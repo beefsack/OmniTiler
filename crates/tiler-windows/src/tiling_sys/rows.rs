@@ -1,210 +1,19 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Held ownership gates for one classification-marker native write (`SetProp` /
-/// `RemoveProp` for sticky, float-intent, or the reserved tile override) on
-/// a stored member: the held process identity must equal the stored full
-/// identity with matching creation, same user/session as the owner, medium
-/// integrity, live lifetime tag, plus scope, hosted-child, and proof fences.
-/// The caller keeps the returned hold across the write and its readback and
-/// rechecks pid plus lifetime tag immediately before the call (a stable
-/// process handle never protects HWND reuse) with a consistent readback
-/// after.
-pub(super) fn hold_marker_target(
-    state: &TileLoop,
-    me: &ProcessIdentity,
-    key: &crate::native_guards::WindowKey,
-) -> Option<HeldProcess> {
-    // Test-only mirror of the gates below against a registered fake: the
-    // scripted pid/process/liveness/integrity stand in for the OS reads
-    // while the predicates (identity, scope, lifetime, integrity) stay
-    // real. The self-process hold is only the liveness guard stand-in:
-    // its ambient runner level never gates scripted installs.
-    // Unregistered HWNDs fall through to the OS exactly as before.
-    #[cfg(test)]
-    if crate::product_hide::sys::fake::active(key.hwnd) {
-        use crate::product_hide::sys::fake;
-        let stored = state.member_identity.get(key)?.clone();
-        let (facts_ok, tag, integrity_rid) = fake::with(key.hwnd, |w| {
-            (
-                w.alive
-                    && w.pid == key.pid
-                    && w.process.pid == stored.pid
-                    && w.process.process_creation == key.creation
-                    && w.process.process_creation == stored.process_creation
-                    && w.process.user_sid == stored.user_sid
-                    && w.process.session_id == stored.session_id
-                    && crate::lifecycle::exe_paths_equal(&w.process.exe_path, &stored.exe_path),
-                w.member_tag.clone(),
-                w.integrity_rid,
-            )
-        })?;
-        if !facts_ok {
-            return None;
-        }
-        if stored.user_sid != me.user_sid || stored.session_id != me.session_id {
-            return None;
-        }
-        if !scope_allows(&state.scope, &stored.exe_path) {
-            return None;
-        }
-        if !hosted_gate_allows(&stored.exe_path, key.hwnd, key.pid, &state.scope_hosts) {
-            return None;
-        }
-        if let Some(entries) = state.allowlist.as_ref() {
-            let entry = entries.iter().find(|e| e.hwnd == key.hwnd)?;
-            if verify_proof_owned(key.hwnd, entry, me).is_err() {
-                return None;
-            }
-        }
-        let stored_tag = state.member_tags.get(key)?;
-        if !crate::native_guards::visible_lifetime_ok(stored_tag, tag.as_deref()) {
-            return None;
-        }
-        if !pid_current(key.hwnd, key.pid) {
-            return None;
-        }
-        let held = fake::hold_verified(key.pid, &stored).and_then(|r| r.ok())?;
-        if !is_medium_rid(integrity_rid) {
-            return None;
-        }
-        return Some(held);
-    }
-    let stored = state.member_identity.get(key)?;
-    let held = HeldProcess::open(key.pid).ok()?;
-    let ident = held.identity().ok()?;
-    if ident.pid != key.pid
-        || ident.process_creation != key.creation
-        || stored.pid != key.pid
-        || stored.process_creation != key.creation
-        || ident.user_sid != stored.user_sid
-        || ident.session_id != stored.session_id
-    {
-        return None;
-    }
-    if !crate::lifecycle::exe_paths_equal(&ident.exe_path, &stored.exe_path) {
-        return None;
-    }
-    if ident.user_sid != me.user_sid || ident.session_id != me.session_id {
-        return None;
-    }
-    if !held.integrity().is_ok_and(is_medium_rid) {
-        return None;
-    }
-    if !scope_allows(&state.scope, &stored.exe_path) {
-        return None;
-    }
-    if !hosted_gate_allows(&stored.exe_path, key.hwnd, key.pid, &state.scope_hosts) {
-        return None;
-    }
-    if let Some(entries) = state.allowlist.as_ref() {
-        let entry = entries.iter().find(|e| e.hwnd == key.hwnd)?;
-        if verify_proof_owned(key.hwnd, entry, me).is_err() {
-            return None;
-        }
-    }
-    let live_tag = crate::product_hide::sys::read_member_tag(key.hwnd);
-    let stored_tag = state.member_tags.get(key)?;
-    if !crate::native_guards::visible_lifetime_ok(stored_tag, live_tag.as_deref()) {
-        return None;
-    }
-    if !pid_current(key.hwnd, key.pid) {
-        return None;
-    }
-    Some(held)
-}
-
-/// Fresh pid plus lifetime-tag recheck for one classification-marker write:
-/// the live member tag must still equal the stored tag and the HWND must
-/// still resolve to the stored pid. Call immediately before the `SetProp` /
-/// `RemoveProp` under the held process and again after the readback.
-pub(super) fn marker_tag_pid_fresh(
-    state: &TileLoop,
-    key: &crate::native_guards::WindowKey,
-) -> bool {
-    state.member_tags.get(key).is_some_and(|stored| {
-        crate::native_guards::visible_lifetime_ok(
-            stored,
-            crate::product_hide::sys::read_member_tag(key.hwnd).as_deref(),
-        )
-    }) && pid_current(key.hwnd, key.pid)
-}
-
-/// Hydrate one admitted member's surviving fixed-window tile-override marker
-/// into the durable origin set (R-SPC-04 D7). Read-only: no
-/// Engine commit, no marker write, no geometry/focus/topmost effect; the
-/// marker stays for later restarts. The full held fence owns every read:
-/// [`hold_marker_target`] binds the live process identity (pid, creation,
-/// sid/session, exe, medium integrity), scope, hosted-child, proof, and the
-/// live lifetime tag plus pid, with a freshness recheck on both sides of the
-/// shared-priority marker peeks while the guard stays retained. Anything
-/// unverifiable fails closed with no intent and no log: the window simply
-/// recomputes ordinary fixed classification with no hold or retry.
-/// Missing/degraded/unmatched records return false.
-///
-/// Returns true exactly when the durable win stands (newly affirmed or
-/// already recorded); the `tile-adopted` line logs only on first
-/// affirmation so later ticks never re-log. Shared by the slotless-maximized
-/// admission site (which must hydrate before any birth probe, latch, clear,
-/// slot, or write effect) and the restart-adoption retained pass. Neither
-/// caller grants membership, writes, or recovery authority: hydration only
-/// classifies rows the admission already accepted.
-pub(super) fn hydrate_tile_override_marker(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    key: &crate::native_guards::WindowKey,
-    log_path: &Path,
-    token: &str,
-) -> bool {
-    if state.fixed_origin_overrides.contains(key) {
-        return true;
-    }
-    let Some(held) = hold_marker_target(state, me, key) else {
-        return false;
-    };
-    if !marker_tag_pid_fresh(state, key) {
-        let _ = &held;
-        return false;
-    }
-    let marker = crate::native_guards::classify_restart_marker(
-        crate::product_hide::sys::peek_float_intent_raw(key.hwnd),
-        crate::product_hide::sys::peek_sticky_raw(key.hwnd),
-        crate::product_hide::sys::peek_tile_override_raw(key.hwnd),
-    );
-    let fresh = marker_tag_pid_fresh(state, key);
-    let _ = &held;
-    if !fresh || !matches!(marker, crate::native_guards::RestartMarker::TileOverride) {
-        return false;
-    }
-    state.fixed_origin_overrides.insert(key.clone());
-    log_json_at(
-        log_path,
-        serde_json::json!({
-            "event": "tile-adopted",
-            "window": token,
-        }),
-    );
-    true
-}
-
-/// Drop float and sticky runtime state whose membership is gone. No writes,
-/// no ledger; the next tick re-derives float rows from the Engine.
-/// Classification markers (window properties) are never pruned here: only
-/// the runtime maps. A surviving marker re-adopts on the next preamble.
+/// Drop float runtime state whose membership is gone. No writes, no ledger;
+/// the next tick re-derives float rows from the canonical intent snapshot.
+/// Classification intent lives in the window's own packed slot and is never
+/// pruned here: only the runtime maps, and the snapshot refresh re-reads the
+/// slot for every surviving member.
 pub(super) fn prune_float_state(state: &mut TileLoop) {
     state
         .float_rects
         .retain(|token, _| state.member_tokens.values().any(|live| live == token));
-    state
-        .restart_reject_hold
-        .retain(|key| state.member_tokens.contains_key(key));
     // Fixed-size admission lanes are membership-bound like the float lanes:
-    // overrides and automatic origins never outlive their live client, and
-    // overlay snapshots never outlive their token. Markers (window
+    // automatic origins never outlive their live client, and overlay
+    // snapshots never outlive their token. Intent markers (window
     // properties) die with the window and are never pruned here.
-    state
-        .fixed_origin_overrides
-        .retain(|key| state.member_tokens.contains_key(key));
     state
         .fixed_auto_seen
         .retain(|key| state.member_tokens.contains_key(key));
@@ -248,12 +57,14 @@ pub(super) fn drop_member_state(state: &mut TileLoop, key: &crate::native_guards
     if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
         state.restore_wake = None;
     }
-    state.born_keep_overlay.remove(key);
-    state.retile_keep_overlay.remove(key);
     state.born_first_exit.remove(key);
     state.fixed_auto_seen.remove(key);
-    state.fixed_origin_overrides.remove(key);
-    state.restart_reject_hold.remove(key);
+    // The canonical intent snapshot never outlives membership: the next
+    // tick's refresh would prune it anyway, and keeping it here means no
+    // stale sticky/float/tile classification survives a same-tick drop or
+    // a same-process reuse rebind. The packed slot itself is untouched
+    // (properties die with the window; a surviving tag re-reads it).
+    state.intent_snapshot.remove(key);
     state.member_identity.remove(key);
     state.member_tags.remove(key);
     state.hint_last_good.remove(key);

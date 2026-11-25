@@ -414,7 +414,6 @@ pub(super) fn poll_foreground_workspace(
     };
     let effect = workspace_do_select(
         state, me, store, dir, fulls, areas, observed, retained, &output, &workspace, None, &ctx,
-        None, false, false,
     );
     log_workspace_action(
         state,

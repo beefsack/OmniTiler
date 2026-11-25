@@ -9,12 +9,14 @@ use super::*;
 /// window-lifetime tag, verified live against the stored copy on every tick.
 /// A same-process HWND reuse (same HWND/PID/creation, fresh window without
 /// our tag) repairs here as a brand-new window: stale membership, Engine
-/// token, identity, tag, and focus memory drop first, then a fresh tag is
-/// stamped, a fresh Engine token is issued, and the current tick's row is
+/// token, identity, tag, and focus memory drop first; the window's surviving
+/// tag is adopted when it has one (restart intent and R12 preimages stay
+/// bound to that exact lifetime) and only a tagless window receives a fresh
+/// stamp; a fresh Engine token is issued, and the current tick's row is
 /// patched to it, so the new generation inherits no membership, focus, or
-/// layout. Stamping writes only our own property name (dies with the window,
-/// never trusted across runs, never removed by us); a failed stamp skips
-/// admission fail-closed for the tick.
+/// layout. Tag writes cover only our own property name (dies with the window,
+/// never trusted across runs, never removed by us); a failed stamp or
+/// adoption skips admission fail-closed for the tick.
 pub(super) fn ensure_workspace_assignments(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -105,13 +107,21 @@ pub(super) fn ensure_workspace_assignments(
             ) {
                 continue;
             }
+            // Restart intent survives admission: `ensure_member_tag` adopts
+            // a surviving live tag instead of rotating it, so the packed
+            // intent slot and the R12 preimages (bound to pid, process
+            // creation, and that tag) still verify against the stored
+            // lifetime. Only a window with no valid tag receives a fresh
+            // stamp (same-process reuse repair), and the postcheck below
+            // proves the exact tag readback before membership is stored.
             let member_tag = match crate::product_hide::sys::ensure_member_tag(window.hwnd, me.pid)
             {
                 Ok(tag) => tag,
                 Err(_) => continue,
             };
             // Post-stamp postcheck: the expected identity must still be live
-            // with the fresh tag reading back, or no membership is stored.
+            // with the adopted/fresh tag reading back, or no membership is
+            // stored.
             let post_ok = crate::product_hide::sys::hold_target_verified(identity.pid, &identity)
                 .is_ok()
                 && pid_current(window.hwnd, identity.pid)
@@ -173,17 +183,16 @@ pub(super) fn ensure_workspace_assignments(
     // (membership without homing); later fullscreen on a lifetime-known
     // window stays a managed overlay transition.
     let _ = admit_born_fullscreen(state, me, retained, areas);
-    // One aggregate hint-query budget for the whole preamble (item 13):
-    // the slotless fixed verdicts and the restart-adoption assemblies below
-    // share it, so many fresh maximized windows cannot reset the timer per
-    // row or per domain. Op assemblies keep their existing per-op budget:
-    // coupling multi-intent ticks (notably keyboard_tick) to this timer
-    // would change pre-existing move/focus budget behavior.
+    // One aggregate hint-query budget for the whole preamble (item 13): the
+    // slotless fixed verdicts share it, so many fresh maximized windows
+    // cannot reset the timer per row or per domain. Op assemblies keep their
+    // existing per-op budget: coupling multi-intent ticks (notably
+    // keyboard_tick) to this timer would change pre-existing move/focus
+    // budget behavior.
     let mut hint_cx = HintCx::new();
     // First-seen maximized members bind slotless the same way; the
     // mode-gated clear restores them on tiled.
     let _ = admit_slotless_maximized(state, me, retained, areas, &mut hint_cx);
-    adopt_restart_markers(state, me, observed, retained, areas, &mut hint_cx);
     // Trailing lifecycle is core-owned: the adapter mints nothing here.
     let _ = admitted_outputs;
     if state.active_output.is_empty()
@@ -201,12 +210,12 @@ pub(super) fn ensure_workspace_assignments(
 /// window loses its tag with the window, while a live window still reads it).
 /// Members without a stored tag keep the existing drop-only behavior, and
 /// empty ids never queue. No production slot leaks through that lane: every
-/// production admission stamps a tag (born-fullscreen, slotless-maximized,
-/// and eligible-visible admission), hiding refuses without one, and restart
-/// adoption admits no new members, so a tagless member is only ever a test
-/// fixture. Homing is read now, while the member still has a workspace
-/// location, and covers hidden workspaces and every domain, so multi-domain
-/// close bursts all queue before their member state drops.
+/// production admission stamps or adopts a tag (born-fullscreen,
+/// slotless-maximized, and eligible-visible admission) and hiding refuses
+/// without one, so a tagless member is only ever a test fixture. Homing is
+/// read now, while the member still has a workspace location, and covers
+/// hidden workspaces and every domain, so multi-domain close bursts all
+/// queue before their member state drops.
 fn queue_verified_close(state: &mut TileLoop, key: &crate::native_guards::WindowKey) {
     let Some(token) = state.member_tokens.get(key).cloned() else {
         return;
@@ -411,15 +420,6 @@ pub(super) fn workspace_close_cleanup(state: &mut TileLoop) {
     state
         .born_fullscreen
         .retain(|key| state.last_hwnds.contains(&key.hwnd));
-    state
-        .born_keep_overlay
-        .retain(|key| state.member_tokens.contains_key(key));
-    state
-        .retile_keep_overlay
-        .retain(|key| state.member_tokens.contains_key(key));
-    state
-        .fixed_origin_overrides
-        .retain(|key| state.member_tokens.contains_key(key));
     state
         .fixed_auto_seen
         .retain(|key| state.member_tokens.contains_key(key));

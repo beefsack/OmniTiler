@@ -11,18 +11,15 @@ use tiler_core::geometry::Rect;
 
 const ADOPT_TEST_CLASS: &str = "OmniTilerRestartAdoptTest";
 
-/// Adopt through the production preamble with genuine world homing: one
-/// observation dispatch through the loop's own owner first so
-/// `member_home` resolves (engine homing for the seeded member tables),
-/// then the real marker adoption. Never fabricated adapter state.
+/// Snapshot native intent before the first world observation, as the owner
+/// does on startup. This seeds core homing and the mechanical frame cache.
 fn adopt_seeded(
     state: &mut super::TileLoop,
-    me: &ProcessIdentity,
     observed: &[super::ObservedWindow],
     retained: &[super::RetainedRow],
     areas: &[super::MonitorArea],
-    hint_cx: &mut super::HintCx,
 ) {
+    super::world_tick::refresh_intent_snapshot(state);
     let reply =
         super::world_tick::dispatch_test_observation(state, observed, retained, areas, 0, None, 0);
     assert!(
@@ -30,8 +27,7 @@ fn adopt_seeded(
         "restart fixture observation must dispatch: {:?}",
         state.world.last_reply()
     );
-    super::adopt_restart_markers(state, me, observed, retained, areas, hint_cx);
-    super::world_tick::refresh_intent_snapshot(state);
+    super::world_tick::snapshot_frames(state, observed);
 }
 
 struct AdoptWindow {
@@ -51,14 +47,12 @@ impl AdoptWindow {
     }
 }
 
+/// The owning identity every adoption gate compares against. Real process
+/// identity is required: the packed intent slot binds to the exact live
+/// (pid, creation, tag), so a fabricated creation stamp could never read or
+/// write the fixture window's own marker.
 fn fake_me() -> ProcessIdentity {
-    ProcessIdentity {
-        pid: std::process::id(),
-        process_creation: "create-restart-adopt".to_owned(),
-        user_sid: "S-1-5-21-restart".to_owned(),
-        session_id: 1,
-        exe_path: "C:\\test\\app.exe".to_owned(),
-    }
+    crate::native::current_identity().expect("current identity reads")
 }
 
 fn bounds() -> Rect {
@@ -80,6 +74,7 @@ fn frame() -> Rect {
 }
 
 fn observed(hwnd: u64, token: &str) -> super::ObservedWindow {
+    let me = fake_me();
     super::ObservedWindow {
         hwnd,
         token: token.to_owned(),
@@ -93,11 +88,11 @@ fn observed(hwnd: u64, token: &str) -> super::ObservedWindow {
         },
         identity: crate::tiling::ObservedTarget {
             hwnd,
-            pid: std::process::id(),
-            process_creation: "create-restart-adopt".to_owned(),
-            exe_path: "C:\\test\\app.exe".to_owned(),
-            user_sid: "S-1-5-21-restart".to_owned(),
-            session_id: 1,
+            pid: me.pid,
+            process_creation: me.process_creation,
+            exe_path: me.exe_path,
+            user_sid: me.user_sid,
+            session_id: me.session_id,
             tag: String::new(),
         },
         facts: crate::tiling::WindowFacts {
@@ -152,6 +147,57 @@ fn seed_member(
     (key, token, output, active)
 }
 
+/// Exact live member key for one fixture window: the packed slot binds to
+/// this pid/creation plus the stored member tag.
+fn intent_key(hwnd: u64) -> WindowKey {
+    let me = fake_me();
+    WindowKey {
+        hwnd,
+        pid: me.pid,
+        creation: me.process_creation,
+    }
+}
+
+/// Canonical real packed-slot write for one fixture window lifetime.
+fn seed_intent(hwnd: u64, tag: &str, storage: super::IntentStorage) {
+    crate::product_hide::sys::write_intent_slot_for(&intent_key(hwnd), tag, storage)
+        .expect("packed intent slot writes for the exact lifetime");
+}
+
+/// Canonical verified storage read; unreadable/foreign reads stay `None`.
+fn intent_of(hwnd: u64, tag: &str) -> Option<super::IntentStorage> {
+    crate::product_hide::sys::read_intent_slot_for(&intent_key(hwnd), tag)
+        .map(Option::unwrap_or_default)
+}
+
+/// Canonical read against the window's live member tag (fixture convenience:
+/// the same tag production stores at admission).
+fn intent_of_window(hwnd: u64) -> Option<super::IntentStorage> {
+    let tag = crate::product_hide::sys::read_member_tag(hwnd)?;
+    intent_of(hwnd, &tag)
+}
+
+fn sticky_intent(prior: bool) -> super::IntentStorage {
+    super::IntentStorage {
+        sticky_prior: Some(prior),
+        float: None,
+    }
+}
+
+fn float_intent() -> super::IntentStorage {
+    super::IntentStorage {
+        sticky_prior: None,
+        float: Some(true),
+    }
+}
+
+fn tile_intent() -> super::IntentStorage {
+    super::IntentStorage {
+        sticky_prior: None,
+        float: Some(false),
+    }
+}
+
 fn areas_for(output: &str) -> Vec<super::MonitorArea> {
     vec![super::MonitorArea {
         device: output.to_owned(),
@@ -175,21 +221,17 @@ fn sticky_markers_readopt_through_real_tileloop_twice() {
         let pid = std::process::id();
         let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
             .expect("member tag installs on the owned window");
-        crate::product_hide::sys::install_sticky_marker(win.hwnd, prior)
-            .expect("sticky marker installs on the owned window");
+        seed_intent(win.hwnd, &tag, sticky_intent(prior));
         for restart in 1..=2 {
             let mut state = test_state();
             state.log_path = std::path::PathBuf::from("NUL");
             let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
             let observed = vec![observed(win.hwnd, &token)];
-            let mut hint_cx = super::HintCx::new();
             adopt_seeded(
                 &mut state,
-                &fake_me(),
                 &observed,
                 &[],
                 &areas_for(&output),
-                &mut hint_cx,
             );
             assert_eq!(
                 state.sticky_prior_value(&key),
@@ -201,10 +243,7 @@ fn sticky_markers_readopt_through_real_tileloop_twice() {
                 "prior {prior} restart {restart}: Engine carries the float"
             );
             assert!(
-                crate::product_hide::sys::peek_sticky_raw(win.hwnd)
-                    == crate::native_guards::MarkerSlot::Value(crate::tiling::sticky_marker_value(
-                        prior
-                    )),
+                intent_of(win.hwnd, &tag) == Some(sticky_intent(prior)),
                 "prior {prior} restart {restart}: durable marker kept"
             );
         }
@@ -222,25 +261,21 @@ fn tile_override_marker_hydrates_override_without_writes_or_float() {
     let pid = std::process::id();
     let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
         .expect("member tag installs on the owned window");
-    crate::product_hide::sys::install_tile_override_marker(win.hwnd)
-        .expect("tile marker installs on the owned window");
+    seed_intent(win.hwnd, &tag, tile_intent());
     for restart in 1..=2 {
         let mut state = test_state();
         state.log_path = std::path::PathBuf::from("NUL");
         let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
         let observed = vec![observed(win.hwnd, &token)];
-        let mut hint_cx = super::HintCx::new();
         adopt_seeded(
             &mut state,
-            &fake_me(),
             &observed,
             &[],
             &areas_for(&output),
-            &mut hint_cx,
         );
         assert!(
-            state.fixed_origin_overrides.contains(&key),
-            "restart {restart}: override hydrated into the runtime set"
+            state.tile_override_of(&key),
+            "restart {restart}: override hydrated into the intent snapshot"
         );
         assert!(
             !state.floating_of(&key),
@@ -255,16 +290,15 @@ fn tile_override_marker_hydrates_override_without_writes_or_float() {
             "restart {restart}: adoption stages no Engine commit"
         );
         assert!(
-            crate::product_hide::sys::read_tile_override_marker(win.hwnd),
+            intent_of(win.hwnd, &tag).is_some_and(|storage| storage.float == Some(false)),
             "restart {restart}: durable marker kept for later restarts"
         );
     }
 }
 
-/// Seed admitted membership for one owned window with its REAL process
-/// identity (not the fake adoption identity): the held fence compares
-/// live identity, sid/session, exe, and integrity against these tables,
-/// so only the true owner passes.
+/// Seed admitted membership for one owned window with its live process
+/// identity: the held fence compares live identity, sid/session, exe, and
+/// integrity against these tables, so only the true owner passes.
 fn seed_real_member(
     state: &mut super::TileLoop,
     hwnd: u64,
@@ -313,30 +347,16 @@ fn retained_max(key: &WindowKey, token: &str) -> super::RetainedRow {
     }
 }
 
-fn runner_is_medium() -> bool {
-    // Own-process windows inherit the runner integrity level, and the
-    // held fence refuses non-medium processes before any marker read.
-    // Medium runners hydrate; elevated runners stop at the gate (the
-    // existing skip contract: refusal-shaped emptiness, never success).
-    crate::native::current_integrity_level()
-        .ok()
-        .is_some_and(crate::lifecycle::is_medium_rid)
-}
-
 #[test]
 fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
-    // D7 retained pass on a real owned message-only window presented as
-    // a retained maximized member with hint loss: the production held
-    // install plus readback persists the marker success-only, then the
-    // production preamble hydrates durable+runtime with no Engine
-    // commit, no native frame/focus/style writes, no D4 latch, and no
-    // clear under both born-maximized modes. Controls: corrupt value,
-    // tag mismatch, destroyed window, settled removal, and membership
-    // prune each hydrate nothing. Message-only windows are invisible
-    // and destroyed at test end; no other window is touched.
+    // D7 retained pass on a real owned message-only window already bound
+    // as a member. The canonical slot read proves identity and tag, not
+    // admission integrity; actual slotless admission checks medium
+    // integrity in `holdable_key` before any intent can influence it.
+    // Verify no D4 latch, native restyle, or reparenting across both
+    // born-maximized modes, and no hydration on bad lifetime or slot.
     use crate::settings::{BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, LiveSettings, Settings};
     let real = crate::native::current_identity().expect("current identity reads");
-    let medium = runner_is_medium();
     let win = AdoptWindow::create();
     let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
         .expect("member tag installs on the owned window");
@@ -347,11 +367,9 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         let mut settings = Settings::default();
         settings.core.born_maximized = born.to_owned();
         state.settings_live = Some(LiveSettings::fresh(settings, None));
-        let (key, token, output, active) = seed_real_member(&mut state, win.hwnd, &tag, &real);
-        // Success-only production install through the held wrapper.
-        let installed = medium
-            && crate::product_hide::sys::install_tile_override_marker(win.hwnd).is_ok();
-        let mut hint_cx = super::HintCx::new();
+        let (key, token, output, _) = seed_real_member(&mut state, win.hwnd, &tag, &real);
+        // The slot binds to the admitted lifetime, independently of hints.
+        seed_intent(win.hwnd, &tag, tile_intent());
         // Hint loss: no injection anywhere, so every fresh probe reads
         // unknown; hydration takes no hints at all.
         super::clear_test_hints();
@@ -359,45 +377,22 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         let retained = vec![retained_max(&key, &token)];
         adopt_seeded(
             &mut state,
-            &real,
             &[],
             &retained,
             &areas_for(&output),
-            &mut hint_cx,
-        );
-        if !medium {
-            assert!(
-                !installed,
-                "born {born}: elevated runner refuses the install"
-            );
-            assert!(
-                !state.fixed_origin_overrides.contains(&key)
-                    && !state.tile_override_of(&key),
-                "born {born}: elevated runner hydrates nothing"
-            );
-            continue;
-        }
-        assert!(installed, "born {born}: held install reads back");
-        assert!(
-            crate::product_hide::sys::read_tile_override_marker(win.hwnd),
-            "born {born}: marker present"
         );
         assert!(
-            state.fixed_origin_overrides.contains(&key),
-            "born {born}: runtime hydrated"
+            intent_of(win.hwnd, &tag).is_some_and(|storage| storage.float == Some(false)),
+            "born {born}: canonical marker present"
         );
         assert!(
-            state.fixed_origin_overrides.contains(&key),
-            "born {born}: durable hydrated"
+            state.tile_override_of(&key),
+            "born {born}: durable intent hydrated"
         );
         assert!(
             state.fixed_auto_seen.is_empty(),
             "born {born}: no automatic origin acquired"
         );
-        let _domain = (output.clone(), active.clone());
-        // Hydration stages no world command of its own: the seeding
-        // dispatch above is the only owner traffic (adoption only fills
-        // adapter intent lanes from durable markers).
         assert_eq!(
             crate::ffi::window_exstyle(win.hwnd),
             style_before,
@@ -408,57 +403,59 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
             parent_before,
             "born {born}: no reparenting"
         );
-        let _cx = super::HintCx::new();
         assert!(
-            crate::product_hide::sys::read_tile_override_marker(win.hwnd),
+            intent_of(win.hwnd, &tag).is_some_and(|storage| storage.float == Some(false)),
             "born {born}: durable override marker kept"
         );
-        let _ = &_cx;
-        // Settled removal through the production wrapper clears the
-        // marker; membership prune drops both runtime lanes.
-        let _ = crate::product_hide::sys::remove_tile_override_marker(win.hwnd);
+        // Settled removal clears the slot; membership prune drops cached intent.
+        seed_intent(win.hwnd, &tag, super::IntentStorage::default());
         assert!(
-            !crate::product_hide::sys::read_tile_override_marker(win.hwnd),
+            !intent_of(win.hwnd, &tag)
+                .is_some_and(|storage| storage.float == Some(false)),
             "born {born}: settled removal clears the marker"
         );
         state.clear_tile(&key);
-        state.fixed_origin_overrides.remove(&key);
         super::drop_member_state(&mut state, &key);
         assert!(
-            !state.fixed_origin_overrides.contains(&key)
-                && !state.tile_override_of(&key),
-            "born {born}: prune drops both lanes"
+            !state.tile_override_of(&key),
+            "born {born}: membership prune drops cached intent"
         );
-        // Re-install for the next born mode (marker removal above).
-        if medium {
-            let _ = crate::product_hide::sys::install_tile_override_marker(win.hwnd);
-        }
     }
-    if !medium {
-        return;
+    // Sticky takes precedence over the explicit tile lane without
+    // discarding it from the packed slot or the per-tick snapshot.
+    {
+        let mixed = super::IntentStorage {
+            float: Some(false),
+            sticky_prior: Some(false),
+        };
+        seed_intent(win.hwnd, &tag, mixed);
+        let mut state = test_state();
+        let (key, token, output, _) = seed_real_member(&mut state, win.hwnd, &tag, &real);
+        let retained = vec![retained_max(&key, &token)];
+        adopt_seeded(&mut state, &[], &retained, &areas_for(&output));
+        assert_eq!(state.intent_snapshot.get(&key), Some(&mixed));
+        assert!(state.sticky_of(&key));
+        assert!(state.floating_of(&key));
+        assert!(!state.tile_override_of(&key));
     }
     // Corrupt value on our property name: diagnosed, no intent.
     {
         let win = AdoptWindow::create();
         let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
             .expect("member tag installs");
-        let ok = crate::ffi::set_prop(win.hwnd, crate::model::TILE_OVERRIDE_PROP, 99);
+        let ok = crate::ffi::set_prop(win.hwnd, crate::product_hide::sys::INTENT_SLOT_PROP, 99);
         assert!(ok, "foreign value plants on the owned window");
         let mut state = test_state();
         let (key, token, output, _) = seed_real_member(&mut state, win.hwnd, &tag, &real);
         let retained = vec![retained_max(&key, &token)];
-        let mut hint_cx = super::HintCx::new();
         adopt_seeded(
             &mut state,
-            &real,
             &[],
             &retained,
             &areas_for(&output),
-            &mut hint_cx,
         );
         assert!(
-            !state.fixed_origin_overrides.contains(&key)
-                && !state.tile_override_of(&key),
+            !state.intent_snapshot.contains_key(&key) && !state.tile_override_of(&key),
             "corrupt plants no override"
         );
     }
@@ -467,51 +464,41 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         let win = AdoptWindow::create();
         let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
             .expect("member tag installs");
-        crate::product_hide::sys::install_tile_override_marker(win.hwnd)
-            .expect("tile marker installs");
+        seed_intent(win.hwnd, &tag, tile_intent());
         let mut state = test_state();
         let (key, token, output, _) =
             seed_real_member(&mut state, win.hwnd, "deadbeefdeadbeef", &real);
         let retained = vec![retained_max(&key, &token)];
-        let mut hint_cx = super::HintCx::new();
         adopt_seeded(
             &mut state,
-            &real,
             &[],
             &retained,
             &areas_for(&output),
-            &mut hint_cx,
         );
         assert!(
-            !state.fixed_origin_overrides.contains(&key),
+            !state.intent_snapshot.contains_key(&key) && !state.tile_override_of(&key),
             "tag mismatch hydrates nothing"
         );
-        let _ = tag;
     }
     // Destroyed window: close refuses adoption with no state change.
     {
         let win = AdoptWindow::create();
         let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
             .expect("member tag installs");
-        crate::product_hide::sys::install_tile_override_marker(win.hwnd)
-            .expect("tile marker installs");
+        seed_intent(win.hwnd, &tag, tile_intent());
         let hwnd = win.hwnd;
         drop(win);
         let mut state = test_state();
         let (key, token, output, _) = seed_real_member(&mut state, hwnd, &tag, &real);
         let retained = vec![retained_max(&key, &token)];
-        let mut hint_cx = super::HintCx::new();
         adopt_seeded(
             &mut state,
-            &real,
             &[],
             &retained,
             &areas_for(&output),
-            &mut hint_cx,
         );
         assert!(
-            !state.fixed_origin_overrides.contains(&key)
-                && !state.tile_override_of(&key),
+            !state.intent_snapshot.contains_key(&key) && !state.tile_override_of(&key),
             "destroyed window hydrates nothing"
         );
     }
@@ -525,20 +512,16 @@ fn float_marker_readopts_through_real_tileloop() {
     let pid = std::process::id();
     let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
         .expect("member tag installs on the owned window");
-    crate::product_hide::sys::install_float_intent_marker(win.hwnd)
-        .expect("float marker installs on the owned window");
+    seed_intent(win.hwnd, &tag, float_intent());
     let mut state = test_state();
     state.log_path = std::path::PathBuf::from("NUL");
     let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
     let observed = vec![observed(win.hwnd, &token)];
-    let mut hint_cx = super::HintCx::new();
     adopt_seeded(
         &mut state,
-        &fake_me(),
         &observed,
         &[],
         &areas_for(&output),
-        &mut hint_cx,
     );
     assert!(
         state.floating_of(&key),
@@ -553,7 +536,7 @@ fn float_marker_readopts_through_real_tileloop() {
         "Engine carries the re-adopted float"
     );
     assert!(
-        crate::product_hide::sys::read_float_intent_marker(win.hwnd),
+        intent_of(win.hwnd, &tag).is_some_and(|storage| storage.float == Some(true)),
         "durable float marker kept for later restarts"
     );
 }
@@ -577,12 +560,9 @@ fn mixed_markers_readopt_through_real_tileloop_in_any_order() {
                 .expect("member tag installs on the owned window")
         };
         let (tag_a, tag_b, tag_c, tag_d) = (install(&a), install(&b), install(&c), install(&d));
-        crate::product_hide::sys::install_sticky_marker(a.hwnd, false)
-            .expect("sticky marker installs");
-        crate::product_hide::sys::install_sticky_marker(b.hwnd, true)
-            .expect("sticky marker installs");
-        crate::product_hide::sys::install_float_intent_marker(c.hwnd)
-            .expect("float marker installs");
+        seed_intent(a.hwnd, &tag_a, sticky_intent(false));
+        seed_intent(b.hwnd, &tag_b, sticky_intent(true));
+        seed_intent(c.hwnd, &tag_c, float_intent());
         let mut state = test_state();
         let log_path = std::env::temp_dir().join(format!(
             "tiler-windows-mixed-adopt-{}-{}.log",
@@ -604,14 +584,11 @@ fn mixed_markers_readopt_through_real_tileloop_in_any_order() {
         if reverse {
             ordered.reverse();
         }
-        let mut hint_cx = super::HintCx::new();
         adopt_seeded(
             &mut state,
-            &fake_me(),
             &ordered,
             &[],
             &areas_for(&output),
-            &mut hint_cx,
         );
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();
         let _ = std::fs::remove_file(&log_path);
@@ -652,66 +629,69 @@ fn mixed_markers_readopt_through_real_tileloop_in_any_order() {
 
 #[test]
 fn marker_install_remove_roundtrip_on_owned_window() {
-    // Actual persistence native ops: install reads back, settled removal
-    // verifies absence, and a wrong sticky value refuses without
-    // touching the live marker.
+    // Canonical packed-slot persistence: the exact live lifetime writes
+    // and reads its own storage, empty storage removes the slot while the
+    // lifetime still reads verified-empty, and a foreign tag fails closed
+    // without touching the live value.
     let win = AdoptWindow::create();
-    // R12 intent slot binds to the exact live lifetime (pid, creation, and
-    // the installed member tag), so the tag must exist before any marker
-    // write. Admission installs it first in production; this fixture does
-    // the same.
-    crate::product_hide::sys::install_member_tag(win.hwnd, std::process::id())
+    let me = fake_me();
+    let tag = crate::product_hide::sys::install_member_tag(win.hwnd, me.pid)
         .expect("member tag installs on the owned window");
-    assert!(
-        !crate::product_hide::sys::read_float_intent_marker(win.hwnd),
-        "fresh window carries no float intent"
+    let key = intent_key(win.hwnd);
+    assert_eq!(
+        intent_of(win.hwnd, &tag),
+        Some(super::IntentStorage::default()),
+        "fresh window reads verified-empty"
     );
-    crate::product_hide::sys::install_float_intent_marker(win.hwnd)
-        .expect("float marker installs on the owned window");
-    assert!(crate::product_hide::sys::read_float_intent_marker(win.hwnd));
-    crate::product_hide::sys::remove_float_intent_marker(win.hwnd)
-        .expect("settled float removal verifies");
-    assert!(
-        !crate::product_hide::sys::read_float_intent_marker(win.hwnd),
-        "settled removal clears the float marker"
-    );
-    crate::product_hide::sys::install_sticky_marker(win.hwnd, true)
-        .expect("sticky marker installs on the owned window");
-    assert!(
-        !crate::product_hide::sys::remove_sticky_marker(win.hwnd, false).expect("readable"),
-        "wrong pre-sticky value refuses without touching"
+    seed_intent(win.hwnd, &tag, float_intent());
+    assert_eq!(intent_of(win.hwnd, &tag), Some(float_intent()));
+    assert_eq!(
+        crate::product_hide::sys::read_intent_slot(win.hwnd),
+        Some(Some(float_intent())),
+        "the packed read agrees with the verified read"
     );
     assert_eq!(
-        crate::product_hide::sys::read_sticky_marker(win.hwnd),
-        Some(true),
-        "refused removal keeps the live marker"
-    );
-    assert!(
-        crate::product_hide::sys::remove_sticky_marker(win.hwnd, true).expect("readable"),
-        "settled removal with the live value verifies"
-    );
-    assert_eq!(
-        crate::product_hide::sys::read_sticky_marker(win.hwnd),
+        crate::product_hide::sys::read_intent_slot_for(&key, "deadbeefdeadbeef"),
         None,
-        "settled removal clears the sticky marker"
+        "a foreign tag never reads the live value"
     );
+    assert!(
+        crate::product_hide::sys::write_intent_slot_for(
+            &key,
+            "deadbeefdeadbeef",
+            super::IntentStorage::default()
+        )
+        .is_err(),
+        "a foreign tag never writes"
+    );
+    assert_eq!(
+        intent_of(win.hwnd, &tag),
+        Some(float_intent()),
+        "the refused write leaves the live slot untouched"
+    );
+    seed_intent(win.hwnd, &tag, super::IntentStorage::default());
+    assert_eq!(
+        crate::product_hide::sys::read_intent_slot(win.hwnd),
+        Some(None),
+        "empty storage removes the packed slot"
+    );
+    assert_eq!(
+        intent_of(win.hwnd, &tag),
+        Some(super::IntentStorage::default()),
+        "the empty lifetime still reads verified-empty, not unreadable"
+    );
+    seed_intent(win.hwnd, &tag, sticky_intent(true));
+    assert_eq!(intent_of(win.hwnd, &tag), Some(sticky_intent(true)));
+    seed_intent(win.hwnd, &tag, super::IntentStorage::default());
+    assert_eq!(intent_of(win.hwnd, &tag), Some(super::IntentStorage::default()));
 }
 
 #[test]
-fn absent_markers_read_silent_never_unreadable() {
-    // Never-installed marker names read silent-absent on a real owned
-    // window: `GetPropW` documents NULL for a missing string with no
-    // last-error promise, and absent reads report nonzero errors here,
-    // so NULL must never classify as unreadable (else every unmarked
-    // window logs marker-unreadable every tick).
+fn absent_slot_reads_verified_empty_on_a_tagged_window() {
     let win = AdoptWindow::create();
-    for peek in [
-        crate::product_hide::sys::peek_sticky_raw(win.hwnd),
-        crate::product_hide::sys::peek_float_intent_raw(win.hwnd),
-        crate::product_hide::sys::peek_tile_override_raw(win.hwnd),
-    ] {
-        assert_eq!(peek, crate::native_guards::MarkerSlot::Absent);
-    }
+    let tag = crate::product_hide::sys::install_member_tag(win.hwnd, std::process::id())
+        .expect("tag the owned window");
+    assert_eq!(intent_of(win.hwnd, &tag), Some(super::IntentStorage::default()));
 }
 
 #[test]
@@ -722,20 +702,17 @@ fn corrupt_marker_adopts_nothing_without_side_effects() {
     let pid = std::process::id();
     let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
         .expect("member tag installs on the owned window");
-    let ok = crate::ffi::set_prop(win.hwnd, crate::model::FLOAT_INTENT_PROP, 99);
+    let ok = crate::ffi::set_prop(win.hwnd, crate::product_hide::sys::INTENT_SLOT_PROP, 99);
     assert!(ok, "foreign value plants on the owned window");
     let mut state = test_state();
     state.log_path = std::path::PathBuf::from("NUL");
     let (key, token, output, _active) = seed_member(&mut state, win.hwnd, &tag);
     let observed = vec![observed(win.hwnd, &token)];
-    let mut hint_cx = super::HintCx::new();
     adopt_seeded(
         &mut state,
-        &fake_me(),
         &observed,
         &[],
         &areas_for(&output),
-        &mut hint_cx,
     );
     assert!(!state.sticky_of(&key), "corrupt never sticks");
     assert!(!state.floating_of(&key), "corrupt never floats");
@@ -750,14 +727,11 @@ fn absent_markers_adopt_nothing_without_side_effects() {
     let hwnd = 0x00BEEF42u64;
     let (key, token, output, _active) = seed_member(&mut state, hwnd, "9f2c41aa07bd33e0");
     let observed = vec![observed(hwnd, &token)];
-    let mut hint_cx = super::HintCx::new();
     adopt_seeded(
         &mut state,
-        &fake_me(),
         &observed,
         &[],
         &areas_for(&output),
-        &mut hint_cx,
     );
     assert!(
         !state.sticky_of(&key),
@@ -1010,12 +984,9 @@ fn reject_rig() -> RejectRig {
                 .expect("member tag installs on the owned window"),
         );
     }
-    crate::product_hide::sys::install_sticky_marker(wins[2].hwnd, false)
-        .expect("sticky marker installs");
-    crate::product_hide::sys::install_sticky_marker(wins[3].hwnd, true)
-        .expect("sticky marker installs");
-    crate::product_hide::sys::install_float_intent_marker(wins[4].hwnd)
-        .expect("float marker installs");
+    seed_intent(wins[2].hwnd, &tags[2], sticky_intent(false));
+    seed_intent(wins[3].hwnd, &tags[3], sticky_intent(true));
+    seed_intent(wins[4].hwnd, &tags[4], float_intent());
     for (index, win) in wins.iter().enumerate() {
         let (key, token, out, _) = seed_member(&mut state, win.hwnd, &tags[index]);
         keys.push(key);
@@ -1056,18 +1027,11 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
     // recomputes the same stable adoption.
     let mut rig = reject_rig();
     let areas = reject_areas_for(&rig.output);
-    let mut hint_cx = super::HintCx::new();
     adopt_seeded(
         &mut rig.state,
-        &fake_me(),
         &rig.observed,
         &[],
         &areas,
-        &mut hint_cx,
-    );
-    assert!(
-        rig.state.restart_reject_hold.is_empty(),
-        "admission leaves no hold"
     );
     assert_eq!(
         rig.state.sticky_prior_value(&rig.keys[2]),
@@ -1106,8 +1070,7 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
         !rig.state.floating_of(anchor_key)
             && !rig.state.sticky_of(anchor_key)
             && !rig.state.fixed_auto_seen.contains(anchor_key)
-            && !rig.state.tile_override_of(anchor_key)
-            && !rig.state.fixed_origin_overrides.contains(anchor_key),
+            && !rig.state.tile_override_of(anchor_key),
         "unmarked anchor stages no intent lane"
     );
     assert!(
@@ -1119,12 +1082,13 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
         "plain remainder stays tiled"
     );
     assert!(
-        crate::product_hide::sys::read_float_intent_marker(rig.wins[4].hwnd),
+        intent_of_window(rig.wins[4].hwnd)
+            .is_some_and(|storage| storage.float == Some(true)),
         "durable float marker survives adoption"
     );
     for (win, prior) in [(&rig.wins[2], false), (&rig.wins[3], true)] {
         assert_eq!(
-            crate::product_hide::sys::read_sticky_marker(win.hwnd),
+            intent_of_window(win.hwnd).and_then(|storage| storage.sticky_prior),
             Some(prior),
             "durable sticky marker survives adoption"
         );
@@ -1147,18 +1111,11 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
     }
     // A repeated identical observation recomputes the same stable adoption:
     // no hold, lanes kept, markers untouched.
-    let mut hint_cx = super::HintCx::new();
     adopt_seeded(
         &mut rig.state,
-        &fake_me(),
         &rig.observed,
         &[],
         &areas,
-        &mut hint_cx,
-    );
-    assert!(
-        rig.state.restart_reject_hold.is_empty(),
-        "repeat adoption leaves no hold"
     );
     assert_eq!(
         rig.state.sticky_prior_value(&rig.keys[2]),
@@ -1175,7 +1132,8 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
         "repeat adoption keeps ordinary float"
     );
     assert!(
-        crate::product_hide::sys::read_float_intent_marker(rig.wins[4].hwnd),
+        intent_of_window(rig.wins[4].hwnd)
+            .is_some_and(|storage| storage.float == Some(true)),
         "repeat adoption keeps the durable marker"
     );
     super::clear_test_hints();
@@ -1189,36 +1147,22 @@ fn next_consistent_observation_revalidates_after_adoption() {
     // empty, and later planned writes never target the floats.
     let mut rig = reject_rig();
     let areas = reject_areas_for(&rig.output);
-    let mut hint_cx = super::HintCx::new();
     adopt_seeded(
         &mut rig.state,
-        &fake_me(),
         &rig.observed,
         &[],
         &areas,
-        &mut hint_cx,
-    );
-    assert!(
-        rig.state.restart_reject_hold.is_empty(),
-        "first observation adopts with no hold"
     );
     assert!(
         rig.state.floating_of(&rig.keys[4]),
         "first observation commits the candidate"
     );
     super::inject_test_hints(rig.wins[0].hwnd, min_anchor_hints());
-    let mut hint_cx = super::HintCx::new();
     adopt_seeded(
         &mut rig.state,
-        &fake_me(),
         &rig.observed,
         &[],
         &areas,
-        &mut hint_cx,
-    );
-    assert!(
-        rig.state.restart_reject_hold.is_empty(),
-        "successful hydration leaves no hold"
     );
     assert_eq!(
         rig.state.sticky_prior_value(&rig.keys[2]),
@@ -1265,16 +1209,9 @@ fn next_consistent_observation_revalidates_after_adoption() {
 }
 
 #[test]
-fn monitorless_adoption_still_adopts_marker_intent_without_hold() {
-    // No per-domain commit remains to refuse: marker intent lanes are
-    // output-independent truths, so adoption with no live monitor (empty
-    // areas) still adopts sticky/float lanes from durable markers, stages
-    // no hold barrier, and keeps every durable marker. The hold field
-    // only ever clears here (corrupt/replaced-lifetime coverage pins the
-    // clearing); nothing in production stages it since the Engine-commit
-    // rollback path was deleted with the per-domain sessions.
+fn monitorless_snapshot_adopts_durable_intent() {
+    // Intent is bound to the window lifetime, not to the monitor topology.
     let mut rig = reject_rig();
-    let areas: Vec<super::MonitorArea> = Vec::new();
     // Genuine world seeding while the monitor exists: plant engine homing
     // with the live topology first (production retains prior homing when
     // the monitor later vanishes; a fresh screenless dispatch could not
@@ -1288,20 +1225,8 @@ fn monitorless_adoption_still_adopts_marker_intent_without_hold() {
         None,
         0,
     );
-    let mut hint_cx = super::HintCx::new();
-    super::adopt_restart_markers(
-        &mut rig.state,
-        &fake_me(),
-        &rig.observed,
-        &[],
-        &areas,
-        &mut hint_cx,
-    );
     super::world_tick::refresh_intent_snapshot(&mut rig.state);
-    assert!(
-        rig.state.restart_reject_hold.is_empty(),
-        "monitorless adoption stages no hold barrier"
-    );
+    super::world_tick::snapshot_frames(&mut rig.state, &rig.observed);
     assert_eq!(
         rig.state.sticky_prior_value(&rig.keys[2]),
         Some(false),
@@ -1328,33 +1253,19 @@ fn monitorless_adoption_still_adopts_marker_intent_without_hold() {
         "only the seeding dispatch committed; adoption stages no command"
     );
     assert!(
-        crate::product_hide::sys::read_float_intent_marker(rig.wins[4].hwnd),
+        intent_of_window(rig.wins[4].hwnd)
+            .is_some_and(|storage| storage.float == Some(true)),
         "durable float marker survives monitorless adoption"
     );
     for (win, prior) in [(&rig.wins[2], false), (&rig.wins[3], true)] {
         assert_eq!(
-            crate::product_hide::sys::read_sticky_marker(win.hwnd),
+            intent_of_window(win.hwnd).and_then(|storage| storage.sticky_prior),
             Some(prior),
             "durable sticky marker survives monitorless adoption"
         );
     }
-    // A repeated identical observation recomputes the same adoption:
-    // lanes kept, markers untouched.
-    let mut hint_cx = super::HintCx::new();
-    // No re-seeding: engine homing persists across observations, so the
-    // repeat proves adoption recomputes from retained homing alone.
-    super::adopt_restart_markers(
-        &mut rig.state,
-        &fake_me(),
-        &rig.observed,
-        &[],
-        &areas,
-        &mut hint_cx,
-    );
-    assert!(
-        rig.state.restart_reject_hold.is_empty(),
-        "repeat monitorless adoption stages no hold"
-    );
+    // Another refresh reads the same exact slots without a world dispatch.
+    super::world_tick::refresh_intent_snapshot(&mut rig.state);
     assert_eq!(
         rig.state.sticky_prior_value(&rig.keys[2]),
         Some(false),
@@ -1373,36 +1284,32 @@ fn monitorless_adoption_still_adopts_marker_intent_without_hold() {
 }
 
 #[test]
-fn invalid_marker_and_replaced_lifetime_never_hold() {
-    // Corrupt values and replaced lifetime tags never stage, so a stale
-    // hold clears and rebuilds to empty: no persistent protection without
-    // a currently valid marker plus exact lifetime.
+fn invalid_slot_and_replaced_lifetime_do_not_preserve_cached_intent() {
+    // Losing exact live proof invalidates even a formerly populated snapshot.
     super::clear_test_hints();
-    // Corrupt float-intent value on our property name.
+    // Corrupt packed slot value on our property name.
     {
         let win = AdoptWindow::create();
         let pid = std::process::id();
         let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
             .expect("member tag installs on the owned window");
-        let planted = crate::ffi::set_prop(win.hwnd, crate::model::FLOAT_INTENT_PROP, 99);
+        let planted =
+            crate::ffi::set_prop(win.hwnd, crate::product_hide::sys::INTENT_SLOT_PROP, 99);
         assert!(planted, "foreign value plants on the owned window");
         let mut state = test_state();
         state.log_path = std::path::PathBuf::from("NUL");
         let (key, token, output, _) = seed_member(&mut state, win.hwnd, &tag);
-        state.restart_reject_hold.insert(key.clone());
+        state.intent_snapshot.insert(key.clone(), float_intent());
         let observed = vec![observed(win.hwnd, &token)];
-        let mut hint_cx = super::HintCx::new();
         adopt_seeded(
             &mut state,
-            &fake_me(),
             &observed,
             &[],
             &areas_for(&output),
-            &mut hint_cx,
         );
         assert!(
-            state.restart_reject_hold.is_empty(),
-            "corrupt marker rebuilds the hold to empty"
+            !state.intent_snapshot.contains_key(&key),
+            "corrupt slot invalidates the cached intent"
         );
         assert!(
             !state.sticky_of(&key)
@@ -1418,27 +1325,23 @@ fn invalid_marker_and_replaced_lifetime_never_hold() {
         let pid = std::process::id();
         let stale = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
             .expect("member tag installs on the owned window");
-        crate::product_hide::sys::install_float_intent_marker(win.hwnd)
-            .expect("float marker installs on the owned window");
+        seed_intent(win.hwnd, &stale, float_intent());
         let mut state = test_state();
         state.log_path = std::path::PathBuf::from("NUL");
         let (key, token, output, _) = seed_member(&mut state, win.hwnd, &stale);
         crate::product_hide::sys::install_member_tag(win.hwnd, pid)
             .expect("replacement tag installs on the owned window");
-        state.restart_reject_hold.insert(key.clone());
+        state.intent_snapshot.insert(key.clone(), float_intent());
         let observed = vec![observed(win.hwnd, &token)];
-        let mut hint_cx = super::HintCx::new();
         adopt_seeded(
             &mut state,
-            &fake_me(),
             &observed,
             &[],
             &areas_for(&output),
-            &mut hint_cx,
         );
         assert!(
-            state.restart_reject_hold.is_empty(),
-            "replaced lifetime rebuilds the hold to empty"
+            !state.intent_snapshot.contains_key(&key),
+            "tag replacement invalidates the cached intent"
         );
         assert!(
             !state.sticky_of(&key)
@@ -1462,13 +1365,11 @@ fn restart_admission_adopts_surviving_tag_and_keeps_durable_intent() {
     // restart marker adoption would log `marker-unreadable` and lose float/
     // sticky/tile intent while the durable above/fullscreen preimage could
     // never verify its lifetime again.
-    use crate::native_guards::MarkerSlot;
     let win = AdoptWindow::create();
     let pid = std::process::id();
     let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
         .expect("member tag installs on the owned window");
-    crate::product_hide::sys::install_float_intent_marker(win.hwnd)
-        .expect("float marker installs on the owned window");
+    seed_intent(win.hwnd, &tag, float_intent());
     crate::product_hide::sys::reset_install_tag_attempts();
     let adopted = crate::product_hide::sys::ensure_member_tag(win.hwnd, pid)
         .expect("surviving tag adopts");
@@ -1478,9 +1379,9 @@ fn restart_admission_adopts_surviving_tag_and_keeps_durable_intent() {
         0,
         "adoption performs no tag write"
     );
-    assert_eq!(
-        crate::product_hide::sys::peek_float_intent_raw(win.hwnd),
-        MarkerSlot::Value(crate::tiling::float_intent_marker_value()),
+    assert!(
+        intent_of(win.hwnd, &tag)
+            .is_some_and(|storage| storage.float == Some(true)),
         "durable float intent still decodes against the adopted tag"
     );
     // A window with no tag still gets a fresh stamp (same-process reuse).

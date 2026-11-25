@@ -1,15 +1,10 @@
 #![forbid(unsafe_code)]
-//! Single runtime WorldEngine owner (stage 2b, standby: unwired).
+//! Single runtime Windows world owner, used by every observation and command.
 //!
-//! `TileLoop` owns exactly one [`WorldOwner`]; the owner wraps the adapted
-//! [`WorldSequencer`](super::world_sequencer::WorldSequencer) (in-process
-//! holder over [`WorldEngine`](tiler_core::world_engine::WorldEngine)).
-//! Standby status: the owner bootstraps and sequences offline (holder
-//! boundary tests), but no production tick or command route dispatches
-//! through it yet and it actuates nothing: the legacy Engine path remains
-//! the single active runtime owner until the follow-up cutover unit wires
-//! all tick/command routes and deletes the legacy path. No second active
-//! owner exists at any point.
+//! `TileLoop` owns exactly one [`WorldOwner`]. It wraps the
+//! [`WorldSequencer`](super::world_sequencer::WorldSequencer), an in-process
+//! holder over [`WorldEngine`](tiler_core::world_engine::WorldEngine), and
+//! applies accepted desires through the native diff.
 //!
 //! Native binding/claim/identity/lifetime caches stay adapter-mechanical;
 //! the last applied [`WorldReplyV4`](tiler_core::world_report::WorldReplyV4) is a
@@ -18,10 +13,9 @@
 //! Durable restart: this carrier persists no logical rings. Every report
 //! is a fresh-observation report: the core mints rings/views from the live
 //! screens, remaining windows admit as genuinely new through the ordinary
-//! path, and restart truth rides the native marker/recovery lanes
-//! (sticky/float/tile-override window markers plus the hide-claim ledger
-//! and the visible-membership lifetime tags), which capture consumes as
-//! ordinary facts/lanes on the first observation.
+//! path. Restart truth rides the packed window intent slot, the hide-claim
+//! ledger and the member lifetime tags; capture consumes these with the
+//! normal observation.
 //!
 //! v4 core owns cross-output capacity handling: an exhausted target holds
 //! its scope (`ConstraintClamp`) instead of floating a transferred row, so
@@ -293,9 +287,9 @@ impl WorldOwner {
     }
 
     /// Run one diff pass for an accepted reply. Returns stats; attempted
-    /// writes append mechanical rows to `frame_out`, `member_out`,
-    /// `view_out` for the next report (each stamped with
-    /// `attempt_ms`).
+    /// writes append to `frame_out` and `member_out` for the next report;
+    /// `view_out` is local proof for the receipt and trace. All carry
+    /// `attempt_ms`.
     /// No verdicts are produced: the core derives every completion from
     /// the raw attempts plus staged observation. The arguments are the
     /// disjoint pass products; bundling would hide the borrow split the
@@ -308,7 +302,7 @@ impl WorldOwner {
         ops: &mut dyn super::world_diff::NativeOps,
         frame_out: &mut Vec<tiler_core::world_report::FrameAttempt>,
         member_out: &mut Vec<tiler_core::world_report::MemberAttempt>,
-        view_out: &mut Vec<tiler_core::world_report::ViewAttempt>,
+        view_out: &mut Vec<super::world_diff::LogicalViewWrite>,
         attempt_ms: u64,
     ) -> super::world_diff::ApplyStats {
         self.last_state_attempts.clear();
@@ -391,18 +385,6 @@ impl WorldOwner {
     /// Stage one raw membership attempt for the next report.
     pub(super) fn note_member_attempt(&mut self, attempt: tiler_core::world_report::MemberAttempt) {
         self.seq.note_member_attempt(attempt);
-    }
-
-    /// Stage one raw view attempt for the next report.
-    pub(super) fn note_view_attempt(&mut self, attempt: tiler_core::world_report::ViewAttempt) {
-        self.seq.note_view_attempt(attempt);
-    }
-
-    /// Host-owned workspace domains capability (see
-    /// [`WorldSequencer::host_owned_workspace_domains`]).
-    #[must_use]
-    pub(super) fn host_owned_workspace_domains(&self) -> bool {
-        self.seq.host_owned_workspace_domains()
     }
 
     /// No durable restoration ingress exists.

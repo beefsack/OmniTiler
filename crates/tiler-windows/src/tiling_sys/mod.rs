@@ -65,9 +65,7 @@ use self::first_run::{FirstRunPending, resolve_first_run};
 pub use self::first_run::{FirstRunResolution, resolve_first_run_outcome};
 use self::focus::{hide_border, note_focus_advance, publish_managed, refresh_active_border};
 pub(crate) use self::focus_actuation::owner_snap_dropped;
-use self::focus_actuation::{
-    born_maximized_keep_overlay_for, overlay_expected, same_axis_move_for,
-};
+use self::focus_actuation::{overlay_expected, same_axis_move_for};
 #[cfg(test)]
 use self::fullscreen::{
     FULLSCREEN_STYLE_BITS, OwnedExitEffects, decode_frame_value, encode_frame_value,
@@ -154,9 +152,9 @@ use self::render_bridge::{
     owned_overlay_hwnd, poll_render_acks, post_border_frame, post_preview_frame,
     post_underlay_frame, render_carrier_visible,
 };
-use self::restart::{admit_born_fullscreen, admit_slotless_maximized, adopt_restart_markers};
+use self::restart::{admit_born_fullscreen, admit_slotless_maximized};
 use self::retained::{HiddenRecord, PendingClosed, RetainedRow};
-use self::rows::{drop_member_state, hydrate_tile_override_marker, prune_float_state};
+use self::rows::{drop_member_state, prune_float_state};
 use self::run_loop::run_tile_loop;
 use self::run_loop_intake::{Intake, pump_intake};
 use self::run_loop_tick::{TickFlow, run_active_tick};
@@ -507,20 +505,6 @@ struct TileLoop {
     /// `verify_proof_owned` before every write. Normal `tile` allows
     /// ordinary-app hides; `shortcut-proof` and `tile-proof` never hide.
     workspace_proof: bool,
-    /// R-MAX-06 keep-overlay latch: exact fresh lifetimes bound at tiled-first
-    /// slotless admission under the live overlay value. Keyed by full member
-    /// identity, never HWND alone; pruned with membership. Pre-existing and
-    /// born-fullscreen lifetimes never enter; floating-first (R-MAX-03) binds
-    /// `retile_keep_overlay` below instead, so the born tile default keeps
-    /// clearing tiled-first admissions while retile always overlays.
-    born_keep_overlay: BTreeSet<crate::native_guards::WindowKey>,
-    /// R-MAX-03 retile latch: exact fresh lifetimes bound at floating-first
-    /// slotless admission. A floating-to-tiled workspace admission keeps the
-    /// native maximize over the reserved tile slot with no one-shot clear,
-    /// independent of `core.born_maximized` (only born R-MAX-06 reads that
-    /// setting). Keyed by full member identity, never HWND alone; pruned
-    /// with membership like `born_keep_overlay`.
-    retile_keep_overlay: BTreeSet<crate::native_guards::WindowKey>,
     /// Born-fullscreen hold (KDE initial-fullscreen-hold parity): first-seen
     /// fullscreen windows without a retained tile slot, tracked slotless as a
     /// planner-only exception until their first exit. Keyed by full member
@@ -745,23 +729,6 @@ struct TileLoop {
     /// single adapter-readable intent lane and never a policy mirror.
     intent_snapshot:
         std::collections::BTreeMap<crate::native_guards::WindowKey, self::world_diff::IntentStorage>,
-    /// Observation-scoped write barrier for restart-hydration float
-    /// candidates: exact marker/lifetime-validated staged ordinary/sticky
-    /// floats whose hydration commit was rejected (or never assembled) this
-    /// observation. Rebuilt by every admission preamble (cleared, then
-    /// repopulated only for the current observation's rejected staged sets),
-    /// keyed by full window lifetime identity, pruned with membership. Row
-    /// assembly rides held keys floating and the write gate excludes them,
-    /// so rejected candidates take no tiled writes before the next
-    /// observation revalidates. Never an adapter float lane: durable
-    /// markers are untouched, and success/invalid markers leave no entry.
-    restart_reject_hold: BTreeSet<crate::native_guards::WindowKey>,
-    /// Durable fixed-origin tile overrides by stable member key (R-SPC-04
-    /// D7): proven fixed-origin tile wins whose prior provenance was known
-    /// automatic fixed. Only this set skips the admission clear, reserves
-    /// the maximized slot, and refuses automatic origin. Generic tile wins
-    /// are read from the durable intent snapshot's `tile` bit.
-    fixed_origin_overrides: BTreeSet<crate::native_guards::WindowKey>,
     /// Adapter-asserted automatic fixed-float origins by stable member key
     /// (R-SPC-04 D4): first-seen maximized windows whose fresh tracks are
     /// fixed under the live predicate. They admit slotless and ride floating

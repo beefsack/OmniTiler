@@ -206,11 +206,15 @@ not v4 acceptance evidence.
   unchanged in a lifetime-bound slot, atomically before dependent
   writes, with restart-verifiable binding
   ([rule](world-contract.md#opaque-intent-storage)).
-- Source-reading: current float/tile/sticky markers are inert scalars,
-  not the opaque record; admission rotates tags under fences
-  (`tiling/float.rs`, `tiling_sys/assignments.rs`, `tiling_sys/restart.rs`). Neither an external tag-keyed slot
-  nor atomic property chunks are implemented for v4. Never match by
-  title/PID or store a pointer into the exiting process.
+- Windows stores the two independent `IntentData` v1 choices in one packed
+  `OmniTiler.IntentSlot.v2` property. Each choice is `null`, `false`, or `true`;
+  all nine states round-trip, with both choices absent represented by no
+  property. Reads and writes prove the HWND's PID, process creation and
+  stored member tag; legacy per-choice properties are not read.
+- If `IntentData` expands beyond v1, replace the packed representation with
+  an adapter-owned atomic external slot keyed by the same exact lifetime.
+  Store and return the opaque string unchanged, bounded to 1024 UTF-8 bytes.
+  Never key by title or PID alone or store a pointer into the exiting process.
 
 ## Output identity matching
 

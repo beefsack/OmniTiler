@@ -12,7 +12,7 @@ use super::rmax03_adapter_tests::test_state;
 use super::world_capture::{HiddenClaimRead, capture_world, resolve_cursor_hit};
 use super::world_diff::{
     ApplyStats, FakeNative, ForegroundState, FreshHost, FreshWindow, GuiFocusState, HostDiff,
-    IntentStorage, NativeOps, apply_world_reply,
+    IntentStorage, LogicalViewWrite, NativeOps, apply_world_reply,
 };
 use super::world_sequencer::{AckOutcome, DispatchError, WorldSequencer};
 use super::{HiddenRecord, MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
@@ -265,15 +265,6 @@ fn workspace_ref(out: &str, ws: &str) -> WorkspaceRef {
     }
 }
 
-/// Logical workspace string a raw attempt reference names, `None` when the
-/// reference is absent or native-namespaced.
-fn ref_workspace(reference: &Option<WorkspaceRef>) -> Option<&str> {
-    match reference {
-        Some(WorkspaceRef::Logical { workspace, .. }) => Some(workspace.0.as_str()),
-        Some(WorkspaceRef::Native { .. }) | None => None,
-    }
-}
-
 fn tiled_row(out: &str, ws: &str, token: &str, target: Rect) -> WindowDesire {
     WindowDesire {
         lifetime: WindowId(token.to_owned()),
@@ -353,7 +344,7 @@ fn apply(
 ) -> (
     ApplyStats,
     Vec<tiler_core::world_report::MemberAttempt>,
-    Vec<tiler_core::world_report::ViewAttempt>,
+    Vec<LogicalViewWrite>,
 ) {
     let mut members = Vec::new();
     let mut views = Vec::new();
@@ -402,7 +393,7 @@ fn apply_frames(
     ApplyStats,
     Vec<tiler_core::world_report::FrameAttempt>,
     Vec<tiler_core::world_report::MemberAttempt>,
-    Vec<tiler_core::world_report::ViewAttempt>,
+    Vec<LogicalViewWrite>,
 ) {
     let mut frames = Vec::new();
     let mut members = Vec::new();
@@ -2863,7 +2854,7 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     let follow = &views[0];
     assert_eq!(follow.operation_id, "op-5");
     assert_eq!(follow.disposition, FrameSetter::Refused);
-    assert_eq!(ref_workspace(&follow.post), Some(rig.ws.as_str()));
+    assert_eq!(follow.post.as_deref(), Some(rig.ws.as_str()));
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
     // The spent follow-view phase never repeats.
@@ -4095,8 +4086,8 @@ fn view_ok_true_with_third_location_is_not_refused_proven() {
     assert_eq!(views.len(), 1);
     let got = &views[0];
     assert_eq!(got.disposition, FrameSetter::Accepted);
-    assert_eq!(ref_workspace(&got.post), Some("ws-other"));
-    assert_ne!(ref_workspace(&got.post), Some("ws-target"));
+    assert_eq!(got.post.as_deref(), Some("ws-other"));
+    assert_ne!(got.post.as_deref(), Some("ws-target"));
 }
 
 #[test]
@@ -5409,8 +5400,8 @@ fn standalone_view_actuates_into_untouched_floating_target() {
     assert_eq!(attempt.target_output.0, rig.out);
     assert_eq!(attempt.target_workspace, ws_float);
     assert_eq!(attempt.disposition, FrameSetter::Accepted);
-    assert_eq!(ref_workspace(&attempt.pre), Some(rig.ws.as_str()));
-    assert_eq!(ref_workspace(&attempt.post), Some(ws_float.as_str()));
+    assert_eq!(attempt.pre.as_deref(), Some(rig.ws.as_str()));
+    assert_eq!(attempt.post.as_deref(), Some(ws_float.as_str()));
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
         Some(ws_float.as_str())
@@ -5555,8 +5546,8 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
     let attempt = &views[0];
     assert_eq!(attempt.operation_id, "op-float-refused");
     assert_eq!(attempt.disposition, FrameSetter::Refused);
-    assert_eq!(ref_workspace(&attempt.pre), Some(rig.ws.as_str()));
-    assert_eq!(ref_workspace(&attempt.post), Some(rig.ws.as_str()));
+    assert_eq!(attempt.pre.as_deref(), Some(rig.ws.as_str()));
+    assert_eq!(attempt.post.as_deref(), Some(rig.ws.as_str()));
     assert!(stats.held >= 1);
     let writes = stats.view_writes;
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
@@ -5663,7 +5654,7 @@ fn floating_migration_target_actuates_members_and_view() {
         .expect("target attempt");
     assert_eq!(target_view.target_workspace, ws_target);
     assert_eq!(target_view.disposition, FrameSetter::Accepted);
-    assert_eq!(ref_workspace(&target_view.post), Some(ws_target.as_str()));
+    assert_eq!(target_view.post.as_deref(), Some(ws_target.as_str()));
     assert!(
         views
             .iter()
@@ -5739,8 +5730,8 @@ fn floating_refill_actuates_after_target_view_proof() {
     assert_eq!(attempt.operation_id, format!("{mig}-refill"));
     assert_eq!(attempt.target_workspace, rig.ws);
     assert_eq!(attempt.disposition, FrameSetter::Accepted);
-    assert_eq!(ref_workspace(&attempt.pre), Some(ws_target.as_str()));
-    assert_eq!(ref_workspace(&attempt.post), Some(rig.ws.as_str()));
+    assert_eq!(attempt.pre.as_deref(), Some(ws_target.as_str()));
+    assert_eq!(attempt.post.as_deref(), Some(rig.ws.as_str()));
     assert_eq!(stats.view_writes, 1);
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
@@ -7199,7 +7190,7 @@ fn staged_apply(
 ) -> (
     ApplyStats,
     Vec<tiler_core::world_report::MemberAttempt>,
-    Vec<tiler_core::world_report::ViewAttempt>,
+    Vec<LogicalViewWrite>,
 ) {
     apply(diff, reply, fresh, native)
 }
@@ -8566,6 +8557,30 @@ fn revealed_this_pass_takes_controlled_state_target() {
 // --- R14 intent reconcile: cache, atomic mirror, freshness ---
 
 #[test]
+fn intent_capture_and_baseline_preserve_independent_sticky_and_float() {
+    let mut rig = rig();
+    let sticky = IntentData::new(Some(false), Some(true));
+    let floating = IntentData::new(Some(true), None);
+    rig.state.intent_snapshot.insert(
+        win_key(1001, 2001, "proc-1"),
+        IntentStorage::from_data(Some(sticky)),
+    );
+    rig.state.intent_snapshot.insert(
+        win_key(1002, 2002, "proc-2"),
+        IntentStorage::from_data(Some(floating)),
+    );
+    let inputs = rig.state.inputs();
+    let captured = capture_world(&inputs, Some(&rig.observed), &[], &rig.areas, 1001);
+    let fresh = FreshHost::from_sources(&inputs, &rig.observed, &[], &captured);
+    assert!(fresh.baseline["w1"].sticky && fresh.baseline["w1"].floating);
+    assert!(!fresh.baseline["w2"].sticky && fresh.baseline["w2"].floating);
+    for (token, wanted) in [("w1", sticky), ("w2", floating)] {
+        let record = captured.intent_records.iter().find(|row| row.win.0 == token).unwrap();
+        assert_eq!(tiler_core::intent_data::decode_intent_data(&record.data), Ok(wanted));
+    }
+}
+
+#[test]
 fn intent_reconcile_absent_baseline_absorbs_cached_snapshot() {
     let rig = rig();
     let (mut diff, fresh, mut native) = converted(&rig);
@@ -8588,6 +8603,28 @@ fn intent_reconcile_absent_baseline_absorbs_cached_snapshot() {
         1,
         "the cached snapshot writes nothing"
     );
+}
+
+#[test]
+fn intent_reconcile_caches_equal_read_and_prunes_departed_lifetime() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    let data = Some(IntentData::new(Some(false), Some(true)));
+    native
+        .intent_storage
+        .insert("w1".to_owned(), IntentStorage::from_data(data));
+    let mut gap = fresh.clone();
+    gap.baseline.remove("w1");
+
+    let (stats, _, _) = apply(&mut diff, &intent_reply(7, 1, &[("w1", data)]), &fresh, &mut native);
+    assert!(!stats.stopped_mid_apply, "{stats:?}");
+    let (stats, _, _) = apply(&mut diff, &intent_reply(7, 2, &[("w1", data)]), &gap, &mut native);
+    assert!(!stats.stopped_mid_apply, "a verified-equal read survives a gap: {stats:?}");
+
+    let _ = apply(&mut diff, &intent_reply(7, 3, &[]), &gap, &mut native);
+    let (stats, _, _) = apply(&mut diff, &intent_reply(7, 4, &[("w1", data)]), &gap, &mut native);
+    assert!(stats.stopped_mid_apply, "a departed lifetime cannot reuse its cache: {stats:?}");
+    assert!(native.intent_writes.is_empty());
 }
 
 #[test]
@@ -8637,8 +8674,7 @@ fn intent_reconcile_mid_list_failure_leaves_no_partial_publish() {
         native.intent_storage.get("w1"),
         Some(&IntentStorage {
             sticky_prior: None,
-            float: true,
-            tile: false,
+            float: Some(true),
         })
     );
 }

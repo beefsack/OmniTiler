@@ -1173,14 +1173,12 @@ fn memberless_migration_actuates_views_without_members() {
         &mut views,
         0,
     );
-    // A memberless migration and refill... (no members anywhere: the
-    // migration carries no membership phase) reports one raw target-view
-    // attempt and actuates it; the core settles from the attempt plus the
-    // staged echo.
+    // A memberless migration has no membership phase and actuates one
+    // target-view transition, traced with the observed post view.
     assert!(members.is_empty());
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, "op-m1");
-    assert_eq!(ref_workspace(views[0].post.as_ref()), Some(ws2.as_str()));
+    assert_eq!(views[0].post.as_deref(), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 1, "{stats:?}");
     assert!(!stats.stopped_mid_apply);
 }
@@ -2635,7 +2633,7 @@ fn admit_bare(env: &mut Env, key: &WindowKey, token: &str) {
 struct LiveTick {
     reply: tiler_core::world_report::WorldReplyV4,
     members: Vec<tiler_core::world_report::MemberAttempt>,
-    views: Vec<tiler_core::world_report::ViewAttempt>,
+    views: Vec<super::super::world_diff::LogicalViewWrite>,
     /// Sequencer delivery of the produced reply (`accepted`, `duplicate`,
     /// or `command-consumed`): lets tests prove fresh-accepted-only
     /// behavior without re-implementing the dispatch path.
@@ -2841,9 +2839,6 @@ fn live_tick_cursor(
     for attempt in &member_attempts {
         owner.note_member_attempt(attempt.clone());
     }
-    for attempt in &view_attempts {
-        owner.note_view_attempt(attempt.clone());
-    }
     for attempt in &frame_attempts {
         owner.note_frame_attempt(attempt.clone());
     }
@@ -2870,14 +2865,14 @@ fn live_tick_cursor(
 /// operation: the native proof the core settles from.
 fn applied_of_members(
     members: &[tiler_core::world_report::MemberAttempt],
-    views: &[tiler_core::world_report::ViewAttempt],
+    views: &[super::super::world_diff::LogicalViewWrite],
     op: &str,
 ) -> bool {
     members.iter().any(|a| {
         a.operation_id == op
             && ref_workspace(a.post.as_ref()).is_some_and(|ws| ws == a.target_workspace)
     }) || views.iter().any(|a| {
-        a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(a.target_workspace.as_str())
+        a.operation_id == op && a.post.as_deref() == Some(a.target_workspace.as_str())
     })
 }
 
@@ -2989,9 +2984,7 @@ fn seed_test_areas() -> Vec<super::super::MonitorArea> {
 fn drain_seeds(state: &mut super::super::TileLoop, seeds: Vec<(WindowKey, Rect)>) {
     let storage = &state.intent_snapshot;
     let fixed_auto_seen = &state.fixed_auto_seen;
-    let fixed_origin_overrides = &state.fixed_origin_overrides;
     let born_first_exit = &state.born_first_exit;
-    let restart_reject_hold = &state.restart_reject_hold;
     let born_fullscreen = &state.born_fullscreen;
     super::apply_hidden_seeds(
         seeds,
@@ -3000,18 +2993,12 @@ fn drain_seeds(state: &mut super::super::TileLoop, seeds: Vec<(WindowKey, Rect)>
         &mut state.float_rects,
         |key| {
             let row = storage.get(key);
-            let sticky = row.is_some_and(|s| s.sticky_prior.is_some());
-            let durable = row.is_some_and(|s| s.tile) || fixed_origin_overrides.contains(key);
-            let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
-            crate::native_guards::float_lane(
-                sticky,
-                automatic,
-                durable,
+            crate::native_guards::hidden_snapshot_uses_float(
+                row.is_some_and(|s| s.sticky_prior.is_some()),
+                fixed_auto_seen.contains(key),
                 born_first_exit.contains(key),
-                row.is_some_and(|s| s.float),
-                restart_reject_hold.contains(key),
+                row.and_then(|s| s.float),
                 born_fullscreen.contains(key),
-                true,
             )
         },
     );
@@ -5455,6 +5442,36 @@ fn selection_focus_authority_is_explicit_selection_only() {
     );
 }
 
+#[test]
+fn live_intent_rejects_a_recycled_pid_creation_or_tag() {
+    let mut env = env_with(110_499);
+    let key = win_key(110_499, 2149, "proc-69");
+    admit_member(&mut env, &key, "ws1", "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+
+    let mut native = assemble(&mut env, scripted());
+    native
+        .write_intent_storage(
+            "w1",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+        )
+        .expect("store float intent for the admitted member");
+    assert_eq!(native.read_intent_storage("w1").unwrap().float, Some(true));
+    assert!(native.read_window("w1").unwrap().floating);
+
+    S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-2".to_owned()));
+    assert_eq!(native.read_intent_storage("w1"), None);
+    assert!(!native.read_window("w1").unwrap().floating);
+    S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
+    for stale in [
+        win_key(key.hwnd, key.pid, "new-process"),
+        win_key(key.hwnd, key.pid + 1, &key.creation),
+    ] {
+        S_IDENT.with(|m| m.borrow_mut().insert(key.hwnd, identity_of(&stale)));
+        assert_eq!(native.read_intent_storage("w1"), None);
+    }
+}
+
 /// Hidden fallback facts: a committed-hidden member's failed visible read
 /// still rides the observed-hidden seam, so the resulting hide receipt
 /// carries the live host-hidden/cape facts instead of a synthesized
@@ -5529,6 +5546,15 @@ fn hidden_fallback_publishes_observed_facts() {
         "observed-hidden facts must ride the fallback read"
     );
     assert_eq!(post.minimized, Some(false));
+
+    native
+        .write_intent_storage(
+            "w1",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+        )
+        .expect("persist hidden float intent");
+    let hidden = native.read_window("w1").expect("committed hidden lifetime");
+    assert!(hidden.hidden && hidden.floating && !hidden.sticky);
 }
 
 #[path = "world_native_composition_tests.rs"]

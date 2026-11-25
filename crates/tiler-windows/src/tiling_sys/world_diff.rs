@@ -39,16 +39,11 @@
 //!   refusal, and ambiguity from that evidence plus the staged observation.
 //!   This module emits no float outcome verdict: a setter boolean or a
 //!   readback alone never settles a placement.
-//! - No external verdicts are emitted: retained window/migration transfer
-//!   completion derives core-side from raw membership/view attempt facts
-//!   (setter disposition plus immediate pre/post proof). Focus-request
-//!   outcomes are proven by read-back and counted in stats. This diff
-//!   actuates no creation or removal: Windows host-owned domains produce no
-//!   `native_creations` rows, so the core learns membership from the next
-//!   observed report; float placements ride the raw-attempt lane with their stable operation
-//!   id plus the immediate pre-write frame, and the core derives
-//!   confirmation, proven refusal, and ambiguity from that evidence plus
-//!   the staged observation.
+//! - The core derives retained transfer completion from observations and
+//!   raw membership attempts. Logical view writes remain local proof for
+//!   receipt merge and tracing, not native-domain evidence. Focus attempts
+//!   report what the immediate foreground readback proves. Windows has no
+//!   native workspace creation or removal.
 //!
 //! Freshness and proof rules (shared core contract):
 //! - The reply must be ready, bound to the current adapter/core generation,
@@ -60,17 +55,11 @@
 //!   External invalidation is polled before every setter and stops remaining
 //!   unsafe writes, including after geometry/float/create/remove/view/
 //!   migration/focus writes.
-//! - Correlated raw attempts (transfers, float placements, views) and
-//!   one-shot focus requests arm BEFORE the first native setter and never repeat
-//!   while ambiguous: the transport reports mechanical facts once, and the
-//!   core derives every verdict. Refused-proven transfers settle only on
-//!   fresh proof of nothing happened plus an explicit native refusal (both
-//!   derived core-side from the raw attempt); float refusal is proven by
-//!   an unchanged readable preimage in the raw attempt, never by a verdict
-//!   here. Third-location proof settles superseded-external instead of
-//!   fighting the user. Follow-view failure holds the window transfer as
-//!   possibly-executed: the core consumes the raw follow-view attempt and
-//!   holds the parent ambiguous, never a refused window.
+//! - Transfers, float placements, view transitions and focus requests arm
+//!   before their first setter and do not repeat while ambiguous. The
+//!   core distinguishes proven refusal from ambiguity using raw attempts
+//!   and staged observations. A failed follow view never turns a proven
+//!   window arrival into a window refusal.
 //! - Desired absence is removal eligibility only: the facade requires a
 //!   managed, non-displaced binding plus fresh occupant/visibility proof.
 //!   Unknown occupancy keeps.
@@ -92,51 +81,37 @@ use tiler_core::world_report::{
     AfterShownMember, ArrivalBracket, ArrivalLocation, AuthorityScope, FocusDisposition,
     FocusFeedback, FocusNoCallReason, FrameAttempt, FramePurpose, FrameSetter, HoldReason,
     LastWritePath, MemberAttempt, MemberDisposition, ScopeAuthority, StateAttempt, StateProperty,
-    TransferKind, TransferTargetV4, ViewAttempt, VisibilityAttempt, VisibilityDisposition,
-    VisibilityFact, VisibilityReason, VisibilitySample, WorkspaceRef, WorldReplyV4,
+    TransferKind, TransferTargetV4, VisibilityAttempt, VisibilityDisposition,
+    VisibilityFact, VisibilityReason, VisibilitySample, WindowDesire, WorkspaceRef, WorldReplyV4,
 };
 
-/// One adapter marker-storage observation for a window lifetime: the exact
-/// three durable marker properties the canonical intent record mirrors.
-///
-/// Crate-visible because the packed native slot lane
-/// (`product_hide::sys`) encodes and decodes the same storage; `tiling_sys`
-/// re-exports it as the single shared definition.
+/// The two independent v1 intent choices stored in the packed native slot.
+/// Both absent is the canonical empty slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct IntentStorage {
     pub(crate) sticky_prior: Option<bool>,
-    pub(crate) float: bool,
-    pub(crate) tile: bool,
+    pub(crate) float: Option<bool>,
 }
 
 impl IntentStorage {
-    /// Canonical storage for one desired intent row. Sticky dominates (its
-    /// marker already implies float); an explicit float/tile marker rides
-    /// alone; the null boundary clears all three markers.
     pub(super) fn from_data(data: Option<IntentData>) -> Self {
-        let Some(data) = data else {
-            return Self::default();
-        };
-        if let Some(prior) = data.sticky_prior {
-            return Self {
-                sticky_prior: Some(prior),
-                float: false,
-                tile: false,
-            };
-        }
-        match data.float {
-            Some(true) => Self {
-                sticky_prior: None,
-                float: true,
-                tile: false,
-            },
-            Some(false) => Self {
-                sticky_prior: None,
-                float: false,
-                tile: true,
-            },
-            None => Self::default(),
-        }
+        data.map_or_else(Self::default, |data| Self {
+            sticky_prior: data.sticky_prior,
+            float: data.float,
+        })
+    }
+
+    pub(super) fn to_data(self) -> Option<IntentData> {
+        (self != Self::default()).then(|| IntentData::new(self.float, self.sticky_prior))
+    }
+
+    pub(super) fn is_floating(self) -> bool {
+        self.sticky_prior.is_some() || self.float == Some(true)
+    }
+
+    /// Sticky controls the current placement without erasing the explicit lane.
+    pub(super) fn is_tiled(self) -> bool {
+        self.sticky_prior.is_none() && self.float == Some(false)
     }
 }
 
@@ -269,6 +244,7 @@ impl FreshHost {
                         String::new(),
                     )
                 });
+            let intent = state.intent_storage.and_then(|map| map.get(key)).copied();
             baseline.insert(
                 token.to_owned(),
                 FreshWindow {
@@ -280,14 +256,8 @@ impl FreshHost {
                     workspace,
                     iconic,
                     hidden,
-                    sticky: state
-                        .intent_storage
-                        .and_then(|map| map.get(key))
-                        .is_some_and(|s| s.sticky_prior.is_some()),
-                    floating: state
-                        .intent_storage
-                        .and_then(|map| map.get(key))
-                        .is_some_and(|s| s.float),
+                    sticky: intent.is_some_and(|s| s.sticky_prior.is_some()),
+                    floating: intent.is_some_and(IntentStorage::is_floating),
                     live_tag: state.member_tags.get(key).cloned(),
                 },
             );
@@ -1672,6 +1642,9 @@ impl HostDiff {
                     .get(token.as_str())
                     .is_none_or(|targets| targets.contains(&(*property, *value)))
         });
+        live_state_tokens.extend(reply.intent_desired.iter().map(|row| row.win.0.as_str()));
+        self.intent_persisted
+            .retain(|token, _| live_state_tokens.contains(token.as_str()));
     }
 }
 
@@ -3159,13 +3132,18 @@ fn homing_pair(homing: Option<(String, String)>) -> Option<WorkspaceRef> {
     })
 }
 
-/// Read one observed output view as the carried logical reference (`None`
-/// = unreadable). Windows is native-free: every view ref is logical.
-fn view_ref(out: &str, view: Option<String>) -> Option<WorkspaceRef> {
-    view.map(|ws| WorkspaceRef::Logical {
-        output: OutputId(out.to_owned()),
-        workspace: tiler_core::directional::WorkspaceId(ws),
-    })
+/// Adapter-local proof and trace for a logical view transition. Windows
+/// has no host-owned workspace domain; this never goes on the v4 wire.
+#[derive(Debug)]
+pub(super) struct LogicalViewWrite {
+    pub(super) operation_id: String,
+    pub(super) target_output: OutputId,
+    pub(super) target_workspace: String,
+    pub(super) disposition: FrameSetter,
+    pub(super) pre: Option<String>,
+    pub(super) post: Option<String>,
+    pub(super) baseline: Option<String>,
+    pub(super) attempt_ms: u64,
 }
 
 /// Migration-member arrival proof shared by every gate in the migration
@@ -3252,7 +3230,7 @@ fn actuate_follow_view(
     transfer: &TransferTargetV4,
     effects: &mut DispatchFences,
     fresh: &FreshHost,
-    view_out: &mut Vec<ViewAttempt>,
+    view_out: &mut Vec<LogicalViewWrite>,
     attempt_ms: u64,
 ) -> FollowOutcome {
     let out = transfer.target_output.0.clone();
@@ -3282,18 +3260,16 @@ fn actuate_follow_view(
     let baseline = fresh.views.get(&out).cloned();
     let result = ops.switch_view(&out, &ws);
     let proof = ops.read_view(&out);
-    // Mechanical facts only: the setter boolean is never proof, the
-    // pre/post/baseline views are the refusal/third-location preimage,
-    // and no outcome is claimed on the window id. The core holds the
-    // parent ambiguous on a miss (never a refused window).
-    view_out.push(ViewAttempt {
+    // Trace the mechanical pre/post/baseline. The readback, not the
+    // setter boolean, proves the new view to the local receipt lane.
+    view_out.push(LogicalViewWrite {
         operation_id: parent,
         target_output: transfer.target_output.clone(),
         target_workspace: ws.clone(),
         disposition: frame_setter(result.as_ref().ok().copied()),
-        pre: view_ref(&out, pre),
-        post: view_ref(&out, proof.clone()),
-        baseline: view_ref(&out, baseline),
+        pre,
+        post: proof.clone(),
+        baseline,
         attempt_ms,
     });
     if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
@@ -3380,7 +3356,7 @@ fn settle_transfer_proven(
     transfer: &TransferTargetV4,
     effects: &mut DispatchFences,
     fresh: &FreshHost,
-    view_out: &mut Vec<ViewAttempt>,
+    view_out: &mut Vec<LogicalViewWrite>,
     attempt_ms: u64,
     count_write: bool,
 ) {
@@ -3483,8 +3459,8 @@ fn reconcile_intent(
             if ops.write_intent_storage(&row.win.0, row.data).is_err() {
                 return None;
             }
-            persisted.insert(row.win.0.clone(), desired);
         }
+        persisted.insert(row.win.0.clone(), desired);
     }
     Some(())
 }
@@ -3624,16 +3600,11 @@ fn stage_state_targets(
 ///
 /// The caller owns generation/observation advancement: `state.gate.current_obs`
 /// is the CURRENT watermark at entry. Racing input is consumed through
-/// [`NativeOps::poll_external_invalidation`] before every setter; the core
-/// consumes no verdicts from this pass (float placements never did: their
-/// verdicts live in the core). Every attempted frame write appends one
-/// mechanical [`FrameAttempt`] to `frame_out`, every membership write one
-/// [`MemberAttempt`] to `member_out`, every view write one
-/// [`ViewAttempt`] to `view_out` (each stamped with `attempt_ms`, the tick's
-/// monotonic clock, and one freshly minted `attempt_id`); the core owns all
-/// completion and the next desire is obeyed as-is. v4 carries native state
-/// targets on the desire rows, but this facade has no state-attempt sink: a
-/// state write is not actuated here (see the module report for the gap).
+/// [`NativeOps::poll_external_invalidation`] before every setter. Frame
+/// and membership writes append raw attempts for the next report; logical
+/// view writes append adapter-local proof for the receipt and trace.
+/// State and visibility attempts are drained separately from [`HostDiff`].
+/// The core owns all completion verdicts.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn apply_world_reply(
     state: &mut HostDiff,
@@ -3642,7 +3613,7 @@ pub(super) fn apply_world_reply(
     ops: &mut dyn NativeOps,
     frame_out: &mut Vec<FrameAttempt>,
     member_out: &mut Vec<MemberAttempt>,
-    view_out: &mut Vec<ViewAttempt>,
+    view_out: &mut Vec<LogicalViewWrite>,
     attempt_ms: u64,
 ) -> ApplyStats {
     apply_world_reply_inner(
@@ -3658,7 +3629,7 @@ fn apply_world_reply_inner(
     ops: &mut dyn NativeOps,
     frame_out: &mut Vec<FrameAttempt>,
     member_out: &mut Vec<MemberAttempt>,
-    view_out: &mut Vec<ViewAttempt>,
+    view_out: &mut Vec<LogicalViewWrite>,
     attempt_ms: u64,
 ) -> ApplyStats {
     let mut stats = ApplyStats::default();
@@ -4341,11 +4312,8 @@ fn apply_world_reply_inner(
         let wrote = ops.write_frame(&row.lifetime.0, target).ok();
         let proof = ops.read_frame(&row.lifetime.0);
         let dpi_after = ops.read_dpi(&row.lifetime.0);
-        // Mechanical facts only: the setter boolean is never proof, the
-        // pre-write frame is the refusal preimage, and the readback never
-        // carries a verdict. The core correlates by operation id plus
-        // window plus target and settles from this evidence plus the next
-        // staged observation.
+        // Report mechanical evidence, not a verdict: the operation id,
+        // window and target correlate these frames with the retained desire.
         frame_out.push(FrameAttempt {
             window: row.lifetime.clone(),
             target,
@@ -4482,14 +4450,14 @@ fn apply_world_reply_inner(
         let proof = ops.read_view(&out);
         // Mechanical facts only: the raw attempt carries the observed
         // pre/baseline/post views; the setter boolean is never proof.
-        view_out.push(ViewAttempt {
+        view_out.push(LogicalViewWrite {
             operation_id: op.clone(),
             target_output: t.target_output.clone(),
             target_workspace: ws.clone(),
             disposition: frame_setter(result.as_ref().ok().copied()),
-            pre: view_ref(&out, pre),
-            post: view_ref(&out, proof.clone()),
-            baseline: view_ref(&out, baseline),
+            pre,
+            post: proof.clone(),
+            baseline,
             attempt_ms,
         });
         if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
@@ -4701,17 +4669,16 @@ fn apply_world_reply_inner(
             let baseline = fresh.views.get(&out).cloned();
             let result = ops.switch_view(&out, &ws);
             let proof = ops.read_view(&out);
-            // Mechanical facts only; the core settles from this attempt
-            // plus the next staged echo. Proof decides, never the setter
-            // boolean: a throw that still landed proceeds to refill.
-            view_out.push(ViewAttempt {
+            // The proof decides locally, never the setter boolean: a
+            // throw that still landed proceeds to refill.
+            view_out.push(LogicalViewWrite {
                 operation_id: op.clone(),
                 target_output: t.target_output.clone(),
                 target_workspace: ws.clone(),
                 disposition: frame_setter(result.as_ref().ok().copied()),
-                pre: view_ref(&out, pre),
-                post: view_ref(&out, proof.clone()),
-                baseline: view_ref(&out, baseline),
+                pre,
+                post: proof.clone(),
+                baseline,
                 attempt_ms,
             });
             if proof.as_deref() == Some(ws.as_str()) {
@@ -4762,16 +4729,14 @@ fn apply_world_reply_inner(
                 }
                 let result = ops.switch_view(&refill_out, &refill_ws);
                 let proof = ops.read_view(&refill_out);
-                // Mechanical facts only; the core settles from this
-                // attempt plus the next staged echo.
-                view_out.push(ViewAttempt {
+                view_out.push(LogicalViewWrite {
                     operation_id: refill.operation_id.clone(),
                     target_output: refill.target_output.clone(),
                     target_workspace: refill_ws.clone(),
                     disposition: frame_setter(result.as_ref().ok().copied()),
-                    pre: view_ref(&refill_out, pre),
-                    post: view_ref(&refill_out, proof.clone()),
-                    baseline: view_ref(&refill_out, baseline_refill),
+                    pre,
+                    post: proof.clone(),
+                    baseline: baseline_refill,
                     attempt_ms,
                 });
                 if proof.as_deref() == Some(refill_ws.as_str()) {

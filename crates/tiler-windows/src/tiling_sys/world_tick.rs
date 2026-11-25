@@ -14,7 +14,7 @@
 //! its desires with fresh proof.
 
 use super::world_capture::capture_world;
-use super::world_diff::{FreshHost, IntentStorage, NativeOps};
+use super::world_diff::{FreshHost, LogicalViewWrite, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
 use super::{
     FullscreenMeta, MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window,
@@ -164,7 +164,7 @@ impl TileLoop {
 pub(super) fn merge_applied_transfers(
     reply: &tiler_core::world_report::WorldReplyV4,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
-    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    view_attempts: &[LogicalViewWrite],
     fresh: &FreshHost,
     native: &mut LiveNative,
     proven_h: &mut HashMap<String, (String, String)>,
@@ -203,13 +203,7 @@ pub(super) fn merge_applied_transfers(
                 attempt.operation_id == transfer.operation_id
                     && attempt.target_output == transfer.target_output
                     && attempt.target_workspace == transfer.target_workspace
-                    && attempt.post.as_ref().is_some_and(|reference| {
-                        workspace_ref_covers(
-                            reference,
-                            &transfer.target_output,
-                            &transfer.target_workspace,
-                        )
-                    })
+                    && attempt.post.as_deref() == Some(transfer.target_workspace.as_str())
             }),
         };
         if !proven {
@@ -426,7 +420,7 @@ fn should_log_apply(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
-    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    view_attempts: &[LogicalViewWrite],
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
     state_attempts: &[tiler_core::world_report::StateAttempt],
     reply: &WorldReplyV4,
@@ -639,7 +633,7 @@ fn apply_diag_value(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
-    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    view_attempts: &[LogicalViewWrite],
     command_result: Option<&CommandResult>,
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
     state_attempts: &[tiler_core::world_report::StateAttempt],
@@ -670,14 +664,21 @@ fn apply_diag_value(
         .iter()
         .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|item| {
+            let logical_view = |ws: &String| {
+                serde_json::json!({
+                    "kind": "logical",
+                    "out": item.target_output.0,
+                    "ws": ws,
+                })
+            };
             serde_json::json!({
                 "op": item.operation_id.clone(),
                 "out": item.target_output.0.clone(),
                 "ws": item.target_workspace.clone(),
                 "setter": item.disposition.as_str(),
-                "pre": item.pre.as_ref().map(workspace_ref_value),
-                "post": item.post.as_ref().map(workspace_ref_value),
-                "base": item.baseline.as_ref().map(workspace_ref_value),
+                "pre": item.pre.as_ref().map(logical_view),
+                "post": item.post.as_ref().map(logical_view),
+                "base": item.baseline.as_ref().map(logical_view),
                 "attempt_ms": item.attempt_ms,
             })
         })
@@ -811,6 +812,12 @@ fn apply_diag_value(
                 "floating": row.floating,
                 "float_origin": row.float_origin.map(|origin| origin.as_str()),
                 "frame_op": row.frame_operation.clone(),
+                "automatic_clear_pending": row.state.iter().any(|state| {
+                    state.property == tiler_core::world_report::StateProperty::Maximized
+                        && !state.value
+                        && state.automatic_clear
+                        && state.authority == tiler_core::world_report::ScopeAuthority::Controlled
+                }),
             })
         })
         .collect();
@@ -1297,7 +1304,7 @@ fn log_apply_diag(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
-    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    view_attempts: &[LogicalViewWrite],
     command_result: Option<&CommandResult>,
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
     state_attempts: &[tiler_core::world_report::StateAttempt],
@@ -1495,33 +1502,36 @@ fn admit_observed(
     }
 }
 
-/// Refresh the per-tick durable intent snapshot from the canonical packed
-/// marker slot of every currently bound member and return the same map for
-/// [`super::world_capture::OwnerInputs::intent_storage`]. Unreadable or
-/// foreign-lifetime slots leave their key absent (unknown, never an inferred
-/// desire). This is the single writer of `TileLoop::intent_snapshot`.
-pub(super) fn refresh_intent_snapshot(
-    state: &mut TileLoop,
-) -> BTreeMap<crate::native_guards::WindowKey, IntentStorage> {
-    let snapshot: BTreeMap<crate::native_guards::WindowKey, IntentStorage> = state
-        .member_tokens
-        .keys()
-        .filter_map(|key| {
-            // Offline synthetic fixture handles are not Win32 HWNDs: their
-            // seeded snapshot entry is the only scripted truth a tick can
-            // read, so a refresh keeps it instead of inventing absence.
-            #[cfg(test)]
-            if !crate::ffi::is_window(key.hwnd)
-                && !crate::product_hide::sys::fake::marker_active(key.hwnd)
-                && let Some(existing) = state.intent_snapshot.get(key)
-            {
-                return Some((key.clone(), *existing));
+/// Refresh the per-tick intent snapshot from the canonical packed slot for
+/// each currently bound member. Unreadable or foreign-lifetime slots leave
+/// their key absent (unknown, never an inferred desire).
+pub(super) fn refresh_intent_snapshot(state: &mut TileLoop) {
+    state
+        .intent_snapshot
+        .retain(|key, _| state.member_tokens.contains_key(key));
+    for key in state.member_tokens.keys() {
+        // Offline fixtures have synthetic HWNDs; keep their seeded intent.
+        #[cfg(test)]
+        if !crate::ffi::is_window(key.hwnd)
+            && !crate::product_hide::sys::fake::marker_active(key.hwnd)
+            && state.intent_snapshot.contains_key(key)
+        {
+            continue;
+        }
+        let read = state
+            .member_tags
+            .get(key)
+            .and_then(|tag| super::world_native::intent_storage_of(key, tag));
+        if let Some(storage) = read {
+            if let Some(existing) = state.intent_snapshot.get_mut(key) {
+                *existing = storage;
+            } else {
+                state.intent_snapshot.insert(key.clone(), storage);
             }
-            super::world_native::intent_storage_of(key.hwnd).map(|storage| (key.clone(), storage))
-        })
-        .collect();
-    state.intent_snapshot = snapshot.clone();
-    snapshot
+        } else {
+            state.intent_snapshot.remove(key);
+        }
+    }
 }
 
 /// Refresh mechanical snapshots: last-known frames per token for overlay
@@ -1557,22 +1567,17 @@ pub(super) fn snapshot_frames(state: &mut TileLoop, observed: &[ObservedWindow])
     }
 }
 
-/// World preamble for retained-only arrivals and quiet restores: bind
-/// first-seen fullscreen/maximized members slotless, re-adopt surviving
-/// float/sticky/tile-override markers, then clear first-seen maximizes
-/// exactly once. Idempotent with the reconcile preamble (all three
-/// early-out on membership, hydration, and attempt state).
-fn admit_retained_and_marks(
+/// Bind first-seen fullscreen and maximized members without allocating a
+/// tile slot until the core owns the transition.
+fn admit_retained(
     state: &mut TileLoop,
     me: &crate::model::ProcessIdentity,
-    observed: &[ObservedWindow],
     retained: &[RetainedRow],
     areas: &[MonitorArea],
 ) {
     super::restart::admit_born_fullscreen(state, me, retained, areas);
     let mut hint_cx = super::HintCx::new();
     super::restart::admit_slotless_maximized(state, me, retained, areas, &mut hint_cx);
-    super::restart::adopt_restart_markers(state, me, observed, retained, areas, &mut hint_cx);
 }
 
 /// Run one observation tick through the single world owner. Returns the
@@ -1597,7 +1602,8 @@ pub(super) fn run_observation_tick(
     let tick = state.tick;
     let log_path = state.log_path.clone();
     admit_observed(state, me, observed);
-    admit_retained_and_marks(state, me, observed, retained, areas);
+    admit_retained(state, me, retained, areas);
+    refresh_intent_snapshot(state);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
     // The native stacking snapshot stashed by the latest observation;
@@ -1624,9 +1630,6 @@ pub(super) fn run_observation_tick(
     // scope holds.
     let hidden_reads =
         super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
-    // One fresh durable-marker read for this tick, before the disjoint split
-    // (capture stays pure over the seam).
-    let intent_storage = refresh_intent_snapshot(state);
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -1637,11 +1640,10 @@ pub(super) fn run_observation_tick(
         ref mut member_rects,
         ref mut float_rects,
         ref hint_logged,
-        ref restart_reject_hold,
+        ref intent_snapshot,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
         ref mut pending_closed,
@@ -1679,11 +1681,9 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         hint_logged,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
@@ -1705,7 +1705,7 @@ pub(super) fn run_observation_tick(
     );
     inputs.hidden_reads = Some(&hidden_reads);
     inputs.fullscreen_meta = Some(&fullscreen_meta);
-    inputs.intent_storage = Some(&intent_storage);
+    inputs.intent_storage = Some(intent_snapshot);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -1742,11 +1742,9 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         hint_logged,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
@@ -1768,40 +1766,8 @@ pub(super) fn run_observation_tick(
     );
     inputs.hidden_reads = Some(&hidden_reads);
     inputs.fullscreen_meta = Some(&fullscreen_meta);
-    inputs.intent_storage = Some(&intent_storage);
+    inputs.intent_storage = Some(intent_snapshot);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
-    let mut inputs = TileLoop::owner_inputs(
-        member_tokens,
-        member_identity,
-        member_tags,
-        member_rects,
-        float_rects,
-        hint_logged,
-        restart_reject_hold,
-        born_fullscreen,
-        born_first_exit,
-        fixed_auto_seen,
-        fixed_origin_overrides,
-        hidden_claims,
-        minimized_omitted,
-        pending_closed,
-        scope,
-        settings_live,
-        output_tokens,
-        monitor_identities,
-        active_output.as_str(),
-        applied_homing,
-        applied_views,
-        active,
-        cursor,
-        hit_hwnd,
-        gesture.clone(),
-        presentation_foreground.clone(),
-        presentation_chord,
-        presentation_move.clone(),
-        presentation_native_order.clone(),
-    );
-    inputs.hidden_reads = Some(&hidden_reads);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
     let proven_homing = applied_homing.clone();
@@ -1833,7 +1799,7 @@ pub(super) fn run_observation_tick(
         member_tags,
         member_identity,
         hidden_claims,
-        &intent_storage,
+        intent_snapshot,
         scope,
         scope_hosts,
         allowlist.as_ref(),
@@ -2029,20 +1995,13 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         |key| {
-            let storage = intent_storage.get(key);
-            let sticky = storage.and_then(|s| s.sticky_prior).is_some();
-            let durable =
-                storage.is_some_and(|s| s.tile) || fixed_origin_overrides.contains(key);
-            let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
-            crate::native_guards::float_lane(
-                sticky,
-                automatic,
-                durable,
+            let storage = intent_snapshot.get(key);
+            crate::native_guards::hidden_snapshot_uses_float(
+                storage.is_some_and(|s| s.sticky_prior.is_some()),
+                fixed_auto_seen.contains(key),
                 born_first_exit.contains(key),
-                storage.is_some_and(|s| s.float),
-                restart_reject_hold.contains(key),
+                storage.and_then(|s| s.float),
                 born_fullscreen.contains(key),
-                true,
             )
         },
     );
@@ -2063,11 +2022,6 @@ pub(super) fn run_observation_tick(
     }
     for attempt in member_attempts {
         world.note_member_attempt(attempt);
-    }
-    if world.host_owned_workspace_domains() {
-        for attempt in view_attempts {
-            world.note_view_attempt(attempt);
-        }
     }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
@@ -2149,7 +2103,8 @@ fn run_observation_core_only(
     let tick = state.tick;
     let log_path = state.log_path.clone();
     admit_observed(state, me, observed);
-    admit_retained_and_marks(state, me, observed, retained, areas);
+    admit_retained(state, me, retained, areas);
+    refresh_intent_snapshot(state);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
     let presentation_native_order = state.last_native_order.clone();
@@ -2162,7 +2117,6 @@ fn run_observation_core_only(
     // disjoint split so capture stays pure over the seam.
     let hidden_reads =
         super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
-    let intent_storage = refresh_intent_snapshot(state);
     let TileLoop {
         ref mut world,
         ref member_tokens,
@@ -2171,11 +2125,10 @@ fn run_observation_core_only(
         ref mut member_rects,
         ref mut float_rects,
         ref hint_logged,
-        ref restart_reject_hold,
+        ref intent_snapshot,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
         ref mut pending_closed,
@@ -2207,11 +2160,9 @@ fn run_observation_core_only(
         member_rects,
         float_rects,
         hint_logged,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
@@ -2233,7 +2184,7 @@ fn run_observation_core_only(
     );
     inputs.hidden_reads = Some(&hidden_reads);
     inputs.fullscreen_meta = Some(&fullscreen_meta);
-    inputs.intent_storage = Some(&intent_storage);
+    inputs.intent_storage = Some(intent_snapshot);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -2318,7 +2269,8 @@ fn run_world_command_impl(
     // dispatch clock, so receipt-to-phase latency starts at actual receipt.
     let recv_mono_ms = super::trace::log_mono_ms();
     admit_observed(state, me, observed);
-    admit_retained_and_marks(state, me, observed, retained, areas);
+    admit_retained(state, me, retained, areas);
+    refresh_intent_snapshot(state);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
     // Superseded fence first: when observation-only catch-up is owed, service
@@ -2360,7 +2312,6 @@ fn run_world_command_impl(
     // scope holds.
     let hidden_reads =
         super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
-    let intent_storage = refresh_intent_snapshot(state);
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -2370,12 +2321,11 @@ fn run_world_command_impl(
         ref member_tags,
         ref mut member_rects,
         ref mut float_rects,
+        ref intent_snapshot,
         ref hint_logged,
-        ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
         ref mut pending_closed,
@@ -2412,11 +2362,9 @@ fn run_world_command_impl(
             member_rects,
             float_rects,
             hint_logged,
-            restart_reject_hold,
             born_fullscreen,
             born_first_exit,
             fixed_auto_seen,
-            fixed_origin_overrides,
             hidden_claims,
             minimized_omitted,
             pending_closed,
@@ -2438,7 +2386,7 @@ fn run_world_command_impl(
         );
         inputs.hidden_reads = Some(&hidden_reads);
         inputs.fullscreen_meta = Some(&fullscreen_meta);
-        inputs.intent_storage = Some(&intent_storage);
+        inputs.intent_storage = Some(intent_snapshot);
         match world.try_dispatch_command(
             &inputs,
             Some(observed),
@@ -2624,11 +2572,9 @@ fn run_world_command_impl(
         member_rects,
         float_rects,
         hint_logged,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
@@ -2650,40 +2596,8 @@ fn run_world_command_impl(
     );
     inputs.hidden_reads = Some(&hidden_reads);
     inputs.fullscreen_meta = Some(&fullscreen_meta);
-    inputs.intent_storage = Some(&intent_storage);
+    inputs.intent_storage = Some(intent_snapshot);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
-    let mut inputs = TileLoop::owner_inputs(
-        member_tokens,
-        member_identity,
-        member_tags,
-        member_rects,
-        float_rects,
-        hint_logged,
-        restart_reject_hold,
-        born_fullscreen,
-        born_first_exit,
-        fixed_auto_seen,
-        fixed_origin_overrides,
-        hidden_claims,
-        minimized_omitted,
-        pending_closed,
-        scope,
-        settings_live,
-        output_tokens,
-        monitor_identities,
-        active_output.as_str(),
-        applied_homing,
-        applied_views,
-        active,
-        cursor,
-        hit_hwnd,
-        gesture.clone(),
-        presentation_foreground.clone(),
-        presentation_chord,
-        presentation_move.clone(),
-        presentation_native_order.clone(),
-    );
-    inputs.hidden_reads = Some(&hidden_reads);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
     let proven_homing = applied_homing.clone();
@@ -2711,7 +2625,7 @@ fn run_world_command_impl(
         member_tags,
         member_identity,
         hidden_claims,
-        &intent_storage,
+        intent_snapshot,
         scope,
         scope_hosts,
         allowlist.as_ref(),
@@ -2891,20 +2805,13 @@ fn run_world_command_impl(
         member_rects,
         float_rects,
         |key| {
-            let storage = intent_storage.get(key);
-            let sticky = storage.and_then(|s| s.sticky_prior).is_some();
-            let durable =
-                storage.is_some_and(|s| s.tile) || fixed_origin_overrides.contains(key);
-            let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
-            crate::native_guards::float_lane(
-                sticky,
-                automatic,
-                durable,
+            let storage = intent_snapshot.get(key);
+            crate::native_guards::hidden_snapshot_uses_float(
+                storage.is_some_and(|s| s.sticky_prior.is_some()),
+                fixed_auto_seen.contains(key),
                 born_first_exit.contains(key),
-                storage.is_some_and(|s| s.float),
-                restart_reject_hold.contains(key),
+                storage.and_then(|s| s.float),
                 born_fullscreen.contains(key),
-                true,
             )
         },
     );
@@ -2925,11 +2832,6 @@ fn run_world_command_impl(
     }
     for attempt in member_attempts {
         world.note_member_attempt(attempt);
-    }
-    if world.host_owned_workspace_domains() {
-        for attempt in view_attempts {
-            world.note_view_attempt(attempt);
-        }
     }
     let ack_outcome = ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing);
     match ack_outcome {
@@ -3231,11 +3133,9 @@ pub(super) fn dispatch_test_observation(
         ref member_rects,
         ref float_rects,
         ref hint_logged,
-        ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
         ref mut pending_closed,
@@ -3260,11 +3160,9 @@ pub(super) fn dispatch_test_observation(
         member_rects,
         float_rects,
         hint_logged,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
@@ -3722,7 +3620,7 @@ mod apply_diag_tests {
 
     #[test]
     fn diag_shape_uses_fixed_vocab_and_bounds_rows() {
-        use tiler_core::world_report::{FrameSetter, MemberAttempt, ViewAttempt};
+        use tiler_core::world_report::{FrameSetter, MemberAttempt};
         let reply = reply_shell();
         let stats = stats_shell();
         let setters = [
@@ -3751,7 +3649,7 @@ mod apply_diag_tests {
                 attempt_ms: n as u64,
             })
             .collect();
-        let views: Vec<ViewAttempt> = Vec::new();
+        let views = Vec::new();
         let value = apply_diag_value(
             11,
             &reply,
@@ -3890,7 +3788,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::{FrameAttempt, FrameSetter, MemberAttempt};
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<FrameAttempt> = Vec::new();
         let idle_reply = reply_shell();
         assert!(!should_log_apply(
@@ -4164,7 +4062,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::FrameAttempt;
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<FrameAttempt> = Vec::new();
         let idle = reply_shell();
         let moved = pager_reply_with(
@@ -4299,7 +4197,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::FrameAttempt;
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<FrameAttempt> = Vec::new();
         let frame = Rect {
             x: 0,
@@ -4479,7 +4377,7 @@ mod apply_diag_tests {
         // observation tick emits its clearing row instead of staying quiet.
         use super::super::world_diff::InFlightEventDiag;
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
         let idle_reply = reply_shell();
         let mut landed = super::super::world_diff::ApplyStats::default();
@@ -4529,7 +4427,7 @@ mod apply_diag_tests {
         // activation-affecting parameter, never intended-mode labels.
         use crate::product_hide::sys::{NA_POS_HIDE_FLAGS, VIEW_POST_API_POS, VisibilityPostDiag};
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
         let idle_reply = reply_shell();
         let mut posted = super::super::world_diff::ApplyStats::default();
@@ -4650,7 +4548,7 @@ mod apply_diag_tests {
         // (shows issued, arrivals proven, focus confirmed, departures
         // hidden) with no new native query. Unavailable staged phases stay
         // honest zeros, never absent keys.
-        use tiler_core::world_report::{FrameSetter, MemberAttempt, ViewAttempt};
+        use tiler_core::world_report::{FrameSetter, MemberAttempt};
         let members = vec![MemberAttempt {
             operation_id: "op-3".to_owned(),
             window: WindowId("w3".to_owned()),
@@ -4664,23 +4562,14 @@ mod apply_diag_tests {
             }),
             attempt_ms: 31,
         }];
-        let views = vec![ViewAttempt {
+        let views = vec![LogicalViewWrite {
             operation_id: "op-7".to_owned(),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws2".to_owned(),
             disposition: FrameSetter::Threw,
-            pre: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws1".to_owned()),
-            }),
-            post: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws2".to_owned()),
-            }),
-            baseline: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws1".to_owned()),
-            }),
+            pre: Some("ws1".to_owned()),
+            post: Some("ws2".to_owned()),
+            baseline: Some("ws1".to_owned()),
             attempt_ms: 32,
         }];
         let mut stats = stats_shell();
@@ -5426,7 +5315,7 @@ mod apply_diag_tests {
             ..Default::default()
         };
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let value = apply_diag_value(
             12,
             &reply,
@@ -5563,7 +5452,7 @@ mod apply_diag_tests {
         }];
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         // Both triggers fire through the REAL throttle: frame-only and
         // settled-only observation ticks each log.
         assert!(should_log_apply(
@@ -5646,7 +5535,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::{FrameAttempt, FrameSetter, WindowDesire};
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let idle_reply = reply_shell();
         assert!(!should_log_apply(
             "observation",
@@ -5752,8 +5641,8 @@ mod apply_diag_tests {
         // from the dispatched report screens with wire output ids, never a
         // separate native copy.
         use tiler_core::world_report::{
-            FrameSetter, HoldReason, MemberAttempt, OutputDesire, ScopeAuthority, TilingMode,
-            ViewAttempt, WindowDesire,
+            FrameSetter, HoldReason, MemberAttempt, OutputDesire, ScopeAuthority, StateProperty,
+            StateTarget, TilingMode, WindowDesire,
         };
         let slot = tiler_core::geometry::Rect {
             x: 0,
@@ -5798,7 +5687,13 @@ mod apply_diag_tests {
             command_seq: None,
             visibility: None,
             visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
-            state: Vec::new(),
+            state: vec![StateTarget {
+                property: StateProperty::Maximized,
+                value: false,
+                authority: ScopeAuthority::Controlled,
+                command_seq: Some(9),
+                automatic_clear: true,
+            }],
         });
         reply.outputs.push(OutputDesire {
             output: OutputId("o1".to_owned()),
@@ -5836,23 +5731,14 @@ mod apply_diag_tests {
             }),
             attempt_ms: 42,
         }];
-        let view_attempts = vec![ViewAttempt {
+        let view_attempts = vec![LogicalViewWrite {
             operation_id: "op-9".to_owned(),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws-b".to_owned(),
             disposition: FrameSetter::Accepted,
-            pre: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws-old".to_owned()),
-            }),
-            post: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws-b".to_owned()),
-            }),
-            baseline: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws-old".to_owned()),
-            }),
+            pre: Some("ws-old".to_owned()),
+            post: Some("ws-b".to_owned()),
+            baseline: Some("ws-old".to_owned()),
             attempt_ms: 42,
         }];
         let value = apply_diag_value(
@@ -5895,6 +5781,8 @@ mod apply_diag_tests {
         assert!(desired[0]["frame_hold"].is_null());
         assert_eq!(desired[0]["floating"], serde_json::json!(false));
         assert!(desired[0]["frame_op"].is_null());
+        assert_eq!(desired[0]["automatic_clear_pending"], serde_json::json!(false));
+        assert_eq!(desired[1]["automatic_clear_pending"], serde_json::json!(true));
         // Held row keeps its explicit hold reasons and stays pending with
         // no fabricated frame write.
         assert_eq!(desired[1]["window"], serde_json::json!("w-held"));
@@ -6265,7 +6153,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::{OperationEvent, OperationOutcome, OutputDesire};
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_vecs: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
         // Desire-only (no attempts, no settlement) stays quiet even with
         // desired windows, outputs, and paired geometry present.
@@ -7423,24 +7311,45 @@ mod core_only_catchup_tests {
     fn core_only_catchup_carries_fullscreen_meta_and_intent() {
         // A window that first admits during the core-only catch-up must ride
         // the same canonical fullscreen ownership and intent-storage reads
-        // as the full observation tick, not lose restart intent.
-        use crate::product_hide::sys::fake;
-        let mut state = crate::tiling_sys::rmax03_adapter_tests::test_state();
-        state.ensure_device("DEV1");
-        let hwnd = 0x7A01;
+        // as the full observation tick, not lose restart intent. The packed
+        // slot is fenced to an exact live (pid, creation, tag), so the fixture
+        // owns a real message-only window and writes that slot for its exact
+        // lifetime exactly as the restart fixtures do.
+        let window = crate::ffi::TestWindow::create_message_only(
+            "OmniTilerCoreOnlyCatchupTest",
+            "core-only-catchup",
+        )
+        .expect("message-only test window creates");
+        let hwnd = window.hwnd();
+        let real = crate::native::current_identity().expect("current identity reads");
+        let tag = crate::product_hide::sys::install_member_tag(hwnd, real.pid)
+            .expect("member tag installs on the owned window");
         let key = WindowKey {
             hwnd,
-            pid: 7101,
-            creation: "proc-7a01".to_owned(),
+            pid: real.pid,
+            creation: real.process_creation.clone(),
         };
+        // Canonical packed-slot write for this exact fixture lifetime: the
+        // fresh lifetime fence reads this slot, never a manually seeded
+        // snapshot.
+        crate::product_hide::sys::write_intent_slot_for(
+            &key,
+            &tag,
+            crate::tiling_sys::IntentStorage {
+                float: Some(false),
+                sticky_prior: None,
+            },
+        )
+        .expect("packed intent slot writes for the exact lifetime");
+        let mut state = crate::tiling_sys::rmax03_adapter_tests::test_state();
+        state.ensure_device("DEV1");
         state
             .member_tokens
             .insert(key.clone(), "w-catchup".to_owned());
         state
             .member_identity
-            .insert(key, member_identity(7101, "proc-7a01"));
-        fake::register_marks(hwnd);
-        assert!(fake::store_tile_mark(hwnd, 1));
+            .insert(key.clone(), member_identity(real.pid, &real.process_creation));
+        state.member_tags.insert(key.clone(), tag.clone());
         inject_fullscreen_meta(
             hwnd,
             FullscreenMeta {
@@ -7452,8 +7361,8 @@ mod core_only_catchup_tests {
         let observed = vec![observed_fullscreen(
             hwnd,
             "w-catchup",
-            7101,
-            "proc-7a01",
+            real.pid,
+            &real.process_creation,
         )];
         let areas = vec![area()];
         let fulls = vec![Rect {
@@ -7494,6 +7403,5 @@ mod core_only_catchup_tests {
             "tile marker becomes the canonical intent record: {}",
             intent.data
         );
-        fake::unregister_all();
     }
 }

@@ -964,8 +964,8 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
             0,
             None,
         );
-        last_members = tick.members.clone();
-        last_views = tick.views.clone();
+        last_members = tick.members;
+        last_views = tick.views;
         let forgotten = !env.state.applied_homing.contains_key("w3");
         let post: std::collections::HashMap<u64, Rect> = live_visible_observed()
             .into_iter()
@@ -1891,9 +1891,6 @@ fn selection_return_core_effect_binds_exact_grant() {
     }
     for attempt in &member_attempts {
         owner.note_member_attempt(attempt.clone());
-    }
-    for attempt in &view_attempts {
-        owner.note_view_attempt(attempt.clone());
     }
     for attempt in &frame_attempts {
         owner.note_frame_attempt(attempt.clone());

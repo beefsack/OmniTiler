@@ -931,7 +931,7 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         recovered.members.iter().any(
             |a| a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(target.as_str())
         ) && recovered.views.iter().any(
-            |a| a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(target.as_str())
+            |a| a.operation_id == op && a.post.as_deref() == Some(target.as_str())
         ),
         "member and view both prove the target: {:?} {:?}",
         recovered.members,
@@ -1051,7 +1051,7 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
     assert_eq!(member.pre, member.post);
     assert!(
         tick.views.iter().any(
-            |a| a.operation_id == op && ref_workspace(a.post.as_ref()) != Some(target.as_str())
+            |a| a.operation_id == op && a.post.as_deref() != Some(target.as_str())
         ),
         "unproven follow view: {:?}",
         tick.views
@@ -1969,7 +1969,6 @@ fn second_hide_after_reveal_readmits_through_real_claims() {
         FakeWindow {
             pid: key.pid,
             process: identity_of(&key),
-            integrity_rid: 0x2000,
             nonce: None,
             member_tag: Some("member-tag-1".to_owned()),
             visible: true,
@@ -2817,7 +2816,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
     assert!(members.is_empty());
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, "op-view-2x2");
-    assert_eq!(ref_workspace(views[0].post.as_ref()), Some(ws2.as_str()));
+    assert_eq!(views[0].post.as_deref(), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 1, "{stats:?}");
     drop(native);
     // Partial completion: the second reveal refuses, so nothing proves.
@@ -2948,7 +2947,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
     // that names the target.
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, "op-view-2x2-partial");
-    assert_ne!(ref_workspace(views[0].post.as_ref()), Some(ws2.as_str()));
+    assert_ne!(views[0].post.as_deref(), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 0, "{stats:?}");
 }
 

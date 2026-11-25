@@ -40,9 +40,8 @@
 //!   `primary_output` derives from the `areas.first()` device, never from
 //!   managed output order (which may be reordered relative to the native
 //!   list).
-//! - Owner intent lanes (`floated`, `sticky`, `restart_reject_hold`,
-//!   `fixed_auto_seen`, `fixed_tile_overrides`, `fixed_origin_overrides`,
-//!   `born_fullscreen`, `born_first_exit`), lifetime tags (`member_tags`),
+//! - Snapshot lanes (`fixed_auto_seen`, `born_fullscreen`,
+//!   `born_first_exit`), lifetime tags (`member_tags`),
 //!   stored identities (`member_identity`), snapshots (`member_rects` /
 //!   `float_rects`), recorded constraints (`hint_logged`) and the durable
 //!   hide claims (`hidden_claims`) are consumed read-only. The intent
@@ -156,7 +155,6 @@ use crate::model::ProcessIdentity;
 use crate::native_guards::WindowKey;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tiler_core::directional::{OutputId, WindowId};
-use tiler_core::intent_data::IntentData;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_report::{
     AuthorityScope, FullscreenOwner, HeldScreenRow, IntentRecord, MAX_IDENTITY_TEXT_BYTES,
@@ -203,11 +201,9 @@ pub(super) struct OwnerInputs<'a> {
     pub member_rects: &'a HashMap<String, Rect>,
     pub float_rects: &'a HashMap<String, Rect>,
     pub hint_logged: &'a HashMap<String, WindowSizeHints>,
-    pub restart_reject_hold: &'a BTreeSet<WindowKey>,
     pub born_fullscreen: &'a BTreeSet<WindowKey>,
     pub born_first_exit: &'a BTreeSet<WindowKey>,
     pub fixed_auto_seen: &'a BTreeSet<WindowKey>,
-    pub fixed_origin_overrides: &'a BTreeSet<WindowKey>,
     pub hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
     /// Fresh lightweight live reads for project-suppressed claim lifetimes
     /// with no live observed row (T4), keyed by the exact lifetime. Built by
@@ -314,11 +310,9 @@ impl TileLoop {
         member_rects: &'a HashMap<String, Rect>,
         float_rects: &'a HashMap<String, Rect>,
         hint_logged: &'a HashMap<String, WindowSizeHints>,
-        restart_reject_hold: &'a BTreeSet<WindowKey>,
         born_fullscreen: &'a BTreeSet<WindowKey>,
         born_first_exit: &'a BTreeSet<WindowKey>,
         fixed_auto_seen: &'a BTreeSet<WindowKey>,
-        fixed_origin_overrides: &'a BTreeSet<WindowKey>,
         hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
         minimized_omitted: &'a HashSet<WindowKey>,
         pending_closed: &'a BTreeMap<String, PendingClosed>,
@@ -345,11 +339,9 @@ impl TileLoop {
             member_rects,
             float_rects,
             hint_logged,
-            restart_reject_hold,
             born_fullscreen,
             born_first_exit,
             fixed_auto_seen,
-            fixed_origin_overrides,
             hidden_claims,
             hidden_reads: None,
             fullscreen_meta: None,
@@ -387,11 +379,9 @@ impl TileLoop {
             member_rects: &self.member_rects,
             float_rects: &self.float_rects,
             hint_logged: &self.hint_logged,
-            restart_reject_hold: &self.restart_reject_hold,
             born_fullscreen: &self.born_fullscreen,
             born_first_exit: &self.born_first_exit,
             fixed_auto_seen: &self.fixed_auto_seen,
-            fixed_origin_overrides: &self.fixed_origin_overrides,
             hidden_claims: &self.hidden_claims,
             hidden_reads: None,
             fullscreen_meta: None,
@@ -749,47 +739,17 @@ pub(super) struct CapturedWorld {
     pub(super) held_members: Vec<String>,
 }
 
-/// Adapter-local snapshot slot selection for one hidden row: sticky wins
-/// unconditionally; the D4 automatic-fixed latch floats unless an explicit
-/// tile win dominates; marker-derived adapter float intent (floats,
-/// restart-holds, born holds) floats unless a first-exit mark already
-/// returned the member to the tiled lane. It only picks the retained float
-/// vs tile frame source for a hidden snapshot; v4 publishes no float
-/// intent, so this is never a report fact. No legacy Engine exception
-/// lane: the core owns float exceptions outright.
-fn capture_floating(
-    state: &OwnerInputs<'_>,
-    key: &crate::native_guards::WindowKey,
-    hidden: bool,
-) -> bool {
+/// Pick the hidden snapshot cache using the exact member's canonical
+/// intent, the fixed-size observation, and the born-fullscreen hold.
+fn capture_floating(state: &OwnerInputs<'_>, key: &WindowKey) -> bool {
     let storage = state.intent_storage.and_then(|map| map.get(key));
-    let sticky = storage.is_some_and(|s| s.sticky_prior.is_some());
-    let (fixed_auto, fixed_suppress) = capture_fixed(state, key);
-    crate::native_guards::float_lane(
-        sticky,
-        fixed_auto,
-        fixed_suppress,
+    crate::native_guards::hidden_snapshot_uses_float(
+        storage.is_some_and(|s| s.sticky_prior.is_some()),
+        state.fixed_auto_seen.contains(key),
         state.born_first_exit.contains(key),
-        storage.is_some_and(|s| s.float),
-        state.restart_reject_hold.contains(key),
+        storage.and_then(|s| s.float),
         state.born_fullscreen.contains(key),
-        hidden,
     )
-}
-
-/// The three fixed-size lanes, preserved distinctly for the snapshot-slot
-/// decision: the explicit tile-win lanes (`fixed_tile_overrides` runtime
-/// plus `fixed_origin_overrides` durable) dominate as `fixed_suppress`; the
-/// D4 automatic latch (`fixed_auto_seen`) reports only when neither sticky
-/// intent nor a durable win reframes it (production stamp parity: sticky
-/// dominates automatic origin and durable wins never acquire it). No lane
-/// is published in v4.
-fn capture_fixed(state: &OwnerInputs<'_>, key: &crate::native_guards::WindowKey) -> (bool, bool) {
-    let storage = state.intent_storage.and_then(|map| map.get(key));
-    let durable = storage.is_some_and(|s| s.tile) || state.fixed_origin_overrides.contains(key);
-    let sticky = storage.is_some_and(|s| s.sticky_prior.is_some());
-    let automatic = state.fixed_auto_seen.contains(key) && !sticky && !durable;
-    (automatic, durable)
 }
 
 /// One project-suppressed (`SW_HIDE`) claim lifetime's lightweight live read
@@ -1613,7 +1573,7 @@ pub(super) fn capture_world(
                 // so the visible-row eligibility gate must not turn it
                 // unreadable. Keeping the row readable preserves its
                 // logical homing (and its workspace's scope) while away.
-                let floating = capture_floating(state, &key, true);
+                let floating = capture_floating(state, &key);
                 let snapshot = crate::native_guards::hidden_snapshot_rect(
                     floating,
                     state.float_rects.get(&token).copied(),
@@ -1756,7 +1716,6 @@ pub(super) fn capture_world(
                 );
                 continue;
             }
-            let overlay = row.maximized || row.fullscreen;
             // Prefer the live frame this tick observed; the retained tile
             // slot is placement memory and only stands in when the row has
             // no live frame. Neither present keeps the unreadable hold.
@@ -1775,15 +1734,6 @@ pub(super) fn capture_world(
                 );
                 continue;
             };
-            let floating = capture_floating(state, key, false);
-            let hints = crate::tiling::retained_overlay_hint(
-                state.hint_logged.get(live_token).copied(),
-                true,
-                overlay,
-                floating,
-                state.born_fullscreen.contains(key),
-                true,
-            );
             // The freshly validated native read rides this row's flags lane:
             // the overlay row is readable and its cloak/ownership/style
             // facts are current, not stale.
@@ -1792,7 +1742,7 @@ pub(super) fn capture_world(
                 key,
                 executable,
                 suppression_owned: owned,
-                hints: Some(hints),
+                hints: None,
                 output: affinity_of(&rect),
                 rect: Some(rect),
                 flags: Some(&row_facts),
@@ -1870,7 +1820,7 @@ pub(super) fn capture_world(
                 );
                 continue;
             };
-            let floating = capture_floating(state, key, true);
+            let floating = capture_floating(state, key);
             let snapshot = crate::native_guards::hidden_snapshot_rect(
                 floating,
                 state.float_rects.get(live_token).copied(),
@@ -2043,8 +1993,6 @@ pub(super) fn capture_world(
     let windows = facts;
     // Canonical intent rows for observed exact member lifetimes: the key
     // must still be bound and its WindowFact must exist in this capture.
-    // Sticky dominates (its marker already implies float); an explicit
-    // float/tile marker rides alone; all-absent storage publishes nothing.
     // Unreadable storage has no map entry, so it never fabricates a record.
     // Deduped by token (first bound lifetime wins).
     let mut intent_records: Vec<IntentRecord> = Vec::new();
@@ -2056,13 +2004,7 @@ pub(super) fn capture_world(
         let Some(storage) = state.intent_storage.and_then(|map| map.get(key)) else {
             continue;
         };
-        let data = if let Some(prior) = storage.sticky_prior {
-            IntentData::new(Some(true), Some(prior))
-        } else if storage.float {
-            IntentData::new(Some(true), None)
-        } else if storage.tile {
-            IntentData::new(Some(false), None)
-        } else {
+        let Some(data) = storage.to_data() else {
             continue;
         };
         if !intent_seen.insert(token.as_str()) {
@@ -2637,6 +2579,7 @@ mod tests {
             assert_eq!(fact.owned, Some(false), "flags lane is published");
             assert_eq!(fact.window_type, Some(WindowType::Normal));
             assert_eq!(fact.host_hidden, Some(false), "flags-derived cloak");
+            assert_eq!(fact.hints, None, "overlay does not prove sizing hints");
         }
 
         #[test]

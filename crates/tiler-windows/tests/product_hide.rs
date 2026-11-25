@@ -500,7 +500,15 @@ mod native_topmost_hide {
     fn marker_alone_never_authorizes_recycled_identity_refuses() {
         let window = TestWindow::create(true);
         let owner = fake_owner();
-        sys::install_float_intent_marker(window.hwnd()).expect("float marker installs");
+        let _tag = sys::install_member_tag(window.hwnd(), std::process::id())
+            .expect("member tag installs on the owned window");
+        sys::write_window_intent(window.hwnd(), Some(true), None)
+            .expect("float intent writes on the owned window");
+        assert_eq!(
+            sys::read_window_intent(window.hwnd()),
+            Some((Some(true), None)),
+            "the packed slot round-trips the explicit float intent"
+        );
         // A present float marker without the runtime flag still refuses
         // topmost: markers never authorize hiding. A recycled identity has no
         // exact runtime key (`None`), so it refuses the same way. Non-medium
@@ -538,6 +546,6 @@ mod native_topmost_hide {
             )),
             bypassed
         );
-        let _ = sys::remove_float_intent_marker(window.hwnd());
+        let _ = sys::write_window_intent(window.hwnd(), None, None);
     }
 }

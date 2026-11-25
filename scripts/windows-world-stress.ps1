@@ -662,7 +662,7 @@ function Compare-StressCheckpoint($Expected, $Actual) {
     if ($null -ne $hv -and "$hv" -ne "") { Fail-Ws "$id membership_hold present" }
     if ($row.floating -ne $false) { Fail-Ws "$id floating" }
     if ($null -ne $row.float_origin -and "$($row.float_origin)" -ne "") { Fail-Ws "$id float origin" }
-    if ("$($row.frame_op)" -ne "" -or "$($row.clear_op)" -ne "") { Fail-Ws "$id pending op" }
+    if ("$($row.frame_op)" -ne "" -or $row.automatic_clear_pending -ne $false) { Fail-Ws "$id pending op" }
     if ("$($row.membership_authority)" -ne "controlled") { Fail-Ws "$id membership authority not controlled" }
     $fr = $Actual.Frames[$id]
     if ($null -eq $fr -or $null -eq $fr.outer -or $null -eq $fr.visible) { Fail-Ws "no native frame for $id" }
@@ -1117,7 +1117,7 @@ function Test-StressApplyPending($Event) {
   if (@($Event.held_scopes).Count -gt 0) { return $true }
   foreach ($row in @($Event.desired_windows)) {
     if ($null -eq $row) { continue }
-    if ("$($row.frame_op)" -ne "" -or "$($row.clear_op)" -ne "") { return $true }
+    if ("$($row.frame_op)" -ne "" -or $row.automatic_clear_pending -ne $false) { return $true }
     if ($null -ne $row.frame_hold -and "$($row.frame_hold)" -ne "") { return $true }
     if ($null -ne $row.membership_hold -and "$($row.membership_hold)" -ne "") { return $true }
     if ($row.floating -eq $true) { return $true }
@@ -1936,7 +1936,7 @@ function Invoke-StressBootstrapLayout($LogPath, $Topo, $TokOf, $HwndOf, $Fixture
     }
     if ($row.floating -ne $false) { Fail-Ws "bootstrap layout refuse: $id floating" }
     if ($null -ne $row.float_origin -and "$($row.float_origin)" -ne "") { Fail-Ws "bootstrap layout refuse: $id float origin" }
-    if ("$($row.frame_op)" -ne "" -or "$($row.clear_op)" -ne "") { Fail-Ws "bootstrap layout refuse: $id pending op" }
+    if ("$($row.frame_op)" -ne "" -or $row.automatic_clear_pending -ne $false) { Fail-Ws "bootstrap layout refuse: $id pending op" }
     if ("$($row.frame_authority)" -ne "controlled" -or "$($row.membership_authority)" -ne "controlled") {
       Fail-Ws "bootstrap layout refuse: $id authority not controlled"
     }

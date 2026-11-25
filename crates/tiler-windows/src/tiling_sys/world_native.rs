@@ -82,8 +82,6 @@ use super::visibility_diag::RevealRecord;
 use crate::model::{ProcessIdentity, WindowIdentity};
 use crate::native::HeldProcess;
 use crate::native_guards::WindowKey;
-#[cfg(test)]
-use crate::native_guards::MarkerSlot;
 use crate::storage::LedgerStore;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -703,6 +701,28 @@ impl<'a> LiveNative<'a> {
             .is_some_and(|storage| storage.sticky_prior.is_some())
     }
 
+    fn read_intent_for(&mut self, key: &WindowKey) -> Option<IntentStorage> {
+        #[cfg(test)]
+        if crate::product_hide::sys::fake::marker_active(key.hwnd) {
+            let expected = self.member_identity.get(key).cloned()?;
+            if !self.identity_ok(key, &expected) || !self.lifetime_ok(key) {
+                return None;
+            }
+            return slot_storage(crate::product_hide::sys::read_intent_slot(key.hwnd));
+        }
+        intent_storage_of(key, self.stored_tag(key)?)
+    }
+
+    fn window_intent(&mut self, key: &WindowKey) -> IntentStorage {
+        #[cfg(test)]
+        if !crate::ffi::is_window(key.hwnd)
+            && !crate::product_hide::sys::fake::marker_active(key.hwnd)
+        {
+            return self.intent_storage.get(key).copied().unwrap_or_default();
+        }
+        self.read_intent_for(key).unwrap_or_default()
+    }
+
     /// Prior topmost band owned by this exact window lifetime, read from the
     /// durable `above` preimage (written only when the project raises the
     /// band and cleared only after a proven restore). Absent means the
@@ -758,12 +778,8 @@ impl<'a> LiveNative<'a> {
             return None;
         }
         let (output, workspace) = self.committed_homing(token).unwrap_or_default();
-        let sticky = self.sticky_of(&key);
-        let hwnd = key.hwnd;
-        let live_tag = (self.prims.member_tag)(hwnd);
-        let float_marked = crate::product_hide::sys::peek_float_intent_raw(hwnd);
-        let floating =
-            sticky || !matches!(float_marked, crate::native_guards::MarkerSlot::Absent);
+        let intent = self.window_intent(&key);
+        let live_tag = (self.prims.member_tag)(key.hwnd);
         Some(FreshWindow {
             key,
             token: token.to_owned(),
@@ -773,8 +789,8 @@ impl<'a> LiveNative<'a> {
             workspace,
             iconic: true,
             hidden: false,
-            sticky,
-            floating,
+            sticky: intent.sticky_prior.is_some(),
+            floating: intent.is_floating(),
             live_tag,
         })
     }
@@ -1813,66 +1829,14 @@ fn release_above(
     StateWrite::Called(true)
 }
 
-/// Canonical intent-storage peek for one window handle: the single durable
-/// lifetime-bound intent slot the intent record mirrors, read fresh through
-/// the packed-slot reader. A gone HWND has no marker storage (markers die
-/// with the window), so it reads as canonical absence, never write authority
-/// (the write path re-proves liveness and fails closed). A slot that is
-/// present but corrupt or bound to a different lifetime reads as unknown
-/// (`None`), never as absent or as a partial guess; an absent slot reads as
-/// canonical no-intent.
-pub(super) fn intent_storage_of(hwnd: u64) -> Option<IntentStorage> {
-    // A scripted test window is not a real Win32 HWND but does carry the
-    // same scripted marker slots; production windows read the packed slot.
-    #[cfg(test)]
-    if crate::product_hide::sys::fake::marker_active(hwnd) {
-        return scripted_intent_storage_of(hwnd);
-    }
-    if !crate::ffi::is_window(hwnd) {
-        // Markers die with the window: a lifetime with no live HWND has no
-        // marker storage. Never write authority on its own.
-        return Some(IntentStorage::default());
-    }
-    intent_storage_from_slot(crate::product_hide::sys::read_intent_slot(hwnd))
+/// Read the slot only for the caller's exact, tagged member lifetime.
+pub(super) fn intent_storage_of(key: &WindowKey, tag: &str) -> Option<IntentStorage> {
+    slot_storage(crate::product_hide::sys::read_intent_slot_for(key, tag))
 }
 
-/// Map one packed-slot read onto the canonical intent-storage read: a
-/// corrupt or foreign-lifetime slot stays unknown (`None`), an absent slot
-/// is canonical no-intent, and a verified slot is itself.
-fn intent_storage_from_slot(slot: Option<Option<IntentStorage>>) -> Option<IntentStorage> {
-    match slot {
-        None => None,
-        Some(None) => Some(IntentStorage::default()),
-        Some(Some(storage)) => Some(storage),
-    }
-}
-
-/// Test-only mirror of the legacy per-property marker reads for scripted
-/// HWNDs: the fake tables keyed by synthetic handles stand in for the
-/// window property table, so the packed slot (which requires a real
-/// process lifetime) is never consulted.
-#[cfg(test)]
-fn scripted_intent_storage_of(hwnd: u64) -> Option<IntentStorage> {
-    let sticky_prior = match crate::product_hide::sys::peek_sticky_raw(hwnd) {
-        MarkerSlot::Absent => None,
-        MarkerSlot::Value(value) => crate::tiling::parse_sticky_marker(value),
-        MarkerSlot::Unreadable => return None,
-    };
-    let float = match crate::product_hide::sys::peek_float_intent_raw(hwnd) {
-        MarkerSlot::Absent => false,
-        MarkerSlot::Value(value) => crate::tiling::parse_float_intent_marker(value).is_some(),
-        MarkerSlot::Unreadable => return None,
-    };
-    let tile = match crate::product_hide::sys::peek_tile_override_raw(hwnd) {
-        MarkerSlot::Absent => false,
-        MarkerSlot::Value(value) => crate::tiling::parse_tile_override_marker(value).is_some(),
-        MarkerSlot::Unreadable => return None,
-    };
-    Some(IntentStorage {
-        sticky_prior,
-        float,
-        tile,
-    })
+/// A verified absent property is empty; an unverified read stays unknown.
+fn slot_storage(slot: Option<Option<IntentStorage>>) -> Option<IntentStorage> {
+    Some(slot?.unwrap_or_default())
 }
 
 /// Resolve the project-owned fullscreen rectangle for one frame-derived
@@ -1921,10 +1885,7 @@ impl NativeOps for LiveNative<'_> {
                 // Committed homing comes from the core projection; the
                 // hidden flag from the hide-claim ledger only.
                 let (output, workspace) = self.committed_homing(token).unwrap_or_default();
-                let sticky = self.sticky_of(&live_key);
-                let float_marked = crate::product_hide::sys::peek_float_intent_raw(key.hwnd);
-                let floating =
-                    sticky || !matches!(float_marked, crate::native_guards::MarkerSlot::Absent);
+                let intent = self.window_intent(&live_key);
                 Some(FreshWindow {
                     key: live_key.clone(),
                     token: token.to_owned(),
@@ -1934,8 +1895,8 @@ impl NativeOps for LiveNative<'_> {
                     workspace,
                     iconic: w.facts.minimized || (self.prims.is_iconic)(key.hwnd),
                     hidden: self.committed_hidden(&live_key),
-                    sticky,
-                    floating,
+                    sticky: intent.sticky_prior.is_some(),
+                    floating: intent.is_floating(),
                     live_tag: (self.prims.member_tag)(key.hwnd),
                 })
             }
@@ -1987,7 +1948,7 @@ impl NativeOps for LiveNative<'_> {
                         && w.identity.process_creation == key.creation
                 });
                 let (output, workspace) = self.committed_homing(token).unwrap_or_default();
-                let sticky = self.sticky_of(&key);
+                let intent = self.window_intent(&key);
                 Some(FreshWindow {
                     key,
                     token: token.to_owned(),
@@ -1997,8 +1958,8 @@ impl NativeOps for LiveNative<'_> {
                     workspace,
                     iconic: (self.prims.is_iconic)(claim_hwnd),
                     hidden: true,
-                    sticky,
-                    floating: sticky,
+                    sticky: intent.sticky_prior.is_some(),
+                    floating: intent.is_floating(),
                     live_tag: (self.prims.member_tag)(claim_hwnd),
                 })
             }
@@ -2742,7 +2703,7 @@ impl NativeOps for LiveNative<'_> {
 
     fn read_intent_storage(&mut self, token: &str) -> Option<IntentStorage> {
         let key = self.key_of(token)?;
-        intent_storage_of(key.hwnd)
+        self.read_intent_for(&key)
     }
 
     fn write_intent_storage(&mut self, token: &str, data: Option<IntentData>) -> Result<(), ()> {
@@ -2752,17 +2713,11 @@ impl NativeOps for LiveNative<'_> {
             return Err(());
         }
         let desired = IntentStorage::from_data(data);
-        // One packed lifetime-bound property slot: a single native mutation
-        // moves sticky/float/tile together, so no half-applied marker set is
-        // ever observable between writes.
-        crate::product_hide::sys::write_intent_slot(key.hwnd, desired).map_err(|_| ())?;
-        // Read-back proof: only canonical storage is a success, so the core
-        // never treats a half-applied marker set as saved.
-        if self.read_intent_storage(token) == Some(desired) {
-            Ok(())
-        } else {
-            Err(())
+        #[cfg(test)]
+        if crate::product_hide::sys::fake::marker_active(key.hwnd) {
+            return crate::product_hide::sys::write_intent_slot(key.hwnd, desired);
         }
+        crate::product_hide::sys::write_intent_slot_for(&key, self.stored_tag(&key).ok_or(())?, desired)
     }
 
     fn foreground_state(&mut self) -> super::world_diff::ForegroundState {
@@ -3222,22 +3177,21 @@ mod r12_native_tests {
 
     #[test]
     fn corrupt_intent_slot_reads_unknown_not_default() {
-        assert_eq!(intent_storage_from_slot(None), None);
+        assert_eq!(slot_storage(None), None);
         assert_ne!(
-            intent_storage_from_slot(None),
+            slot_storage(None),
             Some(IntentStorage::default()),
             "a corrupt/foreign slot is unknown, never canonical absence"
         );
         assert_eq!(
-            intent_storage_from_slot(Some(None)),
+            slot_storage(Some(None)),
             Some(IntentStorage::default()),
             "an absent slot is canonical no-intent"
         );
         let storage = IntentStorage {
             sticky_prior: Some(true),
-            float: true,
-            tile: false,
+            float: Some(true),
         };
-        assert_eq!(intent_storage_from_slot(Some(Some(storage))), Some(storage));
+        assert_eq!(slot_storage(Some(Some(storage))), Some(storage));
     }
 }

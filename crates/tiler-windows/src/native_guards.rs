@@ -92,34 +92,21 @@ pub const fn hidden_snapshot_rect(
     }
 }
 
-/// Hidden float routing for one member: sticky wins unconditionally; the
-/// D4 automatic-fixed latch floats unless an explicit tile win dominates;
-/// marker-derived adapter float intent (floats, restart-holds, born holds)
-/// floats unless a first-exit mark already returned the member to the tiled
-/// lane. Pure predicate shared by row assembly and hide-commit snapshot
-/// seeding so both route the same member to the same cache.
+/// Choose the float cache for a hidden snapshot or hide-commit seed.
+/// Sticky wins, then a fixed automatic float without explicit tile intent;
+/// a born-fullscreen hold ends at first exit unless the member opted to float.
 #[must_use]
-#[allow(clippy::too_many_arguments)]
-pub const fn float_lane(
+pub const fn hidden_snapshot_uses_float(
     sticky: bool,
     fixed_auto: bool,
-    fixed_suppress: bool,
     born_first_exit: bool,
-    floated: bool,
-    restart_hold: bool,
+    float_intent: Option<bool>,
     born_fullscreen: bool,
-    hidden: bool,
 ) -> bool {
-    if sticky {
-        return true;
-    }
-    if fixed_auto && !fixed_suppress {
-        return true;
-    }
-    if born_first_exit && (!hidden || !floated) {
-        return false;
-    }
-    floated || restart_hold || born_fullscreen
+    sticky
+        || (fixed_auto && !matches!(float_intent, Some(false)))
+        || matches!(float_intent, Some(true))
+        || (!born_first_exit && born_fullscreen)
 }
 
 /// Portable writable-token subset: non-hidden members whose Engine token is
@@ -141,128 +128,6 @@ pub fn writable_subset(
         .filter(|t| fresh_tokens.contains(*t))
         .cloned()
         .collect()
-}
-
-/// One on-window marker slot read (R-RST-01/R-FLT-05). `Value`
-/// carries the live `GetProp` value, always nonzero (native NULL/zero reads
-/// as [`MarkerSlot::Absent`); a `Value(0)` only arises in unit tests and
-/// fails closed as corrupt. `Unreadable` is the fail-closed classifier input
-/// for a genuinely failed read: diagnosed, no intent. No current native
-/// reader produces it (`GetPropW` NULL reads absent); it stays so the
-/// classifier never mistakes a future read failure for intent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MarkerSlot {
-    Absent,
-    Value(u64),
-    Unreadable,
-}
-
-/// Restart marker classification for one window's slots. Priority is sticky,
-/// then intentional float, then the reserved tile override; a failed read
-/// with no valid higher lane is [`RestartMarker::Unreadable`] (diagnosed, no
-/// intent), and a present-but-wrong value is [`RestartMarker::Corrupt`]
-/// (logged, no intent). Missing means empty. Markers restore classification
-/// only: hydration still needs admission plus identity and lifetime fences.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestartMarker {
-    Absent,
-    FloatIntent,
-    Sticky(bool),
-    TileOverride,
-    Corrupt,
-    Unreadable,
-}
-
-/// Classify one window's restart marker slots with sticky-first priority.
-#[must_use]
-pub fn classify_restart_marker(
-    float: MarkerSlot,
-    sticky: MarkerSlot,
-    tile: MarkerSlot,
-) -> RestartMarker {
-    if let MarkerSlot::Value(raw) = sticky
-        && let Some(prior) = crate::tiling::parse_sticky_marker(raw)
-    {
-        return RestartMarker::Sticky(prior);
-    }
-    if let MarkerSlot::Value(raw) = float
-        && crate::tiling::parse_float_intent_marker(raw).is_some()
-    {
-        return RestartMarker::FloatIntent;
-    }
-    if let MarkerSlot::Value(raw) = tile
-        && crate::tiling::parse_tile_override_marker(raw).is_some()
-    {
-        return RestartMarker::TileOverride;
-    }
-    if matches!(float, MarkerSlot::Unreadable)
-        || matches!(sticky, MarkerSlot::Unreadable)
-        || matches!(tile, MarkerSlot::Unreadable)
-    {
-        return RestartMarker::Unreadable;
-    }
-    if matches!(float, MarkerSlot::Value(_))
-        || matches!(sticky, MarkerSlot::Value(_))
-        || matches!(tile, MarkerSlot::Value(_))
-    {
-        RestartMarker::Corrupt
-    } else {
-        RestartMarker::Absent
-    }
-}
-
-/// Whether one classified marker re-adopts an ordinary intentional float on
-/// owner restart: admitted membership plus exact identity plus live lifetime
-/// tag, with a valid float marker. Every other lane (sticky, reserved tile
-/// override, corrupt, unreadable, absent) never floats here.
-#[must_use]
-pub const fn restart_float_eligible(
-    admitted: bool,
-    identity_ok: bool,
-    lifetime_ok: bool,
-    marker: RestartMarker,
-) -> bool {
-    admitted && identity_ok && lifetime_ok && matches!(marker, RestartMarker::FloatIntent)
-}
-
-/// Which pre-sticky state one classified marker re-adopts on owner restart:
-/// `Some(prior)` under the same admission/identity/lifetime fences as
-/// [`restart_float_eligible`], `None` otherwise. Both origins re-adopt as
-/// sticky before any tiling (never as a normal float); the exact
-/// post-restart un-stick result stays TBD under R-FLT-05/R-RST-01.
-#[must_use]
-pub const fn restart_sticky_eligible(
-    admitted: bool,
-    identity_ok: bool,
-    lifetime_ok: bool,
-    marker: RestartMarker,
-) -> Option<bool> {
-    if !(admitted && identity_ok && lifetime_ok) {
-        return None;
-    }
-    match marker {
-        RestartMarker::Sticky(prior) => Some(prior),
-        _ => None,
-    }
-}
-
-/// Whether one classified marker re-adopts an explicit fixed-window tile
-/// override on owner restart (R-SPC-04 D7): admitted membership plus exact
-/// identity plus live lifetime tag, with a valid tile-override marker. The
-/// override restores classification only (the stamped suppress signal on
-/// subsequent observations); hydration performs no writes, stages no Engine
-/// commit, and installs no marker. Missing/degraded/unmatched records fall
-/// back to ordinary fixed classification (recompute, no hold/retry). Every
-/// other lane (sticky, float, corrupt, unreadable, absent) never overrides
-/// here.
-#[must_use]
-pub const fn restart_tile_override_eligible(
-    admitted: bool,
-    identity_ok: bool,
-    lifetime_ok: bool,
-    marker: RestartMarker,
-) -> bool {
-    admitted && identity_ok && lifetime_ok && matches!(marker, RestartMarker::TileOverride)
 }
 
 /// Privacy-safe foreground veto reason. Bounded vocabulary only: no titles,
@@ -485,41 +350,6 @@ mod tests {
             writable_subset(&members, |_| false, &token_of, &stale).is_empty(),
             "retained-only tokens never take writes"
         );
-    }
-
-    #[test]
-    fn restart_markers_classify_sticky_first_with_exact_eligibility() {
-        use MarkerSlot::{Absent, Unreadable, Value};
-        // Sticky wins over float and tile-override lanes.
-        let sticky = classify_restart_marker(Value(7), Value(1), Value(1));
-        assert_eq!(sticky, RestartMarker::Sticky(false));
-        assert_eq!(
-            restart_sticky_eligible(true, true, true, sticky),
-            Some(false)
-        );
-        assert!(!restart_float_eligible(true, true, true, sticky));
-        assert!(!restart_tile_override_eligible(true, true, true, sticky));
-        // Ordinary float intent floats; tile override never floats.
-        let float = classify_restart_marker(Value(1), Absent, Absent);
-        assert_eq!(float, RestartMarker::FloatIntent);
-        assert!(restart_float_eligible(true, true, true, float));
-        assert_eq!(restart_sticky_eligible(true, true, true, float), None);
-        // Unreadable with no valid lane diagnoses without intent.
-        let unreadable = classify_restart_marker(Unreadable, Absent, Absent);
-        assert_eq!(unreadable, RestartMarker::Unreadable);
-        assert!(!restart_float_eligible(true, true, true, unreadable));
-        // Present-but-wrong values corrupt without intent.
-        let corrupt = classify_restart_marker(Value(7), Value(3), Value(9));
-        assert_eq!(corrupt, RestartMarker::Corrupt);
-        assert!(!restart_float_eligible(true, true, true, corrupt));
-        assert_eq!(
-            classify_restart_marker(Absent, Absent, Absent),
-            RestartMarker::Absent
-        );
-        // Every eligibility needs admission, identity, and lifetime.
-        assert!(!restart_float_eligible(false, true, true, float));
-        assert!(!restart_float_eligible(true, false, true, float));
-        assert!(!restart_float_eligible(true, true, false, float));
     }
 
     #[test]

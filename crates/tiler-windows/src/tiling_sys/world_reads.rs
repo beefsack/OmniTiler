@@ -201,15 +201,17 @@ impl TileLoop {
     /// Whether the durable intent snapshot marks one member floating
     /// (sticky intent dominates and implies float).
     pub(super) fn floating_of(&self, key: &crate::native_guards::WindowKey) -> bool {
-        self.intent_snapshot.get(key).is_some_and(|storage| {
-            storage.sticky_prior.is_some() || storage.float
-        })
+        self.intent_snapshot
+            .get(key)
+            .is_some_and(|storage| storage.is_floating())
     }
 
-    /// Whether the durable intent snapshot records an explicit tile win for
-    /// one member (the settled `tile` bit of the packed marker slot).
+    /// Whether the durable snapshot has an active explicit tile override.
+    #[cfg(test)]
     pub(super) fn tile_override_of(&self, key: &crate::native_guards::WindowKey) -> bool {
-        self.intent_snapshot.get(key).is_some_and(|storage| storage.tile)
+        self.intent_snapshot
+            .get(key)
+            .is_some_and(|storage| storage.is_tiled())
     }
 
     /// Whether the core currently homes one token as an intentional float:
@@ -255,36 +257,16 @@ impl TileLoop {
     /// handle, exactly as the production write path would leave them: ticks
     /// re-read the slots, so a snapshot-only seed would be erased.
     fn script_intent_slot(&self, key: &crate::native_guards::WindowKey, row: &IntentStorage) {
-        use crate::product_hide::sys::fake;
-        let hwnd = key.hwnd;
-        if !fake::marker_active(hwnd) {
-            return;
-        }
-        match row.sticky_prior {
-            Some(prior) => {
-                fake::store_sticky_mark(hwnd, crate::tiling::sticky_marker_value(prior));
-            }
-            None => {
-                fake::remove_sticky_mark(hwnd);
-            }
-        }
-        if row.float {
-            fake::store_float_mark(hwnd, crate::tiling::float_intent_marker_value());
-        } else {
-            fake::remove_float_mark(hwnd);
-        }
-        if row.tile {
-            fake::store_tile_mark(hwnd, crate::tiling::tile_override_marker_value());
-        } else {
-            fake::remove_tile_mark(hwnd);
+        if crate::product_hide::sys::fake::marker_active(key.hwnd) {
+            crate::product_hide::sys::write_intent_slot(key.hwnd, *row)
+                .expect("script intent slot");
         }
     }
 
     pub(super) fn seed_sticky(&mut self, key: crate::native_guards::WindowKey, prior: bool) {
         let row = self.intent_snapshot.entry(key.clone()).or_default();
         row.sticky_prior = Some(prior);
-        row.float = false;
-        row.tile = false;
+        row.float = None;
         let row = *row;
         self.script_intent_slot(&key, &row);
     }
@@ -292,7 +274,7 @@ impl TileLoop {
     pub(super) fn seed_float(&mut self, key: crate::native_guards::WindowKey) {
         let row = self.intent_snapshot.entry(key.clone()).or_default();
         if row.sticky_prior.is_none() {
-            row.float = true;
+            row.float = Some(true);
         }
         let row = *row;
         self.script_intent_slot(&key, &row);
@@ -300,23 +282,26 @@ impl TileLoop {
 
     pub(super) fn seed_tile(&mut self, key: crate::native_guards::WindowKey) {
         let row = self.intent_snapshot.entry(key.clone()).or_default();
-        row.tile = true;
-        row.float = false;
+        row.float = Some(false);
         let row = *row;
         self.script_intent_slot(&key, &row);
     }
 
     pub(super) fn clear_float(&mut self, key: &crate::native_guards::WindowKey) {
-        if let Some(row) = self.intent_snapshot.get_mut(key) {
-            row.float = false;
+        if let Some(row) = self.intent_snapshot.get_mut(key)
+            && row.float == Some(true)
+        {
+            row.float = None;
             let row = *row;
             self.script_intent_slot(key, &row);
         }
     }
 
     pub(super) fn clear_tile(&mut self, key: &crate::native_guards::WindowKey) {
-        if let Some(row) = self.intent_snapshot.get_mut(key) {
-            row.tile = false;
+        if let Some(row) = self.intent_snapshot.get_mut(key)
+            && row.float == Some(false)
+        {
+            row.float = None;
             let row = *row;
             self.script_intent_slot(key, &row);
         }

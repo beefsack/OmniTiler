@@ -76,7 +76,7 @@ use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FocusFeedback,
     FocusRequest, FrameAttempt, FrameWitness, MemberAttempt, PresentationRowV4, RendererInput,
-    StateAttempt, StateProperty, ViewAttempt, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4,
+    StateAttempt, StateProperty, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4,
     WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
@@ -96,7 +96,6 @@ struct SequencerFlight {
     delivered_closed: Vec<(String, PendingClosed)>,
     delivered_frames: Vec<FrameAttempt>,
     delivered_members: Vec<MemberAttempt>,
-    delivered_views: Vec<ViewAttempt>,
     delivered_visibility: Vec<VisibilityAttempt>,
     delivered_state: Vec<StateAttempt>,
     delivered_focus: Vec<FocusFeedback>,
@@ -118,7 +117,6 @@ pub(super) struct AckReceipt {
     pub(super) closed_acked: Vec<(String, PendingClosed)>,
     pub(super) frames_acked: Vec<String>,
     pub(super) members_acked: Vec<(String, String)>,
-    pub(super) views_acked: Vec<String>,
 }
 
 /// Outcome of offering one core reply to the sequencer.
@@ -186,9 +184,6 @@ pub(super) struct WorldSequencer {
     /// only exactly-equal entries, so a newer update for the same operation
     /// window survives its predecessor's ack.
     pending_members: BTreeMap<(String, String), MemberAttempt>,
-    /// Latest-wins raw view attempts per owning view phase, drained into
-    /// the next report (same ack semantics as members).
-    pending_views: BTreeMap<String, ViewAttempt>,
     /// Latest-wins visibility readbacks per window lifetime, drained into
     /// the next report (same ack semantics as frames).
     pending_visibility: BTreeMap<String, VisibilityAttempt>,
@@ -320,7 +315,6 @@ impl WorldSequencer {
             flight: None,
             pending_frames: BTreeMap::new(),
             pending_members: BTreeMap::new(),
-            pending_views: BTreeMap::new(),
             pending_visibility: BTreeMap::new(),
             pending_state: BTreeMap::new(),
             pending_focus: BTreeMap::new(),
@@ -494,16 +488,6 @@ impl WorldSequencer {
         );
     }
 
-    /// Host-owned workspace domains (native desktops author views). Windows
-    /// binds app-owned logical workspaces, so native view attempts are not a
-    /// supported evidence lane and must never ride a report.
-    #[must_use]
-    pub(super) fn host_owned_workspace_domains(&self) -> bool {
-        self.engine
-            .capabilities()
-            .is_some_and(|caps| caps.host_owned)
-    }
-
     /// Set the witness fields the next report carries: the live
     /// raw-input pointer generation (`None` when uninstalled) and the
     /// last exact warp id spent this generation. The owner calls this from
@@ -525,13 +509,6 @@ impl WorldSequencer {
     #[must_use]
     pub(super) fn report_witness(&self) -> (Option<u64>, Option<String>) {
         (self.pointer_activity, self.warp_spent.clone())
-    }
-
-    /// Stage one raw view attempt for the next report, replacing any entry
-    /// for the same owning view phase (same ack semantics as frames).
-    pub(super) fn note_view_attempt(&mut self, attempt: ViewAttempt) {
-        self.pending_views
-            .insert(attempt.operation_id.clone(), attempt);
     }
 
     /// Stage one raw visibility attempt for the next report, replacing any
@@ -572,8 +549,8 @@ impl WorldSequencer {
         out.into_iter().collect()
     }
 
-    /// Dirty means an outstanding OBSERVATION, CLOSE, FRAME, MEMBER, VIEW,
-    /// or STATE/VISIBILITY obligation. Event-driven catch-up wants the next
+    /// Dirty means an outstanding observation, close, frame, member, state,
+    /// visibility, or focus obligation. Event-driven catch-up wants the next
     /// trigger while any holds; nothing here polls or spins.
     #[must_use]
     #[cfg(test)]
@@ -581,7 +558,6 @@ impl WorldSequencer {
         self.obs_dirty
             || !self.pending_frames.is_empty()
             || !self.pending_members.is_empty()
-            || !self.pending_views.is_empty()
             || !self.pending_visibility.is_empty()
             || !self.pending_state.is_empty()
             || !self.pending_focus.is_empty()
@@ -592,16 +568,13 @@ impl WorldSequencer {
     /// gates stay core-side via the checked admission route; the adapter
     /// never pre-empts them and never encodes JSON transport.
     ///
-    /// The report carries no settings or capability projection in v4: the
-    /// engine's bound connection state owns both, and the handshake/settings
-    /// route set them once. Windows has no native domains, state setter lane,
-    /// focus-feedback producer, intent storage, or renderer; visibility
-    /// attempts ride only target-matching apply readbacks. Capture holds unreadable
-    /// per-output scale inside `held_screens`; failing window facts stay
-    /// inside `windows` with `rect: None` plus an incomplete inventory, so
-    /// `held_windows` is empty. No restoration ingress exists: every report
-    /// is a fresh-observation report and the core mints rings/views from the
-    /// live screens.
+    /// The engine's connection state owns capabilities and settings. Windows
+    /// has logical workspaces, not host-owned desktops, so it emits no native
+    /// view attempts. Other native attempts carry target-matching readbacks
+    /// from accepted apply. Unreadable output scale rides `held_screens`;
+    /// uncertain windows stay in `windows` with `rect: None` and incomplete
+    /// inventory, so `held_windows` is empty. There is no restoration ingress:
+    /// the core mints rings and views from the live screens.
     #[must_use]
     pub(super) fn assemble(
         &mut self,
@@ -645,15 +618,6 @@ impl WorldSequencer {
             self.pending_members.values().cloned().collect();
         member_attempts
             .sort_by(|a, b| (&a.operation_id, &a.window.0).cmp(&(&b.operation_id, &b.window.0)));
-        let mut view_attempts: Vec<ViewAttempt> = if self.host_owned_workspace_domains() {
-            self.pending_views.values().cloned().collect()
-        } else {
-            // Native-free views settle from the frozen selection binding;
-            // the echo/attempt lane is unsupported evidence here and would
-            // be rejected as native-without-capability.
-            Vec::new()
-        };
-        view_attempts.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
         let visibility_attempts: Vec<VisibilityAttempt> =
             self.pending_visibility.values().cloned().collect();
         let mut state_attempts: Vec<StateAttempt> = self.pending_state.values().cloned().collect();
@@ -695,7 +659,7 @@ impl WorldSequencer {
             monotonic_ms,
             frames,
             member_attempts,
-            view_attempts,
+            view_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts,
@@ -787,7 +751,6 @@ impl WorldSequencer {
             delivered_closed,
             delivered_frames: report.frames.clone(),
             delivered_members: report.member_attempts.clone(),
-            delivered_views: report.view_attempts.clone(),
             delivered_visibility: report.visibility_attempts.clone(),
             delivered_state: report.state_attempts.clone(),
             delivered_focus: report.focus_feedback.clone(),
@@ -1006,7 +969,6 @@ impl WorldSequencer {
                 closed_acked: Vec::new(),
                 frames_acked: Vec::new(),
                 members_acked: Vec::new(),
-                views_acked: Vec::new(),
             });
         }
         let revision_new = !self.has_accepted || reply.state_revision > self.last_accepted_rev;
@@ -1123,7 +1085,6 @@ impl WorldSequencer {
         self.flight = None;
         self.pending_frames.clear();
         self.pending_members.clear();
-        self.pending_views.clear();
         self.pending_visibility.clear();
         self.pending_state.clear();
         self.pending_focus.clear();
@@ -1180,17 +1141,6 @@ impl WorldSequencer {
                 members_acked.push(key);
             }
         }
-        let mut views_acked = Vec::new();
-        for delivered in &flight.delivered_views {
-            if self
-                .pending_views
-                .get(&delivered.operation_id)
-                .is_some_and(|pending| pending == delivered)
-            {
-                self.pending_views.remove(&delivered.operation_id);
-                views_acked.push(delivered.operation_id.clone());
-            }
-        }
         for delivered in &flight.delivered_visibility {
             if self
                 .pending_visibility
@@ -1226,7 +1176,6 @@ impl WorldSequencer {
             closed_acked,
             frames_acked,
             members_acked,
-            views_acked,
         }
     }
 

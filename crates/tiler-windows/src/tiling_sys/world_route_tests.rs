@@ -337,15 +337,8 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     assert!(
         vviews.iter().any(|a| {
             a.operation_id == view_op
-                && a.post.as_ref().is_some_and(|reference| {
-                    matches!(
-                        reference,
-                        tiler_core::world_report::WorkspaceRef::Logical {
-                            output,
-                            workspace,
-                        } if output.0 == out_token && workspace.0 == target
-                    )
-                })
+                && a.target_output.0 == out_token
+                && a.post.as_deref() == Some(target.as_str())
         }),
         "view actuation proves: {vviews:?}"
     );
@@ -472,7 +465,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         closed_acked: vec![("w9".to_owned(), homing)],
         frames_acked: Vec::new(),
         members_acked: Vec::new(),
-        views_acked: Vec::new(),
     };
     let pruned = seq.apply_close_receipt(&mut pending, &ack_receipt);
     assert_eq!(pruned, vec!["w9".to_owned()]);
@@ -732,9 +724,6 @@ fn production_select_route_reports_honest_outcome_without_proof() {
         &target,
         None,
         &ctx,
-        None,
-        false,
-        false,
     );
     assert_eq!(effect.outcome, "ok", "effect: {:?}", effect.outcome);
     assert_eq!(effect.target_workspace, target);
@@ -1131,11 +1120,9 @@ fn busy_command_reports_unverified_not_cached_reply() {
             ref member_rects,
             ref float_rects,
             ref hint_logged,
-            ref restart_reject_hold,
             ref born_fullscreen,
             ref born_first_exit,
             ref fixed_auto_seen,
-            ref fixed_origin_overrides,
             ref hidden_claims,
             ref minimized_omitted,
             ref pending_closed,
@@ -1157,11 +1144,9 @@ fn busy_command_reports_unverified_not_cached_reply() {
             member_rects,
             float_rects,
             hint_logged,
-            restart_reject_hold,
             born_fullscreen,
             born_first_exit,
             fixed_auto_seen,
-            fixed_origin_overrides,
             hidden_claims,
             minimized_omitted,
             pending_closed,
