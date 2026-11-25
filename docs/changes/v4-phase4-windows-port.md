@@ -700,3 +700,62 @@ The targeted fixture-only proofs use
   also cover controlled staging and floating visibility under both collapsed
   output authority and mixed exact workspace authority. Evidence:
   `target/task9/phase1-foreground-20261126-021039-17752/evidence.json`.
+
+### Phase 2 Windows review verification
+
+- **Fullscreen baseline (R14):** A decorated floating fixture window
+  restored its exact pre-fullscreen outer rectangle and chrome. The
+  app-owned fullscreen case still received the typed refusal with no
+  native state write. The tiled fixture variant was held before state
+  application because retained overlay rows intentionally carry unknown
+  hints; it does not count as restore evidence. Real-app cases a–d remain
+  user-owned. Evidence:
+  `target/task9/fullscreen-baseline-20261126-063251-597-23612/evidence.json`.
+- **Output identity and DPI (R11):** Offline tests exercise normalized
+  connector identity for identical serial-less monitors. An empty fixture
+  session reported two outputs at 120 and 96 DPI, matching independent PMv2
+  native samples. No physical DPI change or hotplug was exercised. Evidence:
+  `target/task9/output-dpi-20261126-023338-380-5000/evidence.json`.
+- **Settings:** Distinct native track limits, a successful programmatic
+  resize, client and tab reflow, and unchanged settings bytes were observed
+  in the owned Settings process. Evidence:
+  `target/task9/settings-resize-20261126-023223-650-21644/evidence.json`.
+- **Interrupted departure (`hide-L09`):** The historical failing run used
+  ordinary `SW_HIDE` for one departure and then, after invalidation, resumed
+  with nonactivating `SetWindowPos` for the second. That hid the fixture HWND
+  without relinquishing its native foreground. Three bounded pre-fix repeats
+  (one 0 ms and two 10 ms) passed without recurrence. A staged continuation
+  now uses `SW_HIDE` only when the exact departing HWND still owns live
+  foreground and there is no retained focus request to preserve. The
+  focused regressions and the 0 ms `home-away` replay passed without changing
+  the visibility or foreground assertions. Replay evidence:
+  `target/windows-world-stress/20261126-064049-18420/world-stress-report.json`.
+- **Phase 1 regression:** Graceful stop, durable startup recovery, crash
+  watcher recovery, and already-foreground departure passed on the Phase 2
+  adapter. The crash watcher now reads and restores physical coordinates
+  under a scoped PMv2 thread context, including when the hidden fixture is
+  on a differently scaled output. Each proof recorded exact-owner cleanup.
+  Evidence under `target/task9/`: `phase1-graceful-20261126-065514-3708`,
+  `phase1-startup-20261126-065516-3708`, `phase1-crash-20261126-065519-3708`,
+  and `phase1-foreground-20261126-065521-3708`.
+
+The Windows library suite passed (1,409 passed, 4 ignored), the Windows
+`--tests --no-fail-fast` run passed (1,822 passed, 4 ignored, including
+library tests), and the fixture suite passed (122 passed). Strict
+`--all-targets --no-deps` Clippy passed for both crates. Dependency-inclusive
+Clippy still reports `collapsible_if` in `tiler-core/src/world_sends.rs:595`.
+The stress script static check and `-Mock` passed.
+
+Every fixture-only `mise exec -- just world-stress -Case
+test-fixtures/world-stress-<case>.json -DelayMs <n>` row passed with 102
+publications, 61 burst gaps and verified cleanup. Each directory below
+contains `world-stress-report.json`.
+
+| Case | Delay (ms) | Added delay (ms) | Evidence directory |
+| --- | ---: | ---: | --- |
+| home-away | 0 | 0 | `target/windows-world-stress/20261126-065035-14236` |
+| home-away | 10 | 1490 | `target/windows-world-stress/20261126-065123-13816` |
+| home-away | 50 | 7450 | `target/windows-world-stress/20261126-065211-2928` |
+| trio-churn | 0 | 0 | `target/windows-world-stress/20261126-065255-15636` |
+| trio-churn | 10 | 1560 | `target/windows-world-stress/20261126-065340-19044` |
+| trio-churn | 50 | 7800 | `target/windows-world-stress/20261126-065425-16096` |

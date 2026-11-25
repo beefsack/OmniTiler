@@ -249,15 +249,16 @@ not v4 acceptance evidence.
   150 ms tolerance. No witness join or physical-drag acceptance. See
   [K5 results](../changes/windows-v4-native-evidence.md#4-border-tracking-and-winevent-coverage-k5).
 
-## Phase-4 port gates (no passes claimed)
+## Phase-4 port gates
 
-- Carry all eight scenario OPEN/TBD gates plus: K5 witness join and
-  eligibility coverage; opaque/chrome/topmost crash recovery with
-  next-start adoption; untagged-lifetime fencing and HWND-reuse
-  handling; state/style/eligibility event coverage; connector/
-  identical-monitor normalization; per-case app-fullscreen baseline
-  with settled restore proof; beyond-scale-only empty-output
-  coverage. `hostOwned:false` exempts native removal/creation gates;
+- Keep the eight original scenario gates distinct from the native
+  legs proven in the [Phase 2 review](../changes/v4-phase4-windows-port.md#phase-2-windows-review-verification).
+  Fixture runs cover crash recovery, next-start adoption, empty-output
+  scale readback and exact decorated fullscreen restore. K5 causal
+  witness and eligibility-event coverage, actual HWND reuse, physical
+  identical-monitor reconnect, live scale changes and real-app fullscreen
+  exits remain separate gates.
+- `hostOwned:false` exempts native removal/creation gates;
   core `exist:false` is sole removal authority.
 - Conformance: exact v4 fixtures in `test-fixtures/world-wire/v4/`;
   codec/generator comparison and adapter acceptance must agree before
@@ -278,8 +279,10 @@ not v4 acceptance evidence.
 ## Build, check and gate commands
 
 - Toolchain per [windows-dev-environment](../windows-dev-environment.md);
-  CLI/Rust via root `mise.toml`; user owns installs. Blocked:
-  `tiler-windows` build/tests/clippy (expected phase-1 type mismatches).
+  CLI/Rust via root `mise.toml`; user owns installs. Run
+  `cargo test -p tiler-windows --lib`, `cargo test -p tiler-windows --tests
+  --no-fail-fast`, `cargo test -p tiler-live-fixture` and
+  `cargo clippy -p tiler-windows -p tiler-live-fixture --all-targets --no-deps -- -D warnings`.
 - Live work under [live-windows-testing](../live-windows-testing.md),
   fixture-first, scoped fixture only. No production tiler,
   registry/policy, interception or crash probes in this note.
@@ -293,6 +296,24 @@ tracks are not pinned; the tab and controls follow the resized client area.
 `scripts/windows-settings-resize-proof.ps1 -Live` checks distinct native
 tracks, outer and tab geometry after a programmatic resize, and unchanged
 settings bytes after closing the owned process.
+
+## Fixture controls
+
+- All Windows command-file receivers cap reads at 64 KiB. Typed request
+  bodies reject unknown fields, and all receivers reject oversized or
+  non-UTF-8 bodies without logging them. These checks do not change the
+  same-user endpoint or exact-owner model.
+- On Windows, fixture `send` and the native probe take the per-run scope
+  nonce from `TILER_LIVE_FIXTURE_NONCE`. Do not repeat it in payloads on
+  the command line.
+
+## Diagnostics
+
+Routine appends to an owner run log stop at 16 MiB. Oversized rows
+are replaced with a bounded omission marker; a final cap marker
+preserves line offsets without rotating the log. Sanitized panic rows
+have a separate lock-free append lane with a per-write headroom check.
+Detailed accepted-apply and native correlation rows remain trace-gated.
 
 ## Material rough edges (no behavior change selected)
 
