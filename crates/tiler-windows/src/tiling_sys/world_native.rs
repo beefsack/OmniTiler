@@ -1368,7 +1368,7 @@ impl<'a> LiveNative<'a> {
         key: &WindowKey,
         expected: &ProcessIdentity,
     ) -> Result<(), AdmitOutcome> {
-        self.commit_reveal_with(key, expected, false)
+        self.commit_reveal_with(key, expected, false).map(|_| ())
     }
 
     /// Mode-parameterized reveal; `true` takes the nonactivating lane.
@@ -1382,11 +1382,11 @@ impl<'a> LiveNative<'a> {
         key: &WindowKey,
         expected: &ProcessIdentity,
         nonactivating: bool,
-    ) -> Result<(), AdmitOutcome> {
+    ) -> Result<bool, AdmitOutcome> {
         let record = self.hidden_claims.get(key).cloned();
         let Some(record) = record else {
             // Nothing hidden: no native effect.
-            return Ok(());
+            return Ok(false);
         };
         let result = self.reveal_claim(key, expected, nonactivating, &record);
         let (outcome, detail) = match result {
@@ -1404,10 +1404,7 @@ impl<'a> LiveNative<'a> {
             phase: None,
             mono_ms: super::trace::log_mono_ms(),
         });
-        match result {
-            Ok(_) => Ok(()),
-            Err(error) => Err(error),
-        }
+        result
     }
 
     /// Identity-fenced reveal actuation for one committed claim. `Ok(true)`
@@ -1449,9 +1446,9 @@ impl<'a> LiveNative<'a> {
         };
         let outcome = reveal_fn(store, me, &record.claim, iconic, sink);
         match outcome {
-            Ok(_) => {
+            Ok(outcome) => {
                 self.hidden_claims.remove(key);
-                Ok(true)
+                Ok(outcome == Revealed::Shown)
             }
             Err(message) => {
                 if message.starts_with("absent:") {
@@ -1577,7 +1574,7 @@ impl<'a> LiveNative<'a> {
         let mut refused = false;
         for (key, expected) in &entering {
             match self.commit_reveal_with(key, expected, nonactivating) {
-                Ok(()) => {}
+                Ok(_) => {}
                 Err(AdmitOutcome::Refused) | Err(AdmitOutcome::OriginVanished) => {
                     refused = true;
                 }
@@ -2349,7 +2346,7 @@ impl NativeOps for LiveNative<'_> {
             return Ok(false);
         }
         match self.commit_reveal_with(&key, &expected, true) {
-            Ok(()) => Ok(true),
+            Ok(shown) => Ok(shown),
             Err(AdmitOutcome::Refused | AdmitOutcome::OriginVanished) => Ok(false),
             Err(_) => Err(()),
         }
@@ -2366,6 +2363,10 @@ impl NativeOps for LiveNative<'_> {
             Err(AdmitOutcome::Refused | AdmitOutcome::OriginVanished) => Ok(false),
             Err(_) => Err(()),
         }
+    }
+
+    fn fallback_hide_allowed(&mut self, token: &str) -> bool {
+        self.key_of(token).is_some_and(|key| !self.write_vetoed(key.hwnd))
     }
 
     fn foreground_managed(&mut self) -> Option<String> {

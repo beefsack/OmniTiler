@@ -336,9 +336,12 @@ fn s_observe_hidden(
     _fulls: &[Rect],
     _tokens: &mut super::super::TokenMap,
 ) -> Result<super::super::ObservedWindow, super::ObserveError> {
-    S_OBSERVE
+    let visible = S_VISIBLE.with(|m| m.borrow().contains(&hwnd));
+    let mut row = S_OBSERVE
         .with(|m| m.borrow().get(&hwnd).cloned())
-        .ok_or(super::ObserveError::Unknown)
+        .ok_or(super::ObserveError::Unknown)?;
+    row.facts.visible = visible;
+    Ok(row)
 }
 
 fn s_dpi(hwnd: u64) -> Option<u32> {
@@ -1106,6 +1109,26 @@ fn production_fullscreen_foreground_vetoes_frame_write() {
     assert!(members.is_empty() && views.is_empty());
     assert_eq!(S_SET_CALLS.with(|m| m.borrow().len()), 0);
     assert!(stats.held > 0, "{stats:?}");
+}
+
+#[test]
+fn fallback_hide_gate_resamples_foreground_before_write() {
+    let mut env = env_with(108_003);
+    let key = win_key(108_003, 2008, "proc-8");
+    let game = win_key(108_004, 2009, "proc-9");
+    let ordinary = win_key(108_005, 2010, "proc-10");
+    admit_member(&mut env, &key, "ws1", "w1", false);
+    script_live(&key, "w1", rect(0, 0, 800, 600), plain_facts());
+    script_live(&ordinary, "ordinary", rect(0, 0, 800, 600), plain_facts());
+    let mut game_facts = plain_facts();
+    game_facts.captionless_fullscreen = true;
+    script_live(&game, "game", rect(0, 0, 1920, 1080), game_facts);
+
+    let mut native = assemble(&mut env, scripted());
+    S_FG_SEQ.with(|seq| *seq.borrow_mut() = vec![ordinary.hwnd, game.hwnd, 108_006]);
+    assert!(native.fallback_hide_allowed("w1"));
+    assert!(!native.fallback_hide_allowed("w1"), "late fullscreen veto");
+    assert!(!native.fallback_hide_allowed("w1"), "unreadable foreground veto");
 }
 
 #[test]
@@ -3159,6 +3182,26 @@ fn genuine_reveal_records_one_production_row_and_noop_records_none() {
     // No claim left: the same view call posts nothing and records nothing.
     native.switch_view(&rig.out, &ws1).expect("no-op view");
     assert!(native.take_reveals().is_empty());
+}
+
+#[test]
+fn absent_reveal_is_recorded_as_retired() {
+    let mut rig = hide_seed_rig(120_106);
+    let mut native = assemble_with_views(
+        &mut rig.env,
+        scripted(),
+        Some((rig.out.clone(), rig.ws2.clone())),
+    );
+    native.switch_view(&rig.out, &rig.ws2).expect("hide");
+    assert!(native.hidden_claims.contains_key(&rig.leaving));
+    S_REVEAL.with(|m| m.borrow_mut().insert(rig.leaving.hwnd, Ok(Revealed::Retired)));
+
+    assert!(!native.reveal_window("w1").expect("retire absent member"));
+    assert!(!native.hidden_claims.contains_key(&rig.leaving));
+    let rows = native.take_reveals();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].outcome, "retired");
+    assert_eq!(rows[0].detail, Some("absent"));
 }
 
 #[test]

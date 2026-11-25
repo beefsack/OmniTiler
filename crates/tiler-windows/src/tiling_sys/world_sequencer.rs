@@ -223,7 +223,9 @@ pub(super) struct WorldSequencer {
     /// `(accepted command seq, focus request id, issued revision)` of the
     /// exact explicit `after_shown` request. Deferred arrival ticks re-emit
     /// that same request with no command; only an exact still-carried match
-    /// keeps the authority alive. Cleared with the generation.
+    /// keeps the authority alive. A command-carrying publication retires it
+    /// and a generation reset clears it; a rejected delivery is not a
+    /// publication and leaves it untouched.
     retained_selection_authority: Option<(u64, String, u64)>,
     last_accepted_obs: u64,
     last_accepted_rev: u64,
@@ -861,8 +863,9 @@ impl WorldSequencer {
     /// Track authority across a deferred arrival tick. Only an accepted
     /// selection whose exact frozen request rides its own reply arms it;
     /// later publications keep it only while that exact `(id, revision)` is
-    /// still carried; any command-carrying delivery retires it.
-    /// Non-accepted outcomes never invent authority.
+    /// still carried; any command-carrying delivery retires it. Rejection
+    /// is not a publication: the core adopted nothing, so it neither
+    /// retires, replaces, nor creates authority.
     fn track_selection_authority(
         &mut self,
         command: Option<&WorldCommand>,
@@ -872,10 +875,12 @@ impl WorldSequencer {
         let reply = match outcome {
             WorldOutcome::Accepted(reply)
             | WorldOutcome::Duplicate(reply)
-            | WorldOutcome::CommandConsumed(reply) => Some(reply),
-            WorldOutcome::Rejected { .. } => None,
+            | WorldOutcome::CommandConsumed(reply) => reply,
+            // A transient refusal leaves the published state untouched, so
+            // the last accepted publication's exact request stays current.
+            WorldOutcome::Rejected { .. } => return,
         };
-        let request = reply.and_then(|reply| reply.focus_request.as_ref());
+        let request = reply.focus_request.as_ref();
         if matches!(outcome, WorldOutcome::Accepted(_))
             && command.is_some_and(Self::selects_workspace)
             && let Some(seq) = command_seq
@@ -1629,6 +1634,77 @@ mod tests {
             !seq.selection_focus_authority(&reply),
             "a non-selection delivery never carries selection authority"
         );
+    }
+
+    #[test]
+    fn rejected_delivery_keeps_authority_only_for_the_exact_retained_request() {
+        let rejected = WorldOutcome::Rejected {
+            kind: "request-reused",
+            message: "request sequence reused with different input",
+        };
+
+        // A rejection is not a publication: it can never mint authority,
+        // even when the refused report carried a selection command.
+        let mut fresh = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
+        fresh.track_selection_authority(Some(&selection_command()), Some(7), &rejected);
+        assert!(fresh.retained_selection_authority.is_none());
+        assert!(!fresh.selection_focus_authority(&selection_reply()));
+
+        // Transient refusals neither replace nor retire the exact request
+        // minted by the last accepted publication.
+        let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
+        let reply = arm_selection_authority(&mut seq);
+        seq.track_selection_authority(None, None, &rejected);
+        assert_eq!(
+            seq.retained_selection_authority,
+            Some((7, ID.to_owned(), REV))
+        );
+        seq.track_selection_authority(Some(&selection_command()), Some(8), &rejected);
+        assert_eq!(
+            seq.retained_selection_authority,
+            Some((7, ID.to_owned(), REV)),
+            "a refused newer selection never replaces the retained request"
+        );
+
+        // Survival never widens it to another minted request.
+        let mut widened = reply.clone();
+        widened.focus_request.as_mut().expect("request").cmd_seq = Some(8);
+        assert!(!seq.selection_focus_authority(&widened));
+        assert!(seq.selection_focus_authority(&reply));
+
+        // The deferred arrival re-publishes exactly that request, so the
+        // rejection in between never dropped the authority.
+        seq.track_selection_authority(None, None, &WorldOutcome::Accepted(reply.clone()));
+        assert!(seq.selection_focus_authority(&reply));
+
+        // Stale publications still retire it after a rejection.
+        let mut changed = reply.clone();
+        changed
+            .focus_request
+            .as_mut()
+            .expect("request")
+            .issued_revision += 1;
+        assert!(!seq.selection_focus_authority(&changed));
+        seq.track_selection_authority(None, None, &WorldOutcome::Accepted(changed));
+        assert!(seq.retained_selection_authority.is_none());
+        assert!(!seq.selection_focus_authority(&reply));
+
+        // And a command-carrying accepted publication remains terminal,
+        // even when a rejection preceded it.
+        let reply = arm_selection_authority(&mut seq);
+        seq.track_selection_authority(None, None, &rejected);
+        assert!(seq.selection_focus_authority(&reply));
+        let focus = WorldCommand::Focus {
+            window: WindowSubject::Window(WindowId(TARGET.to_owned())),
+            direction: None,
+        };
+        seq.track_selection_authority(
+            Some(&focus),
+            Some(9),
+            &WorldOutcome::Accepted(reply.clone()),
+        );
+        assert!(seq.retained_selection_authority.is_none());
+        assert!(!seq.selection_focus_authority(&reply));
     }
 
     #[test]

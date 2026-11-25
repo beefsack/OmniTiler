@@ -7114,12 +7114,14 @@ fn staged_shapes() -> (Rig, FreshHost, FakeNative, StagedRig) {
     if let Some(base) = fresh.baseline.get_mut("w2") {
         base.workspace = ws2.clone();
         base.hidden = true;
+        base.facts.as_mut().expect("arrival facts").visible = false;
     }
     fresh.views.insert(rig.out.clone(), rig.ws.clone());
     let mut native = FakeNative::seeded(&fresh);
     if let Some(live) = native.windows.get_mut("w2") {
         live.workspace = ws2.clone();
         live.hidden = true;
+        live.facts.as_mut().expect("arrival facts").visible = false;
     }
     native.windows.get_mut("w1").expect("live w1").frame = Some(rect(0, 0, 800, 600));
     native.windows.get_mut("w2").expect("live w2").frame = Some(rect(0, 0, 800, 600));
@@ -7265,6 +7267,30 @@ fn staged_switch_reveals_focuses_then_hides() {
     assert_eq!(restats.staged_hides, 0);
 }
 
+#[test]
+fn staged_switch_hides_when_arrival_is_already_foreground() {
+    let (_rig, fresh, mut native, staged) = staged_shapes();
+    let arrival = native.windows.get_mut("w2").expect("arrival");
+    arrival.hidden = false;
+    arrival.facts.as_mut().expect("arrival facts").visible = true;
+    native.foreground = Some("w2".to_owned());
+    let mut diff = diff_at(7);
+
+    let (stats, _, _) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    let feedback = diff.take_focus_feedback();
+    assert_eq!(feedback.len(), 1, "{stats:?}");
+    assert_eq!(
+        feedback[0].disposition,
+        FocusDisposition::NotCalled { reason: FocusNoCallReason::NoReason }
+    );
+    assert!(feedback[0].foreground_proven);
+    assert_eq!(native.hide_calls, ["w1"]);
+    let attempts = diff.take_visibility_attempts();
+    let hide = attempts.iter().find(|attempt| attempt.window.0 == "w1").unwrap();
+    assert_eq!(hide.path, tiler_core::world_report::LastWritePath::Staged);
+    assert_eq!(hide.post.unwrap().visibility.visible, Some(false));
+}
+
 /// Without the frozen after-shown scope the combined single-shot path
 /// runs: the view still switches only under its own full proof, and the
 /// visibility lane performs no staged reveal/hide.
@@ -7274,8 +7300,12 @@ fn staged_switch_without_frozen_arrival_keeps_legacy_path() {
     let mut reply = staged.reply.clone();
     reply.focus_request.as_mut().expect("focus").after_shown = None;
     // The combined single-shot switch reveals synchronously in production;
-    // the offline stand-in scripts that live visibility directly.
-    native.windows.get_mut("w2").expect("live w2").hidden = false;
+    // the offline stand-in scripts that live visibility directly. Live
+    // facts are authoritative, so the landing clears the committed hide
+    // claim and the observed invisibility together.
+    let landed = native.windows.get_mut("w2").expect("live w2");
+    landed.hidden = false;
+    landed.facts.as_mut().expect("live facts").visible = true;
     let mut diff = diff_at(7);
     let (stats, _, _) = staged_apply(&mut diff, &reply, &fresh, &mut native);
     assert!(native.reveal_calls.is_empty(), "no staged reveal");
@@ -7312,8 +7342,12 @@ fn staged_switch_partial_arrival_holds_focus_without_hide() {
     // Healed: no reveal replay, focus dispatches, departures hide.
     native.skip_reveal.clear();
     // The spent reveal's show lands through the host: the next pass
-    // re-proves arrival-ready from live reads without re-actuating.
-    native.windows.get_mut("w2").expect("live w2").hidden = false;
+    // re-proves arrival-ready from live reads without re-actuating. Live
+    // visibility facts are the truth, so the landing clears the committed
+    // hide claim and the observed invisibility together.
+    let healed = native.windows.get_mut("w2").expect("live w2");
+    healed.hidden = false;
+    healed.facts.as_mut().expect("live facts").visible = true;
     let (restats, _, _) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
     assert_eq!(
         native.reveal_calls.len(),
@@ -7373,7 +7407,13 @@ fn staged_shapes_two_arrivals() -> (FreshHost, FakeNative, StagedRig) {
             key: key3,
             token: "w3".to_owned(),
             frame: Some(frame),
-            facts: Some(plain_facts()),
+            // A hidden arrival carries hidden host facts: live visibility
+            // facts are authoritative, so the committed hide claim alone
+            // never reads as "already shown".
+            facts: Some(WindowFacts {
+                visible: false,
+                ..plain_facts()
+            }),
             output: staged.out.clone(),
             workspace: staged.ws2.clone(),
             iconic: false,
@@ -7932,6 +7972,41 @@ fn hide_waits_for_controlled_authority_without_latching() {
 }
 
 #[test]
+fn async_hide_holds_visible_or_unreadable_until_a_later_proven_sample() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.pending_hide.insert("w1".to_owned());
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let mut row = member_row(&rig.out, &rig.ws, "w1");
+    row.visibility = Some(VisibilityTarget { shown: false, revision: 1, fallback: false });
+    row.visibility_authority = Auth::Controlled;
+    reply.windows.push(row);
+
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.staged_hides, 1);
+    assert!(stats.departures_hidden_mono_ms.is_none());
+    assert!(native.windows["w1"].hidden);
+    assert!(native.windows["w1"].facts.unwrap().visible, "the setter has not landed");
+    assert!(diff.take_visibility_attempts().is_empty());
+
+    let live = native.windows.get_mut("w1").unwrap();
+    live.facts = None;
+    let _ = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(diff.take_visibility_attempts().is_empty());
+
+    native.windows.get_mut("w1").unwrap().facts = Some(WindowFacts { visible: false, ..plain_facts() });
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.departures_hidden_mono_ms.is_some());
+    assert_eq!(native.hide_calls, ["w1"]);
+    let attempts = diff.take_visibility_attempts();
+    assert_eq!(attempts.len(), 1);
+    let post = attempts[0].post.unwrap();
+    assert_eq!(post.visibility.visible, Some(false));
+    assert_eq!(post.visibility.suppression_owned, Some(true));
+    assert_eq!(post.minimized, Some(false));
+}
+
+#[test]
 fn async_show_holds_until_a_later_pass_proves() {
     let rig = rig();
     let (mut diff, mut fresh, mut native) = converted(&rig);
@@ -7949,6 +8024,8 @@ fn async_show_holds_until_a_later_pass_proves() {
         fallback: false,
     });
     row.visibility_authority = Auth::Controlled;
+    row.state.push(state_target(StateProperty::Above, true, None, false));
+    native.state.insert(("w1".to_owned(), StateProperty::Above), false);
     reply.windows.push(row);
 
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
@@ -7958,6 +8035,7 @@ fn async_show_holds_until_a_later_pass_proves() {
         diff.take_visibility_attempts().is_empty(),
         "an accepted reveal that has not landed emits no row"
     );
+    assert!(native.state_writes.is_empty(), "unproven show must not unlock state writes");
 
     // The async show lands: the next pass re-reads without a setter.
     native.skip_reveal.clear();
@@ -7983,6 +8061,7 @@ fn async_show_holds_until_a_later_pass_proves() {
     assert_eq!(post.minimized, Some(false));
     assert_eq!(post.host_hidden, Some(false));
     assert_eq!(stats.staged_reveals, 0, "settling is not another reveal");
+    assert_eq!(native.state_writes, [("w1".to_owned(), StateProperty::Above, true)]);
 }
 
 /// Focus setter that accepts asynchronously: the primitive reports success

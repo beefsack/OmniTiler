@@ -452,6 +452,11 @@ pub(super) trait NativeOps {
     fn hide_window(&mut self, _token: &str) -> Result<bool, ()> {
         Err(())
     }
+    /// Fallback authority is conditional on a fresh native foreground veto
+    /// check immediately before the hide. Unsupported backends hold.
+    fn fallback_hide_allowed(&mut self, _token: &str) -> bool {
+        false
+    }
     /// The managed window holding the live foreground under exact identity
     /// and lifetime proof, or `None` when the foreground is unknown,
     /// foreign, or unreadable. Exact managed `WindowId` only; never a bare
@@ -627,6 +632,8 @@ pub(super) struct FakeNative {
     pub(super) fail_reveal: HashSet<String>,
     pub(super) throw_reveal: HashSet<String>,
     pub(super) fail_hide: HashSet<String>,
+    /// An accepted hide can leave the window visible until a later sample.
+    pub(super) pending_hide: HashSet<String>,
     pub(super) throw_hide: HashSet<String>,
     pub(super) skip_reveal: HashSet<String>,
     /// Every per-window reveal/hide setter attempted, in order (vetoes and
@@ -827,11 +834,19 @@ impl NativeOps for FakeNative {
         }
         self.views.insert(output.to_owned(), logical.to_owned());
         // Production view switches hide departing members and reveal
-        // entering ones. The offline stand-in mirrors that visibility so
-        // target-matching readbacks can settle the selection binding.
+        // entering ones. The offline stand-in mirrors that visibility in
+        // the live facts too: host facts are authoritative, so a committed
+        // hide claim alone would leave post-switch reads stale.
         for window in self.windows.values_mut() {
             if window.output == output {
-                window.hidden = window.workspace != logical;
+                // Sticky windows are visible on every workspace, exactly
+                // like the adapter's combined-switch departure rule.
+                let departing = window.workspace != logical && !window.sticky;
+                let iconic = window.iconic;
+                window.hidden = departing;
+                if let Some(facts) = window.facts.as_mut() {
+                    facts.visible = !departing && !iconic;
+                }
             }
         }
         self.note_write();
@@ -874,12 +889,17 @@ impl NativeOps for FakeNative {
         }
         if let Some(window) = self.windows.get_mut(token) {
             window.hidden = true;
-            if let Some(facts) = window.facts.as_mut() {
+            if !self.pending_hide.contains(token)
+                && let Some(facts) = window.facts.as_mut()
+            {
                 facts.visible = false;
             }
         }
         self.note_write();
         Ok(true)
+    }
+    fn fallback_hide_allowed(&mut self, _token: &str) -> bool {
+        true
     }
     fn foreground_managed(&mut self) -> Option<String> {
         self.foreground
@@ -2103,19 +2123,56 @@ fn scope_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool
 }
 
 /// Exact workspace row authority: a broad output scope never overrides a
-/// more specific workspace row (a floating workspace must stay Untouched
-/// even when its output scope is Controlled).
-fn exact_workspace_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
-    let output = OutputId(output.to_owned());
-    reply.scopes.iter().any(|status| {
-        matches!(
-            &status.scope,
-            AuthorityScope::Workspace {
-                output: scope_output,
-                workspace: scope_workspace,
-            } if scope_output == &output && scope_workspace.0 == workspace
-        ) && status.authority == ScopeAuthority::Controlled
+/// more specific workspace row, and an absent row has no exact authority.
+fn exact_workspace_authority(
+    reply: &WorldReplyV4,
+    output: &str,
+    workspace: &str,
+) -> Option<ScopeAuthority> {
+    reply.scopes.iter().find_map(|status| match &status.scope {
+        AuthorityScope::Workspace {
+            output: scope_output,
+            workspace: scope_workspace,
+        } if scope_output.0 == output && scope_workspace.0 == workspace => Some(status.authority),
+        _ => None,
     })
+}
+
+/// Whether one view transfer leaves member visibility to the per-window
+/// lane instead of running a combined native switch. Two lanes own the real
+/// show/hide calls: a frozen selection arrival whose `after_shown` names
+/// this exact Controlled operation, and a floating (`Untouched`) target.
+/// Both require a shown window desire on the target as proof of a real
+/// per-window reveal lane; the lane reveals/hides the members and the
+/// post-apply `read_view` proof derives the logical view. A memberless
+/// target has no per-window reveal lane, so only the combined switch can
+/// move the view at all. A `Migration`-parented refill never reaches this
+/// test (it defers to the migration path).
+fn view_transfer_yields_to_per_window_lane(
+    reply: &WorldReplyV4,
+    transfer: &TransferTargetV4,
+) -> bool {
+    let yields = match exact_workspace_authority(
+        reply,
+        &transfer.target_output.0,
+        &transfer.target_workspace,
+    ) {
+        Some(ScopeAuthority::Controlled) => reply
+            .focus_request
+            .as_ref()
+            .and_then(|request| request.after_shown.as_ref())
+            .is_some_and(|after| after.op == transfer.operation_id),
+        Some(ScopeAuthority::Untouched) => true,
+        _ => false,
+    };
+    yields
+        && reply.windows.iter().any(|candidate| {
+            candidate.output == transfer.target_output
+                && candidate.workspace == transfer.target_workspace
+                && candidate
+                    .visibility
+                    .is_some_and(|visibility| visibility.shown)
+        })
 }
 
 /// Whether the output row proves this workspace is the current view. A
@@ -2250,6 +2307,11 @@ struct VisibilityRead {
     /// Sticky windows stay visible on every workspace: the adapter never
     /// issues a hide for them, matching the combined-switch departure rule.
     sticky: bool,
+    /// The live window carries the project's committed hide claim. Host
+    /// facts stay authoritative for observed visibility; this claim only
+    /// lets the show lane act on a window we already suppressed when those
+    /// facts are unreadable.
+    hidden_claim: bool,
 }
 
 fn read_visibility(
@@ -2264,11 +2326,7 @@ fn read_visibility(
         .get(token)
         .is_some_and(|base| base.key == live.key && lifetime_ok(&live, &fresh.stored_tags));
     let facts = live.facts;
-    let visible = if live.hidden {
-        Some(false)
-    } else {
-        facts.map(|facts| facts.visible)
-    };
+    let visible = facts.map(|facts| facts.visible);
     // A committed hide claim is the only proof of project-owned
     // suppression. An unhidden invisible window (cloaked, occlusion) is
     // never claimed as ours.
@@ -2285,11 +2343,16 @@ fn read_visibility(
                 visible,
                 suppression_owned,
             },
-            minimized: Some(live.iconic || facts.is_some_and(|facts| facts.minimized)),
+            minimized: if live.iconic {
+                Some(true)
+            } else {
+                facts.map(|facts| facts.minimized)
+            },
             host_hidden: facts.map(|facts| facts.cloaked),
         },
         fullscreen: facts.is_some_and(|facts| facts.captionless_fullscreen),
         sticky: live.sticky,
+        hidden_claim: live.hidden,
     })
 }
 
@@ -2341,6 +2404,25 @@ fn show_sample_proven(sample: &VisibilitySample) -> bool {
         && sample.host_hidden == Some(false)
 }
 
+fn hide_sample_proven(sample: &VisibilitySample) -> bool {
+    sample.lifetime_matched == Some(true)
+        && sample.visibility.visible == Some(false)
+        && sample.visibility.suppression_owned == Some(true)
+        && sample.minimized == Some(false)
+        && sample.host_hidden == Some(false)
+}
+
+fn visibility_call_pending(attempt: &VisibilityAttempt) -> bool {
+    attempt.post.is_none()
+        && matches!(
+            attempt.disposition,
+            VisibilityDisposition::Called {
+                setter: FrameSetter::Accepted,
+                ..
+            }
+        )
+}
+
 fn focus_reason_from_visibility(disposition: VisibilityDisposition) -> FocusNoCallReason {
     match disposition {
         VisibilityDisposition::Called {
@@ -2365,6 +2447,34 @@ fn focus_reason_from_visibility(disposition: VisibilityDisposition) -> FocusNoCa
             _ => FocusNoCallReason::ShowBlocked,
         },
     }
+}
+
+/// True when a combined single-shot view switch in this reply owns the
+/// visibility of one row's output. That switch hides departing members and
+/// reveals entering ones natively, so the per-window lane must never
+/// actuate a duplicate setter for those rows. Ownership gates the setter
+/// only: an already-proven sample still emits its read-only receipt, which
+/// is what lets the retained core view settle. A transfer that yields to
+/// the per-window lane (frozen selection arrival, or a floating
+/// `Untouched` target with a shown desire) runs no switch here, so it never
+/// owns visibility; deferred migration refills dispatch no switch here
+/// either.
+fn combined_switch_owns_visibility(reply: &WorldReplyV4, row: &WindowDesire) -> bool {
+    let migration_ops: HashSet<&str> = reply
+        .transfers
+        .iter()
+        .filter(|transfer| matches!(transfer.kind, TransferKind::Migration))
+        .map(|transfer| transfer.operation_id.as_str())
+        .collect();
+    reply.transfers.iter().any(|transfer| {
+        matches!(transfer.kind, TransferKind::View)
+            && transfer.target_output == row.output
+            && !transfer
+                .parent
+                .as_deref()
+                .is_some_and(|parent| migration_ops.contains(parent))
+            && !view_transfer_yields_to_per_window_lane(reply, transfer)
+    })
 }
 
 /// One pass's frozen-arrival scan: all members ready, or the first blocked
@@ -2464,12 +2574,13 @@ fn scan_arrival(
 /// Truthful show half of the visibility lane. Every desired shown row is
 /// decided exactly once per `(window, target, revision)` tuple: an
 /// unchanged tuple redelivers its original row without a setter, and a
-/// satisfied target is a real not-called row. A non-Controlled or
-/// unreadable target emits no row (a transient hold is never latchable),
-/// and only a Controlled, unsatisfied, identity-clean target reaches one
-/// nonactivating reveal. An accepted reveal whose readback does not prove
-/// stays pending and emits no row until a later proving read. Setter
-/// booleans never prove: the post re-read is the row's fact.
+/// and a satisfied target is a real not-called row. A non-Controlled target,
+/// or an unreadable one with no committed hide claim of ours, emits no row (a
+/// transient hold is never latchable), and only a Controlled, unsatisfied,
+/// identity-clean target reaches one nonactivating reveal. An accepted reveal
+/// whose readback does not prove stays pending and emits no row until a later
+/// proving read. Setter booleans never prove: the post re-read is the row's
+/// fact.
 #[allow(clippy::too_many_arguments)]
 fn stage_visibility_shows(
     reply: &WorldReplyV4,
@@ -2494,6 +2605,10 @@ fn stage_visibility_shows(
             stats.stopped_mid_apply = true;
             break;
         }
+        // A combined single-shot switch realizes this member's visibility
+        // itself. Ownership gates the setter only: already-proven samples
+        // still emit their read-only receipts so the core can settle.
+        let switch_owned = combined_switch_owns_visibility(reply, row);
         let token = row.lifetime.0.as_str();
         if let Some(existing) = records.get(token) {
             // A reported row is a verdict for this tuple, called or not:
@@ -2504,14 +2619,7 @@ fn stage_visibility_shows(
                 // is still in flight: re-read (never the setter) and only a
                 // proving sample may emit the row. Anything else holds with
                 // no row so a later pass can still settle it.
-                if matches!(
-                    existing.disposition,
-                    VisibilityDisposition::Called {
-                        setter: FrameSetter::Accepted,
-                        ..
-                    }
-                ) && existing.post.is_none()
-                {
+                if visibility_call_pending(existing) {
                     let Some(read) = read_visibility(ops, fresh, token, obs) else {
                         stats.held += 1;
                         continue;
@@ -2522,6 +2630,7 @@ fn stage_visibility_shows(
                     }
                     let mut settled = existing.clone();
                     settled.post = Some(read.sample);
+                    revealed.insert(token.to_owned());
                     records.insert(token.to_owned(), settled.clone());
                     attempts.insert(token.to_owned(), settled);
                     continue;
@@ -2537,7 +2646,14 @@ fn stage_visibility_shows(
             continue;
         };
         let satisfied = show_sample_proven(&read.sample);
-        let (disposition, called) = if row.visibility_authority != ScopeAuthority::Controlled {
+        // Unreadable host facts hold, except under the project's own hide
+        // claim: that claim names the window as one we suppressed, which is
+        // exactly what a reveal undoes. The post re-read stays the row's
+        // fact, so an unproven show still emits no row.
+        let suppressed_unreadable = read.sample.visibility.visible.is_none() && read.hidden_claim;
+        let (disposition, called) = if row.visibility_authority != ScopeAuthority::Controlled
+            || (read.sample.visibility.visible.is_none() && !suppressed_unreadable)
+        {
             // Held/excluded authority is transient: emit no row at all (the
             // core's first-match latch must not pin this pass's hold).
             stats.held += 1;
@@ -2556,7 +2672,7 @@ fn stage_visibility_shows(
                 },
                 false,
             )
-        } else if read.sample.visibility.visible == Some(false) {
+        } else if read.sample.visibility.visible == Some(false) || suppressed_unreadable {
             if read.sample.visibility.suppression_owned == Some(false) {
                 (
                     VisibilityDisposition::NotCalled {
@@ -2565,6 +2681,13 @@ fn stage_visibility_shows(
                     false,
                 )
             } else {
+                if switch_owned {
+                    // The combined switch reveals this arrival
+                    // synchronously; never duplicate its setter. Hold with
+                    // no row so a later proving sample can settle it.
+                    stats.held += 1;
+                    continue;
+                }
                 if !ensure_fresh(reply, gate, entry_obs, ops) {
                     stats.stopped_mid_apply = true;
                     break;
@@ -2572,7 +2695,6 @@ fn stage_visibility_shows(
                 let outcome = ops.reveal_window(token);
                 if outcome == Ok(true) {
                     stats.staged_reveals += 1;
-                    revealed.insert(token.to_owned());
                 }
                 (
                     VisibilityDisposition::Called {
@@ -2619,6 +2741,9 @@ fn stage_visibility_shows(
             records.insert(token.to_owned(), attempt);
             stats.held += 1;
             continue;
+        }
+        if accepted {
+            revealed.insert(token.to_owned());
         }
         let attempt = VisibilityAttempt {
             window: row.lifetime.clone(),
@@ -2673,12 +2798,33 @@ fn stage_visibility_hides(
             stats.stopped_mid_apply = true;
             break;
         }
+        // The combined single-shot switch hides departing members itself.
+        // Ownership gates the setter only: a sample the switch already
+        // proved still emits its read-only hide receipt so the retained
+        // core view can settle.
+        let switch_owned = combined_switch_owns_visibility(reply, row);
         let token = row.lifetime.0.as_str();
         if let Some(existing) = records.get(token) {
             // A reported row is a verdict for this tuple, called or not:
             // redeliver it without a new native decision. Pending decisions
             // emit no row above and may still re-decide on a later pass.
             if existing.target == target.shown && existing.revision == target.revision {
+                if visibility_call_pending(existing) {
+                    let Some(read) = read_visibility(ops, fresh, token, obs) else {
+                        stats.held += 1;
+                        continue;
+                    };
+                    if !hide_sample_proven(&read.sample) {
+                        stats.held += 1;
+                        continue;
+                    }
+                    let mut settled = existing.clone();
+                    settled.post = Some(read.sample);
+                    records.insert(token.to_owned(), settled.clone());
+                    attempts.insert(token.to_owned(), settled);
+                    stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
+                    continue;
+                }
                 attempts.insert(token.to_owned(), existing.clone());
                 continue;
             }
@@ -2689,7 +2835,9 @@ fn stage_visibility_hides(
             stats.held += 1;
             continue;
         };
-        if row.visibility_authority != ScopeAuthority::Controlled {
+        if row.visibility_authority != ScopeAuthority::Controlled
+            || read.sample.visibility.visible.is_none()
+        {
             // Held/excluded authority is transient: emit no row at all (the
             // core's first-match latch must not pin this pass's hold).
             stats.held += 1;
@@ -2714,10 +2862,7 @@ fn stage_visibility_hides(
             attempts.insert(token.to_owned(), attempt);
             continue;
         }
-        let hidden = read.sample.visibility.visible == Some(false)
-            && read.sample.minimized == Some(false)
-            && read.sample.host_hidden == Some(false)
-            && read.sample.visibility.suppression_owned == Some(true);
+        let hidden = hide_sample_proven(&read.sample);
         let mut path = LastWritePath::Staged;
         let disposition = if hidden {
             VisibilityDisposition::NotCalled {
@@ -2770,6 +2915,9 @@ fn stage_visibility_hides(
                                 None
                             }
                         }
+                        FocusDisposition::NotCalled {
+                            reason: FocusNoCallReason::NoReason,
+                        } if record.foreground_proven => Some(ops.is_foreground(&request.target.0)),
                         // NotCalled, refused, or threw: the focus verdict is
                         // terminal for this tuple.
                         _ => Some(false),
@@ -2799,15 +2947,25 @@ fn stage_visibility_hides(
             }
         };
         let called = matches!(disposition, VisibilityDisposition::Called { .. });
+        if called && switch_owned {
+            // The combined switch hides this departure synchronously; never
+            // duplicate its setter. Hold with no row: only a later proven
+            // sample (or the read-only receipt above) may settle.
+            stats.held += 1;
+            continue;
+        }
         let disposition = if called {
             if !ensure_fresh(reply, gate, entry_obs, ops) {
                 stats.stopped_mid_apply = true;
                 break;
             }
+            if path == LastWritePath::Fallback && !ops.fallback_hide_allowed(token) {
+                stats.held += 1;
+                continue;
+            }
             let outcome = ops.hide_window(token);
             if outcome == Ok(true) {
                 stats.staged_hides += 1;
-                stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
             }
             VisibilityDisposition::Called {
                 setter: frame_setter_for(outcome),
@@ -2821,6 +2979,14 @@ fn stage_visibility_hides(
         } else {
             Some(read)
         };
+        let accepted = matches!(
+            disposition,
+            VisibilityDisposition::Called {
+                setter: FrameSetter::Accepted,
+                ..
+            }
+        );
+        let pending = accepted && post.as_ref().is_none_or(|read| !hide_sample_proven(&read.sample));
         let attempt = VisibilityAttempt {
             window: row.lifetime.clone(),
             target: false,
@@ -2828,8 +2994,16 @@ fn stage_visibility_hides(
             path,
             disposition,
             pre: Some(read.sample),
-            post: post.map(|read| read.sample),
+            post: post.filter(|_| !pending).map(|read| read.sample),
         };
+        if pending {
+            records.insert(token.to_owned(), attempt);
+            stats.held += 1;
+            continue;
+        }
+        if accepted {
+            stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
+        }
         records.insert(token.to_owned(), attempt.clone());
         attempts.insert(token.to_owned(), attempt);
         if gate.current_obs != entry_obs {
@@ -4252,25 +4426,14 @@ fn apply_world_reply_inner(
         let out = t.target_output.0.clone();
         let ws = t.target_workspace.clone();
         let op = t.operation_id.clone();
-        // Selection-owned arrival views are not combined switches: the
-        // per-window visibility lane makes the real show/hide calls and the
-        // focus lane proves foreground before departing hides. Running a
-        // combined switch here would hide departures before the frozen
-        // focus has any chance to prove.
-        if reply
-            .focus_request
-            .as_ref()
-            .and_then(|request| request.after_shown.as_ref())
-            .is_some_and(|after| after.op == op)
-            && exact_workspace_controlled(reply, &out, &ws)
-            // A memberless target has no per-window reveal lane behind this
-            // skip; only the combined switch can move the view at all.
-            && reply.windows.iter().any(|row| {
-                row.output.0 == out
-                    && row.workspace == ws
-                    && row.visibility.is_some_and(|visibility| visibility.shown)
-            })
-        {
+        // Selection-owned arrival views and floating (Untouched) targets
+        // carrying a shown window desire are not combined switches: the
+        // per-window visibility lane makes the real show/hide calls and
+        // `read_view` derives the logical view proof. Running a combined
+        // switch here would duplicate the lane's setters (or, for a frozen
+        // selection, hide departures before the frozen focus has any chance
+        // to prove).
+        if view_transfer_yields_to_per_window_lane(reply, t) {
             continue;
         }
         if !scope_actuatable(reply, ops, &out, &ws) {
