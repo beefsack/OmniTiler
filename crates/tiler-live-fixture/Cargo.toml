@@ -32,18 +32,23 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
 
-# Windows named-pipe transport: popular maintained tokio pipe API plus a
-# minimal reviewed unsafe module (src/pipe_win.rs) for the owner-only
-# security descriptor. windows-sys 0.61 matches the workspace pin.
+# Windows transport and the single approved Windows FFI root
+# (src/pipe_win.rs): popular maintained tokio pipe API plus the reviewed
+# unsafe module for the owner-only security descriptor and the fixture-only
+# probe wrappers. The extra windows-sys features belong to those probe
+# wrappers; they are declared here (not only inherited from the
+# tiler-windows dev-dependency) so the library target builds alone.
+# windows-sys/windows 0.61 match the workspace pin.
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1", default-features = false, features = ["net", "rt", "rt-multi-thread", "time"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+# DXGI probe wrappers inside the approved FFI root, shared with
+# win-dxgi-probe: same locked 0.61 line as tiler-windows, no new packages.
+# Never attached to fixture HWNDs.
+windows = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 tiler-windows = { path = "../tiler-windows" }
-# Dedicated DXGI probe example only (win-dxgi-probe): same locked windows
-# 0.61 line as tiler-windows, no new packages. Never attached to fixture HWNDs.
-windows = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [lints.rust]
 unsafe_code = "deny"

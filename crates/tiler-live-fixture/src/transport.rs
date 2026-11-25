@@ -14,8 +14,10 @@ use std::path::{Path, PathBuf};
 
 use crate::protocol::MAX_LINE_BYTES;
 
+// The reviewed Windows FFI root lives in the library target so the examples
+// can share it without per-example `allow(unsafe_code)` roots.
 #[cfg(windows)]
-use crate::pipe_win;
+use tiler_live_fixture::pipe_win;
 
 /// Prepared endpoint: socket path plus the per-run connection nonce.
 ///

@@ -1,12 +1,14 @@
 #![allow(unsafe_code)]
 //! Windows-only native boundary for `tiler-live-fixture`.
 //!
-//! Sole `unsafe` owner in this crate. Every Win32 call, raw-pointer use,
-//! and handle/SID/descriptor lifetime lives here; the transport layer
-//! (`transport.rs`) and everything else uses this module through safe APIs
-//! that return `io::Result` and owned values, never raw pointers or
-//! validity obligations. Buffers are allocated here and freed here;
-//! fallible reads fail closed with the OS error, never guessed values.
+//! Sole `unsafe` owner in this crate: the approved Windows FFI root shared
+//! with the `win-probe` and `win-dxgi-probe` examples. Every Win32 call,
+//! raw-pointer use, and handle/SID/descriptor lifetime lives here; the
+//! transport layer (`transport.rs`), the examples, and everything else use
+//! this module through safe APIs that return `io::Result` and owned values,
+//! never raw pointers or validity obligations. Buffers are allocated here
+//! and freed here; fallible reads fail closed with the OS error, never
+//! guessed values.
 //!
 //! Why this module exists instead of a safe dependency: the preferred
 //! maintained pipe crate (`interprocess`) exposes a safe owner-restriction
@@ -16,7 +18,13 @@
 //! leaves the security descriptor to the caller
 //! (`create_with_security_attributes_raw`), so this module builds exactly
 //! that one descriptor plus the two small Win32 helpers the transport needs
-//! (current-user SID, pipe wait). No other Win32 surface is wrapped here.
+//! (current-user SID, pipe wait).
+//!
+//! Fixture-only live probes add reviewed wrappers in two child modules
+//! (`ffi_ext` for `win-probe`, `dxgi` for `win-dxgi-probe`). They are safe
+//! signatures over plain data and raw HRESULTs, live under this file's
+//! reviewed `allow(unsafe_code)` (child modules inherit it), and are never
+//! linked into product code.
 //!
 //! Owner semantics: the DACL names the literal current-user SID plus
 //! `SYSTEM`, never the `OW` (Owner Rights, `S-1-3-4`) pseudo-SID. `OW`
@@ -226,6 +234,473 @@ pub fn wait_for_pipe(pipe_name: &OsStr, timeout_ms: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Fixture-only Win32 gap helpers for `win-probe` (checked exstyle read,
+/// title text, client rect, virtual desktop, synthetic mouse, DWM cloak).
+pub mod ffi_ext {
+    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
+    };
+
+    /// Checked exstyle read mirroring `window_style_checked`: `None`
+    /// only when the word reads zero with a live error.
+    pub fn window_exstyle_checked(hwnd: u64) -> Option<u32> {
+        // SAFETY: `hwnd` is an opaque handle supplied by the caller; a
+        // stale/invalid value makes the API fail with a live error, which
+        // is reported as `None` rather than guessed. No pointers escape.
+        unsafe {
+            SetLastError(0);
+            let value = GetWindowLongW(hwnd as isize as _, GWL_EXSTYLE);
+            let err = GetLastError();
+            if value == 0 && err != 0 {
+                None
+            } else {
+                Some(value as u32)
+            }
+        }
+    }
+
+    /// Best-effort window title text; `None` when unreadable.
+    /// Never used as a write vector: join evidence only.
+    pub fn window_text(hwnd: u64) -> Option<String> {
+        // SAFETY: the length probe only reads window metadata for a caller
+        // handle; a dead handle yields 0/error and is handled below.
+        let len = unsafe { GetWindowTextLengthW(hwnd as isize as _) };
+        if len < 0 {
+            return None;
+        }
+        // Length excludes the NUL; empty titles read as Some("").
+        let mut buf = vec![0u16; (len as usize) + 1];
+        // SAFETY: `buf` has room for the reported length plus the NUL, and
+        // the call writes at most `buf.len()` UTF-16 code units.
+        let copied =
+            unsafe { GetWindowTextW(hwnd as isize as _, buf.as_mut_ptr(), buf.len() as i32) };
+        if copied == 0 {
+            // SAFETY: thread-local last-error read; no pointer arguments.
+            let err = unsafe { GetLastError() };
+            if err != 0 {
+                return None;
+            }
+            return Some(String::new());
+        }
+        Some(String::from_utf16_lossy(&buf[..copied as usize]))
+    }
+
+    /// Screen-space client rect via GetClientRect + ClientToScreen
+    /// mapping of both corners. `None` when the window is gone or the
+    /// mapping fails. Read-only geometry evidence.
+    pub fn client_rect_screen(hwnd: u64) -> Option<(i32, i32, i32, i32)> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+        // SAFETY: `rc`/`top_left`/`bottom_right` are valid stack out-slots
+        // for their calls; the handle is caller-supplied and failure is
+        // mapped to `None`.
+        unsafe {
+            let mut rc: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+            if GetClientRect(hwnd as isize as _, &mut rc) == 0 {
+                return None;
+            }
+            let mut top_left = POINT {
+                x: rc.left,
+                y: rc.top,
+            };
+            let mut bottom_right = POINT {
+                x: rc.right,
+                y: rc.bottom,
+            };
+            if ClientToScreen(hwnd as isize as _, &mut top_left) == 0 {
+                return None;
+            }
+            if ClientToScreen(hwnd as isize as _, &mut bottom_right) == 0 {
+                return None;
+            }
+            Some((top_left.x, top_left.y, bottom_right.x, bottom_right.y))
+        }
+    }
+
+    /// Virtual-desktop rect `(x, y, w, h)` via `GetSystemMetrics`.
+    /// Read-only; used to normalize absolute `SendInput` coordinates.
+    pub fn virtual_desktop_px() -> Option<(i32, i32, i32, i32)> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics;
+        const SM_XVIRTUALSCREEN: i32 = 76;
+        const SM_YVIRTUALSCREEN: i32 = 77;
+        const SM_CXVIRTUALSCREEN: i32 = 78;
+        const SM_CYVIRTUALSCREEN: i32 = 79;
+        // SAFETY: plain metric reads with scalar arguments and results.
+        unsafe {
+            let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if w <= 0 || h <= 0 {
+                return None;
+            }
+            Some((x, y, w, h))
+        }
+    }
+
+    /// One `SendInput` mouse record. Returns the accepted-event count
+    /// (0 when the API refused it). Sole synthetic-input write vector in
+    /// this fixture; every caller re-verifies guards immediately before
+    /// each batch and releases the button in a RAII guard.
+    pub fn send_mouse_input(dx: i32, dy: i32, mouse_data: u32, flags: u32) -> u32 {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_MOUSE, MOUSEINPUT, SendInput,
+        };
+        // SAFETY: one zeroed `INPUT` is initialized for the mouse union
+        // before the call, and `SendInput` reads exactly one record of the
+        // declared size. The record is caller-owned stack memory.
+        unsafe {
+            let mut input: INPUT = std::mem::zeroed();
+            input.r#type = INPUT_MOUSE;
+            input.Anonymous.mi = MOUSEINPUT {
+                dx,
+                dy,
+                mouseData: mouse_data,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            let size = std::mem::size_of::<INPUT>() as i32;
+            SendInput(1, &input, size)
+        }
+    }
+
+    /// Show-command constants for the hide/reveal leg (own fixture only).
+    pub const SW_HIDE: i32 = 0;
+    pub const SW_SHOWNA: i32 = 8;
+
+    /// Public `DwmSetWindowAttribute(DWMWA_CLOAK)` write probe. Returns
+    /// the raw HRESULT (0 == S_OK). The caller records the HRESULT plus
+    /// the native `cloaked()` readback before/after and restores 0.
+    pub fn dwm_set_cloak(hwnd: u64, cloak: bool) -> i32 {
+        use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+        const DWMWA_CLOAK: u32 = 14;
+        let value: i32 = if cloak { 1 } else { 0 };
+        // SAFETY: `value` is a valid `i32` for the duration of the call and
+        // the size matches the attribute's expected payload.
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd as isize as _,
+                DWMWA_CLOAK,
+                (&value as *const i32).cast(),
+                std::mem::size_of::<i32>() as u32,
+            )
+        }
+    }
+}
+
+/// Fixture-only DXGI fullscreen-request helpers for `win-dxgi-probe`
+/// (own device/swapchain; never attached to a fixture HWND).
+pub mod dxgi {
+    use windows::Win32::Foundation::{FALSE, HMODULE, HWND, RECT, TRUE};
+    use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL};
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11CreateDeviceAndSwapChain, ID3D11Device,
+        ID3D11DeviceContext,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_MODE_DESC, DXGI_MODE_SCALING_UNSPECIFIED,
+        DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+    };
+    use windows::Win32::Graphics::Dxgi::{
+        DXGI_PRESENT, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD,
+        DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIOutput, IDXGISwapChain,
+    };
+    use windows::Win32::Graphics::Gdi::{
+        DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, HMONITOR,
+        MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
+    };
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowRect, IsWindow, SetForegroundWindow,
+    };
+    use windows::core::{BOOL, PCWSTR};
+
+    pub struct SwapPair {
+        pub chain: IDXGISwapChain,
+        #[allow(dead_code)]
+        pub device: Option<ID3D11Device>,
+        #[allow(dead_code)]
+        pub context: Option<ID3D11DeviceContext>,
+    }
+
+    /// Best-effort Drop guard so a panic after SetFullscreenState(TRUE)
+    /// still leaves fullscreen FALSE. Disarm only after the FALSE
+    /// readback succeeds; otherwise drop retries FALSE.
+    pub struct FullscreenGuard {
+        chain: Option<IDXGISwapChain>,
+    }
+
+    impl FullscreenGuard {
+        pub fn armed(chain: IDXGISwapChain) -> Self {
+            Self { chain: Some(chain) }
+        }
+
+        pub fn disarm(mut self) {
+            self.chain = None;
+        }
+    }
+
+    impl Drop for FullscreenGuard {
+        fn drop(&mut self) {
+            if let Some(chain) = self.chain.take() {
+                // SAFETY: COM method on a live interface; the best-effort
+                // result is intentionally ignored, and the explicit restore
+                // records HRESULTs.
+                unsafe {
+                    let _ = chain.SetFullscreenState(false, None::<&IDXGIOutput>);
+                }
+            }
+        }
+    }
+
+    fn hwnd(raw: isize) -> HWND {
+        HWND(raw as *mut core::ffi::c_void)
+    }
+
+    fn rect4(rect: &RECT) -> [i32; 4] {
+        [rect.left, rect.top, rect.right, rect.bottom]
+    }
+
+    fn wide_str(raw: &[u16]) -> String {
+        let len = raw.iter().position(|c| *c == 0).unwrap_or(raw.len());
+        String::from_utf16_lossy(&raw[..len])
+    }
+
+    pub fn window_rect(raw: isize) -> Option<[i32; 4]> {
+        let mut rect = RECT::default();
+        // `GetWindowRect` here is the Result-wrapped projection; with the
+        // process PMv2-aware the values are physical pixels.
+        // SAFETY: `rect` is a valid stack out-slot for the call; a missing
+        // window is reported as `None`.
+        unsafe {
+            GetWindowRect(hwnd(raw), &mut rect)
+                .ok()
+                .map(|()| rect4(&rect))
+        }
+    }
+
+    pub fn foreground() -> isize {
+        // SAFETY: scalar handle read with no arguments.
+        unsafe { GetForegroundWindow().0 as isize }
+    }
+
+    /// Best-effort foreground restore without synthetic input; returns
+    /// whether the OS granted the request. Never targets a null handle.
+    pub fn set_foreground(raw: isize) -> bool {
+        if raw == 0 {
+            return false;
+        }
+        // SAFETY: non-null caller handle; a dead handle is a no-op failure.
+        unsafe { SetForegroundWindow(hwnd(raw)) != FALSE }
+    }
+
+    /// Point-in-time native existence check; call only after drop.
+    pub fn is_window(raw: isize) -> bool {
+        if raw == 0 {
+            return false;
+        }
+        // SAFETY: non-null caller handle; stale handles return false.
+        unsafe { IsWindow(Some(hwnd(raw))) != FALSE }
+    }
+
+    pub fn dpi(raw: isize) -> u32 {
+        // SAFETY: scalar read for a caller handle; dead handles return 0.
+        unsafe { GetDpiForWindow(hwnd(raw)) }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+    pub struct MonitorInfo {
+        pub monitor: isize,
+        pub flags: u32,
+        pub monitor_rect: [i32; 4],
+        pub work_rect: [i32; 4],
+        pub device: String,
+    }
+
+    pub fn monitor_info(raw: isize) -> Option<MonitorInfo> {
+        // SAFETY: `ex` is a zeroed `MONITORINFOEXW` with its `cbSize` set
+        // before the read; the monitor handle is derived from the caller
+        // window. Failure is mapped to `None`; the device string is copied
+        // out of the fixed buffer.
+        unsafe {
+            let monitor: HMONITOR = MonitorFromWindow(hwnd(raw), MONITOR_DEFAULTTONEAREST);
+            let mut ex = MONITORINFOEXW::default();
+            ex.monitorInfo.cbSize = core::mem::size_of::<MONITORINFOEXW>() as u32;
+            let ok = GetMonitorInfoW(monitor, &mut ex as *mut MONITORINFOEXW as *mut MONITORINFO);
+            if ok == FALSE {
+                return None;
+            }
+            Some(MonitorInfo {
+                monitor: monitor.0 as isize,
+                flags: ex.monitorInfo.dwFlags,
+                monitor_rect: rect4(&ex.monitorInfo.rcMonitor),
+                work_rect: rect4(&ex.monitorInfo.rcWork),
+                device: wide_str(&ex.szDevice),
+            })
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+    pub struct ModeInfo {
+        pub width: u32,
+        pub height: u32,
+        pub frequency: u32,
+        pub bits_per_pel: u32,
+    }
+
+    /// Read-only current display mode. `None` reads the primary display.
+    pub fn display_mode(device: Option<&str>) -> Option<ModeInfo> {
+        // SAFETY: `mode` is a zeroed `DEVMODEW` with `dmSize` set; the
+        // optional device name is NUL-terminated and outlives the call.
+        // Failure is mapped to `None`.
+        unsafe {
+            let mut mode: DEVMODEW = core::mem::zeroed();
+            mode.dmSize = core::mem::size_of::<DEVMODEW>() as u16;
+            let wide: Vec<u16>;
+            let name = match device {
+                Some(name) => {
+                    wide = name.encode_utf16().chain([0]).collect();
+                    PCWSTR(wide.as_ptr())
+                }
+                None => PCWSTR::null(),
+            };
+            let ok = EnumDisplaySettingsW(name, ENUM_CURRENT_SETTINGS, &mut mode);
+            if ok == FALSE {
+                return None;
+            }
+            Some(ModeInfo {
+                width: mode.dmPelsWidth,
+                height: mode.dmPelsHeight,
+                frequency: mode.dmDisplayFrequency,
+                bits_per_pel: mode.dmBitsPerPel,
+            })
+        }
+    }
+
+    pub fn create_device_and_swapchain(
+        raw: isize,
+        width: u32,
+        height: u32,
+    ) -> (i32, Option<SwapPair>) {
+        let desc = DXGI_SWAP_CHAIN_DESC {
+            BufferDesc: DXGI_MODE_DESC {
+                Width: width,
+                Height: height,
+                RefreshRate: DXGI_RATIONAL {
+                    Numerator: 0,
+                    Denominator: 0,
+                },
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                ScanlineOrdering: DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
+                Scaling: DXGI_MODE_SCALING_UNSPECIFIED,
+            },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: 1,
+            OutputWindow: hwnd(raw),
+            Windowed: TRUE,
+            SwapEffect: DXGI_SWAP_EFFECT_DISCARD,
+            Flags: 0,
+        };
+        let mut chain: Option<IDXGISwapChain> = None;
+        let mut device: Option<ID3D11Device> = None;
+        let mut level = D3D_FEATURE_LEVEL::default();
+        let mut context: Option<ID3D11DeviceContext> = None;
+        // SAFETY: `desc` and every out-slot are valid stack locations for
+        // the call; the out-params are initialized to `None` so a failed
+        // create cannot surface a half-built pair. HRESULT is returned raw.
+        let hr = unsafe {
+            D3D11CreateDeviceAndSwapChain(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE(core::ptr::null_mut()),
+                D3D11_CREATE_DEVICE_FLAG(0),
+                None,
+                D3D11_SDK_VERSION,
+                Some(&desc as *const DXGI_SWAP_CHAIN_DESC),
+                Some(&mut chain as *mut Option<IDXGISwapChain>),
+                Some(&mut device as *mut Option<ID3D11Device>),
+                Some(&mut level as *mut D3D_FEATURE_LEVEL),
+                Some(&mut context as *mut Option<ID3D11DeviceContext>),
+            )
+        };
+        match hr {
+            Ok(()) => (
+                0,
+                chain.map(|chain| SwapPair {
+                    chain,
+                    device,
+                    context,
+                }),
+            ),
+            Err(err) => (err.code().0, None),
+        }
+    }
+
+    /// One minimal windowed present of the uninitialized backbuffer:
+    /// proves presentation mechanics only, never content. Raw HRESULT.
+    pub fn present(chain: &IDXGISwapChain) -> i32 {
+        // SAFETY: COM method on a live interface supplied by the caller.
+        unsafe { chain.Present(1, DXGI_PRESENT(0)).0 }
+    }
+
+    pub fn set_fullscreen(chain: &IDXGISwapChain, fullscreen: bool) -> i32 {
+        // `None` selects the current output; no ResizeTarget or mode
+        // change is ever issued.
+        // SAFETY: COM method on a live interface supplied by the caller.
+        match unsafe { chain.SetFullscreenState(fullscreen, None::<&IDXGIOutput>) } {
+            Ok(()) => 0,
+            Err(err) => err.code().0,
+        }
+    }
+
+    pub fn get_fullscreen(chain: &IDXGISwapChain) -> (i32, Option<bool>, Option<bool>) {
+        let mut state = BOOL::default();
+        let mut target: Option<IDXGIOutput> = None;
+        // SAFETY: both out-slots are valid stack locations; the interface
+        // is live because the caller owns it. Failure returns `None`s.
+        match unsafe {
+            chain.GetFullscreenState(
+                Some(&mut state as *mut BOOL),
+                Some(&mut target as *mut Option<IDXGIOutput>),
+            )
+        } {
+            Ok(()) => (0, Some(state.as_bool()), Some(target.is_some())),
+            Err(err) => (err.code().0, None, None),
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+    pub struct OutputDesc {
+        pub device: String,
+        pub desktop_rect: [i32; 4],
+        pub attached: bool,
+        pub monitor: isize,
+    }
+
+    pub fn containing_output(chain: &IDXGISwapChain) -> Option<OutputDesc> {
+        // SAFETY: COM getter on a live interface; the returned descriptor
+        // is copied into owned fields before the temporary output is
+        // dropped. Failure is mapped to `None`.
+        unsafe {
+            let output = chain.GetContainingOutput().ok()?;
+            let desc = output.GetDesc().ok()?;
+            Some(OutputDesc {
+                device: wide_str(&desc.DeviceName),
+                desktop_rect: rect4(&desc.DesktopCoordinates),
+                attached: desc.AttachedToDesktop.as_bool(),
+                monitor: desc.Monitor.0 as isize,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,8 +722,7 @@ mod tests {
     }
 
     /// `ACCESS_ALLOWED_ACE_TYPE` (`Win32::System::SystemServices`) without
-    /// pulling that feature: the Win32 value is 0. Kept local so this
-    /// module's `windows-sys` surface stays at five features.
+    /// pulling that feature: the Win32 value is 0.
     const ACCESS_ALLOW_TYPE: u8 = 0;
 
     #[test]
