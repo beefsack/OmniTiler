@@ -249,6 +249,23 @@ not v4 acceptance evidence.
   150 ms tolerance. No witness join or physical-drag acceptance. See
   [K5 results](../changes/windows-v4-native-evidence.md#4-border-tracking-and-winevent-coverage-k5).
 
+### Operator-run drag preview
+
+Build the Windows owner and live fixture, then run from the repository root:
+
+```powershell
+pwsh -NoProfile -File scripts/windows-phase2-drag-preview-proof.ps1 -Live
+```
+
+Follow the two prompts to drag the fixture window by its title bar over
+the other fixture. The harness joins the live gesture ID to the preview
+and renderer acknowledgement, checks that the preview stays hidden during
+owner suspension, and checks for a fresh gesture ID after resume.
+It does not synthesize input. The specific
+`presentation.suspended_output` reply-field gate is covered by
+`suspended_output_hides_preview_without_painting`; owner suspend/resume
+alone does not prove that reply-field path.
+
 ## Phase-4 port gates
 
 - Keep the eight original scenario gates distinct from the native

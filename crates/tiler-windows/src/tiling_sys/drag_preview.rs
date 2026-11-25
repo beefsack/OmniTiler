@@ -41,6 +41,28 @@ fn hide_for_suspended_output(
     if !preview_suspended(reply) {
         return false;
     }
+    // Bounded evidence row for the defensive gate: a retained preview and a
+    // core suspension naming its own output are otherwise indistinguishable
+    // from an ordinary hide in the owner log.
+    let preview_id = reply
+        .and_then(|reply| reply.drag_preview.as_ref())
+        .map(|preview| preview.id);
+    let suspended_output = reply
+        .and_then(|reply| reply.presentation.suspended_output.as_ref())
+        .map(|output| output.0.clone());
+    log_json_at(
+        &state.log_path,
+        serde_json::json!({
+            "event": "drag-preview-suppress",
+            "tick": state.tick,
+            "window": state
+                .gesture_preview_start
+                .get(&hwnd)
+                .map(|start| start.token.clone()),
+            "preview_id": preview_id,
+            "suspended_out": suspended_output,
+        }),
+    );
     if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
         bound.hover_prior = None;
     }
@@ -233,10 +255,10 @@ pub(super) fn refresh_drag_preview(
     // Source fence on the correlated result (START bound): a stale result
     // after Finish, drift, or a mover swap never renders.
     let gesture_id = state.gesture_seq.get(&hwnd).copied();
-    let Some((rect, next_prior)) = reply.as_ref().and_then(|reply| {
+    let Some((rect, next_prior, preview_id)) = reply.as_ref().and_then(|reply| {
         let preview = reply.drag_preview.as_ref()?;
         preview_binding_matches(preview.id, &preview.source, gesture_id, &source_key)
-            .then(|| (preview.rect, preview.hover.clone()))
+            .then(|| (preview.rect, preview.hover.clone(), preview.id))
     }) else {
         if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
             bound.hover_prior = None;
@@ -255,6 +277,10 @@ pub(super) fn refresh_drag_preview(
     // the final drop (the core owns the hover semantics; this
     // only forwards the opaque value).
     let prior_desc = preview_prior_desc(&next_prior);
+    let suspended_out = reply
+        .as_ref()
+        .and_then(|reply| reply.presentation.suspended_output.as_ref())
+        .map(|output| output.0.clone());
     if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
         bound.hover_prior = next_prior;
     }
@@ -282,6 +308,25 @@ pub(super) fn refresh_drag_preview(
             correlation.as_str(),
             &prior_desc,
         );
+        // The ack row proves what the renderer painted but carries no core
+        // preview id; this owner-thread post row joins the two by the shared
+        // correlation, so the live proof can bind the painted surface back
+        // to the accepted preview id.
+        if state.trace {
+            log_json_at(
+                &state.log_path,
+                serde_json::json!({
+                    "event": "drag-preview-post",
+                    "tick": state.tick,
+                    "correlation": correlation.as_str(),
+                    "window": start.token,
+                    "rect": [rect.x, rect.y, rect.w, rect.h],
+                    "preview_id": preview_id,
+                    "gesture_id": gesture_id,
+                    "suspended_out": suspended_out,
+                }),
+            );
+        }
         return;
     }
     let outcome =
@@ -337,6 +382,9 @@ pub(super) fn refresh_drag_preview(
                 "window": start.token,
                 "rect": [rect.x, rect.y, rect.w, rect.h],
                 "hover_prior": prior_desc,
+                "preview_id": preview_id,
+                "gesture_id": gesture_id,
+                "suspended_out": suspended_out,
             }),
         );
     }
