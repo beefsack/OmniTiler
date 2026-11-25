@@ -53,6 +53,12 @@
 
 - Never commit local paths or information about local machines (paths, host names, hardware/resource details); describe test conditions generically.
 
+## Branches
+
+- Work directly on `main`. Feature, port and WIP branches diverge from
+  parallel platform work and cause merge conflicts, so create one only in
+  exceptional circumstances and with explicit user approval.
+
 ## Repository Records
 
 - Never record session controls in repository files or commit messages: commit/push permissions, autonomous or supervised modes, agent/model roles and routing, concurrency and approval gates, user availability, or machine-specific resource limits. Record only the work, its evidence, and product decisions. Exception: the standing live-testing posture in [docs/live-kwin-testing.md](docs/live-kwin-testing.md#testing-posture-user-2026-11-15).
