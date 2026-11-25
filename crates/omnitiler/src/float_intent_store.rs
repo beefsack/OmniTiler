@@ -57,7 +57,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fd::OwnedFd;
-use rustix::fs::{AtFlags, Mode, OFlags};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 
 /// D-Bus member names for the intent routes, mirroring the explicit
@@ -84,9 +84,6 @@ pub(crate) const INTENT_STORE_VERSION: u32 = 2;
 pub(crate) const STORE_DIR_NAME: &str = "omnitiler";
 pub(crate) const STORE_FILE_NAME: &str = "float-intent.json";
 const TEMP_FILE_PREFIX: &str = ".float-intent.json.tmp.";
-const S_IFMT: u32 = 0o170000;
-const S_IFDIR: u32 = 0o040000;
-const S_IFREG: u32 = 0o100000;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -410,7 +407,10 @@ pub(crate) fn open_root(root: &Path) -> Result<OwnedFd, ()> {
 /// Shared with the native preimage slot.
 pub(crate) fn gate_private_dir(fd: &OwnedFd) -> Result<(), ()> {
     let stat = rustix::fs::fstat(fd).map_err(|_| ())?;
-    if stat.st_mode & S_IFMT != S_IFDIR || stat.st_uid != euid() || stat.st_mode & 0o077 != 0 {
+    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+        || stat.st_uid != euid()
+        || stat.st_mode & 0o077 != 0
+    {
         return Err(());
     }
     Ok(())
@@ -454,7 +454,10 @@ pub(crate) fn gate_final(dir: &OwnedFd, file_name: &str) -> Result<bool, ()> {
         Err(_) => return Err(()),
     };
     let stat = rustix::fs::fstat(&fd).map_err(|_| ())?;
-    if stat.st_mode & S_IFMT != S_IFREG || stat.st_uid != euid() || stat.st_mode & 0o777 != 0o600 {
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || stat.st_uid != euid()
+        || stat.st_mode & 0o777 != 0o600
+    {
         return Err(());
     }
     Ok(true)
@@ -483,7 +486,10 @@ pub(crate) fn read_final(dir: &OwnedFd, file_name: &str) -> Result<Option<Vec<u8
 
 fn gate_final_fd(fd: &OwnedFd) -> Result<(), ()> {
     let stat = rustix::fs::fstat(fd).map_err(|_| ())?;
-    if stat.st_mode & S_IFMT != S_IFREG || stat.st_uid != euid() || stat.st_mode & 0o777 != 0o600 {
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || stat.st_uid != euid()
+        || stat.st_mode & 0o777 != 0o600
+    {
         return Err(());
     }
     Ok(())
@@ -1210,10 +1216,14 @@ mod tests {
         let root = fresh_root("fifo");
         let store = FloatIntentStore::with_root(root.clone());
         let ns = namespace("bus-fifo", ":1.7");
-        let project = project_fd_for(&root);
-        rustix::fs::mkfifoat(&project, STORE_FILE_NAME, Mode::from_bits_truncate(0o600))
-            .expect("fifo plant");
-        drop(project);
+        drop(project_fd_for(&root));
+        // Darwin's rustix backend does not expose mkfifoat.
+        let status = std::process::Command::new("mkfifo")
+            .args(["-m", "600"])
+            .arg(root.join(STORE_DIR_NAME).join(STORE_FILE_NAME))
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "plant FIFO: {status}");
         // O_NONBLOCK on the final-file opens means the gate open returns
         // immediately instead of blocking on the FIFO; fstat then rejects
         // the non-regular type, so the read degrades and the write fails.
