@@ -515,7 +515,7 @@ not modified by these legs.
   `target/task9/r20-border-20261125-172846-20720/evidence.json`. On the
   non-125% output (96 dpi) the ring was sampled from the composed screen DC at
   **8/8** straight-edge points with `style_px [3,0,6]`; on the 125% output
-  (120 dpi) a snapped half-work frame (physical client `1280×1332`) was
+  (120 dpi) a snapped half-work frame (requested physical client `1280×1332`, observed `1280×1333`) was
   sampled at **8/8** points with `style_px [4,0,8]`. In both stages the
   logged overlay outer equaled the live DWM visible frame expanded by the
   core outsets (±1 px), and the ring was refreshed only through a genuine
