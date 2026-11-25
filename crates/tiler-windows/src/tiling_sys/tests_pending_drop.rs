@@ -211,6 +211,7 @@ fn pd_facts() -> crate::tiling::WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -1154,7 +1155,7 @@ fn sticky_holds_without_commit() {
     // fabricated receipts. No adapter float gate remains.
     let mut fx = pd_fixture(true);
     pd_queue_same(&mut fx, 400, 280);
-    fx.state.sticky.insert(mover_key(), false);
+    fx.state.seed_sticky(mover_key(), false);
     let tick0 = fx.state.tick;
     pd_service(&mut fx);
     assert!(!pd_slot(&fx), "sticky consumes the slot");
@@ -2346,13 +2347,10 @@ fn stale_delivery_claims_nothing_but_clears_on_incorporation() {
         ref member_rects,
         ref float_rects,
         ref hint_logged,
-        ref sticky,
-        ref floated,
         ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
         ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
@@ -2375,13 +2373,10 @@ fn stale_delivery_claims_nothing_but_clears_on_incorporation() {
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
         restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
         fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,

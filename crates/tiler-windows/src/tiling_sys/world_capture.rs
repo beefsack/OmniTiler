@@ -64,16 +64,16 @@
 //!   native facts and Windows has neither (`sticky: None`,
 //!   `NativeWorkspaceFact::Omitted`), so no native rows exist. The neutral
 //!   facts the recorded observation proves ride: `tool_window`
-//!   (`WS_EX_TOOLWINDOW`), `owned` (`GW_OWNER`), `executable` (the
-//!   bound/observed process image), `process_id` (the lifetime key's pid)
-//!   and `window_type: Dialog` for the proven generic dialog class. Every
-//!   other neutral fact stays `None`: `privileged` because the observation
-//!   never reads integrity, `class`/`title`/`role`/`app_id` because the
-//!   class and title reads are not carried into the observation this pure
-//!   capture consumes, and the remaining lanes because Windows has no
-//!   producer. Never a fabricated `false`. `hints` is the recorded
-//!   constraint (`hint_logged`) or `None`, never an empty-hint stand-in.
-//!   Two fresh-read lanes supply these facts: the ordinary visible
+//!   (`WS_EX_TOOLWINDOW`), `owned` (`GW_OWNER`), `above` (`WS_EX_TOPMOST`),
+//!   `executable` (the bound/observed process image), `process_id` (the
+//!   lifetime key's pid) and `window_type: Dialog` for the proven generic
+//!   dialog class. Every other neutral fact stays `None`: `privileged`
+//!   because the observation never reads integrity, `class`/`title`/`role`/
+//!   `app_id` because the class and title reads are not carried into the
+//!   observation this pure capture consumes, and the remaining lanes because
+//!   Windows has no producer. Never a fabricated `false`. `hints` is the
+//!   recorded constraint (`hint_logged`) or `None`, never an empty-hint
+//!   stand-in. Two fresh-read lanes supply these facts: the ordinary visible
 //!   observation (`WindowFacts`) and the lightweight per-claim read for a
 //!   project-suppressed member with no live observed row ([`HiddenClaimRead`]).
 //!   `host_hidden` is the fresh native cloak read (never project
@@ -163,7 +163,7 @@ use tiler_core::world_report::{
     NativeWorkspaceFact, OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4,
     RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport, VisibilityFact, WindowFact,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW;
+use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_TOOLWINDOW, WS_EX_TOPMOST};
 
 /// Normalized foreground facts for one tick's uniform presentation ingress
 /// (stage 5): the genuinely observed foreground lifetime (proof-verified
@@ -203,13 +203,10 @@ pub(super) struct OwnerInputs<'a> {
     pub member_rects: &'a HashMap<String, Rect>,
     pub float_rects: &'a HashMap<String, Rect>,
     pub hint_logged: &'a HashMap<String, WindowSizeHints>,
-    pub sticky: &'a BTreeMap<WindowKey, bool>,
-    pub floated: &'a BTreeSet<WindowKey>,
     pub restart_reject_hold: &'a BTreeSet<WindowKey>,
     pub born_fullscreen: &'a BTreeSet<WindowKey>,
     pub born_first_exit: &'a BTreeSet<WindowKey>,
     pub fixed_auto_seen: &'a BTreeSet<WindowKey>,
-    pub fixed_tile_overrides: &'a BTreeSet<WindowKey>,
     pub fixed_origin_overrides: &'a BTreeSet<WindowKey>,
     pub hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
     /// Fresh lightweight live reads for project-suppressed claim lifetimes
@@ -317,13 +314,10 @@ impl TileLoop {
         member_rects: &'a HashMap<String, Rect>,
         float_rects: &'a HashMap<String, Rect>,
         hint_logged: &'a HashMap<String, WindowSizeHints>,
-        sticky: &'a BTreeMap<WindowKey, bool>,
-        floated: &'a BTreeSet<WindowKey>,
         restart_reject_hold: &'a BTreeSet<WindowKey>,
         born_fullscreen: &'a BTreeSet<WindowKey>,
         born_first_exit: &'a BTreeSet<WindowKey>,
         fixed_auto_seen: &'a BTreeSet<WindowKey>,
-        fixed_tile_overrides: &'a BTreeSet<WindowKey>,
         fixed_origin_overrides: &'a BTreeSet<WindowKey>,
         hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
         minimized_omitted: &'a HashSet<WindowKey>,
@@ -351,13 +345,10 @@ impl TileLoop {
             member_rects,
             float_rects,
             hint_logged,
-            sticky,
-            floated,
             restart_reject_hold,
             born_fullscreen,
             born_first_exit,
             fixed_auto_seen,
-            fixed_tile_overrides,
             fixed_origin_overrides,
             hidden_claims,
             hidden_reads: None,
@@ -396,18 +387,15 @@ impl TileLoop {
             member_rects: &self.member_rects,
             float_rects: &self.float_rects,
             hint_logged: &self.hint_logged,
-            sticky: &self.sticky,
-            floated: &self.floated,
             restart_reject_hold: &self.restart_reject_hold,
             born_fullscreen: &self.born_fullscreen,
             born_first_exit: &self.born_first_exit,
             fixed_auto_seen: &self.fixed_auto_seen,
-            fixed_tile_overrides: &self.fixed_tile_overrides,
             fixed_origin_overrides: &self.fixed_origin_overrides,
             hidden_claims: &self.hidden_claims,
             hidden_reads: None,
             fullscreen_meta: None,
-            intent_storage: None,
+            intent_storage: Some(&self.intent_snapshot),
             minimized_omitted: &self.minimized_omitted,
             pending_closed: &self.pending_closed,
             scope: &self.scope,
@@ -774,14 +762,15 @@ fn capture_floating(
     key: &crate::native_guards::WindowKey,
     hidden: bool,
 ) -> bool {
-    let sticky = state.sticky.contains_key(key);
+    let storage = state.intent_storage.and_then(|map| map.get(key));
+    let sticky = storage.is_some_and(|s| s.sticky_prior.is_some());
     let (fixed_auto, fixed_suppress) = capture_fixed(state, key);
     crate::native_guards::float_lane(
         sticky,
         fixed_auto,
         fixed_suppress,
         state.born_first_exit.contains(key),
-        state.floated.contains(key),
+        storage.is_some_and(|s| s.float),
         state.restart_reject_hold.contains(key),
         state.born_fullscreen.contains(key),
         hidden,
@@ -796,9 +785,9 @@ fn capture_floating(
 /// dominates automatic origin and durable wins never acquire it). No lane
 /// is published in v4.
 fn capture_fixed(state: &OwnerInputs<'_>, key: &crate::native_guards::WindowKey) -> (bool, bool) {
-    let durable =
-        state.fixed_tile_overrides.contains(key) || state.fixed_origin_overrides.contains(key);
-    let sticky = state.sticky.contains_key(key);
+    let storage = state.intent_storage.and_then(|map| map.get(key));
+    let durable = storage.is_some_and(|s| s.tile) || state.fixed_origin_overrides.contains(key);
+    let sticky = storage.is_some_and(|s| s.sticky_prior.is_some());
     let automatic = state.fixed_auto_seen.contains(key) && !sticky && !durable;
     (automatic, durable)
 }
@@ -807,8 +796,8 @@ fn capture_fixed(state: &OwnerInputs<'_>, key: &crate::native_guards::WindowKey)
 /// (T4). Such a member is absent from the ordinary visible observation, so
 /// capture cannot reuse `WindowFacts`; these are the only native inputs that
 /// classify it truthfully: the shown state (`visibility.visible`), the DWM
-/// cloak (`host_hidden`, not project suppression), the tool-window style
-/// bit, native ownership, and the generic dialog kind.
+/// cloak (`host_hidden`, not project suppression), the tool-window and
+/// topmost style bits, native ownership, and the generic dialog kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HiddenClaimRead {
     /// Fresh `IsWindowVisible` read. Project-suppressed windows normally read
@@ -820,6 +809,8 @@ pub(super) struct HiddenClaimRead {
     pub owned: bool,
     /// `WS_EX_TOOLWINDOW` set.
     pub tool_window: bool,
+    /// `WS_EX_TOPMOST` set.
+    pub topmost: bool,
     /// Unowned generic Win32 dialog class (`#32770`), mirroring the observed
     /// `facts.dialog` kind gate. The class text itself stays unpublished:
     /// `class` is declared unavailable on this route.
@@ -845,6 +836,7 @@ pub(super) fn read_hidden_claim(hwnd: u64) -> Option<HiddenClaimRead> {
         cloaked,
         owned,
         tool_window: exstyle & WS_EX_TOOLWINDOW != 0,
+        topmost: exstyle & WS_EX_TOPMOST != 0,
         dialog: !owned && class == crate::tiling::GENERIC_DIALOG_CLASS,
     })
 }
@@ -899,8 +891,9 @@ struct FactSeed<'a> {
     flags: Option<&'a WindowFacts>,
     /// Lightweight live read for a project-suppressed claim with no live
     /// observed row: the only source of shown state, cloak, `owned`,
-    /// `tool_window`, and the generic dialog kind for that lane. Mutually
-    /// exclusive with `flags` by construction; `None` keeps the flags lane.
+    /// `tool_window`, `above`, and the generic dialog kind for that lane.
+    /// Mutually exclusive with `flags` by construction; `None` keeps the
+    /// flags lane.
     live: Option<&'a HiddenClaimRead>,
     /// Explicit host-hidden override for rows with no fresh native read
     /// (hidden-workspace claims); `None` keeps the flags-derived value.
@@ -972,9 +965,9 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         managed: None,
         accepts_input: None,
         activation_inhibited: None,
-        // `WS_EX_TOOLWINDOW` and `GW_OWNER` come from the same fresh read as
-        // the frame (or the claim lane's lightweight live read); a held row
-        // carries neither.
+        // `WS_EX_TOOLWINDOW`, `GW_OWNER` and `WS_EX_TOPMOST` come from the
+        // same fresh read as the frame (or the claim lane's lightweight
+        // live read); a held row carries no such fact.
         tool_window: flags
             .map(|facts| facts.tool_window)
             .or_else(|| live.map(|read| read.tool_window)),
@@ -984,7 +977,9 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         transient: None,
         modal: None,
         resizable: None,
-        above: None,
+        above: flags
+            .map(|facts| facts.topmost)
+            .or_else(|| live.map(|read| read.topmost)),
         below: None,
         owner: None,
         parent: None,
@@ -2251,6 +2246,7 @@ mod foreground_output_tests {
             owned: false,
             captionless_fullscreen: false,
             no_activate: false,
+            topmost: false,
             dialog: false,
         }
     }
@@ -2573,6 +2569,7 @@ mod tests {
                 owned: false,
                 captionless_fullscreen: false,
                 no_activate: false,
+                topmost: false,
                 dialog: false,
             }
         }
@@ -2690,6 +2687,7 @@ mod tests {
                     cloaked: false,
                     owned: false,
                     tool_window: false,
+                    topmost: false,
                     dialog: false,
                 },
             )]);
@@ -2747,6 +2745,7 @@ mod tests {
                     cloaked: false,
                     owned: false,
                     tool_window: false,
+                    topmost: false,
                     dialog: false,
                 },
             )]);
@@ -2758,6 +2757,87 @@ mod tests {
                 .find(|fact| fact.window.0 == "w-hidden2")
                 .expect("hidden claim rides a fact row");
             assert_eq!(fact.hints, Some(hints), "recorded hint still rides");
+        }
+
+        #[test]
+        fn above_fact_comes_from_live_topmost_reads() {
+            // The observed lane publishes its fresh `WindowFacts` bit, never
+            // a default `None` while that read exists.
+            for topmost in [false, true] {
+                let mut state = test_state();
+                state.ensure_device("DEV-A");
+                let mut row = observed(103, "w-flag-top", 203, "proc-flag");
+                row.facts.topmost = topmost;
+                let captured = capture_world(
+                    &state.inputs(),
+                    Some(&[row]),
+                    &[],
+                    &[area("DEV-A")],
+                    0,
+                );
+                let fact = captured
+                    .windows
+                    .iter()
+                    .find(|fact| fact.window.0 == "w-flag-top")
+                    .expect("observed row rides a fact row");
+                assert_eq!(fact.above, Some(topmost), "observed topmost bit rides");
+            }
+
+            // The hidden-claim lane publishes the same bit from its
+            // lightweight live read when no observed row exists.
+            for topmost in [false, true] {
+                let mut state = test_state();
+                state.ensure_device("DEV-A");
+                let claim_key = key(704, 804, "proc-704");
+                state
+                    .member_tokens
+                    .insert(claim_key.clone(), "w-claim-top".to_owned());
+                state
+                    .member_tags
+                    .insert(claim_key.clone(), "0123456789abcdef".to_owned());
+                state.member_rects.insert(
+                    "w-claim-top".to_owned(),
+                    Rect {
+                        x: 20,
+                        y: 20,
+                        w: 400,
+                        h: 300,
+                    },
+                );
+                state.hidden_claims.insert(
+                    claim_key.clone(),
+                    HiddenRecord {
+                        claim: WindowIdentity {
+                            hwnd: claim_key.hwnd,
+                            process: process(claim_key.pid, &claim_key.creation),
+                            tag: "0123456789abcdef".to_owned(),
+                            kind: crate::model::WindowClaimKind::Helper,
+                            show: crate::model::WindowShowState::default(),
+                        },
+                        iconic: false,
+                    },
+                );
+                let mut inputs = state.inputs();
+                let reads = std::collections::BTreeMap::from([(
+                    claim_key.clone(),
+                    HiddenClaimRead {
+                        visible: false,
+                        cloaked: false,
+                        owned: false,
+                        tool_window: false,
+                        topmost,
+                        dialog: false,
+                    },
+                )]);
+                inputs.hidden_reads = Some(&reads);
+                let captured = capture_world(&inputs, Some(&[]), &[], &[area("DEV-A")], 0);
+                let fact = captured
+                    .windows
+                    .iter()
+                    .find(|fact| fact.window.0 == "w-claim-top")
+                    .expect("hidden claim rides a fact row");
+                assert_eq!(fact.above, Some(topmost), "hidden topmost bit rides");
+            }
         }
 
         #[test]

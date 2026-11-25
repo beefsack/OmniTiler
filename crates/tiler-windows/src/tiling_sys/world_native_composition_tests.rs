@@ -1249,7 +1249,8 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         });
         S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
     }
-    env.state.sticky.insert(anchor.clone(), false);
+    crate::product_hide::sys::fake::register_marks(anchor.hwnd);
+    env.state.seed_sticky(anchor.clone(), false);
     let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
     let areas = one_area();
     let fulls = env.fulls.clone();
@@ -1512,7 +1513,8 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         });
         S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
     }
-    env.state.sticky.insert(anchor.clone(), false);
+    crate::product_hide::sys::fake::register_marks(anchor.hwnd);
+    env.state.seed_sticky(anchor.clone(), false);
     let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
     let areas = one_area();
     let fulls = env.fulls.clone();
@@ -2748,6 +2750,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -2758,6 +2761,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -2874,6 +2878,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -2884,6 +2889,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -3203,6 +3209,7 @@ fn world_minimized_omission_never_closes_hidden_keeps_fullscreen() {
             cloaked: false,
             owned: false,
             tool_window: false,
+            topmost: false,
             dialog: false,
         },
     )]);
@@ -3281,8 +3288,8 @@ fn world_marker_intent_restores_quiet_without_receipts() {
             .float_rects
             .insert(token.to_owned(), rect(10, 10, 400, 300));
     }
-    state.floated.insert(float_key.clone());
-    state.sticky.insert(sticky_key.clone(), false);
+    state.seed_float(float_key.clone());
+    state.seed_sticky(sticky_key.clone(), false);
     let observed = vec![
         observed_for(&float_key, "w-float", rect(10, 10, 400, 300), plain_facts()),
         observed_for(

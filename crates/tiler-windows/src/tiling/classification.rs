@@ -89,6 +89,8 @@ pub struct WindowFacts {
     pub owned: bool,
     pub captionless_fullscreen: bool,
     pub no_activate: bool,
+    /// Live `WS_EX_TOPMOST` read; the source of the `above` observable fact.
+    pub topmost: bool,
     /// Generic Win32 dialog class (`#32770`) without an owner window. Owned
     /// dialogs are reported as `OwnedDialog` instead. The project's own
     /// Settings UI is an ordinary member (see [`workspace_dialog_refuses`]),

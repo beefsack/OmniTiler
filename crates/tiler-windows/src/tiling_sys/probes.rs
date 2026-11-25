@@ -4,13 +4,7 @@ use super::*;
 /// Revalidate one write target immediately before `SetWindowPos`: fresh
 /// eligibility, scope, fresh full identity compared against the cached
 /// expectation and the frozen allowlist, with the process held open across
-/// the write. Returns the fresh observation plus the held process (liveness
-/// guard).
-pub(super) struct WriteTarget {
-    pub(super) window: ObservedWindow,
-    pub(super) held: HeldProcess,
-}
-
+/// the write (the guard drops when this returns).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn revalidate_target(
     expected: &ObservedWindow,
@@ -23,7 +17,7 @@ pub(super) fn revalidate_target(
     member_tag: Option<&str>,
     scope_hosts: &[ScopeHostChild],
     allow_maximized: bool,
-) -> std::result::Result<WriteTarget, &'static str> {
+) -> std::result::Result<(), &'static str> {
     let hwnd = expected.hwnd as isize as HWND;
     let pid = crate::ffi::window_pid(expected.hwnd);
     if pid == 0 || pid != expected.identity.pid {
@@ -95,10 +89,7 @@ pub(super) fn revalidate_target(
     if fresh.token != expected.token {
         return Err("identity-changed");
     }
-    Ok(WriteTarget {
-        window: fresh,
-        held,
-    })
+    Ok(())
 }
 
 /// Recheck the HWND's current pid after the write (recycled-HWND guard).

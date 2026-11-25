@@ -42,10 +42,12 @@ pub(super) const WARP_SUPPORTED: bool = true;
 ///   claimed.
 /// - `window_suppression: true`: the product hide/restore lane exists.
 /// - `maximize: true`, `fullscreen: true`: native actuators exist for each.
-/// - `above: false`: no persistent stacking actuator exists yet; R14's
-///   `StateTarget`/R12 crash-safe preimage lane has not landed, so a
+/// - `above: false`: capture now produces the topmost fact from the live
+///   `WS_EX_TOPMOST` read, but no persistent stacking actuator exists yet;
+///   R14's `StateTarget`/R12 crash-safe preimage lane has not landed, so a
 ///   truth-claiming window would have no honest topmost actuation or
-///   recovery. Flip to `true` when that task proves both.
+///   recovery. The capability claim stays `false` until the live proof task
+///   proves both; flip it to `true` then.
 /// - `warp`: the retained exact-once cursor-warp lane, sourced from
 ///   [`WARP_SUPPORTED`]. It is true after the adapter lane and the
 ///   clean-HEAD live Raw Input non-increment receipt; the `cursorWarp`
@@ -54,12 +56,14 @@ pub(super) const WARP_SUPPORTED: bool = true;
 /// - `tiled_float_transfer: false`: no professed cross-output float remap.
 /// - `unavailable_facts` is the precise not-yet-produced catalog set in
 ///   [`FactName`] order: `managed`, `acceptsInput`, `activationInhibited`,
-///   `transient`, `modal`, `resizable`, `above`, `below`, `owner`, `parent`,
-///   `role`, `appId`, `title`, `activationPolicy`, `layer`, `privileged`,
-///   and `class`. The remaining four lanes (`toolWindow`, `owned`,
+///   `transient`, `modal`, `resizable`, `below`, `owner`, `parent`, `role`,
+///   `appId`, `title`, `activationPolicy`, `layer`, `privileged`, and
+///   `class`. The remaining five lanes (`toolWindow`, `owned`, `above`,
 ///   `executable`, `processId`) are the exact capture-emitted producer set;
 ///   an available fact may still be `None` when a single read is honestly
 ///   unknown, so availability is a producer claim, never a value claim.
+///   Capture now produces the `above` fact from the topmost style read while
+///   the capability claim remains `false` until the live proof task.
 ///   `executable`/`processId` also stay available because [`own_identity`]
 ///   supplies both (the support-consistency gate). `privileged` is not
 ///   emitted (observe hardcodes `false` as a projected negative) and
@@ -87,7 +91,6 @@ pub(super) fn windows_capabilities() -> HostCapabilities {
             FactName::Transient,
             FactName::Modal,
             FactName::Resizable,
-            FactName::Above,
             FactName::Below,
             FactName::Owner,
             FactName::Parent,

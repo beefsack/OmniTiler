@@ -25,6 +25,7 @@ fn vd_facts(cloaked: bool) -> WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -643,7 +644,7 @@ fn exception_lane_enter_exit_with_reasons() {
         flush_exceptions(&mut f.state).is_none(),
         "tiled baseline stays quiet"
     );
-    f.state.floated.insert(key.clone());
+    f.state.seed_float(key.clone());
     vd_advance(&mut f, 1100);
     f.state.tick = 31;
     stage_exceptions(&mut f.state);
@@ -662,7 +663,7 @@ fn exception_lane_enter_exit_with_reasons() {
     );
     assert_eq!(entry["history_lost"], false);
     assert!(entry["observed_ms"].as_u64().is_some());
-    f.state.floated.remove(&key);
+    f.state.clear_float(&key);
     f.state.tick = 32;
     stage_exceptions(&mut f.state);
     assert!(
@@ -684,7 +685,7 @@ fn exception_marks_lost_history_on_out_and_back() {
     let output = f.output.clone();
     let ws = f.ws.clone();
     let key = vd_member(&mut f.state, &output, &ws, "wexc", 9611);
-    f.state.floated.insert(key.clone());
+    f.state.seed_float(key.clone());
     f.state.tick = 70;
     stage_exceptions(&mut f.state);
     assert!(
@@ -693,14 +694,14 @@ fn exception_marks_lost_history_on_out_and_back() {
     );
     // Exit and re-enter inside one throttle interval: the exit never emits
     // on its own, and the return matches the emitted baseline exactly.
-    f.state.floated.remove(&key);
+    f.state.clear_float(&key);
     f.state.tick = 71;
     stage_exceptions(&mut f.state);
     assert!(
         flush_exceptions(&mut f.state).is_none(),
         "exit-leg throttled"
     );
-    f.state.floated.insert(key.clone());
+    f.state.seed_float(key.clone());
     stage_exceptions(&mut f.state);
     assert!(
         flush_exceptions(&mut f.state).is_none(),
@@ -732,7 +733,7 @@ fn exception_names_sticky_and_born_lanes() {
     let ws = f.ws.clone();
     let key_sticky = vd_member(&mut f.state, &output, &ws, "wsticky", 9701);
     let key_born = vd_member(&mut f.state, &output, &ws, "wborn", 9702);
-    f.state.sticky.insert(key_sticky.clone(), false);
+    f.state.seed_sticky(key_sticky.clone(), false);
     f.state.born_fullscreen.insert(key_born.clone());
     f.state.tick = 40;
     stage_exceptions(&mut f.state);
@@ -874,7 +875,7 @@ fn exception_labels_net_change_honestly() {
     let ws = f.ws.clone();
     let key = vd_member(&mut f.state, &output, &ws, "wlab", 9871);
     // Entered: baseline zero to nonzero lanes.
-    f.state.floated.insert(key.clone());
+    f.state.seed_float(key.clone());
     f.state.tick = 80;
     stage_exceptions(&mut f.state);
     let entered = flush_exceptions(&mut f.state).expect("entry emits");
@@ -884,7 +885,7 @@ fn exception_labels_net_change_honestly() {
     );
     // Changed: nonzero lanes to different nonzero lanes.
     vd_advance(&mut f, 1100);
-    f.state.sticky.insert(key.clone(), false);
+    f.state.seed_sticky(key.clone(), false);
     f.state.tick = 81;
     stage_exceptions(&mut f.state);
     let changed = flush_exceptions(&mut f.state).expect("lane change emits");

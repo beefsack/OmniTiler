@@ -1262,7 +1262,6 @@ pub(super) fn dispatch_verified_select(
     };
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    clear_maximize_at_admission(state, me, &retained);
     workspace_close_cleanup(state);
     let ctx = ActionCtx {
         correlation: format!("act-{tick}"),
@@ -1962,6 +1961,7 @@ mod pager_host_tests {
                 owned: false,
                 captionless_fullscreen: false,
                 no_activate: false,
+                topmost: false,
                 dialog: false,
             },
             member_tag: None,
@@ -2055,6 +2055,7 @@ mod pager_host_tests {
                 owned: false,
                 captionless_fullscreen: false,
                 no_activate: false,
+                topmost: false,
                 dialog: false,
             },
             member_tag: None,
@@ -2087,6 +2088,7 @@ mod pager_host_tests {
                 owned: false,
                 captionless_fullscreen: true,
                 no_activate: false,
+                topmost: false,
                 dialog: false,
             }),
         }

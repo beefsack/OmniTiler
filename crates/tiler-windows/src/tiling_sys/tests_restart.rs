@@ -31,6 +31,7 @@ fn adopt_seeded(
         state.world.last_reply()
     );
     super::adopt_restart_markers(state, me, observed, retained, areas, hint_cx);
+    super::world_tick::refresh_intent_snapshot(state);
 }
 
 struct AdoptWindow {
@@ -108,6 +109,7 @@ fn observed(hwnd: u64, token: &str) -> super::ObservedWindow {
             shell: false,
             tool_window: false,
             owned: false,
+            topmost: false,
             captionless_fullscreen: false,
             no_activate: false,
             dialog: false,
@@ -190,8 +192,8 @@ fn sticky_markers_readopt_through_real_tileloop_twice() {
                 &mut hint_cx,
             );
             assert_eq!(
-                state.sticky.get(&key),
-                Some(&prior),
+                state.sticky_prior_value(&key),
+                Some(prior),
                 "prior {prior} restart {restart}: sticky origin re-adopted"
             );
             assert!(
@@ -237,15 +239,15 @@ fn tile_override_marker_hydrates_override_without_writes_or_float() {
             &mut hint_cx,
         );
         assert!(
-            state.fixed_tile_overrides.contains(&key),
+            state.fixed_origin_overrides.contains(&key),
             "restart {restart}: override hydrated into the runtime set"
         );
         assert!(
-            !state.floated.contains(&key),
+            !state.floating_of(&key),
             "restart {restart}: override never floats"
         );
         assert!(
-            !state.sticky.contains_key(&key),
+            !state.sticky_of(&key),
             "restart {restart}: override takes no sticky entry"
         );
         assert!(
@@ -303,6 +305,7 @@ fn retained_max(key: &WindowKey, token: &str) -> super::RetainedRow {
             shell: false,
             tool_window: false,
             owned: false,
+            topmost: false,
             captionless_fullscreen: false,
             no_activate: false,
             dialog: false,
@@ -346,7 +349,8 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         state.settings_live = Some(LiveSettings::fresh(settings, None));
         let (key, token, output, active) = seed_real_member(&mut state, win.hwnd, &tag, &real);
         // Success-only production install through the held wrapper.
-        let installed = super::install_tile_override_mark_held(&state, &real, &key);
+        let installed = medium
+            && crate::product_hide::sys::install_tile_override_marker(win.hwnd).is_ok();
         let mut hint_cx = super::HintCx::new();
         // Hint loss: no injection anywhere, so every fresh probe reads
         // unknown; hydration takes no hints at all.
@@ -367,8 +371,8 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
                 "born {born}: elevated runner refuses the install"
             );
             assert!(
-                !state.fixed_tile_overrides.contains(&key)
-                    && !state.fixed_origin_overrides.contains(&key),
+                !state.fixed_origin_overrides.contains(&key)
+                    && !state.tile_override_of(&key),
                 "born {born}: elevated runner hydrates nothing"
             );
             continue;
@@ -379,7 +383,7 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
             "born {born}: marker present"
         );
         assert!(
-            state.fixed_tile_overrides.contains(&key),
+            state.fixed_origin_overrides.contains(&key),
             "born {born}: runtime hydrated"
         );
         assert!(
@@ -406,32 +410,29 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         );
         let _cx = super::HintCx::new();
         assert!(
-            !super::admission_clear_planned(&state, &retained[0], &_cx),
-            "born {born}: durable never plans CLEAR"
+            crate::product_hide::sys::read_tile_override_marker(win.hwnd),
+            "born {born}: durable override marker kept"
         );
+        let _ = &_cx;
         // Settled removal through the production wrapper clears the
         // marker; membership prune drops both runtime lanes.
-        super::remove_tile_override_mark_best_effort(
-            &state,
-            &real,
-            &key,
-            &state.log_path.clone(),
-            &token,
-        );
+        let _ = crate::product_hide::sys::remove_tile_override_marker(win.hwnd);
         assert!(
             !crate::product_hide::sys::read_tile_override_marker(win.hwnd),
             "born {born}: settled removal clears the marker"
         );
-        state.fixed_tile_overrides.remove(&key);
+        state.clear_tile(&key);
         state.fixed_origin_overrides.remove(&key);
         super::drop_member_state(&mut state, &key);
         assert!(
-            !state.fixed_tile_overrides.contains(&key)
-                && !state.fixed_origin_overrides.contains(&key),
+            !state.fixed_origin_overrides.contains(&key)
+                && !state.tile_override_of(&key),
             "born {born}: prune drops both lanes"
         );
         // Re-install for the next born mode (marker removal above).
-        super::install_tile_override_mark_held(&state, &real, &key);
+        if medium {
+            let _ = crate::product_hide::sys::install_tile_override_marker(win.hwnd);
+        }
     }
     if !medium {
         return;
@@ -456,8 +457,8 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
             &mut hint_cx,
         );
         assert!(
-            !state.fixed_tile_overrides.contains(&key)
-                && !state.fixed_origin_overrides.contains(&key),
+            !state.fixed_origin_overrides.contains(&key)
+                && !state.tile_override_of(&key),
             "corrupt plants no override"
         );
     }
@@ -482,8 +483,7 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
             &mut hint_cx,
         );
         assert!(
-            !state.fixed_tile_overrides.contains(&key)
-                && !state.fixed_origin_overrides.contains(&key),
+            !state.fixed_origin_overrides.contains(&key),
             "tag mismatch hydrates nothing"
         );
         let _ = tag;
@@ -510,8 +510,8 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
             &mut hint_cx,
         );
         assert!(
-            !state.fixed_tile_overrides.contains(&key)
-                && !state.fixed_origin_overrides.contains(&key),
+            !state.fixed_origin_overrides.contains(&key)
+                && !state.tile_override_of(&key),
             "destroyed window hydrates nothing"
         );
     }
@@ -541,11 +541,11 @@ fn float_marker_readopts_through_real_tileloop() {
         &mut hint_cx,
     );
     assert!(
-        state.floated.contains(&key),
+        state.floating_of(&key),
         "float intent re-adopted into the runtime set"
     );
     assert!(
-        !state.sticky.contains_key(&key),
+        !state.sticky_of(&key),
         "ordinary float takes no sticky entry"
     );
     assert!(
@@ -616,21 +616,21 @@ fn mixed_markers_readopt_through_real_tileloop_in_any_order() {
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();
         let _ = std::fs::remove_file(&log_path);
         assert_eq!(
-            state.sticky.get(&key_a),
-            Some(&false),
+            state.sticky_prior_value(&key_a),
+            Some(false),
             "reverse {reverse}: ex-tiled sticky re-adopts; log:\n{log}"
         );
         assert_eq!(
-            state.sticky.get(&key_b),
-            Some(&true),
+            state.sticky_prior_value(&key_b),
+            Some(true),
             "reverse {reverse}: ex-float sticky re-adopts; log:\n{log}"
         );
         assert!(
-            state.floated.contains(&key_c),
+            state.floating_of(&key_c),
             "reverse {reverse}: ordinary float re-adopts; log:\n{log}"
         );
         assert!(
-            !state.sticky.contains_key(&key_d) && !state.floated.contains(&key_d),
+            !state.sticky_of(&key_d) && !state.floating_of(&key_d),
             "reverse {reverse}: unmarked tile stays tiled; log:\n{log}"
         );
         for (token, what) in [
@@ -656,6 +656,12 @@ fn marker_install_remove_roundtrip_on_owned_window() {
     // verifies absence, and a wrong sticky value refuses without
     // touching the live marker.
     let win = AdoptWindow::create();
+    // R12 intent slot binds to the exact live lifetime (pid, creation, and
+    // the installed member tag), so the tag must exist before any marker
+    // write. Admission installs it first in production; this fixture does
+    // the same.
+    crate::product_hide::sys::install_member_tag(win.hwnd, std::process::id())
+        .expect("member tag installs on the owned window");
     assert!(
         !crate::product_hide::sys::read_float_intent_marker(win.hwnd),
         "fresh window carries no float intent"
@@ -731,8 +737,8 @@ fn corrupt_marker_adopts_nothing_without_side_effects() {
         &areas_for(&output),
         &mut hint_cx,
     );
-    assert!(!state.sticky.contains_key(&key), "corrupt never sticks");
-    assert!(!state.floated.contains(&key), "corrupt never floats");
+    assert!(!state.sticky_of(&key), "corrupt never sticks");
+    assert!(!state.floating_of(&key), "corrupt never floats");
 }
 
 #[test]
@@ -754,10 +760,10 @@ fn absent_markers_adopt_nothing_without_side_effects() {
         &mut hint_cx,
     );
     assert!(
-        !state.sticky.contains_key(&key),
+        !state.sticky_of(&key),
         "no sticky without a marker"
     );
-    assert!(!state.floated.contains(&key), "no float without a marker");
+    assert!(!state.floating_of(&key), "no float without a marker");
     assert!(
         !state.float_rects.contains_key(&token),
         "no float frame without adoption"
@@ -1064,17 +1070,17 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
         "admission leaves no hold"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[2]),
-        Some(&false),
+        rig.state.sticky_prior_value(&rig.keys[2]),
+        Some(false),
         "ex-tiled sticky adopts its prior"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[3]),
-        Some(&true),
+        rig.state.sticky_prior_value(&rig.keys[3]),
+        Some(true),
         "ex-float sticky adopts its prior"
     );
     assert!(
-        rig.state.floated.contains(&rig.keys[4]),
+        rig.state.floating_of(&rig.keys[4]),
         "ordinary float adopts"
     );
     for token in &rig.tokens[2..] {
@@ -1097,10 +1103,10 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
     // core policy (tiler-core fixed_size_admission, world_admission_close_stay).
     let anchor_key = &rig.keys[0];
     assert!(
-        !rig.state.floated.contains(anchor_key)
-            && !rig.state.sticky.contains_key(anchor_key)
+        !rig.state.floating_of(anchor_key)
+            && !rig.state.sticky_of(anchor_key)
             && !rig.state.fixed_auto_seen.contains(anchor_key)
-            && !rig.state.fixed_tile_overrides.contains(anchor_key)
+            && !rig.state.tile_override_of(anchor_key)
             && !rig.state.fixed_origin_overrides.contains(anchor_key),
         "unmarked anchor stages no intent lane"
     );
@@ -1135,7 +1141,7 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
             .map(|(key, _)| key.clone())
             .expect("adopted float binds a member");
         assert!(
-            rig.state.floated.contains(&key) || rig.state.sticky.contains_key(&key),
+            rig.state.floating_of(&key) || rig.state.sticky_of(&key),
             "adopted float {token} rides an adapter float lane"
         );
     }
@@ -1155,17 +1161,17 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
         "repeat adoption leaves no hold"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[2]),
-        Some(&false),
+        rig.state.sticky_prior_value(&rig.keys[2]),
+        Some(false),
         "repeat adoption keeps ex-tiled sticky"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[3]),
-        Some(&true),
+        rig.state.sticky_prior_value(&rig.keys[3]),
+        Some(true),
         "repeat adoption keeps ex-float sticky"
     );
     assert!(
-        rig.state.floated.contains(&rig.keys[4]),
+        rig.state.floating_of(&rig.keys[4]),
         "repeat adoption keeps ordinary float"
     );
     assert!(
@@ -1197,7 +1203,7 @@ fn next_consistent_observation_revalidates_after_adoption() {
         "first observation adopts with no hold"
     );
     assert!(
-        rig.state.floated.contains(&rig.keys[4]),
+        rig.state.floating_of(&rig.keys[4]),
         "first observation commits the candidate"
     );
     super::inject_test_hints(rig.wins[0].hwnd, min_anchor_hints());
@@ -1215,17 +1221,17 @@ fn next_consistent_observation_revalidates_after_adoption() {
         "successful hydration leaves no hold"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[2]),
-        Some(&false),
+        rig.state.sticky_prior_value(&rig.keys[2]),
+        Some(false),
         "ex-tiled sticky re-adopts its prior"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[3]),
-        Some(&true),
+        rig.state.sticky_prior_value(&rig.keys[3]),
+        Some(true),
         "ex-float sticky re-adopts its prior"
     );
     assert!(
-        rig.state.floated.contains(&rig.keys[4]),
+        rig.state.floating_of(&rig.keys[4]),
         "ordinary float re-adopts"
     );
     for token in &rig.tokens[2..] {
@@ -1237,8 +1243,8 @@ fn next_consistent_observation_revalidates_after_adoption() {
     // The unmarked anchor adopts no intent lane under min-only hints
     // either (marker-driven adoption only; hints ride no world-path fact).
     assert!(
-        !rig.state.floated.contains(&rig.keys[0])
-            && !rig.state.sticky.contains_key(&rig.keys[0])
+        !rig.state.floating_of(&rig.keys[0])
+            && !rig.state.sticky_of(&rig.keys[0])
             && !rig.state.fixed_auto_seen.contains(&rig.keys[0]),
         "fixed anchor stays lane-free after min-only hints"
     );
@@ -1246,8 +1252,8 @@ fn next_consistent_observation_revalidates_after_adoption() {
     // the tile and the unmarked anchor stay unmarked while every adopted
     // float rides a lane.
     for (key, token) in rig.keys.iter().zip(rig.tokens.iter()) {
-        let lane = rig.state.floated.contains(key)
-            || rig.state.sticky.contains_key(key)
+        let lane = rig.state.floating_of(key)
+            || rig.state.sticky_of(key)
             || rig.state.fixed_auto_seen.contains(key);
         if token == &rig.tokens[1] || token == &rig.tokens[0] {
             assert!(!lane, "revalidated tile {token} stays lane-free");
@@ -1291,22 +1297,23 @@ fn monitorless_adoption_still_adopts_marker_intent_without_hold() {
         &areas,
         &mut hint_cx,
     );
+    super::world_tick::refresh_intent_snapshot(&mut rig.state);
     assert!(
         rig.state.restart_reject_hold.is_empty(),
         "monitorless adoption stages no hold barrier"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[2]),
-        Some(&false),
+        rig.state.sticky_prior_value(&rig.keys[2]),
+        Some(false),
         "ex-tiled sticky adopts without a monitor"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[3]),
-        Some(&true),
+        rig.state.sticky_prior_value(&rig.keys[3]),
+        Some(true),
         "ex-float sticky adopts without a monitor"
     );
     assert!(
-        rig.state.floated.contains(&rig.keys[4]),
+        rig.state.floating_of(&rig.keys[4]),
         "ordinary float adopts without a monitor"
     );
     for token in &rig.tokens[2..] {
@@ -1349,17 +1356,17 @@ fn monitorless_adoption_still_adopts_marker_intent_without_hold() {
         "repeat monitorless adoption stages no hold"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[2]),
-        Some(&false),
+        rig.state.sticky_prior_value(&rig.keys[2]),
+        Some(false),
         "repeat keeps ex-tiled sticky"
     );
     assert_eq!(
-        rig.state.sticky.get(&rig.keys[3]),
-        Some(&true),
+        rig.state.sticky_prior_value(&rig.keys[3]),
+        Some(true),
         "repeat keeps ex-float sticky"
     );
     assert!(
-        rig.state.floated.contains(&rig.keys[4]),
+        rig.state.floating_of(&rig.keys[4]),
         "repeat keeps ordinary float"
     );
     super::clear_test_hints();
@@ -1398,7 +1405,9 @@ fn invalid_marker_and_replaced_lifetime_never_hold() {
             "corrupt marker rebuilds the hold to empty"
         );
         assert!(
-            state.floated.is_empty() && state.sticky.is_empty(),
+            !state.sticky_of(&key)
+                && !state.floating_of(&key)
+                && !state.tile_override_of(&key),
             "corrupt marker stages no lane"
         );
     }
@@ -1432,12 +1441,14 @@ fn invalid_marker_and_replaced_lifetime_never_hold() {
             "replaced lifetime rebuilds the hold to empty"
         );
         assert!(
-            state.floated.is_empty() && state.sticky.is_empty(),
+            !state.sticky_of(&key)
+                && !state.floating_of(&key)
+                && !state.tile_override_of(&key),
             "replaced lifetime stages no lane"
         );
         assert!(
-            crate::product_hide::sys::read_float_intent_marker(win.hwnd),
-            "replaced lifetime never touches the durable marker"
+            crate::product_hide::sys::read_intent_slot(win.hwnd).is_none(),
+            "replaced lifetime never touches the durable marker (present but foreign, not absent)"
         );
     }
     super::clear_test_hints();

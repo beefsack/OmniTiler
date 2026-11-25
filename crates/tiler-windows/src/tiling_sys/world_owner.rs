@@ -59,6 +59,12 @@ pub(super) struct WorldOwner {
     /// rendered, so later state can never relabel captured proof. Never a
     /// second policy, never regenerated from current caches.
     last_proof: Option<serde_json::Value>,
+    /// Raw native-state attempts drained by the most recent apply pass
+    /// (TRACE-ONLY): the exact rows pushed into the sequencer for the next
+    /// report, kept for the `world-apply` diag so a pass whose only evidence
+    /// is a state write still emits its row with the original revision and
+    /// stamp. Reset at the start of every apply; never policy input.
+    last_state_attempts: Vec<tiler_core::world_report::StateAttempt>,
     has_accepted: bool,
     /// Offline-test scripting for the two report witness fields (live
     /// pointer generation, spent warp id). Never present in production;
@@ -121,6 +127,7 @@ impl WorldOwner {
             diff,
             last_reply: None,
             last_proof: None,
+            last_state_attempts: Vec::new(),
             has_accepted: false,
             #[cfg(test)]
             witness_override: None,
@@ -304,6 +311,7 @@ impl WorldOwner {
         view_out: &mut Vec<tiler_core::world_report::ViewAttempt>,
         attempt_ms: u64,
     ) -> super::world_diff::ApplyStats {
+        self.last_state_attempts.clear();
         let selection_focus_authority = self.seq.selection_focus_authority(reply);
         self.diff.arm_selection_focus(selection_focus_authority);
         let stats = apply_world_reply(
@@ -319,8 +327,9 @@ impl WorldOwner {
         for attempt in self.diff.take_visibility_attempts() {
             self.seq.note_visibility_attempt(attempt);
         }
-        for attempt in self.diff.take_state_attempts() {
-            self.seq.note_state_attempt(attempt);
+        self.last_state_attempts = self.diff.take_state_attempts();
+        for attempt in &self.last_state_attempts {
+            self.seq.note_state_attempt(attempt.clone());
         }
         for feedback in self.diff.take_focus_feedback() {
             self.seq.note_focus_feedback(feedback);
@@ -328,13 +337,10 @@ impl WorldOwner {
         stats
     }
 
-    /// Drain marker-mirror updates proven by the last apply pass. The tick
-    /// applies them to its sticky/float/tile tables only after the durable
-    /// native storage write succeeded; a held reply pushes nothing.
-    pub(super) fn take_intent_mirror_updates(
-        &mut self,
-    ) -> Vec<(String, super::world_diff::IntentStorage)> {
-        self.diff.take_intent_mirror_updates()
+    /// Raw native-state attempts drained by the most recent apply pass. Empty
+    /// when the pass dispatched no state write; never a cached policy fact.
+    pub(super) fn last_state_attempts(&self) -> &[tiler_core::world_report::StateAttempt] {
+        &self.last_state_attempts
     }
 
     pub(super) fn last_reply(&self) -> Option<&WorldReplyV4> {

@@ -114,20 +114,6 @@ pub(super) fn hold_marker_target(
     Some(held)
 }
 
-/// Held ownership gates for a band-only topmost effect on a stored member
-/// with no live eligible observation (retained floats, graceful stop).
-/// Same bar as [`hold_marker_target`]: the caller keeps the returned hold
-/// across the effect and rechecks pid plus band readback after.
-/// Geometry effects use `revalidate_target` (fresh eligibility classification);
-/// band effects move, size, and activate nothing.
-pub(super) fn hold_band_target(
-    state: &TileLoop,
-    me: &ProcessIdentity,
-    key: &crate::native_guards::WindowKey,
-) -> Option<HeldProcess> {
-    hold_marker_target(state, me, key)
-}
-
 /// Fresh pid plus lifetime-tag recheck for one classification-marker write:
 /// the live member tag must still equal the stored tag and the HWND must
 /// still resolve to the stored pid. Call immediately before the `SetProp` /
@@ -144,132 +130,8 @@ pub(super) fn marker_tag_pid_fresh(
     }) && pid_current(key.hwnd, key.pid)
 }
 
-/// Install one sticky marker under the fresh held gate with the guard kept
-/// across the write and its readback. Returns true only when the install
-/// reads back consistently and the pid plus lifetime tag stay fresh after.
-pub(super) fn install_sticky_mark_held(
-    state: &TileLoop,
-    me: &ProcessIdentity,
-    key: &crate::native_guards::WindowKey,
-    prior_floating: bool,
-) -> bool {
-    let Some(held) = hold_marker_target(state, me, key) else {
-        return false;
-    };
-    if !marker_tag_pid_fresh(state, key) {
-        let _ = &held;
-        return false;
-    }
-    let ok = crate::product_hide::sys::install_sticky_marker(key.hwnd, prior_floating).is_ok();
-    let fresh = marker_tag_pid_fresh(state, key);
-    let _ = &held;
-    ok && fresh
-}
-
-/// Install one intentional-float marker under the fresh held gate with the
-/// guard kept across the write and its readback. Only call after the Engine
-/// commit plus verified native effects hold: success-only persistence keeps
-/// local intent and native state on failure with no rollback. Returns true
-/// only when the install reads back consistently and the pid plus lifetime
-/// tag stay fresh after.
-pub(super) fn install_float_mark_held(
-    state: &TileLoop,
-    me: &ProcessIdentity,
-    key: &crate::native_guards::WindowKey,
-) -> bool {
-    let Some(held) = hold_marker_target(state, me, key) else {
-        return false;
-    };
-    if !marker_tag_pid_fresh(state, key) {
-        let _ = &held;
-        return false;
-    }
-    let ok = crate::product_hide::sys::install_float_intent_marker(key.hwnd).is_ok();
-    let fresh = marker_tag_pid_fresh(state, key);
-    let _ = &held;
-    ok && fresh
-}
-
-/// Install one fixed-window tile-override marker (R-SPC-04 D7) under the
-/// fresh held gate with the guard kept across the write and its readback.
-/// Only call after settled unfloat verified (Engine commit plus native
-/// effects hold): success-only persistence keeps local intent (the runtime
-/// override set) and native state on failure with a degraded log from the
-/// caller. Returns true only when the install reads back consistently and
-/// the pid plus lifetime tag stay fresh after.
-pub(super) fn install_tile_override_mark_held(
-    state: &TileLoop,
-    me: &ProcessIdentity,
-    key: &crate::native_guards::WindowKey,
-) -> bool {
-    let Some(held) = hold_marker_target(state, me, key) else {
-        return false;
-    };
-    if !marker_tag_pid_fresh(state, key) {
-        let _ = &held;
-        return false;
-    }
-    let ok = crate::product_hide::sys::install_tile_override_marker(key.hwnd).is_ok();
-    let fresh = marker_tag_pid_fresh(state, key);
-    let _ = &held;
-    ok && fresh
-}
-
-/// Best-effort removal of one tile-override marker on settled re-float
-/// (R-SPC-04 D7: clear on re-float). Mirrors the item-8 clear shape: a
-/// verifiably absent marker needs no write; otherwise the held process is
-/// bound across the before/after freshness checks plus the effect and its
-/// readback, and any failure only logs degraded from the caller and never
-/// fails the float itself. No write runs when identity is unsafe. A stale
-/// marker stays classification-inert while its window floats (suppress
-/// consults tiled admissions only) and dies with the window; verified close
-/// and membership prune drop the runtime set.
-pub(super) fn remove_tile_override_mark_best_effort(
-    state: &TileLoop,
-    me: &ProcessIdentity,
-    key: &crate::native_guards::WindowKey,
-    log_path: &Path,
-    window: &str,
-) {
-    let degraded = |detail: &str| {
-        log_json_at(
-            log_path,
-            serde_json::json!({
-                "event": "tile-override",
-                "window": window,
-                "outcome": "marker-unverified",
-                "detail": detail,
-            }),
-        );
-    };
-    let Some(held) = hold_marker_target(state, me, key) else {
-        // No hold, no write: an already-absent marker is clean; a present
-        // one stays for later recovery rather than risking a foreign write.
-        if !crate::ffi::is_window(key.hwnd)
-            || !crate::product_hide::sys::read_tile_override_marker(key.hwnd)
-        {
-            return;
-        }
-        degraded("identity-changed");
-        return;
-    };
-    if !marker_tag_pid_fresh(state, key) {
-        let _ = &held;
-        degraded("identity-changed");
-        return;
-    }
-    let result = crate::product_hide::sys::remove_tile_override_marker(key.hwnd);
-    let fresh = marker_tag_pid_fresh(state, key);
-    let _ = &held;
-    match result {
-        Ok(()) if fresh => {}
-        Ok(()) => degraded("identity-changed"),
-        Err(error) => degraded(&error.to_string()),
-    }
-}
-
 /// Hydrate one admitted member's surviving fixed-window tile-override marker
-/// into the runtime + durable override sets (R-SPC-04 D7). Read-only: no
+/// into the durable origin set (R-SPC-04 D7). Read-only: no
 /// Engine commit, no marker write, no geometry/focus/topmost effect; the
 /// marker stays for later restarts. The full held fence owns every read:
 /// [`hold_marker_target`] binds the live process identity (pid, creation,
@@ -314,7 +176,6 @@ pub(super) fn hydrate_tile_override_marker(
     if !fresh || !matches!(marker, crate::native_guards::RestartMarker::TileOverride) {
         return false;
     }
-    state.fixed_tile_overrides.insert(key.clone());
     state.fixed_origin_overrides.insert(key.clone());
     log_json_at(
         log_path,
@@ -332,17 +193,8 @@ pub(super) fn hydrate_tile_override_marker(
 /// the runtime maps. A surviving marker re-adopts on the next preamble.
 pub(super) fn prune_float_state(state: &mut TileLoop) {
     state
-        .float_topmost_prev
-        .retain(|key, _| state.member_tokens.contains_key(key));
-    state
         .float_rects
         .retain(|token, _| state.member_tokens.values().any(|live| live == token));
-    state
-        .floated
-        .retain(|key| state.member_tokens.contains_key(key));
-    state
-        .sticky
-        .retain(|key, _| state.member_tokens.contains_key(key));
     state
         .restart_reject_hold
         .retain(|key| state.member_tokens.contains_key(key));
@@ -350,9 +202,6 @@ pub(super) fn prune_float_state(state: &mut TileLoop) {
     // overrides and automatic origins never outlive their live client, and
     // overlay snapshots never outlive their token. Markers (window
     // properties) die with the window and are never pruned here.
-    state
-        .fixed_tile_overrides
-        .retain(|key| state.member_tokens.contains_key(key));
     state
         .fixed_origin_overrides
         .retain(|key| state.member_tokens.contains_key(key));
@@ -404,10 +253,6 @@ pub(super) fn drop_member_state(state: &mut TileLoop, key: &crate::native_guards
     state.born_first_exit.remove(key);
     state.fixed_auto_seen.remove(key);
     state.fixed_origin_overrides.remove(key);
-    state.fixed_tile_overrides.remove(key);
-    state.float_topmost_prev.remove(key);
-    state.floated.remove(key);
-    state.sticky.remove(key);
     state.restart_reject_hold.remove(key);
     state.member_identity.remove(key);
     state.member_tags.remove(key);
@@ -511,57 +356,6 @@ pub(super) fn refresh_world_hints(
     state
         .hint_fallback_uses
         .retain(|token, _| live.contains(token));
-}
-
-/// One exact-window foreground check plus a single setter with readback.
-/// Already-foreground takes no setter. Token-safe outcome only.
-fn retain_float_focus(hwnd_u64: u64) -> &'static str {
-    let foreground = crate::ffi::foreground_window();
-    if foreground == hwnd_u64 {
-        return "float-focus-retained";
-    }
-    if !crate::ffi::set_foreground_window(hwnd_u64) {
-        return "float-focus-failed";
-    }
-    if crate::ffi::foreground_window() == hwnd_u64 {
-        "float-focus-retained"
-    } else {
-        "float-focus-failed"
-    }
-}
-
-/// Validated float focus retention for the exact toggled window: fresh
-/// revalidation holds the target across the prior band calls, then at most
-/// one setter with readback. Stale targets fail closed; failures report
-/// without claiming success. No timers or retries.
-pub(super) fn retain_float_focus_validated(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    fulls: &[Rect],
-    expected: &ObservedWindow,
-    member_key: &crate::native_guards::WindowKey,
-) -> &'static str {
-    let member_tag = state.member_tags.get(member_key).map(String::as_str);
-    let target = match revalidate_target(
-        expected,
-        me,
-        fulls,
-        &mut state.tokens,
-        state.allowlist.is_some(),
-        state.allowlist.as_ref(),
-        &state.scope,
-        member_tag,
-        &state.scope_hosts,
-        false,
-    ) {
-        Ok(target) => target,
-        Err(_) => return "float-focus-failed",
-    };
-    let _ = &target.held;
-    if !pid_current(target.window.hwnd, target.window.identity.pid) {
-        return "float-focus-failed";
-    }
-    retain_float_focus(target.window.hwnd)
 }
 
 /// Record one fresh-query lane Timeout-reuse decision: whether this row's

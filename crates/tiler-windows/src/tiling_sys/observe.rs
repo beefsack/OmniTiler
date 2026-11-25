@@ -1320,6 +1320,7 @@ fn observe_window_inner(
         owned,
         captionless_fullscreen: is_borderless_fullscreen(captionless, visible, fulls),
         no_activate: exstyle & WS_EX_NOACTIVATE != 0,
+        topmost: exstyle & windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST != 0,
         // Own Settings rides the ordinary membership gate (never a
         // dialog); generic unowned `#32770` dialogs still refuse.
         dialog: crate::tiling::workspace_dialog_refuses(

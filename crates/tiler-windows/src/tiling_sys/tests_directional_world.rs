@@ -44,6 +44,7 @@ fn plain_facts() -> crate::tiling::WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -106,8 +107,9 @@ fn seed_member(state: &mut super::TileLoop, hwnd: u64, token: &str) {
         },
     );
     // v4 derives fixed-size intent from truthful raw hints: the automatic
-    // float origin is a fixed hint pair the core can prove. The adapter
-    // float table is no longer a classification input.
+    // float origin is a fixed hint pair the core can prove. No adapter
+    // float-intent lane is seeded, so the hints reach the report intact and
+    // the core admits the automatic fixed float itself.
     state.hint_logged.insert(
         token.to_owned(),
         tiler_core::size_hints::WindowSizeHints {
@@ -117,7 +119,6 @@ fn seed_member(state: &mut super::TileLoop, hwnd: u64, token: &str) {
             max_h: Some(200),
         },
     );
-    state.floated.insert(member);
 }
 
 /// Seed one managed member as a plain tile: identical identity tables to
@@ -787,7 +788,7 @@ fn maximized_clear_runs_core_desire_through_diff_to_continuation() {
     // Production mirrors the applied durable record into the mechanical
     // adapter table (`apply_intent_mirrors`), the same table the diff
     // baseline reads for its overlay guard.
-    state.floated.insert(key(101));
+    state.seed_float(key(101));
     let tiles = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
     for _ in 0..2 {
         observe_with_intent(&state, &mut seq, &intent, &tiles, 101);
@@ -943,7 +944,7 @@ fn maximized_sticky_clear_runs_core_desire_through_diff_to_continuation() {
     // Production mirrors the applied durable record into the mechanical
     // adapter table (`apply_intent_mirrors`), the same table the diff
     // baseline reads for its overlay guard.
-    state.sticky.insert(key(101), true);
+    state.seed_sticky(key(101), true);
     let tiles = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
     for window in &tiles {
         state
@@ -1638,10 +1639,12 @@ fn maximized_live_clear_authority_dispatches_exactly_once() {
         stats.held, 1,
         "only the maximized overlay frame write holds, got {stats:?}"
     );
-    // Redelivery with a lost acknowledgement: the spent automatic clear is
-    // one-shot per (lifetime, property, value) and never touches native
-    // again. The scripted live state is forced back to maximized, so any
-    // re-actuation would be visible as a flip to false.
+    // Redelivery with a lost acknowledgement: the durable
+    // (value, command_seq) record outranks the automatic-clear one-shot
+    // latch, so the original attempt is redelivered unchanged (same window,
+    // property, target, revision, pre/post, disposition, stamp) with zero
+    // native calls. The scripted live state is forced back to maximized, so
+    // any re-actuation would be visible as a flip to false.
     native
         .state
         .insert(("w1".to_owned(), StateProperty::Maximized), true);
@@ -1655,16 +1658,45 @@ fn maximized_live_clear_authority_dispatches_exactly_once() {
         &mut Vec::new(),
         1000,
     );
-    assert!(
-        diff.take_state_attempts().is_empty(),
-        "a redelivered one-shot clear reports no attempt: {redelivered:?}"
+    let redelivered_out = diff.take_state_attempts();
+    assert_eq!(
+        redelivered_out.len(),
+        1,
+        "a redelivered automatic clear reports its original attempt: {redelivered:?}"
+    );
+    let redelivered_attempt = &redelivered_out[0];
+    assert_eq!(redelivered_attempt.window.0, "w1");
+    assert_eq!(redelivered_attempt.property, StateProperty::Maximized);
+    assert!(!redelivered_attempt.target);
+    assert_eq!(
+        redelivered_attempt.revision, attempt.revision,
+        "redelivery preserves the acted-on revision"
+    );
+    assert_eq!(redelivered_attempt.pre, attempt.pre);
+    assert_eq!(redelivered_attempt.post, attempt.post);
+    assert_eq!(redelivered_attempt.disposition, attempt.disposition);
+    assert_eq!(
+        redelivered_attempt.attempt_ms, attempt.attempt_ms,
+        "redelivery preserves the original stamp"
     );
     assert_eq!(
         native
             .state
             .get(&("w1".to_owned(), StateProperty::Maximized)),
         Some(&true),
-        "the spent automatic clear never re-actuates native state"
+        "the redelivered automatic clear never re-actuates native state"
+    );
+    assert_eq!(
+        native
+            .state_writes
+            .iter()
+            .filter(|(token, property, _)| {
+                token == "w1" && *property == StateProperty::Maximized
+            })
+            .count(),
+        1,
+        "exactly one native state call ever ran, got {:?}",
+        native.state_writes
     );
 }
 

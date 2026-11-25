@@ -418,9 +418,6 @@ pub(super) fn workspace_close_cleanup(state: &mut TileLoop) {
         .retile_keep_overlay
         .retain(|key| state.member_tokens.contains_key(key));
     state
-        .fixed_tile_overrides
-        .retain(|key| state.member_tokens.contains_key(key));
-    state
         .fixed_origin_overrides
         .retain(|key| state.member_tokens.contains_key(key));
     state

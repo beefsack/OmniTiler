@@ -70,6 +70,7 @@ fn plain_facts() -> WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -622,8 +623,7 @@ fn assemble_with_views<'e>(
         &env.state.member_tags,
         &env.state.member_identity,
         &mut env.state.hidden_claims,
-        &env.state.sticky,
-        &env.state.float_topmost_prev,
+        &env.state.intent_snapshot,
         &env.state.scope,
         &env.state.scope_hosts,
         None,
@@ -650,6 +650,7 @@ fn script_live(key: &WindowKey, token: &str, vis: Rect, facts: WindowFacts) {
                 cloaked: facts.cloaked,
                 owned: facts.owned,
                 tool_window: facts.tool_window,
+                topmost: false,
                 dialog: facts.dialog,
             },
         )
@@ -2573,6 +2574,7 @@ fn scripted_hidden_reads(
                     cloaked: facts.cloaked,
                     owned: facts.owned,
                     tool_window: facts.tool_window,
+                    topmost: false,
                     dialog: facts.dialog,
                 },
                 None => {
@@ -2773,8 +2775,7 @@ fn live_tick_cursor(
         &env.state.member_tags,
         &env.state.member_identity,
         &mut env.state.hidden_claims,
-        &env.state.sticky,
-        &env.state.float_topmost_prev,
+        &env.state.intent_snapshot,
         &env.state.scope,
         &env.state.scope_hosts,
         None,
@@ -2963,12 +2964,10 @@ fn seed_test_areas() -> Vec<super::super::MonitorArea> {
 /// Production lane routing mirrored from the owner tick drain: one seed
 /// lands in the tile/float cache under the same lane row assembly uses.
 fn drain_seeds(state: &mut super::super::TileLoop, seeds: Vec<(WindowKey, Rect)>) {
-    let sticky = &state.sticky;
+    let storage = &state.intent_snapshot;
     let fixed_auto_seen = &state.fixed_auto_seen;
-    let fixed_tile_overrides = &state.fixed_tile_overrides;
     let fixed_origin_overrides = &state.fixed_origin_overrides;
     let born_first_exit = &state.born_first_exit;
-    let floated = &state.floated;
     let restart_reject_hold = &state.restart_reject_hold;
     let born_fullscreen = &state.born_fullscreen;
     super::apply_hidden_seeds(
@@ -2977,16 +2976,16 @@ fn drain_seeds(state: &mut super::super::TileLoop, seeds: Vec<(WindowKey, Rect)>
         &mut state.member_rects,
         &mut state.float_rects,
         |key| {
-            let sticky = sticky.contains_key(key);
-            let durable =
-                fixed_tile_overrides.contains(key) || fixed_origin_overrides.contains(key);
+            let row = storage.get(key);
+            let sticky = row.is_some_and(|s| s.sticky_prior.is_some());
+            let durable = row.is_some_and(|s| s.tile) || fixed_origin_overrides.contains(key);
             let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
             crate::native_guards::float_lane(
                 sticky,
                 automatic,
                 durable,
                 born_first_exit.contains(key),
-                floated.contains(key),
+                row.is_some_and(|s| s.float),
                 restart_reject_hold.contains(key),
                 born_fullscreen.contains(key),
                 true,
@@ -3050,7 +3049,7 @@ fn hide_seeds_hidden_snapshot_with_fresh_proven_frame() {
 fn hide_seeds_float_snapshot_for_floated_member() {
     // Float lane routes to `float_rects` and leaves the tile slot alone.
     let mut rig = hide_seed_rig(120_102);
-    rig.env.state.floated.insert(rig.leaving.clone());
+    rig.env.state.seed_float(rig.leaving.clone());
     let old_float = rect(10, 10, 200, 200);
     rig.env.state.float_rects.insert("w1".to_owned(), old_float);
     let mut native = assemble_with_views(

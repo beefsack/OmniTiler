@@ -200,16 +200,3 @@ pub(super) fn toggle_workspace_tiling(
     }
     let _ = tick;
 }
-
-/// Retry unconfirmed workspace-domain releases: deleted. Mode toggles
-/// dispatch synchronously through the world owner and report the honest
-/// outcome inline; nothing queues, so no topology-edge retry exists.
-/// unknown on the output. Stale-intent detection must distinguish unknown
-/// (still releasable with empty rows) from tiled (never releasable).
-pub(super) fn workspace_mode_known(
-    state: &TileLoop,
-    output: &str,
-    workspace: &str,
-) -> Option<bool> {
-    state.workspace_mode_known_here(output, workspace)
-}

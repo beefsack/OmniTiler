@@ -166,7 +166,6 @@ pub(super) fn poll_send_output_cli_request(
     };
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    clear_maximize_at_admission(state, me, &retained);
     workspace_close_cleanup(state);
     let mut queued = cli_line(tick, "dispatched");
     queued["origin"] = serde_json::Value::from(origin.token.clone());

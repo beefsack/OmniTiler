@@ -1,54 +1,5 @@
 #![forbid(unsafe_code)]
-use super::focus_actuation::overlay_expected;
 use super::*;
-
-/// Auto-retire positively restored owned-fullscreen markers on verified
-/// workspace members through the shared exact-lifetime sequence, so no
-/// special clear action is needed to trigger it. Global game/elevated gate
-/// only: per-action home/focus do not apply to background retirement, but
-/// every candidate still passes the exact member/window-tag/held-identity/
-/// scope proof inside the sequence plus the double live restoration proof.
-/// Metadata removal only, never a geometry write; fullscreen, transitional,
-/// unreadable, recycled, and zero-bit shapes keep their markers. Candidates
-/// need verified workspace membership; `overlay_expected` supplies the
-/// retained-aware expectation the pin requires.
-pub(super) fn sweep_retire_stale_fullscreen(
-    effects: &mut dyn UnfloatClearEffects,
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    fulls: &[Rect],
-) {
-    if effects.suspend_block(state, me, fulls) || effects.elevated(me) {
-        return;
-    }
-    let candidates: Vec<(crate::native_guards::WindowKey, String)> = state
-        .member_tokens
-        .iter()
-        .map(|(key, token)| (key.clone(), token.clone()))
-        .collect();
-    for (key, token) in candidates {
-        if state.member_home(&key).is_none() {
-            continue;
-        }
-        let Some(expected) = overlay_expected(state, observed, retained, &token) else {
-            continue;
-        };
-        if expected.hwnd != key.hwnd
-            || expected.identity.pid != key.pid
-            || expected.identity.process_creation != key.creation
-        {
-            continue;
-        }
-        let pre = effects.fullscreen_meta(key.hwnd);
-        if pre.is_none() {
-            continue;
-        }
-        let _ =
-            effective_stale_meta_via_effects(effects, state, &key, &expected, me, pre, true, fulls);
-    }
-}
 
 /// Run one reconcile tick through the single world owner: enumerate once,
 /// run the mechanical admission preamble plus visibility diagnostics, then
@@ -82,15 +33,8 @@ pub(super) fn reconcile_tick(
         );
         return;
     };
-    {
-        let mut native_retire = NativeUnfloatClear;
-        sweep_retire_stale_fullscreen(&mut native_retire, state, me, &observed, &retained, fulls);
-    }
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    // First-seen maximized windows restore once here: lifetime tags are
-    // stamped, and the cleared window converges as eligible next tick.
-    clear_maximize_at_admission(state, me, &retained);
     workspace_close_cleanup(state);
     // Bounded normal-level visibility/exception snapshots over the observation
     // just taken: managed visibility/cloak transitions and exception-lane

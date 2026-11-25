@@ -105,9 +105,6 @@ pub(super) fn gesture_tick(
     };
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    // First-seen maximized windows restore once here: lifetime tags are
-    // stamped, and the cleared window converges as eligible next tick.
-    clear_maximize_at_admission(state, me, &retained);
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     for hwnd in ended {
         // Every gesture settles as native: the title-bar modal loop is

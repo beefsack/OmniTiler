@@ -204,9 +204,8 @@ pub(super) fn dispatch_float_intent(
         return;
     };
     let ChordObserved {
-        mut observed,
-        mut retained,
-        mut skipped,
+        observed,
+        retained,
     } = chord;
     let ChordTarget {
         from,
@@ -221,9 +220,6 @@ pub(super) fn dispatch_float_intent(
         }
     };
     let is_float = engine_is_float(state, &loc.output, &loc.workspace, &from);
-    // Overlay fences on live state: overlay targets never float, and a
-    // natively overlaid float never unfloats until it reads normal again.
-    // Sticky origins refuse with the sticky vocabulary (KDE parity).
     // Floating workspaces take no per-window float toggles: the domain is
     // released and every frame stays native.
     if !workspace_mode_tiled(state, &loc.output, &loc.workspace) {
@@ -236,138 +232,114 @@ pub(super) fn dispatch_float_intent(
     }
     // Overlay fences on live state: overlay targets never float, and a
     // natively overlaid float never unfloats until it reads normal again.
-    // Sticky origins refuse with the sticky vocabulary (KDE parity). B9
-    // exception (R-FLT-06): an ordinary maximized float takes one
-    // nonactivating clear plus observed-clear before fresh admission instead
-    // of refusing; fullscreen, sticky, and tiled lanes keep refusing here.
-    let is_sticky_origin = state.sticky.contains_key(&member_key);
-    if let Some(refusal) =
-        chord_overlay_refusal(is_sticky_origin, &observed, &retained, &member_key)
+    // Sticky origins refuse with the sticky vocabulary (KDE parity). The
+    // core alone decides whether a maximized or fullscreen subject may
+    // transition (R-MAX-11): no adapter pre-clear exists.
+    let is_sticky_origin = state.sticky_of(&member_key);
+    if let Some(refusal) = chord_overlay_refusal(is_sticky_origin, &observed, &retained, &member_key)
     {
-        if refusal == "float-refused-maximize" && is_float && !is_sticky_origin {
-            match unfloat_maximize_clear(
-                state,
-                &mut NativeUnfloatClear,
-                me,
-                fulls,
-                &observed,
-                &retained,
-                &member_key,
-                &from,
-                &loc,
-                &origin.token,
-                &log_path,
-                tick,
-                &correlation,
-            ) {
-                Ok(fresh) => {
-                    observed = fresh.observed;
-                    retained = fresh.retained;
-                    skipped = fresh.skipped;
-                }
-                Err((outcome, cause)) => {
-                    state.snap_advance = None;
-                    let mut line = settle(outcome);
-                    line["origin"] = serde_json::Value::from(origin.token.clone());
-                    line["window"] = serde_json::Value::from(from.clone());
-                    if let Some(cause) = cause {
-                        line["cause"] = serde_json::Value::from(cause);
-                    }
-                    log_json_at(&log_path, line);
-                    return;
-                }
-            }
-        } else {
-            let mut line = settle(refusal);
-            line["origin"] = serde_json::Value::from(origin.token.clone());
-            line["window"] = serde_json::Value::from(from.clone());
-            log_json_at(&log_path, line);
-            return;
-        }
-    }
-    let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
-    let live_visible = by_hwnd.get(&member_key.hwnd).map(|w| w.visible);
-    // Win+G on any sticky origin clears sticky then tiles the CURRENT
-    // workspace. Prior float or tiled both tile.
-    if is_sticky_origin {
-        sticky_off_to_current(
-            state,
-            me,
-            store,
-            dir,
-            fulls,
-            areas,
-            &observed,
-            &retained,
-            &member_key,
-            &from,
-            &loc,
-            &origin,
-            &settle,
-            &log_path,
-            &correlation,
-        );
+        let mut line = settle(refusal);
+        line["origin"] = serde_json::Value::from(origin.token.clone());
+        line["window"] = serde_json::Value::from(from.clone());
+        log_json_at(&log_path, line);
         return;
     }
     // Unfloat carries the live frame rect so a moved/resized float is
-    // retained; float carries no rect so the Engine picks the retained
-    // placement, else the centered fallback. Frameless floats unfloat with no
-    // rect and keep the Engine-retained placement.
-    let live_rect = live_visible.or_else(|| {
-        retained
-            .iter()
-            .find(|r| r.key == member_key)
-            .and_then(|row| row.rect)
-    });
-    if is_float {
-        apply_unfloat_to_tiled(
-            state,
-            me,
-            store,
-            dir,
-            fulls,
-            areas,
-            &observed,
-            &retained,
-            skipped,
-            &member_key,
-            &from,
-            &loc,
-            live_rect,
-            &origin,
-            &settle,
-            &log_path,
-            tick,
-            &correlation,
-            "float",
-            "unfloated",
-            false,
-        );
-        return;
-    }
-    apply_float_from_tiled(
+    // retained. The core resolves the float direction and placement from
+    // its staged facts; this seam mutates no local intent table.
+    let live_rect = observed
+        .iter()
+        .find(|w| w.hwnd == member_key.hwnd)
+        .map(|w| w.visible)
+        .or_else(|| {
+            retained
+                .iter()
+                .find(|r| r.key == member_key)
+                .and_then(|row| row.rect)
+        });
+    // World-owned toggle: sticky-origin Win+G clears sticky and lets the
+    // core re-evaluate the conversion/rehome in the same command; every
+    // other origin toggles the ordinary float. The applied reply IS the
+    // outcome, and the host diff applies sibling reflow with fresh proof.
+    let command = if is_sticky_origin {
+        tiler_core::world_report::WorldCommand::SetSticky {
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
+            value: false,
+        }
+    } else {
+        tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
+            float_rect: live_rect,
+        })
+    };
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
         state,
         me,
         store,
         dir,
-        fulls,
-        areas,
         &observed,
         &retained,
-        skipped,
-        &member_key,
-        &from,
-        &loc,
-        &origin,
-        &settle,
-        &log_path,
-        tick,
-        &correlation,
-        "float",
-        "floated",
-        "float-applied",
-        false,
+        areas,
+        foreground,
+        fulls,
+        command,
+        super::observation::sample_cursor(),
     );
+    // Frame cache only (never intent): a floating applied row publishes the
+    // effective float frame for later retained-placement reads.
+    if let Some(outcome) = reply.as_ref()
+        && let Some(row) = outcome
+            .reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == from)
+        && row.floating
+        && let Some(frame) = row.effective_frame.or(row.allocation)
+    {
+        state.float_rects.insert(from.clone(), frame);
+    }
+    let (outcome, target) = if is_sticky_origin {
+        super::keyboard_overlays::state_toggle_labels(
+            reply.as_ref(),
+            &from,
+            tiler_core::world_report::StateProperty::Sticky,
+            "sticky",
+        )
+    } else {
+        match reply.as_ref() {
+            None => ("float-unverified", if is_float { "unfloated" } else { "floated" }),
+            Some(outcome) => match outcome.result.as_ref() {
+                Some(tiler_core::world_report::CommandResult::Float { no_space: true, .. }) => {
+                    ("unfloat-no-space", "floated")
+                }
+                Some(tiler_core::world_report::CommandResult::Float { rect: Some(_), .. }) => {
+                    ("float-applied", "floated")
+                }
+                Some(tiler_core::world_report::CommandResult::Float { rect: None, .. }) => {
+                    ("unfloat-applied", "unfloated")
+                }
+                Some(tiler_core::world_report::CommandResult::Rejected { .. }) => {
+                    ("rejected", "float")
+                }
+                _ => ("float-applied", "floated"),
+            },
+        }
+    };
+    let mut line = settle(outcome);
+    line["origin"] = serde_json::Value::from(origin.token.clone());
+    line["window"] = serde_json::Value::from(from.clone());
+    line["target"] = serde_json::Value::from(target);
+    if let Some(tiler_core::world_report::CommandResult::Rejected { kind }) =
+        reply.as_ref().and_then(|outcome| outcome.result.as_ref())
+    {
+        line["cause"] = serde_json::Value::from(kind.as_str());
+    }
+    log_json_at(&log_path, line);
 }
 
 /// Win+O orientation toggle (KDE Meta+O parity, item 4 R-LAY-01): fresh
@@ -446,7 +418,6 @@ pub(super) fn dispatch_orientation_intent(
     let ChordObserved {
         observed,
         retained,
-        skipped: _,
     } = chord;
     let ChordTarget {
         from,
@@ -472,7 +443,7 @@ pub(super) fn dispatch_orientation_intent(
     }
     // Float/sticky subjects hold no tile slot: the toggle settles with no
     // writes, never retiles them.
-    if state.sticky.contains_key(&member_key) {
+    if state.sticky_of(&member_key) {
         let mut line = settle("orientation-refused-sticky");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         line["window"] = serde_json::Value::from(from.clone());
@@ -636,218 +607,6 @@ pub(super) fn dispatch_workspace_tiling_intent(
     toggle_workspace_tiling(state, me, store, dir, fulls, areas, &output);
 }
 
-/// Cross-domain sticky-off to the current workspace: drop the float exception
-/// from the backing domain and admit on the current domain via two reconciles
-/// on a local candidate, with no stale duplicate. With `floating` the window
-/// stays a normal float preserving the live frame (no geometry writes);
-/// otherwise it tiles current. Band restores under held gates for the tiled
-/// destination; focus is retained in both.
-#[allow(clippy::too_many_arguments)]
-fn sticky_rehome_to_current(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    store: &LedgerStore,
-    dir: &Path,
-    fulls: &[Rect],
-    areas: &[MonitorArea],
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    member_key: &crate::native_guards::WindowKey,
-    from: &str,
-    loc: &super::world_reads::Home,
-    current_ws: &str,
-    origin: &SnapOrigin,
-    settle: &dyn Fn(&'static str) -> serde_json::Value,
-    log_path: &Path,
-    _correlation: &CorrelationId,
-    floating: bool,
-) {
-    let target = if floating { "float" } else { "unfloated" };
-    let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
-    let live_frame = by_hwnd
-        .get(&member_key.hwnd)
-        .map(|w| w.visible)
-        .or_else(|| state.float_rects.get(from).copied())
-        .or_else(|| {
-            retained
-                .iter()
-                .find(|r| r.key == *member_key)
-                .and_then(|row| row.rect)
-        });
-    let Some(live_frame) = live_frame else {
-        let mut line = settle("deferred");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.to_owned());
-        log_json_at(log_path, line);
-        return;
-    };
-    if !areas.iter().any(|a| a.device == loc.output) {
-        let mut line = settle("unknown-output");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        log_json_at(log_path, line);
-        return;
-    };
-    let topmost_restored = if floating {
-        true
-    } else {
-        let Some(restored) = restore_raised_band(
-            state, me, fulls, observed, member_key, from, target, origin, settle, log_path,
-            state.tick, "sticky",
-        ) else {
-            return;
-        };
-        restored
-    };
-    let expected_prior = state.sticky.get(member_key).copied().unwrap_or(false);
-    if !clear_sticky_mark(
-        state,
-        me,
-        member_key,
-        expected_prior,
-        from,
-        target,
-        origin,
-        settle,
-        log_path,
-    ) {
-        return;
-    }
-    // Settled rehome to tile clears a carried float marker too (a prior-float
-    // sticky tiling); rehome to float keeps (or repairs) it below.
-    if !floating
-        && !clear_float_mark(
-            state, me, member_key, from, target, origin, settle, log_path,
-        )
-    {
-        return;
-    }
-    // R-SPC-04 D7 provenance: capture BEFORE the world commit below.
-    // Sticky intent withdrew latch/override lanes at sticky-on, so only a
-    // surviving durable record or marker still proves fixed origin here.
-    let fixed_win = fixed_origin_provenance(state, member_key);
-    // World-owned lanes first: sticky leaves, and the float lanes settle by
-    // destination (ordinary float rides on, tile clears). The send below
-    // carries these facts, so the core homes the now-ordinary window.
-    state.sticky.remove(member_key);
-    if floating {
-        // Sticky-off preserving a prior float: ordinary intent rides on and
-        // any explicit tile win withdraws (R-SPC-04 D3/D7), like a settled
-        // re-float. Clear the runtime lanes and the marker best-effort.
-        // The float marker rides on: repair it when a foreign value crept
-        // onto our property; a failed repair keeps local intent and native
-        // state with a degraded log. A pending first exit resolves through
-        // this ordinary-float lane too.
-        state.fixed_tile_overrides.remove(member_key);
-        state.fixed_origin_overrides.remove(member_key);
-        state.fixed_auto_seen.remove(member_key);
-        state.born_first_exit.remove(member_key);
-        remove_tile_override_mark_best_effort(state, me, member_key, log_path, from);
-        let float_ok = crate::product_hide::sys::read_float_intent_marker(member_key.hwnd)
-            || install_float_mark_held(state, me, member_key);
-        state.float_rects.insert(from.to_owned(), live_frame);
-        state.floated.insert(member_key.clone());
-        if !float_ok {
-            let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
-                Some(expected) => {
-                    retain_float_focus_validated(state, me, fulls, expected, member_key)
-                }
-                None => "float-focus-failed",
-            };
-            let mut line = settle("float-unverified");
-            line["origin"] = serde_json::Value::from(origin.token.clone());
-            line["window"] = serde_json::Value::from(from.to_owned());
-            line["target"] = serde_json::Value::from(target);
-            line["focus"] = serde_json::Value::from(focus);
-            log_json_at(log_path, line);
-            state.ensure_device(&loc.output);
-            return;
-        }
-    } else {
-        state.float_topmost_prev.remove(member_key);
-        state.floated.remove(member_key);
-        state.float_rects.remove(from);
-        // Settled rehome to tile is an explicit user tile win (R-SPC-04
-        // D3/D7), like a settled unfloat: record the runtime override; only
-        // a proven fixed origin joins the durable set and persists the
-        // marker; the D4 latch withdraws.
-        state.fixed_auto_seen.remove(member_key);
-        state.fixed_tile_overrides.insert(member_key.clone());
-        if fixed_win {
-            state.fixed_origin_overrides.insert(member_key.clone());
-            if !install_tile_override_mark_held(state, me, member_key) {
-                log_json_at(
-                    log_path,
-                    serde_json::json!({
-                        "event": "tile-override",
-                        "window": from,
-                        "outcome": "marker-unverified",
-                    }),
-                );
-            }
-        }
-    }
-    // The core owns the rehome transfer: the facts above (sticky cleared,
-    // float lanes settled) home this now-ordinary window, and the send
-    // retains the transfer to the current view. The host diff applies it
-    // with fresh proof; focus stays explicit below.
-    let Some(wire) = state.wire_of(&loc.output) else {
-        let mut line = settle("unknown-output");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.to_owned());
-        line["target"] = serde_json::Value::from(target);
-        log_json_at(log_path, line);
-        return;
-    };
-    let foreground = crate::ffi::foreground_window();
-    let reply = super::world_tick::run_world_command(
-        state,
-        me,
-        store,
-        dir,
-        observed,
-        retained,
-        areas,
-        foreground,
-        fulls,
-        tiler_core::world_report::WorldCommand::Send {
-            window: tiler_core::directional::WindowSubject::Window(
-                tiler_core::directional::WindowId(from.to_owned()),
-            ),
-            target_output: tiler_core::directional::OutputId(wire),
-            target_workspace: tiler_core::directional::WorkspaceId(current_ws.to_owned()),
-            follow: false,
-        },
-        super::observation::sample_cursor(),
-    );
-    let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
-        Some(expected) => retain_float_focus_validated(state, me, fulls, expected, member_key),
-        None => "float-focus-failed",
-    };
-    if floating {
-        let mut line = settle(match reply {
-            Some(_) => "sticky-applied",
-            None => "sticky-unverified",
-        });
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.to_owned());
-        line["target"] = serde_json::Value::from(target);
-        line["focus"] = serde_json::Value::from(focus);
-        log_json_at(log_path, line);
-        return;
-    }
-    let outcome: &'static str = match reply {
-        Some(_) => "unfloat-applied",
-        None => "unfloat-unverified",
-    };
-    let mut line = settle(outcome);
-    line["origin"] = serde_json::Value::from(origin.token.clone());
-    line["window"] = serde_json::Value::from(from.to_owned());
-    line["target"] = serde_json::Value::from(target);
-    line["focus"] = serde_json::Value::from(focus);
-    line["topmost_restored"] = serde_json::Value::from(topmost_restored);
-    log_json_at(log_path, line);
-}
-
 /// Win+Shift+G sticky toggle: every production fence (suspend/elevated,
 /// fresh observation, origin re-resolution, overlay, workspace mode) runs
 /// here, then the world-owned `ToggleSticky` command decides the sticky-on
@@ -989,87 +748,3 @@ pub(super) fn dispatch_sticky_intent(
     log_json_at(&log_path, line);
 }
 
-/// Sticky-off to the current workspace: Win+G on a sticky origin always tiles
-/// the current workspace. Same-domain tiles via the shared unfloat;
-/// cross-domain rehomes.
-#[allow(clippy::too_many_arguments)]
-fn sticky_off_to_current(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    store: &LedgerStore,
-    dir: &Path,
-    fulls: &[Rect],
-    areas: &[MonitorArea],
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    member_key: &crate::native_guards::WindowKey,
-    from: &str,
-    loc: &super::world_reads::Home,
-    origin: &SnapOrigin,
-    settle: &dyn Fn(&'static str) -> serde_json::Value,
-    log_path: &Path,
-    correlation: &CorrelationId,
-) {
-    let Some(current_ws) = state.active_view(&loc.output) else {
-        let mut line = settle("unknown-output");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.to_owned());
-        log_json_at(log_path, line);
-        return;
-    };
-    if current_ws == loc.workspace {
-        let live_rect = observed
-            .iter()
-            .find(|w| w.hwnd == member_key.hwnd)
-            .map(|w| w.visible)
-            .or_else(|| {
-                retained
-                    .iter()
-                    .find(|r| r.key == *member_key)
-                    .and_then(|row| row.rect)
-            });
-        apply_unfloat_to_tiled(
-            state,
-            me,
-            store,
-            dir,
-            fulls,
-            areas,
-            observed,
-            retained,
-            Vec::new(),
-            member_key,
-            from,
-            loc,
-            live_rect,
-            origin,
-            settle,
-            log_path,
-            state.tick,
-            correlation,
-            "sticky",
-            "unfloated",
-            true,
-        );
-        return;
-    }
-    sticky_rehome_to_current(
-        state,
-        me,
-        store,
-        dir,
-        fulls,
-        areas,
-        observed,
-        retained,
-        member_key,
-        from,
-        loc,
-        &current_ws,
-        origin,
-        settle,
-        log_path,
-        correlation,
-        false,
-    );
-}

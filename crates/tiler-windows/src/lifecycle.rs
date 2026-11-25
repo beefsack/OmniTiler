@@ -1169,6 +1169,11 @@ pub mod sys {
         if !owner_dead(&record.owner)? {
             return Err(err("refuse: owner still active"));
         }
+        // R12 durable preimages: the dead owner's rows are foreign to the
+        // restoring process, so the restoring session is the exclusion scope;
+        // a live current session's own preimages are never touched. Runs after
+        // the dead-owner proof and before revealing windows.
+        let _ = crate::tiling_sys::recover_durable_preimages(&dir, &me.process_creation);
         // The owner is dead, so no live project icon exists: prune the crash
         // ghost through the stable GUID before revealing windows (tolerant,
         // unclaimed; same-user trust like every recovery step here).

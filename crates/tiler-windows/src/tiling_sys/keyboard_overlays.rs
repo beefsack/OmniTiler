@@ -137,9 +137,6 @@ pub(super) fn dispatch_maximize_intent(
     };
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    // First-seen maximized windows restore once here: lifetime tags are
-    // stamped, and the cleared window converges as eligible next tick.
-    clear_maximize_at_admission(state, me, &retained);
     let fresh: Vec<SnapOrigin> = state.snap_origins.values().cloned().collect();
     let foreground_hwnd = Some(crate::ffi::foreground_window());
     let (from, _) = match resolve_origin(
@@ -200,27 +197,6 @@ pub(super) fn dispatch_maximize_intent(
                 "disposition": "consumed",
                 "outcome": "foreground-changed",
                 "origin": origin.token,
-            }),
-        );
-        return;
-    }
-    // Fresh fullscreen/state fences before the native write (KDE
-    // `maximize-refused-fullscreen` parity): fullscreen wins and
-    // refuses, never toggles. A maximized member restores, any
-    // other managed member maximizes.
-    let retained_row = retained.iter().find(|r| r.key == member_key).cloned();
-    if retained_row.as_ref().is_some_and(|r| r.fullscreen) {
-        log_json_at(
-            log_path,
-            serde_json::json!({
-                "event": "maximize-toggle",
-                "tick": tick,
-                "correlation": correlation.as_str(),
-                "edge": intent.edge.as_str(),
-                "disposition": "consumed",
-                "outcome": "maximize-refused-fullscreen",
-                "origin": origin.token,
-                "window": from,
             }),
         );
         return;
@@ -452,9 +428,6 @@ pub(super) fn dispatch_fullscreen_intent(
     };
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    // First-seen maximized windows restore once here: lifetime tags are
-    // stamped, and the cleared window converges as eligible next tick.
-    clear_maximize_at_admission(state, me, &retained);
     let fresh: Vec<SnapOrigin> = state.snap_origins.values().cloned().collect();
     let foreground_hwnd = Some(crate::ffi::foreground_window());
     let (from, _) = match resolve_origin(
@@ -599,6 +572,7 @@ pub(super) fn dispatch_fullscreen_intent(
                 owned: false,
                 captionless_fullscreen: false,
                 no_activate: false,
+                topmost: false,
                 dialog: false,
             }),
             // Synthetic fallback row: no fresh membership read was taken, so

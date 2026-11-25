@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-use super::*;
 
 /// Settled result of one geometry application pass: verified writes,
 /// readback mismatches, and whether the independent readback observation ran
@@ -28,8 +27,3 @@ pub(super) struct VetoDiag {
     pub(super) cloaked: bool,
 }
 
-pub(super) fn audit_json(state: &TileLoop, value: serde_json::Value) {
-    if let Some(path) = state.audit_path.as_ref() {
-        log_json_at(path, value);
-    }
-}

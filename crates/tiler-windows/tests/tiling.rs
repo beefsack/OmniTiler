@@ -46,6 +46,7 @@ fn eligible_facts() -> WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -763,6 +764,7 @@ fn shared_window_policy_fixture_projection_matches_core_order() {
             owned: bit("owned_dialog"),
             captionless_fullscreen: bit("fullscreen"),
             no_activate: bit("no_activate"),
+            topmost: false,
             dialog: bit("dialog"),
         };
         let expected = case.get("refusal").and_then(serde_json::Value::as_str);
@@ -795,6 +797,7 @@ fn windows_classifier_normalization_exhaustive_matches_oracle_and_core() {
         owned: true,
         captionless_fullscreen: false,
         no_activate: true,
+        topmost: false,
         dialog: true,
     });
     assert_eq!(
@@ -825,6 +828,7 @@ fn windows_classifier_normalization_exhaustive_matches_oracle_and_core() {
                 owned: bits & 64 != 0,
                 captionless_fullscreen: fullscreen,
                 no_activate: bits & 256 != 0,
+                topmost: false,
                 dialog: bits & 128 != 0,
             };
             let geometry_expected = if !facts.visible {

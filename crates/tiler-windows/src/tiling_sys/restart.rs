@@ -341,7 +341,6 @@ pub(super) fn adopt_restart_markers(
     /// One staged marker window: `prior` carries the pre-sticky float state
     /// for sticky markers and is `None` for an ordinary float.
     struct Staged {
-        key: crate::native_guards::WindowKey,
         token: String,
         loc: super::world_reads::Home,
         prior: Option<bool>,
@@ -352,48 +351,9 @@ pub(super) fn adopt_restart_markers(
     // from the previous observation holds no authority here until this
     // observation revalidates its marker, lifetime, and pid fences below.
     state.restart_reject_hold.clear();
-    // R12 startup recovery (once per process): restore durable topmost
-    // preimages left by a previous tiler session whose exact lifetime is
-    // still observed. Only full identity plus stored-tag proof restores, and
-    // the current session's own live preimages are never touched. A missing
-    // or corrupt slot restores nothing (the slot is not authority).
-    if !state.above_preimage_restore_done {
-        state.above_preimage_restore_done = true;
-        let live_preimages: Vec<super::above_preimage::LiveLifetime<'_>> = observed
-            .iter()
-            .filter_map(|window| {
-                let key = crate::native_guards::WindowKey {
-                    hwnd: window.hwnd,
-                    pid: window.identity.pid,
-                    creation: window.identity.process_creation.clone(),
-                };
-                let tag = state.member_tags.get(&key)?;
-                Some(super::above_preimage::LiveLifetime {
-                    hwnd: window.hwnd,
-                    pid: window.identity.pid,
-                    creation: window.identity.process_creation.as_str(),
-                    tag: tag.as_str(),
-                })
-            })
-            .collect();
-        if !live_preimages.is_empty() {
-            let restored = super::above_preimage::restore_leftovers(
-                &state.durable_dir,
-                me.process_creation.as_str(),
-                &live_preimages,
-            );
-            if restored > 0 {
-                log_json_at(
-                    &state.log_path,
-                    serde_json::json!({
-                        "event": "above-preimage-restore",
-                        "outcome": "restored",
-                        "count": restored,
-                    }),
-                );
-            }
-        }
-    }
+    // R12 durable-preimage recovery no longer lives here: one scan per
+    // process runs at the top of `admit_observed` (before membership-tag
+    // rotation), and the crash watcher runs it under the dead-owner lease.
     // Stage every admitted valid marker before the first domain commit, so
     // no marker window is ever admitted as an ordinary tile first. No Engine
     // commits and no map writes in this pass (the already-floating fast path
@@ -405,7 +365,7 @@ pub(super) fn adopt_restart_markers(
             pid: window.identity.pid,
             creation: window.identity.process_creation.clone(),
         };
-        if state.sticky.contains_key(&key) || state.floated.contains(&key) {
+        if state.sticky_of(&key) || state.floating_of(&key) {
             continue;
         }
         if state.hidden_claims.keys().any(|k| k.hwnd == window.hwnd) {
@@ -506,10 +466,9 @@ pub(super) fn adopt_restart_markers(
             // reach here (fences above); recompute covers everything else.
             // Already-hydrated rows skip silently so later ticks never
             // re-log; hint loss and predicate changes never erase the win.
-            if state.fixed_origin_overrides.contains(&key) {
+            if state.tile_override_of(&key) {
                 continue;
             }
-            state.fixed_tile_overrides.insert(key.clone());
             state.fixed_origin_overrides.insert(key.clone());
             log_json_at(
                 &log_path,
@@ -524,14 +483,8 @@ pub(super) fn adopt_restart_markers(
             // The Engine already floats this token: track the runtime lane
             // with the live frame. No marker write, no commit.
             let lane = match prior {
-                Some(prior) => {
-                    state.sticky.insert(key.clone(), prior);
-                    "sticky-adopted"
-                }
-                None => {
-                    state.floated.insert(key.clone());
-                    "float-adopted"
-                }
+                Some(_) => "sticky-adopted",
+                None => "float-adopted",
             };
             state.float_rects.insert(token.clone(), window.visible);
             log_json_at(
@@ -544,7 +497,6 @@ pub(super) fn adopt_restart_markers(
             continue;
         }
         staged.push(Staged {
-            key,
             token,
             loc,
             prior,
@@ -594,22 +546,14 @@ pub(super) fn adopt_restart_markers(
     // the core homes them floating; no per-domain Engine commit exists to
     // refuse. Frames land here with the adopted outcome per window.
     for (output, workspace) in domains {
-        // Kept: the temporary lane entries below are the re-adopted
-        // origins (sticky keeps its prior, never a normal float). Every
-        // durable marker stays for later restarts; only settled
-        // unfloat/sticky-off removes them.
+        // Frames land here with the adopted outcome per window. Intent
+        // lanes are the durable markers read fresh into the per-tick
+        // snapshot; every marker stays for later restarts and only
+        // settled unfloat/sticky-off removes it through the core.
         for s in staged
             .iter()
             .filter(|s| s.loc.output == output && s.loc.workspace == workspace)
         {
-            match s.prior {
-                Some(prior) => {
-                    state.sticky.insert(s.key.clone(), prior);
-                }
-                None => {
-                    state.floated.insert(s.key.clone());
-                }
-            }
             state.float_rects.insert(s.token.clone(), s.frame);
             let lane = match s.prior {
                 Some(_) => "sticky-adopted",

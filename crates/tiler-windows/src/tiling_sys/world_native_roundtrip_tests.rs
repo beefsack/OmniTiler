@@ -1037,7 +1037,11 @@ fn floating_source_migration_writes_core_slot_and_preserves_float() {
     let f1 = win_key(208_502, 2262, "proc-162");
     admit_bare(&mut env, &a1, "w1");
     admit_bare(&mut env, &f1, "wf");
-    env.state.floated.insert(f1.clone());
+    env.state.seed_float(f1.clone());
+    // Production ticks re-read the durable slot; script the same intent on
+    // the marker-only fixture handle so the refresh keeps the float lane.
+    crate::product_hide::sys::fake::register_marks(f1.hwnd);
+    crate::product_hide::sys::fake::store_float_mark(f1.hwnd, 1);
     let float_rect = rect(-2000, 100, 300, 200);
     script_live(&a1, "w1", rect(-300, 1000, 400, 300), plain_facts());
     script_live(&f1, "wf", float_rect, plain_facts());
@@ -1771,6 +1775,7 @@ fn selection_return_core_effect_binds_exact_grant() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -1781,6 +1786,7 @@ fn selection_return_core_effect_binds_exact_grant() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -1843,8 +1849,7 @@ fn selection_return_core_effect_binds_exact_grant() {
         &env.state.member_tags,
         &env.state.member_identity,
         &mut env.state.hidden_claims,
-        &env.state.sticky,
-        &env.state.float_topmost_prev,
+        &env.state.intent_snapshot,
         &env.state.scope,
         &env.state.scope_hosts,
         None,

@@ -16,7 +16,6 @@
 use super::world_capture::capture_world;
 use super::world_diff::{FreshHost, IntentStorage, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
-use super::world_owner::WorldOwner;
 use super::{
     FullscreenMeta, MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window,
 };
@@ -429,12 +428,17 @@ fn should_log_apply(
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
+    state_attempts: &[tiler_core::world_report::StateAttempt],
     reply: &WorldReplyV4,
 ) -> bool {
     if command_kind != "observation" {
         return true;
     }
-    if !member_attempts.is_empty() || !view_attempts.is_empty() || !frame_attempts.is_empty() {
+    if !member_attempts.is_empty()
+        || !view_attempts.is_empty()
+        || !frame_attempts.is_empty()
+        || !state_attempts.is_empty()
+    {
         return true;
     }
     if !reply.operation_settled.is_empty() {
@@ -623,7 +627,7 @@ fn workspace_ref_covers(
 /// refusal as `Ok(false)` and torn state as `Err` without a native errno,
 /// so deeper refusal detail would need a broader seam change (reported as a
 /// limitation, not papered over here).
-// Fifteen inputs are the disjoint trace context plus the pass products
+// Sixteen inputs are the disjoint trace context plus the pass products
 // (reply, delivery, command kind, stats, raw attempts, fresh receipt proof,
 // cursor-hit/FFC, dispatched-report geometry basis); bundling would hide
 // the call-site borrow split the tick relies on.
@@ -638,6 +642,7 @@ fn apply_diag_value(
     view_attempts: &[tiler_core::world_report::ViewAttempt],
     command_result: Option<&CommandResult>,
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
+    state_attempts: &[tiler_core::world_report::StateAttempt],
     fresh_route: serde_json::Value,
     cursor_hit: Option<String>,
     ffc_enabled: bool,
@@ -725,6 +730,28 @@ fn apply_diag_value(
                 "dpi_before": item.dpi_before,
                 "dpi_after": item.dpi_after,
                 "attempt_id": item.attempt_id,
+                "attempt_ms": item.attempt_ms,
+            })
+        })
+        .collect();
+    // Raw native-state writes this pass produced (fullscreen/maximize/sticky/
+    // above), bounded with an honest omitted count: window/property/target
+    // correlation plus the original acted-on revision and stamp, the setter
+    // disposition vocabulary shared with frame setters, and the live
+    // pre/post property reads. `null` pre/post means unreadable, never a
+    // fabricated false. Never a verdict: the core owns completion.
+    let state_rows: Vec<serde_json::Value> = state_attempts
+        .iter()
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
+        .map(|item| {
+            serde_json::json!({
+                "window": item.window.0.clone(),
+                "property": item.property.as_str(),
+                "target": item.target,
+                "rev": item.revision,
+                "setter": item.disposition.as_str(),
+                "pre": item.pre,
+                "post": item.post,
                 "attempt_ms": item.attempt_ms,
             })
         })
@@ -1148,6 +1175,12 @@ fn apply_diag_value(
             .saturating_sub(stats.visibility_posts.len().min(MAX_APPLY_DIAG_FOCUS)),
         "fresh_route": fresh_route,
     });
+    out["states"] = serde_json::Value::Array(state_rows);
+    out["states_omitted"] = serde_json::json!(
+        state_attempts
+            .len()
+            .saturating_sub(state_attempts.len().min(MAX_APPLY_DIAG_ATTEMPTS))
+    );
     out["receipt_views"] = serde_json::Value::Array(receipt_rows);
     out["receipt_views_omitted"] = serde_json::json!(
         receipt_views
@@ -1249,7 +1282,7 @@ fn attach_warp_witness(value: &mut serde_json::Value, witness: (Option<u64>, Opt
 /// no input-hook cost, no native re-read, no per-window dump. Returns true
 /// when a row was emitted (the caller records the hover triple then, never
 /// on quiet ticks).
-// Twenty-one inputs are the disjoint trace context plus the pass products
+// Twenty-two inputs are the disjoint trace context plus the pass products
 // (reply, delivery, command kind, stats, raw attempts, fresh receipt proof,
 // cursor-hit/FFC, dispatched-report geometry basis, staged report witness,
 // hover-change, receipt-change, command-receipt stamp); bundling would hide
@@ -1267,6 +1300,7 @@ fn log_apply_diag(
     view_attempts: &[tiler_core::world_report::ViewAttempt],
     command_result: Option<&CommandResult>,
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
+    state_attempts: &[tiler_core::world_report::StateAttempt],
     fresh_route: serde_json::Value,
     cursor_hit: Option<String>,
     ffc_enabled: bool,
@@ -1285,6 +1319,7 @@ fn log_apply_diag(
             member_attempts,
             view_attempts,
             frame_attempts,
+            state_attempts,
             reply,
         ) || hover_changed
             || receipt_changed)
@@ -1306,6 +1341,7 @@ fn log_apply_diag(
         view_attempts,
         command_result,
         frame_attempts,
+        state_attempts,
         fresh_route,
         cursor_hit,
         ffc_enabled,
@@ -1331,6 +1367,26 @@ fn admit_observed(
     me: &crate::model::ProcessIdentity,
     observed: &[ObservedWindow],
 ) {
+    // R12 durable-preimage recovery (once per process): run before the
+    // per-window membership-tag rotation below, so leftovers from a previous
+    // tiler session are restored from the durable slots themselves (every
+    // enumerated window is already live; no observation list gates it). Only
+    // foreign-session rows whose exact lifetime self-verifies are touched,
+    // and the current session's own live preimages are never candidates.
+    if !state.durable_preimage_recovery_done {
+        state.durable_preimage_recovery_done = true;
+        let restored = super::recover_durable_preimages(&state.durable_dir, &me.process_creation);
+        if restored > 0 {
+            super::trace::log_json_at(
+                &state.log_path,
+                serde_json::json!({
+                    "event": "durable-preimage-restore",
+                    "outcome": "restored",
+                    "count": restored,
+                }),
+            );
+        }
+    }
     for window in observed {
         let key = crate::native_guards::WindowKey {
             hwnd: window.hwnd,
@@ -1459,6 +1515,35 @@ fn admit_observed(
     }
 }
 
+/// Refresh the per-tick durable intent snapshot from the canonical packed
+/// marker slot of every currently bound member and return the same map for
+/// [`super::world_capture::OwnerInputs::intent_storage`]. Unreadable or
+/// foreign-lifetime slots leave their key absent (unknown, never an inferred
+/// desire). This is the single writer of `TileLoop::intent_snapshot`.
+pub(super) fn refresh_intent_snapshot(
+    state: &mut TileLoop,
+) -> BTreeMap<crate::native_guards::WindowKey, IntentStorage> {
+    let snapshot: BTreeMap<crate::native_guards::WindowKey, IntentStorage> = state
+        .member_tokens
+        .keys()
+        .filter_map(|key| {
+            // Offline synthetic fixture handles are not Win32 HWNDs: their
+            // seeded snapshot entry is the only scripted truth a tick can
+            // read, so a refresh keeps it instead of inventing absence.
+            #[cfg(test)]
+            if !crate::ffi::is_window(key.hwnd)
+                && !crate::product_hide::sys::fake::marker_active(key.hwnd)
+                && let Some(existing) = state.intent_snapshot.get(key)
+            {
+                return Some((key.clone(), *existing));
+            }
+            super::world_native::intent_storage_of(key.hwnd).map(|storage| (key.clone(), storage))
+        })
+        .collect();
+    state.intent_snapshot = snapshot.clone();
+    snapshot
+}
+
 /// Refresh mechanical snapshots: last-known frames per token for overlay
 /// slots and hidden snapshots. Tiled members refresh their tile slot;
 /// floating lanes (sticky, automatic fixed, core floats, born holds) track
@@ -1477,7 +1562,7 @@ pub(super) fn snapshot_frames(state: &mut TileLoop, observed: &[ObservedWindow])
         if bound != window.token {
             continue;
         }
-        let float_lane = state.sticky.contains_key(&key)
+        let float_lane = state.sticky_of(&key)
             || state.fixed_auto_seen.contains(&key)
             || state.core_is_float_token(&bound)
             || state.born_fullscreen.contains(&key);
@@ -1508,7 +1593,6 @@ fn admit_retained_and_marks(
     let mut hint_cx = super::HintCx::new();
     super::restart::admit_slotless_maximized(state, me, retained, areas, &mut hint_cx);
     super::restart::adopt_restart_markers(state, me, observed, retained, areas, &mut hint_cx);
-    super::admission::clear_maximize_at_admission(state, me, retained);
 }
 
 /// Run one observation tick through the single world owner. Returns the
@@ -1560,6 +1644,9 @@ pub(super) fn run_observation_tick(
     // scope holds.
     let hidden_reads =
         super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
+    // One fresh durable-marker read for this tick, before the disjoint split
+    // (capture stays pure over the seam).
+    let intent_storage = refresh_intent_snapshot(state);
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -1570,13 +1657,10 @@ pub(super) fn run_observation_tick(
         ref mut member_rects,
         ref mut float_rects,
         ref hint_logged,
-        ref sticky,
-        ref floated,
         ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
         ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
@@ -1592,23 +1676,15 @@ pub(super) fn run_observation_tick(
         ref active,
         ref allowlist,
         workspace_proof,
-        ref float_topmost_prev,
         ..
     } = *state;
-    // Canonical fullscreen ownership and intent-storage reads for this
-    // tick's bound lifetimes, built from the disjoint table borrows before
-    // every capture below (capture stays pure over the seam). A failed read
-    // leaves its key absent: unknown/app-owned fullscreen and no intent
-    // record, never an inferred desire.
+    // Canonical fullscreen ownership for this tick's bound lifetimes, built
+    // from the disjoint table borrows before every capture below (capture
+    // stays pure over the seam). A failed read leaves its key absent:
+    // unknown/app-owned fullscreen, never an inferred desire.
     let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
         .keys()
         .filter_map(|key| super::read_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
-        .collect();
-    let intent_storage: BTreeMap<crate::native_guards::WindowKey, IntentStorage> = member_tokens
-        .keys()
-        .filter_map(|key| {
-            super::world_native::intent_storage_of(key.hwnd).map(|storage| (key.clone(), storage))
-        })
         .collect();
     // Invalidate synchronously on every tick input (dirty-until-ack).
     world.invalidate();
@@ -1623,13 +1699,10 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
         restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
         fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
@@ -1689,13 +1762,10 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
         restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
         fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
@@ -1727,13 +1797,10 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
         restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
         fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
@@ -1786,8 +1853,7 @@ pub(super) fn run_observation_tick(
         member_tags,
         member_identity,
         hidden_claims,
-        sticky,
-        float_topmost_prev,
+        &intent_storage,
         scope,
         scope_hosts,
         allowlist.as_ref(),
@@ -1896,6 +1962,7 @@ pub(super) fn run_observation_tick(
             &view_attempts,
             None,
             &frame_attempts,
+            world.last_state_attempts(),
             fresh_route_value(
                 &captured.focused_global,
                 captured.cursor,
@@ -1936,6 +2003,7 @@ pub(super) fn run_observation_tick(
         &view_attempts,
         None,
         &frame_attempts,
+        world.last_state_attempts(),
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -1974,34 +2042,26 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         |key| {
-            let sticky = sticky.contains_key(key);
+            let storage = intent_storage.get(key);
+            let sticky = storage.and_then(|s| s.sticky_prior).is_some();
             let durable =
-                fixed_tile_overrides.contains(key) || fixed_origin_overrides.contains(key);
+                storage.is_some_and(|s| s.tile) || fixed_origin_overrides.contains(key);
             let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
             crate::native_guards::float_lane(
                 sticky,
                 automatic,
                 durable,
                 born_first_exit.contains(key),
-                floated.contains(key),
+                storage.is_some_and(|s| s.float),
                 restart_reject_hold.contains(key),
                 born_fullscreen.contains(key),
                 true,
             )
         },
     );
-    // Durable marker storage proven earlier in this pass mirrors into the
-    // adapter tables here, after every shared input borrow has ended. A
-    // held/failed reconcile pushed nothing, so these tables never lead the
-    // native truth.
-    apply_intent_mirrors(
-        world,
-        member_tokens,
-        &mut state.sticky,
-        &mut state.floated,
-        &mut state.fixed_tile_overrides,
-        &mut state.fixed_origin_overrides,
-    );
+    // Durable marker storage is authoritative over the adapter's former
+    // mechanical mirrors (deleted): the next tick re-reads the canonical
+    // packed slot, so nothing can lead the native truth.
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
     }
@@ -2115,6 +2175,7 @@ fn run_observation_core_only(
     // disjoint split so capture stays pure over the seam.
     let hidden_reads =
         super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
+    let intent_storage = refresh_intent_snapshot(state);
     let TileLoop {
         ref mut world,
         ref member_tokens,
@@ -2123,13 +2184,10 @@ fn run_observation_core_only(
         ref mut member_rects,
         ref mut float_rects,
         ref hint_logged,
-        ref sticky,
-        ref floated,
         ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
         ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
@@ -2144,21 +2202,14 @@ fn run_observation_core_only(
         ref active,
         ..
     } = *state;
-    // Canonical fullscreen ownership and intent-storage reads for this
-    // tick's bound lifetimes, exactly like the full observation tick: a
-    // window that first admits during this core-only catch-up carries its
-    // owner metadata and intent record into the report instead of losing
-    // restart intent. A failed read leaves its key absent (unknown, never
-    // inferred).
+    // Canonical fullscreen ownership for this tick's bound lifetimes,
+    // exactly like the full observation tick: a window that first admits
+    // during this core-only catch-up carries its owner metadata and intent
+    // record into the report instead of losing restart intent. A failed read
+    // leaves its key absent (unknown, never inferred).
     let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
         .keys()
         .filter_map(|key| read_tick_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
-        .collect();
-    let intent_storage: BTreeMap<crate::native_guards::WindowKey, IntentStorage> = member_tokens
-        .keys()
-        .filter_map(|key| {
-            super::world_native::intent_storage_of(key.hwnd).map(|storage| (key.clone(), storage))
-        })
         .collect();
     world.invalidate();
     let tick_ms = super::trace::log_mono_ms();
@@ -2169,13 +2220,10 @@ fn run_observation_core_only(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
         restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
         fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
@@ -2238,54 +2286,6 @@ fn run_observation_core_only(
     // The report is returned for the offline catch-up regression; production
     // callers ignore it. Ack outcome keeps owning the fence exactly as before.
     Some(report)
-}
-
-/// Apply durable marker-storage results to the adapter's mechanical
-/// sticky/float/tile mirrors. Only storage the apply pass itself proved (the
-/// atomic publish succeeded) reaches here; a held or failed reconcile pushes
-/// nothing, so these tables never lead the native truth. Sticky dominates,
-/// matching capture's precedence; the fixed tile marker mirrors the durable
-/// win exactly as marker hydration does.
-fn apply_intent_mirrors(
-    world: &mut WorldOwner,
-    member_tokens: &BTreeMap<crate::native_guards::WindowKey, String>,
-    sticky: &mut BTreeMap<crate::native_guards::WindowKey, bool>,
-    floated: &mut std::collections::BTreeSet<crate::native_guards::WindowKey>,
-    fixed_tile_overrides: &mut std::collections::BTreeSet<crate::native_guards::WindowKey>,
-    fixed_origin_overrides: &mut std::collections::BTreeSet<crate::native_guards::WindowKey>,
-) {
-    for (token, storage) in world.take_intent_mirror_updates() {
-        let Some(key) = member_tokens
-            .iter()
-            .find(|(_, live)| live.as_str() == token)
-            .map(|(key, _)| key.clone())
-        else {
-            continue;
-        };
-        match storage.sticky_prior {
-            Some(prior) => {
-                sticky.insert(key.clone(), prior);
-                floated.remove(&key);
-                fixed_tile_overrides.remove(&key);
-            }
-            None if storage.float => {
-                sticky.remove(&key);
-                floated.insert(key.clone());
-                fixed_tile_overrides.remove(&key);
-            }
-            None if storage.tile => {
-                sticky.remove(&key);
-                floated.remove(&key);
-                fixed_tile_overrides.insert(key.clone());
-                fixed_origin_overrides.insert(key);
-            }
-            _ => {
-                sticky.remove(&key);
-                floated.remove(&key);
-                fixed_tile_overrides.remove(&key);
-            }
-        }
-    }
 }
 
 /// Shared command dispatch core: admission preamble, catch-up fence check
@@ -2373,6 +2373,7 @@ fn run_world_command_impl(
     // scope holds.
     let hidden_reads =
         super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
+    let intent_storage = refresh_intent_snapshot(state);
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -2383,13 +2384,10 @@ fn run_world_command_impl(
         ref mut member_rects,
         ref mut float_rects,
         ref hint_logged,
-        ref sticky,
-        ref floated,
         ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
         ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
@@ -2405,22 +2403,15 @@ fn run_world_command_impl(
         ref active,
         ref allowlist,
         workspace_proof,
-        ref float_topmost_prev,
         ..
     } = *state;
-    // Canonical fullscreen ownership and intent-storage reads for this
-    // command tick's bound lifetimes, built before both captures below
-    // (capture stays pure over the seam). A failed read leaves its key
-    // absent: unknown/app-owned fullscreen and no intent record.
+    // Canonical fullscreen ownership for this command tick's bound
+    // lifetimes, built before both captures below (capture stays pure over
+    // the seam). A failed read leaves its key absent: unknown/app-owned
+    // fullscreen, never an inferred desire.
     let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
         .keys()
         .filter_map(|key| super::read_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
-        .collect();
-    let intent_storage: BTreeMap<crate::native_guards::WindowKey, IntentStorage> = member_tokens
-        .keys()
-        .filter_map(|key| {
-            super::world_native::intent_storage_of(key.hwnd).map(|storage| (key.clone(), storage))
-        })
         .collect();
     world.invalidate();
     // One monotonic sample for this command tick (same contract as the
@@ -2434,13 +2425,10 @@ fn run_world_command_impl(
             member_rects,
             float_rects,
             hint_logged,
-            sticky,
-            floated,
             restart_reject_hold,
             born_fullscreen,
             born_first_exit,
             fixed_auto_seen,
-            fixed_tile_overrides,
             fixed_origin_overrides,
             hidden_claims,
             minimized_omitted,
@@ -2649,13 +2637,10 @@ fn run_world_command_impl(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
         restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
         fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
@@ -2687,13 +2672,10 @@ fn run_world_command_impl(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
         restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
         fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
@@ -2742,8 +2724,7 @@ fn run_world_command_impl(
         member_tags,
         member_identity,
         hidden_claims,
-        sticky,
-        float_topmost_prev,
+        &intent_storage,
         scope,
         scope_hosts,
         allowlist.as_ref(),
@@ -2840,6 +2821,7 @@ fn run_world_command_impl(
             &view_attempts,
             result.as_ref(),
             &frame_attempts,
+            world.last_state_attempts(),
             fresh_route_value(
                 &captured.focused_global,
                 captured.cursor,
@@ -2880,6 +2862,7 @@ fn run_world_command_impl(
         &view_attempts,
         result.as_ref(),
         &frame_attempts,
+        world.last_state_attempts(),
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -2914,34 +2897,26 @@ fn run_world_command_impl(
         member_rects,
         float_rects,
         |key| {
-            let sticky = sticky.contains_key(key);
+            let storage = intent_storage.get(key);
+            let sticky = storage.and_then(|s| s.sticky_prior).is_some();
             let durable =
-                fixed_tile_overrides.contains(key) || fixed_origin_overrides.contains(key);
+                storage.is_some_and(|s| s.tile) || fixed_origin_overrides.contains(key);
             let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
             crate::native_guards::float_lane(
                 sticky,
                 automatic,
                 durable,
                 born_first_exit.contains(key),
-                floated.contains(key),
+                storage.is_some_and(|s| s.float),
                 restart_reject_hold.contains(key),
                 born_fullscreen.contains(key),
                 true,
             )
         },
     );
-    // Durable marker storage proven earlier in this pass mirrors into the
-    // adapter tables here, after every shared input borrow has ended. A
-    // held/failed reconcile pushed nothing, so these tables never lead the
-    // native truth.
-    apply_intent_mirrors(
-        world,
-        member_tokens,
-        &mut state.sticky,
-        &mut state.floated,
-        &mut state.fixed_tile_overrides,
-        &mut state.fixed_origin_overrides,
-    );
+    // Durable marker storage is authoritative over the adapter's former
+    // mechanical mirrors (deleted): the next tick re-reads the canonical
+    // packed slot, so nothing can lead the native truth.
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
     }
@@ -3262,13 +3237,10 @@ pub(super) fn dispatch_test_observation(
         ref member_rects,
         ref float_rects,
         ref hint_logged,
-        ref sticky,
-        ref floated,
         ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
         ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
@@ -3281,6 +3253,7 @@ pub(super) fn dispatch_test_observation(
         ref mut applied_homing,
         ref mut applied_views,
         ref active,
+        ref intent_snapshot,
         ..
     } = *state;
     world.invalidate();
@@ -3293,13 +3266,10 @@ pub(super) fn dispatch_test_observation(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
         restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
         fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
@@ -3321,6 +3291,7 @@ pub(super) fn dispatch_test_observation(
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.intent_storage = Some(intent_snapshot);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -3583,6 +3554,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             fresh_route_value(
                 "w1",
                 None,
@@ -3639,6 +3611,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             fresh_route_value(
                 "w1",
                 None,
@@ -3668,6 +3641,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             fresh_route_value(
                 "w1",
                 None,
@@ -3691,6 +3665,65 @@ mod apply_diag_tests {
         if let Ok(mut queue) = hook_queue().lock() {
             queue.clear();
         }
+    }
+
+    #[test]
+    fn state_attempt_only_pass_logs_with_original_revision_and_stamp() {
+        use tiler_core::world_report::{FrameSetter, StateAttempt, StateProperty};
+        let reply = reply_shell();
+        let stats = super::super::world_diff::ApplyStats::default();
+        let state_attempts = vec![StateAttempt {
+            window: WindowId("w7".to_owned()),
+            property: StateProperty::Above,
+            target: true,
+            revision: 42,
+            disposition: FrameSetter::Accepted,
+            pre: Some(false),
+            post: Some(true),
+            attempt_ms: 77,
+        }];
+        // A pass whose only evidence is one raw state write must emit, not
+        // stay quiet on an observation tick.
+        assert!(should_log_apply(
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &state_attempts,
+            &reply,
+        ));
+        let value = apply_diag_value(
+            9,
+            &reply,
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            None,
+            &[],
+            &state_attempts,
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            None,
+        );
+        let states = value["states"].as_array().expect("state rows");
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0]["window"], serde_json::json!("w7"));
+        assert_eq!(states[0]["property"], serde_json::json!("above"));
+        assert_eq!(states[0]["target"], serde_json::json!(true));
+        // The row carries the acted-on revision and the raw setter stamp,
+        // never the current pass clock or an inferred verdict.
+        assert_eq!(states[0]["rev"], serde_json::json!(42));
+        assert_eq!(states[0]["attempt_ms"], serde_json::json!(77));
+        assert_eq!(states[0]["setter"], serde_json::json!("accepted"));
+        assert_eq!(states[0]["pre"], serde_json::json!(false));
+        assert_eq!(states[0]["post"], serde_json::json!(true));
+        assert_eq!(value["states_omitted"], serde_json::json!(0));
     }
 
     #[test]
@@ -3734,6 +3767,7 @@ mod apply_diag_tests {
             &members,
             &views,
             None,
+            &[],
             &[],
             fresh_route_value(
                 "w1",
@@ -3871,6 +3905,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Pure-held observation ticks stay quiet: steady-state holds with no
@@ -3885,6 +3920,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Commands always log, so a no-attempt Hold on a command still shows
@@ -3895,6 +3931,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         assert!(should_log_apply(
@@ -3914,6 +3951,7 @@ mod apply_diag_tests {
             }],
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         let writes = super::super::world_diff::ApplyStats {
@@ -3926,6 +3964,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         let stopped = super::super::world_diff::ApplyStats {
@@ -3939,6 +3978,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Any minted focus effect logs on observation ticks, dispatched or
@@ -3992,6 +4032,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         let held_no_setter = super::super::world_diff::ApplyStats {
@@ -4042,6 +4083,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Settlement-only observation ticks log: an observation-only
@@ -4063,6 +4105,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &settled_reply,
         ));
         // Frame-only observation ticks log: a fresh raw frame write with no
@@ -4093,6 +4136,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &frame_only,
+            &[],
             &idle_reply,
         ));
     }
@@ -4174,6 +4218,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             route.clone(),
             None,
             false,
@@ -4201,6 +4246,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             route,
             None,
             false,
@@ -4228,6 +4274,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             fresh_route_value(
                 "",
                 None,
@@ -4298,6 +4345,7 @@ mod apply_diag_tests {
                     &empty_members,
                     &empty_views,
                     &empty_frames,
+                    &[],
                     reply,
                 ),
                 "unchanged accept must stay silent on the ordinary log"
@@ -4322,6 +4370,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             route(),
             None,
             false,
@@ -4339,6 +4388,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             route(),
             None,
             false,
@@ -4409,6 +4459,7 @@ mod apply_diag_tests {
             &[],
             None,
             &empty_frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4457,6 +4508,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Omitted-count-only evidence logs too: the fold itself is new.
@@ -4470,6 +4522,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
     }
@@ -4502,6 +4555,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         let value = apply_diag_value(
@@ -4514,6 +4568,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4542,6 +4597,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Over-cap source storage stays honest in world-apply: the capped
@@ -4570,6 +4626,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4646,6 +4703,7 @@ mod apply_diag_tests {
             &views,
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4688,6 +4746,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4723,6 +4782,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -4764,6 +4824,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -4849,6 +4910,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
@@ -5001,6 +5063,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
             true,
@@ -5142,6 +5205,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
             true,
@@ -5244,6 +5308,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             Some("w0".to_owned()),
             false,
@@ -5326,6 +5391,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             Some("w0".to_owned()),
             true,
@@ -5377,6 +5443,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5410,6 +5477,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -5510,6 +5578,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &frames,
+            &[],
             &reply_shell(),
         ));
         assert!(should_log_apply(
@@ -5517,6 +5586,7 @@ mod apply_diag_tests {
             &quiet,
             &empty_members,
             &empty_views,
+            &[],
             &[],
             &reply,
         ));
@@ -5530,6 +5600,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5589,6 +5660,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
+            &[],
             &idle_reply,
         ));
         let mut reply = reply_shell();
@@ -5646,6 +5718,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5797,6 +5870,7 @@ mod apply_diag_tests {
             &member_attempts,
             &view_attempts,
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -5959,6 +6033,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6022,6 +6097,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6061,6 +6137,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6077,6 +6154,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6110,6 +6188,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6160,6 +6239,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6245,6 +6325,7 @@ mod apply_diag_tests {
             &empty_vecs,
             &empty_views,
             &empty_frames,
+            &[],
             &desire_only,
         ));
         // Settlement with zero attempts emits through the real throttle.
@@ -6262,6 +6343,7 @@ mod apply_diag_tests {
             &empty_vecs,
             &empty_views,
             &empty_frames,
+            &[],
             &settled,
         ));
         let value = apply_diag_value(
@@ -6274,6 +6356,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6308,6 +6391,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6375,6 +6459,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6404,6 +6489,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6432,6 +6518,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6449,6 +6536,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6474,6 +6562,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6557,6 +6646,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6579,6 +6669,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6612,6 +6703,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6650,6 +6742,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6684,6 +6777,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6717,6 +6811,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6755,6 +6850,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6816,6 +6912,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
@@ -6835,6 +6932,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             route(),
             None,
@@ -6861,6 +6959,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
@@ -6886,6 +6985,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
@@ -6908,6 +7008,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
@@ -6927,6 +7028,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             route(),
             None,
@@ -6952,6 +7054,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             route(),
             None,
@@ -6995,6 +7098,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             fresh_route_value(
                 "",
                 None,
@@ -7023,6 +7127,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -7046,6 +7151,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -7082,6 +7188,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -7135,6 +7242,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -7185,6 +7293,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -7307,6 +7416,7 @@ mod core_only_catchup_tests {
                 shell: false,
                 tool_window: false,
                 owned: false,
+                topmost: false,
                 captionless_fullscreen: true,
                 no_activate: false,
                 dialog: false,

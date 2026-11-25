@@ -192,7 +192,7 @@ pub(super) fn run_tile_loop(
         log_path: log_path.clone(),
         audit_path: audit_path.clone(),
         durable_dir: dir.to_path_buf(),
-        above_preimage_restore_done: false,
+        durable_preimage_recovery_done: false,
         keyboard,
         inner_gap,
         outer_gap,
@@ -242,7 +242,6 @@ pub(super) fn run_tile_loop(
         pager_cells_last: None,
         pager_refusals: HashMap::new(),
         workspace_proof: false,
-        maximize_admission_attempted: HashSet::new(),
         born_keep_overlay: BTreeSet::new(),
         retile_keep_overlay: BTreeSet::new(),
         born_fullscreen: BTreeSet::new(),
@@ -293,12 +292,9 @@ pub(super) fn run_tile_loop(
             let (win_held, shift_held) = chord_held_now();
             tiler_core::visual::group_underlay_chord_held(win_held, shift_held)
         },
-        float_topmost_prev: std::collections::BTreeMap::new(),
         float_rects: HashMap::new(),
-        floated: BTreeSet::new(),
-        sticky: std::collections::BTreeMap::new(),
+        intent_snapshot: std::collections::BTreeMap::new(),
         restart_reject_hold: BTreeSet::new(),
-        fixed_tile_overrides: BTreeSet::new(),
         fixed_origin_overrides: BTreeSet::new(),
         fixed_auto_seen: BTreeSet::new(),
         born_first_exit: BTreeSet::new(),
@@ -1515,59 +1511,8 @@ pub(super) fn run_tile_loop(
         &log_path,
         serde_json::json!({"event":"drag-preview-end","overlay": preview_snapshot}),
     );
-    // Graceful stop restores only project-raised topmost bands with no frame
-    // change, under the same held ownership gates as dispatch. Geometry is
-    // left in place; a crash leaves every frame where it is, and restart
-    // resets this runtime-local preimage with the Engine.
-    let mut float_topmost_restored = 0u32;
-    let mut float_topmost_skipped = 0u32;
-    let float_preimages: Vec<(crate::native_guards::WindowKey, bool)> = state
-        .float_topmost_prev
-        .iter()
-        .map(|(key, prior)| (key.clone(), *prior))
-        .collect();
-    for (key, prior) in float_preimages {
-        let Some(held) = hold_band_target(&state, me, &key) else {
-            float_topmost_skipped += 1;
-            continue;
-        };
-        let current = read_topmost_now(key.hwnd);
-        if !crate::tiling::float_topmost_restore_needed(prior, current) {
-            continue;
-        }
-        let ok = set_topmost_band(key.hwnd, prior)
-            && read_topmost_now(key.hwnd) == prior
-            && pid_current(key.hwnd, key.pid);
-        let _ = &held;
-        if state.audit_path.is_some() {
-            audit_json(
-                &state,
-                serde_json::json!({
-                    "event": "proof-topmost",
-                    "op": "stop",
-                    "restored": ok,
-                }),
-            );
-        }
-        if ok {
-            float_topmost_restored += 1;
-        } else {
-            float_topmost_skipped += 1;
-        }
-    }
-    state.float_topmost_prev.clear();
-    state.floated.clear();
     state.float_rects.clear();
-    if float_topmost_restored > 0 || float_topmost_skipped > 0 {
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "float-topmost-restore",
-                "restored": float_topmost_restored,
-                "skipped": float_topmost_skipped,
-            }),
-        );
-    }
+    state.intent_snapshot.clear();
     log_json_at(
         &log_path,
         serde_json::json!({"event":"tile-end","ticks":state.tick}),

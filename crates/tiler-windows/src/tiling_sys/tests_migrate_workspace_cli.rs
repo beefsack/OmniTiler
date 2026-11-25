@@ -395,6 +395,7 @@ fn migrate_workspace_applied_path_through_production_route() {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     };
     for (hwnd, token, pid, creation, _rect) in &wins {
@@ -581,6 +582,7 @@ fn migrate_workspace_refusal_logs_bounded_core_reason() {
             owned: false,
             captionless_fullscreen: false,
             no_activate: false,
+            topmost: false,
             dialog: false,
         },
         member_tag: Some("tag-0x4201".to_owned()),
@@ -810,6 +812,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
             owned: false,
             captionless_fullscreen: false,
             no_activate: false,
+            topmost: false,
             dialog: false,
         };
         for (hwnd, token, pid, creation, _x) in [
@@ -1085,6 +1088,7 @@ fn migrate_workspace_tick_and_cli_share_core_resolution() {
             owned: false,
             captionless_fullscreen: false,
             no_activate: false,
+            topmost: false,
             dialog: false,
         },
         member_tag: Some("tag-0x5201".to_owned()),

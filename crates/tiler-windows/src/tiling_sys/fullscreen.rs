@@ -200,103 +200,21 @@ pub(super) fn clear_fullscreen_meta(hwnd_u64: u64) -> bool {
     read_fullscreen_meta(hwnd_u64).is_none()
 }
 
-/// Live style read for stale-metadata retirement: `None` when the window is
-/// dead or the style word is unreadable (fail closed, never guessed).
-pub(super) fn live_style_for_retire(hwnd_u64: u64) -> Option<u32> {
-    if !crate::ffi::is_window(hwnd_u64) {
-        return None;
-    }
-    crate::ffi::window_style_checked(hwnd_u64)
-}
-
-/// Shared stale-retirement ordering for owned fullscreen markers (user
-/// decision 2026-10-12): the single production sequence used by the
-/// directional move-clear, the B9 unfloat-clear, and the reconcile sweep, so
-/// no special action is needed to trigger it. A stale marker whose chrome
-/// provably restored by other means retires here (metadata removal only,
-/// never a geometry write); every other shape keeps its marker so the veto
-/// below still holds.
-///
-/// Sequence: no work without a pre-read marker or when the caller's
-/// home/focus/suspend/elevation guards already fail (no mutation then,
-/// preserving scope and game safety); quick pid fence; first live
-/// restoration proof (style contains all `changed` plus live no-cover);
-/// immediately-before-removal exact revalidation (member key, window tag,
-/// held process/identity, scope/hosted/proof via the existing target
-/// fences); re-read metadata must equal the probed preimage; second live
-/// proof must still hold; pid still current; only then best-effort removal
-/// with an absence re-read. Any unreadable leg, drift, re-fullscreen, tag
-/// change, same-PID reuse, zero-bit preimage, or failed removal keeps the
-/// marker for a later press. No resurrection of incomplete preimages (a
-/// missing companion never reads as a preimage), no writes whatsoever on
-/// fullscreen/transition.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn effective_stale_meta_via_effects(
-    effects: &mut dyn UnfloatClearEffects,
-    state: &mut TileLoop,
-    member_key: &crate::native_guards::WindowKey,
-    expected: &ObservedWindow,
-    me: &ProcessIdentity,
-    meta: Option<FullscreenMeta>,
-    guards_ok: bool,
-    fulls: &[Rect],
-) -> Option<FullscreenMeta> {
-    let pre = meta?;
-    if !guards_ok {
-        return Some(pre);
-    }
-    if !effects.pid_current(member_key.hwnd, expected.identity.pid) {
-        return Some(pre);
-    }
-    let (style_opt, fullscreen_opt) = effects.retire_probe(member_key.hwnd, fulls);
-    let restored = style_opt.is_some_and(|live| live & pre.changed == pre.changed);
-    if !crate::tiling::stale_fullscreen_retire_eligible(pre.changed, restored, fullscreen_opt) {
-        return Some(pre);
-    }
-    // Immediately-before-removal lifetime pin: member key, window tag, held
-    // process/identity, scope/hosted/proof. Any drift fails closed.
-    let held = match effects.revalidate(state, member_key, expected, me, fulls) {
-        Ok(target) => target.held,
-        Err(_) => return Some(pre),
-    };
-    let _ = &held;
-    // The marker must still equal the probed preimage: a changed marker
-    // (including a genuine re-fullscreen) never deletes another preimage.
-    // An externally vanished marker reads absent and stays absent.
-    let cur = effects.fullscreen_meta(member_key.hwnd);
-    if cur != Some(pre) {
-        return cur;
-    }
-    // The restoration proof must still be live after the pin.
-    let (style2, fullscreen2) = effects.retire_probe(member_key.hwnd, fulls);
-    let restored2 = style2.is_some_and(|live| live & pre.changed == pre.changed);
-    if !crate::tiling::stale_fullscreen_retire_eligible(pre.changed, restored2, fullscreen2) {
-        return Some(pre);
-    }
-    if !effects.pid_current(member_key.hwnd, expected.identity.pid) {
-        return effects.fullscreen_meta(member_key.hwnd).or(Some(pre));
-    }
-    if effects.retire_clear(member_key.hwnd) {
-        effects.fullscreen_meta(member_key.hwnd)
-    } else {
-        effects.fullscreen_meta(member_key.hwnd).or(Some(pre))
-    }
-}
-
-/// Enter project-owned fullscreen: store the restoration preimage first, then
-/// clear the frame bits and cover the monitor without activating. No blind
-/// input synthesis; the official style/frame APIs only. The preimage keeps
-/// the pre-fullscreen outer frame for non-maximized windows (floats and
-/// tiled alike) so exit can move the window back; an unreadable frame fails
-/// closed before any write. Re-entry never
-/// overwrites an existing preimage: an owned frame always exits first, so an
-/// entry that finds metadata returns without a write. Returns the
-/// readback-settled outcome: `fullscreen` when the frame bits read back
-/// cleared, `dispatched` when a setter accepted but completion is pending or
-/// uncertain (including a `SetWindowPos` failure after the chrome changed,
-/// where the preimage is preserved for a later exit), `threw` when no style
-/// effect happened (the fresh preimage is cleared, nothing is left trusted).
-/// No automatic retries on any path.
+/// Enter project-owned fullscreen: persist the durable R12 preimage first,
+/// store the window-prop restoration preimage, then clear the frame bits and
+/// cover the monitor without activating. No blind input synthesis; the
+/// official style/frame APIs only. The preimage keeps the pre-fullscreen
+/// outer frame for non-maximized windows (floats and tiled alike) so exit can
+/// move the window back; an unreadable frame fails closed before any write.
+/// Re-entry never overwrites an existing preimage: an owned frame always
+/// exits first, so an entry that finds metadata returns without a write.
+/// Returns the readback-settled outcome: `fullscreen` when the frame bits
+/// read back cleared, `dispatched` when a setter accepted but completion is
+/// pending or uncertain (including a `SetWindowPos` failure after the chrome
+/// changed, where the preimage is preserved for a later exit), `threw` when
+/// the durable row or the window-prop preimage could not be persisted or no
+/// style effect happened (the fresh preimages are cleared, nothing is left
+/// trusted). No automatic retries on any path.
 pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
     if !crate::ffi::is_window(hwnd_u64) {
         return "threw";
@@ -319,13 +237,45 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
         was_maximized,
         frame,
     };
+    // R12 durable preimage: the crash/restart authority is written before any
+    // chrome write, and an unreadable identity/tag/session or a failed atomic
+    // publish fails closed with no window props written.
+    let Ok(dir) = crate::native::ledger_directory() else {
+        return "threw";
+    };
+    let Ok(session) = crate::native::current_identity() else {
+        return "threw";
+    };
+    let Some((pid, creation, tag)) = durable_identity(hwnd_u64) else {
+        return "threw";
+    };
+    let Some(row) = super::fullscreen_preimage::FullscreenPreimage::new(
+        hwnd_u64,
+        pid,
+        &creation,
+        &tag,
+        &session.process_creation,
+        meta.changed,
+        meta.was_maximized,
+        meta.frame,
+    ) else {
+        return "threw";
+    };
+    if super::fullscreen_preimage::persist(&dir, &row).is_err() {
+        return "threw";
+    }
     if !write_fullscreen_meta(hwnd_u64, &meta) {
+        // No chrome changed: the durable row never gained restoration
+        // authority, so drop it rather than let a later startup touch
+        // untouched state.
+        let _ = super::fullscreen_preimage::clear(&dir, hwnd_u64, pid, &creation, &tag);
         return "threw";
     }
     let next = (style & !FULLSCREEN_STYLE_BITS) as i32;
     let (prev, style_err) = crate::ffi::set_window_style(hwnd_u64, next);
     if prev == 0 && style_err != 0 {
         clear_fullscreen_meta(hwnd_u64);
+        let _ = super::fullscreen_preimage::clear(&dir, hwnd_u64, pid, &creation, &tag);
         return "threw";
     }
     let placed = crate::ffi::set_window_pos(
@@ -346,6 +296,26 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
     }
 }
 
+/// Live exact lifetime of one window for the durable preimage slot: pid,
+/// held-process creation, and the installed membership tag. Any unreadable
+/// leg is `None` (fail closed, never guessed).
+fn durable_identity(hwnd_u64: u64) -> Option<(u32, String, String)> {
+    let pid = crate::ffi::window_pid(hwnd_u64);
+    if pid == 0 {
+        return None;
+    }
+    let held = crate::native::HeldProcess::open(pid).ok()?;
+    let live = held.identity().ok()?;
+    if live.pid != pid || live.process_creation.is_empty() {
+        return None;
+    }
+    let tag = crate::product_hide::sys::read_member_tag(hwnd_u64)?;
+    if tag.is_empty() {
+        return None;
+    }
+    Some((pid, live.process_creation, tag))
+}
+
 /// Exit project-owned fullscreen: restore exactly the owned mask bits
 /// (unrelated application style changes meanwhile are preserved), reapply
 /// the frame without moving (so externally moved frames still exit), move a
@@ -355,7 +325,26 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
 /// retries automatically. `meta.changed` is already validated to the owned
 /// mask on read, so restoration never touches arbitrary bits. A legacy
 /// preimage without a frame restores style only (old behavior, no strand).
+/// Only a verified `restored` outcome clears the durable row, and only when
+/// the live exact lifetime is still readable; otherwise the row stays for
+/// next-startup verification (never guessed).
 pub(super) fn exit_fullscreen_owned(hwnd_u64: u64, meta: &FullscreenMeta) -> &'static str {
+    let outcome = exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta);
+    if outcome == "restored"
+        && let Ok(dir) = crate::native::ledger_directory()
+        && let Some((pid, creation, tag)) = durable_identity(hwnd_u64)
+        && super::fullscreen_preimage::load(&dir, hwnd_u64, pid, &creation, &tag).is_some()
+    {
+        let _ = super::fullscreen_preimage::clear(&dir, hwnd_u64, pid, &creation, &tag);
+    }
+    outcome
+}
+
+/// Restore one durable fullscreen-chrome leftover through the exact
+/// production owned-exit sequence (no ledger identity needed here: the
+/// durable row already carries the verified lifetime). Used only by
+/// [`super::fullscreen_preimage`] startup recovery.
+pub(super) fn restore_owned_chrome(hwnd_u64: u64, meta: &FullscreenMeta) -> &'static str {
     exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta)
 }
 
@@ -649,7 +638,7 @@ fn consume_classified_first_exits(state: &mut TileLoop) {
         // Intentional lanes own the window now (settled explicit float or
         // sticky, including restart-adopted intent): the exit already
         // resolved through them.
-        if state.floated.contains(key) || state.sticky.contains_key(key) {
+        if state.floating_of(key) || state.sticky_of(key) {
             done.push(key.clone());
             continue;
         }

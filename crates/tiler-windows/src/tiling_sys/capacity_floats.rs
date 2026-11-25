@@ -66,7 +66,7 @@ pub(super) fn adopt_floats_from_reply(
 /// mutation, geometry writes, or focus changes.
 pub(super) fn register_committed_floats(
     state: &mut TileLoop,
-    me: &ProcessIdentity,
+    _me: &ProcessIdentity,
     domain_key: &tiler_core::session::DomainKey,
     frames: &HashMap<String, Rect>,
 ) -> Vec<CommittedFloatAdopted> {
@@ -109,23 +109,23 @@ pub(super) fn register_committed_floats(
     }
     let mut adopted = Vec::new();
     for (key, token, frame) in candidates {
-        if state.sticky.contains_key(&key) {
+        if state.sticky_of(&key) {
             continue;
         }
-        let fresh_lane = !state.floated.contains(&key);
-        if fresh_lane {
-            state.floated.insert(key.clone());
-            if let Some(frame) = frame {
-                state.float_rects.insert(token.clone(), frame);
-            }
+        let fresh_lane = !state.floating_of(&key);
+        if fresh_lane
+            && let Some(frame) = frame
+        {
+            state.float_rects.insert(token.clone(), frame);
         }
-        let present = crate::product_hide::sys::read_float_intent_marker(key.hwnd);
-        let marker_ok = if present {
-            true
-        } else {
-            install_float_mark_held(state, me, &key)
+        let desired = super::world_diff::IntentStorage {
+            sticky_prior: None,
+            float: true,
+            tile: false,
         };
-        if fresh_lane || (!present && marker_ok) {
+        let marker_ok = crate::product_hide::sys::write_intent_slot(key.hwnd, desired).is_ok()
+            && super::world_native::intent_storage_of(key.hwnd) == Some(desired);
+        if fresh_lane || !marker_ok {
             adopted.push(CommittedFloatAdopted { token, marker_ok });
         }
     }

@@ -4,7 +4,6 @@ use super::*;
 pub(super) struct ChordObserved {
     pub(super) observed: Vec<ObservedWindow>,
     pub(super) retained: Vec<RetainedRow>,
-    pub(super) skipped: Vec<(String, String)>,
 }
 
 pub(super) fn observe_chord_intent(
@@ -18,11 +17,9 @@ pub(super) fn observe_chord_intent(
     let mut observed = state.observe(me, fulls, &mut skipped, &mut retained)?;
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    clear_maximize_at_admission(state, me, &retained);
     Some(ChordObserved {
         observed,
         retained,
-        skipped,
     })
 }
 

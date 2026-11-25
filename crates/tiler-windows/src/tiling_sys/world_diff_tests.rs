@@ -12,7 +12,7 @@ use super::rmax03_adapter_tests::test_state;
 use super::world_capture::{HiddenClaimRead, capture_world, resolve_cursor_hit};
 use super::world_diff::{
     ApplyStats, FakeNative, ForegroundState, FreshHost, FreshWindow, GuiFocusState, HostDiff,
-    NativeOps, apply_world_reply,
+    IntentStorage, NativeOps, apply_world_reply,
 };
 use super::world_sequencer::{AckOutcome, DispatchError, WorldSequencer};
 use super::{HiddenRecord, MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
@@ -22,14 +22,15 @@ use crate::tiling::{FrameInsets, ObservedTarget, WindowFacts};
 use std::collections::BTreeMap;
 use tiler_core::directional::{OutputId, WindowId, WindowSubject, WorkspaceId};
 use tiler_core::geometry::Rect;
+use tiler_core::intent_data::IntentData;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
     AfterShown, AfterShownMember, AfterShownScope, AuthorityScope, BorderHideReasonV4,
-    BorderPresentationV4, FocusDisposition, FocusNoCallReason, FocusRequest,
-    FocusRequestCause, FrameSetter, HoldReason as CoreHold, MemberDisposition,
-    ScopeAuthority as Auth, ScopeStatus, TransferKind, TransferTargetV4,
-    VisibilityDisposition, VisibilityReason, VisibilityTarget, WORLD_CONTRACT_VERSION,
-    WindowDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
+    BorderPresentationV4, FocusDisposition, FocusNoCallReason, FocusRequest, FocusRequestCause,
+    FrameSetter, HoldReason as CoreHold, IntentDesire, MemberDisposition, ScopeAuthority as Auth,
+    ScopeStatus, StateProperty, StateTarget, TransferKind, TransferTargetV4, VisibilityDisposition,
+    VisibilityReason, VisibilityTarget, WORLD_CONTRACT_VERSION, WindowDesire, WorkspaceRef,
+    WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
 };
 
 pub(super) const ADAPTER: &str = "adapter-1";
@@ -61,6 +62,7 @@ pub(super) fn plain_facts() -> WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -544,6 +546,7 @@ fn hidden_snapshot_rides_slot_with_verified_fullscreen() {
             cloaked: false,
             owned: false,
             tool_window: false,
+            topmost: false,
             dialog: false,
         },
     )]);
@@ -655,6 +658,7 @@ fn hidden_claim_live_read_carries_cloak_ownership_and_kind() {
                 cloaked: true,
                 owned: true,
                 tool_window: true,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -665,6 +669,7 @@ fn hidden_claim_live_read_carries_cloak_ownership_and_kind() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: true,
             },
         ),
@@ -5148,7 +5153,7 @@ fn capture_projects_retained_maximized_float_after_observed() {
     let mut rig = rig();
     let slot = rect(300, 100, 200, 200);
     rig.state.member_rects.insert("w2".to_owned(), slot);
-    rig.state.floated.insert(win_key(1002, 2002, "proc-2"));
+    rig.state.seed_float(win_key(1002, 2002, "proc-2"));
     rig.observed.retain(|window| window.token == "w1");
     let retained = vec![RetainedRow {
         key: win_key(1002, 2002, "proc-2"),
@@ -8178,4 +8183,419 @@ fn focus_already_foreground_reports_no_setter_call() {
     assert!(feedback[0].foreground_proven);
     assert_eq!(feedback[0].pre.as_ref().map(|id| id.0.as_str()), Some("w1"));
     assert_eq!(feedback[0].post.as_ref().map(|id| id.0.as_str()), Some("w1"));
+}
+
+// --- R14 state-target lane: durable redelivery, pruning, phase-0 reveal ---
+
+/// State-only desire row: both frame and membership authority are
+/// untouched so a test isolates the state lane (scope rows still carry
+/// Controlled workspace authority through `reply_shell`).
+fn state_row(out: &str, ws: &str, token: &str, state: Vec<StateTarget>) -> WindowDesire {
+    let mut row = member_row(out, ws, token);
+    row.membership_authority = Auth::Untouched;
+    row.state = state;
+    row
+}
+
+fn state_target(
+    property: StateProperty,
+    value: bool,
+    command_seq: Option<u64>,
+    automatic_clear: bool,
+) -> StateTarget {
+    StateTarget {
+        property,
+        value,
+        authority: Auth::Controlled,
+        command_seq,
+        automatic_clear,
+    }
+}
+
+/// Reply shell carrying only intent-desire rows (no windows): the marker
+/// reconcile lane runs before any dependent write.
+fn intent_reply(obs: u64, rev: u64, rows: &[(&str, Option<IntentData>)]) -> WorldReplyV4 {
+    let mut reply = reply_shell(obs, rev, &[]);
+    reply.intent_desired = rows
+        .iter()
+        .map(|(token, data)| IntentDesire {
+            win: WindowId((*token).to_owned()),
+            data: *data,
+        })
+        .collect();
+    reply
+}
+
+#[test]
+fn state_target_absent_then_reissued_higher_revision_writes_fresh() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Above), false);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.windows.push(state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Above, true, None, false)],
+    ));
+    let _ = apply(&mut diff, &reply, &fresh, &mut native);
+    let first = diff.take_state_attempts();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0].revision, 1);
+    assert_eq!(
+        native.state_writes,
+        vec![("w1".to_owned(), StateProperty::Above, true)]
+    );
+
+    // The next reply still lists the lifetime but publishes no state target
+    // for the property: the durable record is pruned, no native call runs.
+    let mut silent = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
+    silent
+        .windows
+        .push(state_row(&rig.out, &rig.ws, "w1", Vec::new()));
+    let _ = apply(&mut diff, &silent, &fresh, &mut native);
+    assert!(diff.take_state_attempts().is_empty());
+    assert_eq!(native.state_writes.len(), 1, "pruning calls no setter");
+
+    // Re-issued at a higher revision while the native value is back at
+    // false: a fresh write and a fresh attempt at the new revision, never a
+    // redelivery of the inert rev-1 record.
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Above), false);
+    let mut reissued = reply_shell(7, 3, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reissued.windows.push(state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Above, true, None, false)],
+    ));
+    let _ = apply(&mut diff, &reissued, &fresh, &mut native);
+    let fresh_out = diff.take_state_attempts();
+    assert_eq!(fresh_out.len(), 1, "{fresh_out:?}");
+    assert_eq!(fresh_out[0].revision, 3);
+    assert_eq!(fresh_out[0].pre, Some(false));
+    assert_eq!(fresh_out[0].post, Some(true));
+    assert_eq!(
+        native.state_writes,
+        vec![
+            ("w1".to_owned(), StateProperty::Above, true),
+            ("w1".to_owned(), StateProperty::Above, true),
+        ]
+    );
+}
+
+#[test]
+fn state_write_record_for_departed_lifetime_is_pruned() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Above), false);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.windows.push(state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Above, true, None, false)],
+    ));
+    let _ = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(native.state_writes.len(), 1);
+
+    // w1 departs: absent from the fresh baseline and from the reply rows.
+    let mut gone_fresh = fresh.clone();
+    gone_fresh.baseline.remove("w1");
+    gone_fresh.stored_tags.remove("w1");
+    let gone = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let _ = apply(&mut diff, &gone, &gone_fresh, &mut native);
+    assert_eq!(native.state_writes.len(), 1, "departure calls no setter");
+
+    // w1 returns and the same target is requested while native reads false:
+    // the departed record cannot redeliver, so a fresh write runs.
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Above), false);
+    let mut back = reply_shell(7, 3, &[(rig.out.as_str(), rig.ws.as_str())]);
+    back.windows.push(state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Above, true, None, false)],
+    ));
+    let _ = apply(&mut diff, &back, &fresh, &mut native);
+    let attempts = diff.take_state_attempts();
+    assert_eq!(attempts.len(), 1, "{attempts:?}");
+    assert_eq!(attempts[0].revision, 3);
+    assert_eq!(native.state_writes.len(), 2);
+}
+
+#[test]
+fn observation_only_reply_redelivers_original_state_attempt() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Above), false);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.windows.push(state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Above, true, None, false)],
+    ));
+    let _ = apply(&mut diff, &reply, &fresh, &mut native);
+    let first = diff.take_state_attempts();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(native.state_writes.len(), 1);
+
+    // Lost acknowledgement: the live value is forced back to false while the
+    // same reply is redelivered. The durable record must redeliver the
+    // ORIGINAL attempt (revision and evidence included) with zero native
+    // calls, never a second write.
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Above), false);
+    let mut redeliver = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    redeliver.windows.push(state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Above, true, None, false)],
+    ));
+    let _ = apply(&mut diff, &redeliver, &fresh, &mut native);
+    let second = diff.take_state_attempts();
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert_eq!(
+        second[0], first[0],
+        "original evidence is preserved exactly"
+    );
+    assert_eq!(
+        native.state_writes.len(),
+        1,
+        "redelivery never touches native"
+    );
+    assert_eq!(
+        native.state.get(&("w1".to_owned(), StateProperty::Above)),
+        Some(&false),
+        "the scripted live preimage was never overwritten"
+    );
+}
+
+#[test]
+fn automatic_clear_latch_pruned_when_target_disappears_reactuates() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Maximized), true);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.windows.push(state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Maximized, false, Some(7), true)],
+    ));
+    let _ = apply(&mut diff, &reply, &fresh, &mut native);
+    let first = diff.take_state_attempts();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(native.state_writes.len(), 1);
+
+    // The reply stops publishing the automatic clear for this listed
+    // lifetime: the one-shot latch retires with the record.
+    let mut silent = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
+    silent
+        .windows
+        .push(state_row(&rig.out, &rig.ws, "w1", Vec::new()));
+    let _ = apply(&mut diff, &silent, &fresh, &mut native);
+    assert!(diff.take_state_attempts().is_empty());
+    assert_eq!(native.state_writes.len(), 1);
+
+    // A new automatic clear at a higher revision requests native
+    // re-actuation instead of being suppressed by the stale latch.
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Maximized), true);
+    let mut reissued = reply_shell(7, 3, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reissued.windows.push(state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Maximized, false, Some(7), true)],
+    ));
+    let _ = apply(&mut diff, &reissued, &fresh, &mut native);
+    let fresh_out = diff.take_state_attempts();
+    assert_eq!(fresh_out.len(), 1, "{fresh_out:?}");
+    assert_eq!(fresh_out[0].revision, 3);
+    assert_eq!(fresh_out[0].disposition, FrameSetter::Accepted);
+    assert_eq!(native.state_writes.len(), 2);
+    assert_eq!(
+        native
+            .state
+            .get(&("w1".to_owned(), StateProperty::Maximized)),
+        Some(&false)
+    );
+}
+
+#[test]
+fn revealed_this_pass_takes_controlled_state_target() {
+    let rig = rig();
+    let (mut diff, mut fresh, mut native) = converted(&rig);
+    fresh.baseline.get_mut("w1").expect("base w1").hidden = true;
+    let live = native.windows.get_mut("w1").expect("live w1");
+    live.hidden = true;
+    live.facts.as_mut().expect("facts").visible = false;
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Above), false);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let mut row = state_row(
+        &rig.out,
+        &rig.ws,
+        "w1",
+        vec![state_target(StateProperty::Above, true, None, false)],
+    );
+    row.visibility = Some(VisibilityTarget {
+        shown: true,
+        revision: 1,
+        fallback: false,
+    });
+    row.visibility_authority = Auth::Controlled;
+    reply.windows.push(row);
+
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls, vec!["w1".to_owned()]);
+    assert_eq!(stats.staged_reveals, 1, "{stats:?}");
+    let attempts = diff.take_state_attempts();
+    assert_eq!(
+        attempts.len(),
+        1,
+        "the revealed window takes its state target: {stats:?} {attempts:?}"
+    );
+    assert_eq!(attempts[0].window.0, "w1");
+    assert_eq!(attempts[0].property, StateProperty::Above);
+    assert_eq!(attempts[0].revision, 1);
+    assert_eq!(attempts[0].pre, Some(false));
+    assert_eq!(attempts[0].post, Some(true));
+    assert_eq!(
+        native.state_writes,
+        vec![("w1".to_owned(), StateProperty::Above, true)]
+    );
+}
+
+// --- R14 intent reconcile: cache, atomic mirror, freshness ---
+
+#[test]
+fn intent_reconcile_absent_baseline_absorbs_cached_snapshot() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    let data = IntentData::new(Some(true), None);
+    let reply = intent_reply(7, 1, &[("w1", Some(data))]);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(native.intent_writes.len() == 1, "{stats:?}");
+    assert!(!stats.stopped_mid_apply, "{stats:?}");
+
+    // The window leaves the fresh baseline; the same desired storage is
+    // already proven persisted, so nothing is owed and nothing holds.
+    let mut gone = fresh.clone();
+    gone.baseline.remove("w1");
+    let reply = intent_reply(7, 2, &[("w1", Some(data))]);
+    let (stats, _, _) = apply(&mut diff, &reply, &gone, &mut native);
+    assert!(!stats.stopped_mid_apply, "{stats:?}");
+    assert_eq!(stats.held, 0, "{stats:?}");
+    assert_eq!(
+        native.intent_writes.len(),
+        1,
+        "the cached snapshot writes nothing"
+    );
+}
+
+#[test]
+fn intent_reconcile_absent_baseline_stale_cache_holds_reply() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    let data = IntentData::new(Some(true), None);
+    let reply = intent_reply(7, 1, &[("w1", Some(data))]);
+    let _ = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(native.intent_writes.len(), 1);
+
+    // The window is gone from the baseline while the desired storage differs
+    // from the persisted snapshot: the whole reply holds.
+    let mut gone = fresh.clone();
+    gone.baseline.remove("w1");
+    let changed = IntentData::new(Some(false), None);
+    let reply = intent_reply(7, 2, &[("w1", Some(changed))]);
+    let (stats, _, _) = apply(&mut diff, &reply, &gone, &mut native);
+    assert!(stats.stopped_mid_apply, "{stats:?}");
+    assert_eq!(stats.held, 1, "{stats:?}");
+    assert_eq!(native.intent_writes.len(), 1);
+}
+
+#[test]
+fn intent_reconcile_mid_list_failure_leaves_no_partial_publish() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.fail_intent.insert("w2".to_owned());
+    let reply = intent_reply(
+        7,
+        1,
+        &[
+            ("w1", Some(IntentData::new(Some(true), None))),
+            ("w2", Some(IntentData::new(None, Some(true)))),
+        ],
+    );
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.stopped_mid_apply, "{stats:?}");
+    assert_eq!(stats.held, 1, "{stats:?}");
+    assert_eq!(
+        native.intent_writes.len(),
+        1,
+        "the first row really did publish before the failure"
+    );
+    assert_eq!(native.intent_writes[0].0, "w1");
+    assert_eq!(
+        native.intent_storage.get("w1"),
+        Some(&IntentStorage {
+            sticky_prior: None,
+            float: true,
+            tile: false,
+        })
+    );
+}
+
+#[test]
+fn intent_reconcile_success_publishes_every_row() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    let float = Some(IntentData::new(Some(true), None));
+    let sticky = Some(IntentData::new(None, Some(true)));
+    let reply = intent_reply(7, 1, &[("w1", float), ("w2", sticky)]);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(!stats.stopped_mid_apply, "{stats:?}");
+    assert_eq!(stats.held, 0, "{stats:?}");
+    assert_eq!(native.intent_writes.len(), 2);
+    assert_eq!(
+        native.intent_storage.get("w1"),
+        Some(&IntentStorage::from_data(float))
+    );
+    assert_eq!(
+        native.intent_storage.get("w2"),
+        Some(&IntentStorage::from_data(sticky))
+    );
+}
+
+#[test]
+fn intent_reconcile_external_invalidation_holds_without_write() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.pending_invalidation = true;
+    let reply = intent_reply(7, 1, &[("w1", Some(IntentData::new(Some(true), None)))]);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.stopped_mid_apply, "{stats:?}");
+    assert_eq!(stats.held, 1, "{stats:?}");
+    assert!(
+        native.intent_writes.is_empty(),
+        "racing input before the write holds it"
+    );
 }

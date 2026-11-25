@@ -98,7 +98,6 @@ pub(super) fn dispatch_resize_intent(
     let ChordObserved {
         observed,
         retained,
-        skipped: _,
     } = chord;
     let ChordTarget {
         from,
@@ -115,7 +114,7 @@ pub(super) fn dispatch_resize_intent(
     // writes, never retiles them. Ordered ahead of the workspace fence to
     // match the Snap Move arm and KDE refusal priority (subject before
     // domain).
-    if state.sticky.contains_key(&member_key) {
+    if state.sticky_of(&member_key) {
         let mut line = settle("resize-refused-sticky");
         line["origin"] = serde_json::Value::from(origin.token.clone());
         line["window"] = serde_json::Value::from(from.clone());

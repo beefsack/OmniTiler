@@ -88,9 +88,10 @@ impl AbovePreimage {
     }
 
     /// Whether this row is a leftover of a different tiler session
-    /// (restorable) rather than this live session's own preimage.
-    pub(super) fn is_foreign_session(&self, session: &str) -> bool {
-        !session.is_empty() && self.session != session
+    /// (restorable) rather than the restoring (current) session's own
+    /// preimage. `current_session` is the restoring process's creation.
+    pub(super) fn is_foreign_session(&self, current_session: &str) -> bool {
+        !current_session.is_empty() && self.session != current_session
     }
 
     fn to_json(&self) -> serde_json::Value {
@@ -208,57 +209,70 @@ pub(super) fn clear(dir: &Path, hwnd: u64, pid: u32, creation: &str, tag: &str) 
     write_store(dir, &rows)
 }
 
-/// One observed live lifetime eligible for leftover restoration: the exact
-/// native identity plus the stored membership tag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct LiveLifetime<'a> {
-    pub(super) hwnd: u64,
-    pub(super) pid: u32,
-    pub(super) creation: &'a str,
-    pub(super) tag: &'a str,
-}
-
-/// Pure restoration plan: foreign-session rows whose exact lifetime is still
-/// observed. Never returns a row for the current session (that is a live
-/// preimage, not a leftover) and never matches a recycled HWND.
-pub(super) fn restore_plan(
-    rows: &[AbovePreimage],
-    session: &str,
-    live: &[LiveLifetime<'_>],
-) -> Vec<AbovePreimage> {
+/// Pure leftover filter: rows written by a different tiler session. A live
+/// current-session preimage is never a leftover, and a missing session is
+/// never restoration authority. Nothing here inspects the window.
+fn leftover_candidates<'a>(
+    rows: &'a [AbovePreimage],
+    current_session: &str,
+) -> Vec<&'a AbovePreimage> {
     rows.iter()
-        .filter(|row| row.is_foreign_session(session))
-        .filter(|row| {
-            live.iter().any(|candidate| {
-                row.same_lifetime(
-                    candidate.hwnd,
-                    candidate.pid,
-                    candidate.creation,
-                    candidate.tag,
-                )
-            })
-        })
-        .cloned()
+        .filter(|row| row.is_foreign_session(current_session))
         .collect()
 }
 
-/// Restore verified leftovers at startup and drop their rows. Restores only
-/// rows of a different tiler session with an exact still-observed lifetime;
-/// a row whose current band already equals the preimage needs no write but is
-/// still cleared once its lifetime is verified. Persistence failures after a
-/// successful native restore keep the row for the next startup and never
-/// re-write the window here. Returns how many rows were restored.
-pub(super) fn restore_leftovers(dir: &Path, session: &str, live: &[LiveLifetime<'_>]) -> usize {
+/// Self-verify one durable row's exact live lifetime from the row itself (no
+/// observation list): the window still exists, its pid is the stored pid, the
+/// held process identity still carries the stored creation time, and the live
+/// membership tag still equals the stored tag. Any unreadable leg is not a
+/// match, never a guess.
+fn verify_live_lifetime(row: &AbovePreimage) -> bool {
+    if row.creation.is_empty() || row.tag.is_empty() || !crate::ffi::is_window(row.hwnd) {
+        return false;
+    }
+    if crate::ffi::window_pid(row.hwnd) != row.pid {
+        return false;
+    }
+    let Ok(held) = crate::native::HeldProcess::open(row.pid) else {
+        return false;
+    };
+    let Ok(live) = held.identity() else {
+        return false;
+    };
+    if live.pid != row.pid || live.process_creation != row.creation {
+        return false;
+    }
+    crate::product_hide::sys::read_member_tag(row.hwnd).as_deref() == Some(row.tag.as_str())
+}
+
+/// Restore verified leftovers at startup and drop their rows. `current_session`
+/// is the restoring process's creation: only rows of a different session are
+/// considered, so the dead owner's rows are foreign and the current session's
+/// own live preimages are never touched. Each candidate self-verifies its
+/// exact live lifetime (existing window, stored pid, stored process creation,
+/// stored membership tag) without an observation dependency. A row whose
+/// current band already equals the preimage needs no write but is still
+/// cleared once its lifetime is verified. A failed native restore keeps the
+/// row so the next startup retries the same idempotent restore; a failed
+/// publish only means a later startup re-checks. An unreadable store restores
+/// nothing. Returns how many rows were restored.
+pub(super) fn restore_verified_leftovers(dir: &Path, current_session: &str) -> usize {
     let Ok(mut rows) = read_store(dir) else {
         return 0;
     };
-    let plan = restore_plan(&rows, session, live);
-    if plan.is_empty() {
+    let candidates: Vec<AbovePreimage> = leftover_candidates(&rows, current_session)
+        .into_iter()
+        .cloned()
+        .collect();
+    if candidates.is_empty() {
         return 0;
     }
     let mut restored = 0usize;
     let mut dirty = false;
-    for row in &plan {
+    for row in &candidates {
+        if !verify_live_lifetime(row) {
+            continue;
+        }
         let current = super::workspace_mode::read_topmost_now(row.hwnd);
         if current == row.prior_topmost
             || super::workspace_mode::set_topmost_band(row.hwnd, row.prior_topmost)
@@ -304,41 +318,75 @@ mod tests {
     }
 
     #[test]
-    fn restore_plan_skips_current_session_and_unobserved_lifetimes() {
+    fn leftover_candidates_skip_current_session_and_missing_session() {
+        // Both rows carry a complete exact-lifetime shape (hwnd/pid/creation/
+        // tag); only the session differs. Native lifetime verification runs
+        // after this filter, so this is exactly the restoration-scope
+        // decision: a same-session row is never restorable, a different-
+        // session row is the candidate.
         let rows = vec![row(10, "session-a", false), row(11, "session-b", true)];
-        let live = [
-            LiveLifetime {
-                hwnd: 10,
-                pid: 7,
-                creation: "creation-a",
-                tag: "tag-a",
-            },
-            LiveLifetime {
-                hwnd: 11,
-                pid: 7,
-                creation: "creation-a",
-                tag: "tag-a",
-            },
-        ];
-        let plan = restore_plan(&rows, "session-b", &live);
-        assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0].hwnd, 10);
-        assert!(!plan[0].prior_topmost);
+        let foreign = leftover_candidates(&rows, "session-b");
+        assert_eq!(foreign.len(), 1);
+        assert_eq!(foreign[0].hwnd, 10);
+        assert!(!foreign[0].prior_topmost);
         // Same-session rows are never leftovers.
-        assert!(restore_plan(&rows, "session-a", &live).len() == 1);
-        assert_eq!(restore_plan(&rows, "session-a", &live)[0].hwnd, 11);
+        let own = leftover_candidates(&rows, "session-a");
+        assert_eq!(own.len(), 1);
+        assert_eq!(own[0].hwnd, 11);
+        // A missing session is never restoration authority.
+        assert!(leftover_candidates(&rows, "").is_empty());
+    }
+
+    fn temp_store(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "omnitester-above-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
     }
 
     #[test]
-    fn restore_plan_requires_exact_tag_and_creation() {
-        let rows = vec![row(10, "session-a", false)];
-        let live = [LiveLifetime {
-            hwnd: 10,
-            pid: 7,
-            creation: "creation-a",
-            tag: "tag-b",
-        }];
-        assert!(restore_plan(&rows, "session-b", &live).is_empty());
+    fn malformed_store_restores_nothing_and_is_left_untouched() {
+        let dir = temp_store("malformed");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // A single corrupt row invalidates the slot: the scanner must not
+        // guess, overwrite, or restore anything from it.
+        let path = dir.join(PREIMAGE_FILE);
+        std::fs::write(
+            &path,
+            br#"{"v":1,"rows":[{"v":1,"hwnd":10,"pid":7,"creation":"","tag":"tag-a","priorTopmost":false,"session":"session-a"}]}"#,
+        )
+        .expect("write corrupt store");
+        assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
+        assert!(read_store(&dir).is_err());
+        assert_eq!(
+            std::fs::read(&path).expect("store still present"),
+            br#"{"v":1,"rows":[{"v":1,"hwnd":10,"pid":7,"creation":"","tag":"tag-a","priorTopmost":false,"session":"session-a"}]}"#
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dead_lifetime_is_not_restored_and_keeps_its_row() {
+        let dir = temp_store("dead");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dead = row(0, "session-a", false);
+        persist(&dir, &dead).expect("persist");
+        // No observation list is consulted; the row itself cannot prove a
+        // live exact lifetime (HWND 0), so nothing is written and the row is
+        // retained for a later startup.
+        assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
+        assert_eq!(
+            load(&dir, 0, 7, "creation-a", "tag-a"),
+            Some(dead),
+            "unverified row must stay for the next startup"
+        );
+        // The current session never treats its own live preimage as leftover.
+        assert_eq!(restore_verified_leftovers(&dir, "session-a"), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

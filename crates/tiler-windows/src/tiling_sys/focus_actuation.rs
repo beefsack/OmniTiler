@@ -55,6 +55,7 @@ pub(super) fn overlay_expected(
             owned: false,
             captionless_fullscreen: false,
             no_activate: false,
+            topmost: false,
             dialog: false,
         }),
         // Synthetic fallback row: no fresh membership read was taken, so it

@@ -98,11 +98,15 @@ use tiler_core::world_report::{
 
 /// One adapter marker-storage observation for a window lifetime: the exact
 /// three durable marker properties the canonical intent record mirrors.
+///
+/// Crate-visible because the packed native slot lane
+/// (`product_hide::sys`) encodes and decodes the same storage; `tiling_sys`
+/// re-exports it as the single shared definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) struct IntentStorage {
-    pub(super) sticky_prior: Option<bool>,
-    pub(super) float: bool,
-    pub(super) tile: bool,
+pub(crate) struct IntentStorage {
+    pub(crate) sticky_prior: Option<bool>,
+    pub(crate) float: bool,
+    pub(crate) tile: bool,
 }
 
 impl IntentStorage {
@@ -276,8 +280,14 @@ impl FreshHost {
                     workspace,
                     iconic,
                     hidden,
-                    sticky: state.sticky.contains_key(key),
-                    floating: state.floated.contains(key),
+                    sticky: state
+                        .intent_storage
+                        .and_then(|map| map.get(key))
+                        .is_some_and(|s| s.sticky_prior.is_some()),
+                    floating: state
+                        .intent_storage
+                        .and_then(|map| map.get(key))
+                        .is_some_and(|s| s.float),
                     live_tag: state.member_tags.get(key).cloned(),
                 },
             );
@@ -1356,11 +1366,12 @@ pub(super) struct HostDiff {
     /// this apply pass, drained into the next report by the owner. Keyed by
     /// the property so a paired Fullscreen→Maximized publish keeps both.
     pending_state: BTreeMap<(String, StateProperty), StateAttempt>,
-    /// Marker-mirror updates proven by this apply's intent reconcile, in
-    /// lifetime order. The owner drains them to update its tables only
-    /// after the durable storage write succeeded; a failed write leaves
-    /// every adapter mirror untouched.
-    pending_intent_mirror: Vec<(String, IntentStorage)>,
+    /// Last-persisted marker snapshot per lifetime. An absent-baseline
+    /// desired row owns no native read, so only a proven publish of this
+    /// exact storage proves nothing is owed; anything else holds the reply.
+    /// Updated only on a successful publish and cleared on generation
+    /// reset.
+    intent_persisted: HashMap<String, IntentStorage>,
 }
 
 /// Durable at-most-once record for one `(lifetime, property)` state slot.
@@ -1396,7 +1407,7 @@ impl HostDiff {
             state_writes: BTreeMap::new(),
             auto_clear_spent: BTreeSet::new(),
             pending_state: BTreeMap::new(),
-            pending_intent_mirror: Vec::new(),
+            intent_persisted: HashMap::new(),
         }
     }
 
@@ -1420,11 +1431,6 @@ impl HostDiff {
                 .then_with(|| state_property_rank(a.property).cmp(&state_property_rank(b.property)))
         });
         rows
-    }
-
-    /// Drain marker-mirror updates proven by the last apply pass.
-    pub(super) fn take_intent_mirror_updates(&mut self) -> Vec<(String, IntentStorage)> {
-        std::mem::take(&mut self.pending_intent_mirror)
     }
 
     /// Arm the one-shot desktop exception for the next apply pass. The
@@ -1552,7 +1558,7 @@ impl HostDiff {
         self.state_writes.clear();
         self.auto_clear_spent.clear();
         self.pending_state.clear();
-        self.pending_intent_mirror.clear();
+        self.intent_persisted.clear();
     }
 
     /// Bound every table against the current reply and baseline: spent and
@@ -1563,7 +1569,18 @@ impl HostDiff {
     /// inventory) and acknowledgement loss, allowing a possibly-executed
     /// write to repeat. Departed lifetimes retire with the operation id
     /// (the core forgets them on close when the reply drops the transfer).
-    fn prune(&mut self, reply: &WorldReplyV4, _fresh: &FreshHost) {
+    ///
+    /// State tables prune against the union of the fresh baseline and the
+    /// reply's listed lifetimes. A listed lifetime that publishes no state
+    /// target for a property drops that `(lifetime, property)` write record,
+    /// so a later target at a higher revision performs a fresh native write
+    /// instead of redelivering an inert revision forever. A live lifetime
+    /// with no row at all (whole-window absence, an observation gap) keeps
+    /// its records: absence is never proof a possibly-executed write did not
+    /// run. The automatic-clear latch follows the same policy against the
+    /// automatic targets alone. Authority is not a prune input: a Hold or
+    /// Untouched row still publishes the property and protects its record.
+    fn prune(&mut self, reply: &WorldReplyV4, fresh: &FreshHost) {
         let mut live_ops: HashSet<&str> = HashSet::new();
         if let Some(request) = reply.focus_request.as_ref() {
             live_ops.insert(request.id.as_str());
@@ -1603,6 +1620,38 @@ impl HostDiff {
             .map(|request| request.id.as_str());
         self.focus_records
             .retain(|id, _| live_focus == Some(id.as_str()));
+        // State records outlive a whole-window observation gap but never a
+        // departed lifetime, and a listed lifetime's published property set
+        // is the exact re-arm boundary: a property that disappeared from the
+        // row retires its record so a re-issued target writes natively.
+        let mut live_state_tokens: HashSet<&str> =
+            fresh.baseline.keys().map(String::as_str).collect();
+        live_state_tokens.extend(reply.windows.iter().map(|row| row.lifetime.0.as_str()));
+        let mut listed_props: HashMap<&str, HashSet<StateProperty>> = HashMap::new();
+        let mut listed_auto: HashMap<&str, HashSet<(StateProperty, bool)>> = HashMap::new();
+        for row in &reply.windows {
+            let token = row.lifetime.0.as_str();
+            let props = listed_props.entry(token).or_default();
+            let autos = listed_auto.entry(token).or_default();
+            for target in &row.state {
+                props.insert(target.property);
+                if target.automatic_clear {
+                    autos.insert((target.property, target.value));
+                }
+            }
+        }
+        self.state_writes.retain(|(token, property), _| {
+            live_state_tokens.contains(token.as_str())
+                && listed_props
+                    .get(token.as_str())
+                    .is_none_or(|props| props.contains(property))
+        });
+        self.auto_clear_spent.retain(|(token, property, value)| {
+            live_state_tokens.contains(token.as_str())
+                && listed_auto
+                    .get(token.as_str())
+                    .is_none_or(|targets| targets.contains(&(*property, *value)))
+        });
     }
 }
 
@@ -3224,28 +3273,44 @@ fn state_property_rank(property: StateProperty) -> u8 {
 /// Reconcile every retained intent desire into durable marker storage before
 /// any dependent write.
 ///
-/// A desired row for a window outside this reply's fresh baseline, an
-/// unreadable current storage, or a failed atomic publish holds the WHOLE
-/// reply (`None`): no visibility, state, frame, or membership write may run
-/// while the marker preimage the core believes it changed is unproven, and
-/// the next reply retries. Equal storage writes nothing. Absent rows carry
-/// no authority and touch nothing.
+/// A desired row for a window outside this reply's fresh baseline owns no
+/// native read: it is absorbed only when the last proven publish already
+/// recorded exactly this storage (nothing is owed), and otherwise holds the
+/// WHOLE reply. An unreadable current storage or a failed atomic publish
+/// holds the same way: no visibility, state, frame, or membership write may
+/// run while the marker preimage the core believes it changed is unproven,
+/// and the next reply retries. Equal storage writes nothing. Absent rows
+/// carry no authority and touch nothing.
+#[allow(clippy::too_many_arguments)]
 fn reconcile_intent(
     reply: &WorldReplyV4,
     fresh: &FreshHost,
     ops: &mut dyn NativeOps,
-    mirror: &mut Vec<(String, IntentStorage)>,
+    gate: &mut DiffGate,
+    entry_obs: u64,
+    persisted: &mut HashMap<String, IntentStorage>,
 ) -> Option<()> {
     for row in &reply.intent_desired {
+        let desired = IntentStorage::from_data(row.data);
         if !fresh.baseline.contains_key(&row.win.0) {
+            if persisted.get(&row.win.0) == Some(&desired) {
+                // A prior proven publish of exactly this storage proves the
+                // absent window owes nothing: absorb with no read and no
+                // write.
+                continue;
+            }
             return None;
         }
         let current = ops.read_intent_storage(&row.win.0)?;
-        let desired = IntentStorage::from_data(row.data);
-        if current != desired && ops.write_intent_storage(&row.win.0, row.data).is_err() {
-            return None;
+        if current != desired {
+            if !ensure_fresh(reply, gate, entry_obs, ops) {
+                return None;
+            }
+            if ops.write_intent_storage(&row.win.0, row.data).is_err() {
+                return None;
+            }
+            persisted.insert(row.win.0.clone(), desired);
         }
-        mirror.push((row.win.0.clone(), desired));
     }
     Some(())
 }
@@ -3253,13 +3318,18 @@ fn reconcile_intent(
 /// Stage controlled native state targets in ordered property phases.
 ///
 /// Only `StateTarget.authority == Controlled` actuates; anything else is the
-/// core's explicit hold and reports nothing. Hidden/iconic/unreadable rows
-/// and unreadable pre-reads hold with no attempt and no native call, so a
-/// possibly-executed write is never invented and an unreadable prerequisite
-/// is never papered over. A durable `(value, command_seq)` record redelivers
-/// its original attempt with zero native calls, which makes acknowledgement
-/// loss harmless; a new value or command sequence replaces the record. An
-/// automatic clear runs at most once per `(lifetime, property, value)`.
+/// core's explicit hold and reports nothing. Hidden/iconic rows are skipped
+/// unless phase 0 revealed them this pass, and unreadable pre-reads hold with
+/// no attempt and no native call, so a possibly-executed write is never
+/// invented and an unreadable prerequisite is never papered over.
+///
+/// The durable `(value, command_seq)` record is checked BEFORE the
+/// automatic-clear latch. A redelivery preserves the original evidence and
+/// stamp (revision, millis, pre/post, disposition) and never touches native:
+/// the core correlates the attempt against the revision it originally acted
+/// on, so suppressing a lost-ack redelivery would strand the target. Only
+/// then does the one-shot automatic-clear latch apply to requests that are
+/// not a redelivery.
 #[allow(clippy::too_many_arguments)]
 fn stage_state_targets(
     reply: &WorldReplyV4,
@@ -3267,6 +3337,7 @@ fn stage_state_targets(
     ops: &mut dyn NativeOps,
     gate: &mut DiffGate,
     entry_obs: u64,
+    revealed: &HashSet<String>,
     state_writes: &mut BTreeMap<(String, StateProperty), StateWriteRecord>,
     auto_clear_spent: &mut BTreeSet<(String, StateProperty, bool)>,
     pending_state: &mut BTreeMap<(String, StateProperty), StateAttempt>,
@@ -3287,7 +3358,10 @@ fn stage_state_targets(
         let Some(base) = fresh.baseline.get(&row.lifetime.0) else {
             continue;
         };
-        if base.hidden || base.iconic {
+        // A window shown by the visibility phase this pass may proceed from
+        // its stale observation preimage; the show lane already proved the
+        // live visibility transition.
+        if !revealed.contains(&row.lifetime.0) && (base.hidden || base.iconic) {
             continue;
         }
         let mut targets = row.state.clone();
@@ -3297,19 +3371,24 @@ fn stage_state_targets(
                 continue;
             }
             let key = (row.lifetime.0.clone(), target.property);
-            if target.automatic_clear
-                && auto_clear_spent.contains(&(key.0.clone(), key.1, target.value))
-            {
-                // One-shot: this exact automatic clear already ran once.
-                continue;
-            }
             if let Some(record) = state_writes.get(&key)
                 && record.value == target.value
                 && record.command_seq == target.command_seq
             {
-                // Acknowledgement lost: redeliver the original attempt with
-                // the revision it acted on and never touch native again.
+                // Acknowledgement lost: redeliver the original attempt
+                // unchanged (revision, stamps, pre/post, disposition) and
+                // never touch native again. This precedes the one-shot
+                // automatic-clear latch so a redelivered automatic clear is
+                // still reported and the core can correlate the revision it
+                // originally acted on.
                 pending_state.insert(key, record.attempt.clone());
+                continue;
+            }
+            if target.automatic_clear
+                && auto_clear_spent.contains(&(key.0.clone(), key.1, target.value))
+            {
+                // One-shot: this exact automatic clear already ran once and
+                // the record above proves this is not a redelivery of it.
                 continue;
             }
             let Some(pre) = ops.read_state(&row.lifetime.0, target.property) else {
@@ -3557,13 +3636,22 @@ fn apply_world_reply_inner(
         state_writes,
         auto_clear_spent,
         pending_state,
-        pending_intent_mirror,
+        intent_persisted,
     } = state;
 
     // 0a. Intent reconcile precedes every dependent write: markers are the
     // preimage the core's own intent records and sticky/float lanes ride.
     // Any unreadable/failed publish holds the whole reply and retries.
-    if reconcile_intent(reply, fresh, ops, pending_intent_mirror).is_none() {
+    if reconcile_intent(
+        reply,
+        fresh,
+        ops,
+        gate,
+        entry_obs,
+        intent_persisted,
+    )
+    .is_none()
+    {
         stats.held += 1;
         stats.stopped_mid_apply = true;
         finalize(&mut stats);
@@ -3609,6 +3697,7 @@ fn apply_world_reply_inner(
         ops,
         gate,
         entry_obs,
+        &revealed_this_pass,
         state_writes,
         auto_clear_spent,
         pending_state,

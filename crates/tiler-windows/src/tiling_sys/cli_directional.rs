@@ -139,8 +139,8 @@ pub(super) fn poll_directional_cli_request(
     // names the pre-reveal set right after a foreground return (the reveal
     // proves focus before the next observation publishes), so rebuild it
     // from a fresh observation first: `observe` plus `publish_managed`
-    // only. Admission (`ensure_workspace_assignments`,
-    // `clear_maximize_at_admission`) stays with the dispatch below, which
+    // only. Admission (`ensure_workspace_assignments`) stays with the
+    // dispatch below, which
     // runs the full sequence itself; rebuilding the map performs no native
     // writes and no membership or tag mutation; a refused poll may refresh
     // observation caches only. The dispatch still re-resolves

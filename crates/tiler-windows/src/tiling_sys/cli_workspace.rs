@@ -50,7 +50,6 @@ fn dispatch_fullscreen_cli_toggle(
     };
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    clear_maximize_at_admission(state, me, &retained);
     // Live-foreground origin through the same map the hook binds chords
     // against; never a carried HWND, never a retarget.
     let foreground_hwnd = crate::ffi::foreground_window();
@@ -131,6 +130,7 @@ fn dispatch_fullscreen_cli_toggle(
                 owned: false,
                 captionless_fullscreen: false,
                 no_activate: false,
+                topmost: false,
                 dialog: false,
             }),
             // Synthetic fallback row: no fresh membership read was taken, so
@@ -529,9 +529,6 @@ pub(super) fn poll_workspace_cli_request(
     };
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    // First-seen maximized windows restore once here: lifetime tags are
-    // stamped, and the cleared window converges as eligible next tick.
-    clear_maximize_at_admission(state, me, &retained);
     workspace_close_cleanup(state);
     let ctx = ActionCtx {
         correlation: format!("act-{tick}"),

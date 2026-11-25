@@ -80,7 +80,9 @@ pub(super) type RevealClaimFn = fn(
 use super::{AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, ScopeHostChild, TokenMap};
 use crate::model::{ProcessIdentity, WindowIdentity};
 use crate::native::HeldProcess;
-use crate::native_guards::{MarkerSlot, WindowKey};
+use crate::native_guards::WindowKey;
+#[cfg(test)]
+use crate::native_guards::MarkerSlot;
 use crate::storage::LedgerStore;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -565,8 +567,7 @@ pub(super) struct LiveNative<'a> {
     /// veto passed through the selection-arrival exception. Reset at each
     /// call entry; the post-prime recheck requires a fresh equal proof.
     desktop_proof: Option<DesktopProof>,
-    pub sticky: &'a BTreeMap<WindowKey, bool>,
-    pub float_topmost_prev: &'a BTreeMap<WindowKey, bool>,
+    pub intent_storage: &'a BTreeMap<WindowKey, IntentStorage>,
     pub scope: &'a [String],
     pub scope_hosts: &'a [ScopeHostChild],
     pub allowlist: Option<&'a Vec<AllowEntry>>,
@@ -613,8 +614,7 @@ impl<'a> LiveNative<'a> {
         member_tags: &'a BTreeMap<WindowKey, String>,
         member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
         hidden_claims: &'a mut BTreeMap<WindowKey, HiddenRecord>,
-        sticky: &'a BTreeMap<WindowKey, bool>,
-        float_topmost_prev: &'a BTreeMap<WindowKey, bool>,
+        intent_storage: &'a BTreeMap<WindowKey, IntentStorage>,
         scope: &'a [String],
         scope_hosts: &'a [ScopeHostChild],
         allowlist: Option<&'a Vec<AllowEntry>>,
@@ -645,8 +645,7 @@ impl<'a> LiveNative<'a> {
             focus_veto_detail: None,
             selection_arrival_armed: false,
             desktop_proof: None,
-            sticky,
-            float_topmost_prev,
+            intent_storage,
             scope,
             scope_hosts,
             allowlist,
@@ -681,6 +680,25 @@ impl<'a> LiveNative<'a> {
     /// table.
     fn committed_hidden(&self, key: &WindowKey) -> bool {
         self.hidden_claims.contains_key(key)
+    }
+
+    /// Durable sticky desire for one member: the canonical packed intent
+    /// slot's sticky prior. Unknown storage (unreadable/corrupt/foreign
+    /// lifetime) reads as not sticky, never as an inferred desire.
+    fn sticky_of(&self, key: &WindowKey) -> bool {
+        self.intent_storage
+            .get(key)
+            .is_some_and(|storage| storage.sticky_prior.is_some())
+    }
+
+    /// Prior topmost band owned by this exact window lifetime, read from the
+    /// durable `above` preimage (written only when the project raises the
+    /// band and cleared only after a proven restore). Absent means the
+    /// project never raised it, so no hide bypass.
+    fn above_prior_topmost(&self, key: &WindowKey) -> Option<bool> {
+        let tag = self.stored_tag(key)?;
+        super::above_preimage::load(self.dir, key.hwnd, key.pid, &key.creation, tag)
+            .map(|row| row.prior_topmost)
     }
 
     fn stored_tag(&self, key: &WindowKey) -> Option<&str> {
@@ -728,7 +746,7 @@ impl<'a> LiveNative<'a> {
             return None;
         }
         let (output, workspace) = self.committed_homing(token).unwrap_or_default();
-        let sticky = self.sticky.contains_key(&key);
+        let sticky = self.sticky_of(&key);
         let hwnd = key.hwnd;
         let live_tag = (self.prims.member_tag)(hwnd);
         let float_marked = crate::product_hide::sys::peek_float_intent_raw(hwnd);
@@ -1135,7 +1153,7 @@ impl<'a> LiveNative<'a> {
     /// otherwise visible exactly when the desired workspace is the
     /// desired view on its output.
     fn expected_visible(&self, key: &WindowKey, desired: &(String, String)) -> bool {
-        if self.sticky.contains_key(key) {
+        if self.sticky_of(key) {
             return true;
         }
         self.core_views
@@ -1175,7 +1193,7 @@ impl<'a> LiveNative<'a> {
             // occluded, minimized omission): fail closed, never proof.
             return None;
         }
-        if self.sticky.contains_key(key) {
+        if self.sticky_of(key) {
             return Some(desired);
         }
         if let Some(target) = self.desired_frames.get(token).copied() {
@@ -1239,7 +1257,7 @@ impl<'a> LiveNative<'a> {
         }
         if !hidden
             && visible
-            && !self.sticky.contains_key(key)
+            && !self.sticky_of(key)
             && let Some(target) = self.desired_frames.get(token).copied()
             && self.core_homing.get(token).is_some_and(|d| d == &homing)
         {
@@ -1290,7 +1308,7 @@ impl<'a> LiveNative<'a> {
             .map(|w| w.visible);
         let stored = self.stored_tag(key).unwrap_or_default().to_owned();
         let allow_topmost = crate::product_hide::project_topmost_hide_allowed(
-            self.float_topmost_prev.get(key).copied(),
+            self.above_prior_topmost(key),
             (self.prims.read_topmost)(key.hwnd),
         );
         let claim = (self.prims.admit)(key.hwnd, self.me, expected, &stored, allow_topmost)?;
@@ -1415,7 +1433,7 @@ impl<'a> LiveNative<'a> {
             let Some(key) = self.key_of(token) else {
                 continue;
             };
-            if self.sticky.contains_key(&key) {
+            if self.sticky_of(&key) {
                 continue;
             }
             out.push((token.clone(), ws.clone(), key));
@@ -1442,7 +1460,7 @@ impl<'a> LiveNative<'a> {
             .filter(|(_, (member_out, ws))| member_out == output && ws != logical)
             .filter_map(|(token, _)| {
                 let key = self.key_of(token)?;
-                if self.sticky.contains_key(&key) {
+                if self.sticky_of(&key) {
                     return None;
                 }
                 let identity = self.member_identity.get(&key).cloned()?;
@@ -1656,7 +1674,8 @@ pub(super) fn apply_hidden_seeds(
 /// Raise or release the persistent `WS_EX_TOPMOST` band under the R12 durable
 /// preimage. A raise persists the original band first and never runs native
 /// when persistence fails; a release restores only this lifetime's exact
-/// stored row and then clears it. No retries, no guessed lifetimes.
+/// stored row and clears it only after a verified successful restore. No
+/// retries, no guessed lifetimes.
 fn write_above(native: &mut LiveNative<'_>, key: &WindowKey, value: bool) -> StateWrite {
     let Some(tag) = native
         .member_tags
@@ -1693,47 +1712,76 @@ fn write_above(native: &mut LiveNative<'_>, key: &WindowKey, value: bool) -> Sta
         }
         StateWrite::Called(true)
     } else {
-        let Some(row) =
-            super::above_preimage::load(native.dir, key.hwnd, key.pid, &key.creation, &tag)
-        else {
-            // No owned preimage: this lifetime's above was never raised by
-            // the project, so there is nothing to restore.
-            return StateWrite::NotAttempted;
-        };
-        let set = super::workspace_mode::set_topmost_band(key.hwnd, row.prior_topmost);
-        if !set && row.prior_topmost {
-            return StateWrite::Threw;
-        }
-        let _ = super::above_preimage::clear(native.dir, key.hwnd, key.pid, &key.creation, &tag);
-        StateWrite::Called(true)
+        release_above(native.dir, key, &tag, |prior| {
+            super::workspace_mode::set_topmost_band(key.hwnd, prior)
+        })
     }
 }
 
-/// Canonical intent-storage peek for one window handle: the exact three
-/// durable marker properties the intent record mirrors, read fresh through
-/// the safe marker wrappers. A gone HWND has no marker storage (markers die
+/// Release one owned `above` row: restore only this lifetime's exact stored
+/// band and clear the durable row only after the native setter reported
+/// success. A failed restore reports [`StateWrite::Threw`] and leaves the
+/// preimage loadable, so the next start can still restore the original
+/// band; a release never deletes the only proof of the state it failed to
+/// undo.
+fn release_above(
+    dir: &Path,
+    key: &WindowKey,
+    tag: &str,
+    restore: impl FnOnce(bool) -> bool,
+) -> StateWrite {
+    let Some(row) = super::above_preimage::load(dir, key.hwnd, key.pid, &key.creation, tag) else {
+        // No owned preimage: this lifetime's above was never raised by the
+        // project, so there is nothing to restore.
+        return StateWrite::NotAttempted;
+    };
+    if !restore(row.prior_topmost) {
+        return StateWrite::Threw;
+    }
+    let _ = super::above_preimage::clear(dir, key.hwnd, key.pid, &key.creation, tag);
+    StateWrite::Called(true)
+}
+
+/// Canonical intent-storage peek for one window handle: the single durable
+/// lifetime-bound intent slot the intent record mirrors, read fresh through
+/// the packed-slot reader. A gone HWND has no marker storage (markers die
 /// with the window), so it reads as canonical absence, never write authority
-/// (the write path re-proves liveness and fails closed). A marker that is
-/// present but unreadable makes the whole read unknown (`None`), never a
-/// partial guess; absent markers read as their canonical no-intent value.
+/// (the write path re-proves liveness and fails closed). A slot that is
+/// present but corrupt or bound to a different lifetime reads as unknown
+/// (`None`), never as absent or as a partial guess; an absent slot reads as
+/// canonical no-intent.
 pub(super) fn intent_storage_of(hwnd: u64) -> Option<IntentStorage> {
     // A scripted test window is not a real Win32 HWND but does carry the
-    // same marker slots; production windows satisfy the liveness check.
-    let scripted = {
-        #[cfg(test)]
-        {
-            crate::product_hide::sys::fake::marker_active(hwnd)
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
-    };
-    if !scripted && !crate::ffi::is_window(hwnd) {
+    // same scripted marker slots; production windows read the packed slot.
+    #[cfg(test)]
+    if crate::product_hide::sys::fake::marker_active(hwnd) {
+        return scripted_intent_storage_of(hwnd);
+    }
+    if !crate::ffi::is_window(hwnd) {
         // Markers die with the window: a lifetime with no live HWND has no
         // marker storage. Never write authority on its own.
         return Some(IntentStorage::default());
     }
+    intent_storage_from_slot(crate::product_hide::sys::read_intent_slot(hwnd))
+}
+
+/// Map one packed-slot read onto the canonical intent-storage read: a
+/// corrupt or foreign-lifetime slot stays unknown (`None`), an absent slot
+/// is canonical no-intent, and a verified slot is itself.
+fn intent_storage_from_slot(slot: Option<Option<IntentStorage>>) -> Option<IntentStorage> {
+    match slot {
+        None => None,
+        Some(None) => Some(IntentStorage::default()),
+        Some(Some(storage)) => Some(storage),
+    }
+}
+
+/// Test-only mirror of the legacy per-property marker reads for scripted
+/// HWNDs: the fake tables keyed by synthetic handles stand in for the
+/// window property table, so the packed slot (which requires a real
+/// process lifetime) is never consulted.
+#[cfg(test)]
+fn scripted_intent_storage_of(hwnd: u64) -> Option<IntentStorage> {
     let sticky_prior = match crate::product_hide::sys::peek_sticky_raw(hwnd) {
         MarkerSlot::Absent => None,
         MarkerSlot::Value(value) => crate::tiling::parse_sticky_marker(value),
@@ -1756,6 +1804,34 @@ pub(super) fn intent_storage_of(hwnd: u64) -> Option<IntentStorage> {
     })
 }
 
+/// Resolve the project-owned fullscreen rectangle for one frame-derived
+/// output device. The device must match an observed monitor area exactly: an
+/// unknown output refuses (returns `None`) with no native call instead of
+/// borrowing another screen's full rectangle.
+fn enter_fullscreen_at(
+    areas: &[MonitorArea],
+    device: &str,
+    enter: impl FnOnce(Rect) -> &'static str,
+) -> Option<&'static str> {
+    let full = areas
+        .iter()
+        .find(|area| area.device == device)
+        .map(|area| area.full)?;
+    Some(enter(full))
+}
+
+/// Resolve the live-frame-derived output and enter fullscreen on that exact
+/// area. A frame whose output has no matching area returns `None` before any
+/// native call; the caller reports `NotAttempted`.
+fn enter_fullscreen_for_frame(
+    areas: &[MonitorArea],
+    frame: &Rect,
+    enter: impl FnOnce(Rect) -> &'static str,
+) -> Option<&'static str> {
+    let device = super::directional_resolution::output_for_rect(areas, frame);
+    enter_fullscreen_at(areas, &device, enter)
+}
+
 impl NativeOps for LiveNative<'_> {
     fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
         let key = self.key_of(token)?;
@@ -1771,7 +1847,7 @@ impl NativeOps for LiveNative<'_> {
                 // Committed homing comes from the core projection; the
                 // hidden flag from the hide-claim ledger only.
                 let (output, workspace) = self.committed_homing(token).unwrap_or_default();
-                let sticky = self.sticky.contains_key(&live_key);
+                let sticky = self.sticky_of(&live_key);
                 let float_marked = crate::product_hide::sys::peek_float_intent_raw(key.hwnd);
                 let floating =
                     sticky || !matches!(float_marked, crate::native_guards::MarkerSlot::Absent);
@@ -1837,7 +1913,7 @@ impl NativeOps for LiveNative<'_> {
                         && w.identity.process_creation == key.creation
                 });
                 let (output, workspace) = self.committed_homing(token).unwrap_or_default();
-                let sticky = self.sticky.contains_key(&key);
+                let sticky = self.sticky_of(&key);
                 Some(FreshWindow {
                     key,
                     token: token.to_owned(),
@@ -1949,7 +2025,7 @@ impl NativeOps for LiveNative<'_> {
                     continue;
                 }
                 let key = self.key_of(token)?;
-                if self.sticky.contains_key(&key) {
+                if self.sticky_of(&key) {
                     continue;
                 }
                 let expected = self.member_identity.get(&key).cloned()?;
@@ -2062,7 +2138,7 @@ impl NativeOps for LiveNative<'_> {
         // Still a validated no-effect transaction: full identity, lifetime,
         // scope/hosted gates, and live visibility must all prove. Never a
         // bare setter boolean.
-        if self.sticky.contains_key(&key) {
+        if self.sticky_of(&key) {
             if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
                 return Err(());
             }
@@ -2168,7 +2244,7 @@ impl NativeOps for LiveNative<'_> {
         if visible != expected_visible || !visible {
             return false;
         }
-        if self.sticky.contains_key(&key) {
+        if self.sticky_of(&key) {
             return true;
         }
         if floating {
@@ -2563,22 +2639,18 @@ impl NativeOps for LiveNative<'_> {
             StateProperty::Fullscreen => {
                 if value {
                     // Enter needs a live frame-derived output anchor; an
-                    // unreadable frame refuses before any write.
+                    // unreadable frame refuses before any write, and an
+                    // output with no matching area refuses too instead of
+                    // borrowing another screen's full rectangle.
                     let Some(frame) = self.read_frame(token) else {
                         return StateWrite::NotAttempted;
                     };
-                    let device =
-                        super::directional_resolution::output_for_rect(&self.areas, &frame);
-                    let Some(full) = self
-                        .areas
-                        .iter()
-                        .find(|area| area.device == device)
-                        .map(|area| area.full)
-                        .or_else(|| self.areas.first().map(|area| area.full))
-                    else {
+                    let Some(result) = enter_fullscreen_for_frame(&self.areas, &frame, |full| {
+                        super::fullscreen::enter_fullscreen(key.hwnd, full)
+                    }) else {
                         return StateWrite::NotAttempted;
                     };
-                    match super::fullscreen::enter_fullscreen(key.hwnd, full) {
+                    match result {
                         "threw" => StateWrite::Threw,
                         _ => StateWrite::Called(true),
                     }
@@ -2612,36 +2684,11 @@ impl NativeOps for LiveNative<'_> {
         if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
             return Err(());
         }
-        let current = self.read_intent_storage(token).ok_or(())?;
         let desired = IntentStorage::from_data(data);
-        let hwnd = key.hwnd;
-        // Sticky first: install overwrites our own property, and clearing
-        // requires the exact live prior value so a foreign value is never
-        // destroyed.
-        match desired.sticky_prior {
-            Some(prior) => {
-                crate::product_hide::sys::install_sticky_marker(hwnd, prior).map_err(|_| ())?
-            }
-            None => {
-                if let Some(prior) = current.sticky_prior {
-                    let removed = crate::product_hide::sys::remove_sticky_marker(hwnd, prior)
-                        .map_err(|_| ())?;
-                    if !removed {
-                        return Err(());
-                    }
-                }
-            }
-        }
-        if desired.float {
-            crate::product_hide::sys::install_float_intent_marker(hwnd).map_err(|_| ())?;
-        } else if current.float {
-            crate::product_hide::sys::remove_float_intent_marker(hwnd).map_err(|_| ())?;
-        }
-        if desired.tile {
-            crate::product_hide::sys::install_tile_override_marker(hwnd).map_err(|_| ())?;
-        } else if current.tile {
-            crate::product_hide::sys::remove_tile_override_marker(hwnd).map_err(|_| ())?;
-        }
+        // One packed lifetime-bound property slot: a single native mutation
+        // moves sticky/float/tile together, so no half-applied marker set is
+        // ever observable between writes.
+        crate::product_hide::sys::write_intent_slot(key.hwnd, desired).map_err(|_| ())?;
         // Read-back proof: only canonical storage is a success, so the core
         // never treats a half-applied marker set as saved.
         if self.read_intent_storage(token) == Some(desired) {
@@ -2777,7 +2824,7 @@ impl<'a> LiveNative<'a> {
         if !visible {
             return false;
         }
-        if self.sticky.contains_key(key) {
+        if self.sticky_of(key) {
             return true;
         }
         if !row.floating {
@@ -2869,7 +2916,7 @@ impl<'a> LiveNative<'a> {
                 );
                 continue;
             }
-            let expected_visible = if self.sticky.contains_key(&key) {
+            let expected_visible = if self.sticky_of(&key) {
                 true
             } else {
                 self.core_views
@@ -2901,3 +2948,182 @@ impl<'a> LiveNative<'a> {
 #[cfg(test)]
 #[path = "world_native_tests.rs"]
 mod world_native_tests;
+
+/// Offline R12 native-lane coverage: the durable `above` preimage survives a
+/// failed release, and fullscreen enter refuses an output with no matching
+/// area before any native call. Both seams take the native effect as a
+/// closure so production ordering runs unchanged without a live window.
+#[cfg(test)]
+mod r12_native_tests {
+    use super::super::above_preimage::{self, AbovePreimage};
+    use super::*;
+    use std::path::PathBuf;
+
+    const TAG: &str = "abcdef0123456789";
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "omnitiler-r12-native-{}-{tag}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn key(hwnd: u64) -> WindowKey {
+        WindowKey {
+            hwnd,
+            pid: 4242,
+            creation: "proc-creation".to_owned(),
+        }
+    }
+
+    fn area(device: &str, x: i32, y: i32, w: i32, h: i32) -> MonitorArea {
+        let full = Rect { x, y, w, h };
+        MonitorArea {
+            device: device.to_owned(),
+            work: full,
+            full,
+            dpi: 96,
+        }
+    }
+
+    #[test]
+    fn failed_above_release_reports_threw_and_keeps_preimage() {
+        let dir = temp_dir("above-fail");
+        let key = key(0x4001);
+        let row =
+            AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
+                .expect("row builds");
+        above_preimage::persist(&dir, &row).expect("preimage persists");
+
+        let mut calls = 0;
+        let result = release_above(&dir, &key, TAG, |prior| {
+            calls += 1;
+            assert!(!prior, "acquisition only owns a prior-false band");
+            false
+        });
+        assert_eq!(result, StateWrite::Threw);
+        assert_eq!(calls, 1, "exactly one restore attempt");
+        let kept = above_preimage::load(&dir, key.hwnd, key.pid, &key.creation, TAG)
+            .expect("failed release keeps the durable preimage loadable");
+        assert_eq!(kept, row);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verified_above_release_clears_preimage() {
+        let dir = temp_dir("above-ok");
+        let key = key(0x4002);
+        let row =
+            AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
+                .expect("row builds");
+        above_preimage::persist(&dir, &row).expect("preimage persists");
+
+        let result = release_above(&dir, &key, TAG, |prior| {
+            assert!(!prior);
+            true
+        });
+        assert_eq!(result, StateWrite::Called(true));
+        assert_eq!(
+            above_preimage::load(&dir, key.hwnd, key.pid, &key.creation, TAG),
+            None,
+            "verified restore clears the owned row"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn above_release_without_owned_row_never_calls_native() {
+        let dir = temp_dir("above-none");
+        let key = key(0x4003);
+        let result = release_above(&dir, &key, TAG, |_| {
+            panic!("no native restore without an owned preimage")
+        });
+        assert_eq!(result, StateWrite::NotAttempted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fullscreen_enter_refuses_unknown_output_without_native_call() {
+        let areas = vec![area("\\\\.\\DISPLAY1", 0, 0, 1920, 1080)];
+        let mut called = false;
+        let result = enter_fullscreen_at(&areas, "\\\\.\\DISPLAY9", |_| {
+            called = true;
+            "called"
+        });
+        assert_eq!(result, None);
+        assert!(!called, "unknown output never reaches enter_fullscreen");
+
+        // No observed area means the frame-derived output has no anchor.
+        let mut called = false;
+        let result = enter_fullscreen_for_frame(
+            &[],
+            &Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+            },
+            |_| {
+                called = true;
+                "called"
+            },
+        );
+        assert_eq!(result, None);
+        assert!(!called, "empty topology never falls back to a screen");
+    }
+
+    #[test]
+    fn fullscreen_enter_uses_the_frame_outputs_exact_area() {
+        let areas = vec![
+            area("\\\\.\\DISPLAY1", 0, 0, 800, 600),
+            area("\\\\.\\DISPLAY2", 800, 0, 800, 600),
+        ];
+        let mut got = None;
+        let result = enter_fullscreen_for_frame(
+            &areas,
+            &Rect {
+                x: 900,
+                y: 100,
+                w: 100,
+                h: 100,
+            },
+            |full| {
+                got = Some(full);
+                "called"
+            },
+        );
+        assert_eq!(result, Some("called"));
+        assert_eq!(
+            got,
+            Some(Rect {
+                x: 800,
+                y: 0,
+                w: 800,
+                h: 600
+            })
+        );
+    }
+
+    #[test]
+    fn corrupt_intent_slot_reads_unknown_not_default() {
+        assert_eq!(intent_storage_from_slot(None), None);
+        assert_ne!(
+            intent_storage_from_slot(None),
+            Some(IntentStorage::default()),
+            "a corrupt/foreign slot is unknown, never canonical absence"
+        );
+        assert_eq!(
+            intent_storage_from_slot(Some(None)),
+            Some(IntentStorage::default()),
+            "an absent slot is canonical no-intent"
+        );
+        let storage = IntentStorage {
+            sticky_prior: Some(true),
+            float: true,
+            tile: false,
+        };
+        assert_eq!(intent_storage_from_slot(Some(Some(storage))), Some(storage));
+    }
+}

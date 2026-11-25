@@ -758,10 +758,10 @@ pub(super) fn flush_visibility(state: &mut TileLoop) -> Option<serde_json::Value
 /// live Engine exception bit for its workspace domain. Pure read.
 fn exc_mask_for(state: &TileLoop, key: &crate::native_guards::WindowKey, token: &str) -> u8 {
     let mut mask = 0u8;
-    if state.floated.contains(key) {
+    if state.floating_of(key) {
         mask |= LANE_FLOAT;
     }
-    if state.sticky.contains_key(key) {
+    if state.sticky_of(key) {
         mask |= LANE_STICKY;
     }
     if state.born_fullscreen.contains(key) {
