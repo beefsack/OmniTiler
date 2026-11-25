@@ -304,85 +304,181 @@ fn workspace_mode_options_carry_functional_labels() {
 }
 
 #[test]
-fn fixed_tracks_ready_needs_init_and_pointer() {
-    // The production `WM_GETMINMAXINFO` readiness gate: advertise only
-    // with a non-null info pointer once `WM_CREATE` stored user data.
-    // Zero user data (pre-creation query) or a null pointer falls back
-    // to `DefWindowProcW` in the handler.
-    assert!(super::fixed_tracks_ready(1, 0x1000));
-    assert!(super::fixed_tracks_ready(-1, 0x1000));
-    assert!(!super::fixed_tracks_ready(0, 0x1000));
-    assert!(!super::fixed_tracks_ready(1, 0));
-    assert!(!super::fixed_tracks_ready(0, 0));
-}
-
-#[test]
-fn fixed_minmax_tracks_pins_live_outer_on_both_axes() {
-    // The production `WM_GETMINMAXINFO` answer shape: a usable live outer
-    // size advertises equal min/max tracks, which the shared classifier
-    // reads as fixed under both predicates once converted with the
-    // measured frame insets (same subtraction both sides preserves
-    // equality while the remainder stays usable).
-    use tiler_core::size_hints::{FixedSizePredicate, is_fixed_size_with};
-    let insets = crate::tiling::FrameInsets {
-        left: 8,
-        top: 31,
-        right: 8,
-        bottom: 8,
+fn window_style_is_a_normal_resizable_application_frame() {
+    // Settings is an ordinary resizable app window (contract decision), so
+    // the frame carries the sizing border plus minimize/maximize boxes and
+    // no modal dialog extended style. Any fixed min/max track override
+    // would defeat resizing and is gone from the window procedure.
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WS_CAPTION, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
     };
-    for (outer_w, outer_h) in [(940, 1120), (1848, 2224), (200, 100)] {
-        let (w, h) = super::fixed_minmax_tracks(outer_w, outer_h).expect("usable outer pins");
-        assert_eq!((w, h), (outer_w, outer_h));
-        let hints = crate::tiling::hints_from_outer(Some((w, h)), Some((w, h)), insets);
-        assert!(
-            is_fixed_size_with(hints, FixedSizePredicate::BothAxes),
-            "fixed under both-axes at {outer_w}x{outer_h}"
-        );
-        assert!(
-            is_fixed_size_with(hints, FixedSizePredicate::EitherAxis),
-            "fixed under either-axis at {outer_w}x{outer_h}"
-        );
-    }
-}
-
-#[test]
-fn fixed_minmax_tracks_falls_back_on_unusable_outer() {
-    // Non-positive or out-of-bound outers carry no fixed claim: the
-    // production handler falls back to `DefWindowProcW` for these.
-    use tiler_core::bounds::GEOMETRY_BOUND;
-    for (outer_w, outer_h) in [
-        (0, 0),
-        (0, 600),
-        (800, 0),
-        (-32000, -32000),
-        (-8, 600),
-        (GEOMETRY_BOUND + 1, 600),
-        (800, GEOMETRY_BOUND + 1),
-        (i32::MAX, i32::MAX),
+    let style = super::window_style();
+    for bit in [
+        WS_CAPTION,
+        WS_SYSMENU,
+        WS_THICKFRAME,
+        WS_MINIMIZEBOX,
+        WS_MAXIMIZEBOX,
+        WS_CLIPCHILDREN,
     ] {
+        assert_ne!(style & bit, 0, "resizable frame missing {bit:#x}");
+    }
+    assert_eq!(super::window_ex_style(), 0, "no modal dialog frame");
+}
+
+#[test]
+fn settings_class_stays_an_ordinary_workspace_member() {
+    // Resizability changes the frame, never the identity rules: the shell
+    // class is the classifier's own-settings class, and an own-executable
+    // window of that class is an ordinary slotless member, not a dialog.
+    assert_eq!(
+        super::SETTINGS_WINDOW_CLASS,
+        crate::tiling::OWN_SETTINGS_WINDOW_CLASS
+    );
+    assert!(
+        !crate::tiling::workspace_dialog_refuses(
+            super::SETTINGS_WINDOW_CLASS,
+            false,
+            "C:\\apps\\tiler-windows.exe",
+            "C:\\apps\\tiler-windows.exe",
+        ),
+        "own Settings must stay an ordinary member, never a dialog"
+    );
+}
+
+/// Every design rect the shell creates: automated controls, groupboxes,
+/// and label statics. The relayout model must cover all three families.
+fn design_rects() -> Vec<(i32, i32, i32, i32)> {
+    use super::tabs;
+    let mut rects: Vec<(i32, i32, i32, i32)> = tabs::ALL_CONTROL_IDS
+        .iter()
+        .filter_map(|id| tabs::control_rect(*id))
+        .collect();
+    rects.extend(tabs::GROUPS.iter().map(|(_, x, y, w, h)| (*x, *y, *w, *h)));
+    rects.extend(
+        tabs::LABEL_RECTS
+            .iter()
+            .map(|(_, x, y, w, h)| (*x, *y, *w, *h)),
+    );
+    rects
+}
+
+#[test]
+fn relayout_is_identity_at_the_design_client() {
+    use super::tabs;
+    for rect in design_rects() {
         assert_eq!(
-            super::fixed_minmax_tracks(outer_w, outer_h),
-            None,
-            "no fixed claim at {outer_w}x{outer_h}"
+            super::relayout_rect(rect, tabs::CLIENT_W, tabs::CLIENT_H),
+            rect,
+            "design layout must not move at its own client size"
         );
     }
-    // Boundary itself still pins.
-    assert_eq!(
-        super::fixed_minmax_tracks(GEOMETRY_BOUND, GEOMETRY_BOUND),
-        Some((GEOMETRY_BOUND, GEOMETRY_BOUND))
+}
+
+#[test]
+fn relayout_scales_every_rect_inside_a_larger_client() {
+    use super::tabs;
+    let (client_w, client_h) = (tabs::CLIENT_W * 2, tabs::CLIENT_H * 2);
+    let mut grew = false;
+    for rect in design_rects() {
+        let (x, y, w, h) = super::relayout_rect(rect, client_w, client_h);
+        assert!(x >= 0 && y >= 0, "origin outside client for {rect:?}");
+        assert!(w >= 1 && h >= 1, "non-positive extent for {rect:?}");
+        assert!(x + w <= client_w, "right edge outside client for {rect:?}");
+        assert!(y + h <= client_h, "bottom edge outside client for {rect:?}");
+        if w > rect.2 && h > rect.3 {
+            grew = true;
+        }
+    }
+    assert!(grew, "the whole layout tracks a larger client");
+}
+
+#[test]
+fn relayout_keeps_proportional_margins_when_growing() {
+    use super::{ID_TABS, tabs};
+    let client_w = tabs::CLIENT_W * 3 / 2;
+    let client_h = tabs::CLIENT_H * 3 / 2;
+    let (x, y, w, h) = super::relayout_rect(
+        tabs::control_rect(ID_TABS).expect("strip rect"),
+        client_w,
+        client_h,
     );
-    // A fallback-shaped conversion (unknown max side) never classifies,
-    // under either predicate.
-    use tiler_core::size_hints::{FixedSizePredicate, is_fixed_size_with};
-    let insets = crate::tiling::FrameInsets {
-        left: 8,
-        top: 31,
-        right: 8,
-        bottom: 8,
-    };
-    let hints = crate::tiling::hints_from_outer(Some((800, 600)), None, insets);
-    assert!(!is_fixed_size_with(hints, FixedSizePredicate::BothAxes));
-    assert!(!is_fixed_size_with(hints, FixedSizePredicate::EitherAxis));
+    assert_eq!((x, y, w, h), (15, 12, 1356, 780));
+    assert_eq!(x, client_w - (x + w), "equal left/right margins");
+}
+
+#[test]
+fn relayout_keeps_tiny_clients_bounded_and_positive() {
+    use super::tabs;
+    for (client_w, client_h) in [
+        (2, 2),
+        (120, 90),
+        (200, 200),
+        (tabs::CLIENT_W / 2, tabs::CLIENT_H / 2),
+    ] {
+        for rect in design_rects() {
+            let (x, y, w, h) = super::relayout_rect(rect, client_w, client_h);
+            assert!(
+                x >= 0 && y >= 0,
+                "origin for {rect:?} at {client_w}x{client_h}"
+            );
+            assert!(
+                w >= 1 && h >= 1,
+                "extent for {rect:?} at {client_w}x{client_h}"
+            );
+            assert!(
+                x + w <= client_w,
+                "right for {rect:?} at {client_w}x{client_h}"
+            );
+            assert!(
+                y + h <= client_h,
+                "bottom for {rect:?} at {client_w}x{client_h}"
+            );
+        }
+    }
+}
+
+#[test]
+fn relayout_keeps_page_content_above_the_footer() {
+    // Proportional mapping is monotone: page content (controls, groups,
+    // labels) must stay above the chrome footer at every client size, as
+    // it does in the design rects (528 page bottom vs 532 footer top).
+    use super::{ID_TABS, tabs};
+    for (client_w, client_h) in [
+        (tabs::CLIENT_W, tabs::CLIENT_H),
+        (tabs::CLIENT_W * 3 / 2, tabs::CLIENT_H * 3 / 2),
+        (tabs::CLIENT_W / 2, tabs::CLIENT_H / 2),
+        (400, 300),
+    ] {
+        let mut page_bottom = 0;
+        let mut footer_top = i32::MAX;
+        for id in tabs::ALL_CONTROL_IDS {
+            let Some(rect) = tabs::control_rect(*id) else {
+                continue;
+            };
+            let (_, y, _, h) = super::relayout_rect(rect, client_w, client_h);
+            match tabs::control_tab(*id) {
+                None => {
+                    if *id != ID_TABS {
+                        footer_top = footer_top.min(y);
+                    }
+                }
+                Some(_) => page_bottom = page_bottom.max(y + h),
+            }
+        }
+        for (_, x, y, w, h) in tabs::GROUPS {
+            let (_, y, _, h) = super::relayout_rect((*x, *y, *w, *h), client_w, client_h);
+            page_bottom = page_bottom.max(y + h);
+        }
+        for (_, x, y, w, h) in tabs::LABEL_RECTS {
+            let (_, y, _, h) = super::relayout_rect((*x, *y, *w, *h), client_w, client_h);
+            page_bottom = page_bottom.max(y + h);
+        }
+        assert!(
+            page_bottom <= footer_top,
+            "page bottom {page_bottom} overlaps footer top {footer_top} at {client_w}x{client_h}"
+        );
+    }
 }
 #[test]
 fn switch_target_radio_round_trips_both_tokens() {

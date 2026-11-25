@@ -290,6 +290,14 @@ not v4 acceptance evidence.
 - Core-only gates stay host-independent; settlement/recovery/paint
   evidence is separate from codec acceptance.
 
+## Windows Settings
+
+Settings is an ordinary resizable application window. Its native sizing
+tracks are not pinned; the tab and controls follow the resized client area.
+`scripts/windows-settings-resize-proof.ps1 -Live` checks distinct native
+tracks, outer and tab geometry after a programmatic resize, and unchanged
+settings bytes after closing the owned process.
+
 ## Material rough edges (no behavior change selected)
 
 - Projected `WindowFact`s, not raw safety facts; `#32770`-to-dialog

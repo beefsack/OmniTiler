@@ -145,8 +145,9 @@ unsafe extern "system" fn wnd_proc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CREATESTRUCTW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, SetWindowLongPtrW, WM_CLOSE,
-        WM_COMMAND, WM_CREATE, WM_DESTROY, WM_GETMINMAXINFO, WM_NOTIFY, WM_TIMER,
+        CREATESTRUCTW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, SIZE_MINIMIZED,
+        SetWindowLongPtrW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_NOTIFY, WM_SIZE,
+        WM_TIMER,
     };
     if msg == WM_CREATE {
         let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
@@ -160,41 +161,22 @@ unsafe extern "system" fn wnd_proc(
     {
         return 0;
     }
-    if msg == WM_GETMINMAXINFO {
-        let user = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWLP_USERDATA)
-        };
-        let ready = crate::settings_ui::fixed_tracks_ready(user, lparam);
-        if !ready {
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
-        }
-        let outer = (|| {
-            use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
-            let mut outer: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
-            if unsafe { GetWindowRect(hwnd, &mut outer) } == 0 {
-                return None;
+    if msg == WM_SIZE {
+        // Normal resizable frame: no fixed min/max track override. Client
+        // extent comes from the message words in physical pixels; a
+        // minimized window reports 0x0 and keeps the last layout. The
+        // layout is snapshotted under the checked borrow and placed after
+        // it drops, so a reentrant message sees normal state and a
+        // reentrant size replays the same design rects instead of aliasing.
+        let client_w = (lparam & 0xffff) as i32;
+        let client_h = ((lparam >> 16) & 0xffff) as i32;
+        if wparam != SIZE_MINIMIZED as usize && client_w > 0 && client_h > 0 {
+            let entries = with_app_mut(hwnd, |app| app.layout.clone());
+            if let Some(entries) = entries {
+                crate::settings_ui::relayout_for(&entries, client_w, client_h);
             }
-            let w: Option<i32> = (i64::from(outer.right) - i64::from(outer.left))
-                .try_into()
-                .ok();
-            let h: Option<i32> = (i64::from(outer.bottom) - i64::from(outer.top))
-                .try_into()
-                .ok();
-            w.and_then(|w| h.and_then(|h| crate::settings_ui::fixed_minmax_tracks(w, h)))
-        })();
-        match outer {
-            Some((w, h)) => {
-                let info = unsafe {
-                    &mut *(lparam as *mut windows_sys::Win32::UI::WindowsAndMessaging::MINMAXINFO)
-                };
-                info.ptMinTrackSize.x = w;
-                info.ptMinTrackSize.y = h;
-                info.ptMaxTrackSize.x = w;
-                info.ptMaxTrackSize.y = h;
-                0
-            }
-            None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
         }
+        0
     } else if msg == WM_COMMAND {
         if crate::ffi::settings_controls::notifications_suppressed() {
             return 0;
@@ -697,5 +679,24 @@ mod tests {
             posted,
             "WM_DESTROY must PostQuitMessage so run_loop GetMessage returns 0"
         );
+    }
+
+    #[test]
+    fn size_message_without_registered_state_fails_closed() {
+        // A resize that arrives with no validated cell (unregistered handle,
+        // as when a reentrant message lands before creation registers, or
+        // after drop removes the slot) must not touch state: the checked
+        // borrow refuses and the procedure still answers 0. No window,
+        // guard, or pump is created.
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SIZE_RESTORED, WM_SIZE};
+        let turn = unsafe {
+            wnd_proc(
+                std::ptr::null_mut(),
+                WM_SIZE,
+                SIZE_RESTORED as usize,
+                (((600i32) << 16) | 800i32) as isize,
+            )
+        };
+        assert_eq!(turn, 0);
     }
 }
