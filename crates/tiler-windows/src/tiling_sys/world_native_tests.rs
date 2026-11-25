@@ -450,7 +450,7 @@ fn scripted() -> NativePrimitives {
             }
             S_IDENT.with(|m| m.borrow().get(&hwnd).cloned())
         },
-        read_topmost: |_| false,
+        read_topmost: |hwnd| S_OBSERVE.with(|m| m.borrow().get(&hwnd).map_or(Some(false), |w| Some(w.facts.topmost))),
         admit: |hwnd, _me, _expected, _tag, _topmost| {
             S_ADMIT_CALLS.with(|m| m.borrow_mut().push(hwnd));
             S_ADMIT.with(|m| {
@@ -653,7 +653,7 @@ fn script_live(key: &WindowKey, token: &str, vis: Rect, facts: WindowFacts) {
                 cloaked: facts.cloaked,
                 owned: facts.owned,
                 tool_window: facts.tool_window,
-                topmost: false,
+                topmost: facts.topmost,
                 dialog: facts.dialog,
             },
         )
@@ -2597,7 +2597,7 @@ fn scripted_hidden_reads(
                     cloaked: facts.cloaked,
                     owned: facts.owned,
                     tool_window: facts.tool_window,
-                    topmost: false,
+                    topmost: facts.topmost,
                     dialog: facts.dialog,
                 },
                 None => {

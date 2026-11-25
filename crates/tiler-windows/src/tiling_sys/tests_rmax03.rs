@@ -47,8 +47,6 @@ pub(super) fn test_state() -> TileLoop {
         // crate directory on every run.
         log_path: std::path::PathBuf::from("NUL"),
         audit_path: None,
-        durable_dir: std::env::temp_dir(),
-        durable_preimage_recovery_done: true,
         last_observation_skips: Vec::new(),
         keyboard: crate::snapkey::KeyboardConfig::disabled(),
         inner_gap: crate::tiling::INNER_GAP,

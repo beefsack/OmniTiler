@@ -316,14 +316,6 @@ struct TileLoop {
     suspended_limited: bool,
     log_path: std::path::PathBuf,
     audit_path: Option<std::path::PathBuf>,
-    /// Durable ledger directory (owner lock already held): the adapter-owned
-    /// atomic slot home for R12 native preimages. Never a policy input.
-    durable_dir: std::path::PathBuf,
-    /// One-shot R12 durable-preimage recovery latch: persistent-above topmost
-    /// and fullscreen-chrome leftovers from a previous tiler session are
-    /// restored by one scan per process, before membership-tag rotation on
-    /// the first admission preamble, so later ticks never rescan the slots.
-    durable_preimage_recovery_done: bool,
     /// Last per-tick observation skip set, used only to emit one
     /// `world-observation-skips` trace row when the reasons change (never a
     /// policy input). Held scopes otherwise repeat the same skip silently.
@@ -856,6 +848,15 @@ pub(crate) fn plan_snapshot_offer(
 pub(crate) fn recover_durable_preimages(dir: &Path, current_session: &str) -> usize {
     above_preimage::restore_verified_leftovers(dir, current_session)
         + fullscreen_preimage::restore_verified_leftovers(dir, current_session)
+}
+
+/// Graceful owner teardown: restore only preimages the current session owns.
+/// Unreadable or unrestored rows remain available to independent recovery.
+pub(crate) fn restore_current_preimages(dir: &Path, current_session: &str) -> (usize, bool) {
+    let (above, above_pending) = above_preimage::restore_verified_current(dir, current_session);
+    let (fullscreen, fullscreen_pending) =
+        fullscreen_preimage::restore_verified_current(dir, current_session);
+    (above + fullscreen, above_pending || fullscreen_pending)
 }
 
 /// Armed prompt-restore wake: the restored member by full identity plus the

@@ -942,13 +942,22 @@ pub mod sys {
         if snap_want {
             snap_drive_restore(dir, me, &store, "teardown");
         }
-        // The watcher stops only after the reveal: killing it first would
-        // leave a crash window with committed hides and no recovery. When
-        // the reveal keeps residue the watcher stays running so owner exit
-        // still triggers recovery.
+        // Restore before stopping the watcher. Leave it available when an
+        // exact durable preimage or hide claim could not be recovered.
         let mut keep_recovery = false;
         if product {
-            keep_recovery = teardown_product_claims(dir, me, &store);
+            let (restored, pending) =
+                crate::tiling_sys::restore_current_preimages(dir, &me.process_creation);
+            if restored > 0 || pending {
+                let line = serde_json::json!({
+                    "event": "durable-preimage-restore",
+                    "phase": "teardown",
+                    "outcome": if pending { "pending" } else { "restored" },
+                    "count": restored,
+                });
+                let _ = write_log_at(&log_file, &line.to_string(), false);
+            }
+            keep_recovery = teardown_product_claims(dir, me, &store) || pending;
         }
         if let Some(mut child) = watcher
             && !keep_recovery
@@ -1152,6 +1161,7 @@ pub mod sys {
             cleanup_own_directional_request(&dir, &me.process_creation);
             cleanup_own_send_output_request(&dir, &me.process_creation);
             cleanup_own_migrate_workspace_request(&dir, &me.process_creation);
+            let _ = crate::tiling_sys::recover_durable_preimages(&dir, &me.process_creation);
             // No committed owner means no live icon: prune a crash ghost, if
             // any, through the stable project GUID (tolerant, unclaimed).
             let _ = crate::tray_sys::remove_stale_icon();

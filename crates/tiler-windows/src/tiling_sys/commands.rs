@@ -808,7 +808,9 @@ pub fn cmd_inventory() -> Result<String> {
             })
             .unwrap_or_else(|| "unknown".to_owned());
         let style = crate::ffi::window_style(hwnd_u64);
-        let exstyle = crate::ffi::window_exstyle(hwnd_u64);
+        let Some(exstyle) = crate::ffi::window_exstyle_checked(hwnd_u64) else {
+            continue;
+        };
         entries.push(serde_json::json!({
             "hwnd": raw as u64,
             "pid": pid,

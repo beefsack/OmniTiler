@@ -137,6 +137,19 @@ pub(super) fn run_tile_loop(
             );
         }
     }
+    // Recover chrome and topmost bands before any observation can classify
+    // them as application-owned state or rotate the old membership tags.
+    let restored = super::recover_durable_preimages(dir, &me.process_creation);
+    if restored > 0 {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "durable-preimage-restore",
+                "outcome": "restored",
+                "count": restored,
+            }),
+        );
+    }
     let last_remap = settings_live
         .as_ref()
         .map(|live| crate::settings::build_remap(&live.settings))
@@ -191,8 +204,6 @@ pub(super) fn run_tile_loop(
         suspended_limited: false,
         log_path: log_path.clone(),
         audit_path: audit_path.clone(),
-        durable_dir: dir.to_path_buf(),
-        durable_preimage_recovery_done: false,
         last_observation_skips: Vec::new(),
         keyboard,
         inner_gap,

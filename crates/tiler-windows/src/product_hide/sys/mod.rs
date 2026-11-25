@@ -136,7 +136,8 @@ pub fn query_candidate(
     if crate::ffi::owner_of(hwnd_u64) != 0 {
         return Err(err("refuse: owned dialog"));
     }
-    let ex = crate::ffi::window_exstyle(hwnd_u64);
+    let ex = crate::ffi::window_exstyle_checked(hwnd_u64)
+        .ok_or_else(|| err("uncertain: target extended style unreadable"))?;
     if ex & WS_EX_TOOLWINDOW != 0 {
         return Err(err("refuse: tool window"));
     }
@@ -1909,7 +1910,9 @@ pub fn classify_candidate_for_hide(
     if crate::ffi::owner_of(hwnd_u64) != 0 {
         return CandidateStatus::Refused("owned-dialog");
     }
-    let ex = crate::ffi::window_exstyle(hwnd_u64);
+    let Some(ex) = crate::ffi::window_exstyle_checked(hwnd_u64) else {
+        return CandidateStatus::Uncertain;
+    };
     if ex & WS_EX_TOOLWINDOW != 0 {
         return CandidateStatus::Refused("tool");
     }

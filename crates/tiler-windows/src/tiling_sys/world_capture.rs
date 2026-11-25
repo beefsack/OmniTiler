@@ -828,7 +828,7 @@ pub(super) fn read_hidden_claim(hwnd: u64) -> Option<HiddenClaimRead> {
     let visible = crate::ffi::is_visible(hwnd);
     let cloaked = crate::ffi::cloaked(hwnd)?;
     crate::ffi::window_style_checked(hwnd)?;
-    let exstyle = crate::ffi::window_exstyle(hwnd);
+    let exstyle = crate::ffi::window_exstyle_checked(hwnd)?;
     let owned = crate::ffi::owner_of(hwnd) != 0;
     let class = crate::ffi::try_class_name(hwnd)?;
     Some(HiddenClaimRead {
@@ -1065,16 +1065,7 @@ fn foreground_output_for_rect(
     // first entry, so prove the frame actually lands on a carried area
     // before delegating: an off-inventory rectangle (a transient or
     // moved-away frame) reports no output rather than the first screen.
-    let names_area = areas.iter().any(|area| {
-        let left = i64::from(rect.x).max(i64::from(area.full.x));
-        let top = i64::from(rect.y).max(i64::from(area.full.y));
-        let right = (i64::from(rect.x) + i64::from(rect.w))
-            .min(i64::from(area.full.x) + i64::from(area.full.w));
-        let bottom = (i64::from(rect.y) + i64::from(rect.h))
-            .min(i64::from(area.full.y) + i64::from(area.full.h));
-        right > left && bottom > top
-    });
-    if !names_area {
+    if !super::directional_resolution::frame_overlaps_output(areas, rect) {
         return None;
     }
     let entries: Vec<tiler_core::output_selection::OutputEntry> = areas
@@ -2096,9 +2087,7 @@ pub(super) fn capture_world(
     } else {
         crate::ffi::window_rect(foreground_hwnd)
             .and_then(rect_from_win)
-            .map(|rect| super::directional_resolution::output_for_rect(areas, &rect))
-            .and_then(|device| state.output_tokens.get(&device).cloned())
-            .map(OutputId)
+            .and_then(|rect| foreground_output_for_rect(areas, &rect, state.output_tokens))
     };
     let action_cached = if state.active_output.is_empty() {
         None

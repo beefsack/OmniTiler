@@ -248,6 +248,7 @@ pub(super) fn persist(dir: &Path, row: &FullscreenPreimage) -> Result<(), ()> {
 
 /// Load the row for one exact lifetime, if any. Unreadable slots return
 /// `None` (callers treat that as "no owned preimage", never as authority).
+#[cfg(test)]
 pub(super) fn load(
     dir: &Path,
     hwnd: u64,
@@ -285,6 +286,37 @@ fn leftover_candidates<'a>(
     rows.iter()
         .filter(|row| row.is_foreign_session(current_session))
         .collect()
+}
+
+/// Pure current-session filter: rows written by the restoring session, the
+/// graceful-stop set. A missing session is never restoration authority, so it
+/// selects nothing.
+fn current_candidates<'a>(
+    rows: &'a [FullscreenPreimage],
+    current_session: &str,
+) -> Vec<&'a FullscreenPreimage> {
+    if current_session.is_empty() {
+        return Vec::new();
+    }
+    rows.iter()
+        .filter(|row| row.session == current_session)
+        .collect()
+}
+
+/// D5 pruning decision for one durable row: a closed window, a handle now
+/// owned by another process (recycled), or a handle that vanished between the
+/// two reads can never verify its stored lifetime again, so the row is dead
+/// metadata. `GetWindowThreadProcessId` needs no handle access rights: for an
+/// existing HWND it always yields the owning pid, so a mismatch (including the
+/// zero read of a window destroyed mid-query) is a gone lifetime, never an
+/// access-denied guess. Access denied/unknown stays fail-closed in the
+/// held-process identity path ([`lifetime_provably_dead`]) for a matching
+/// live HWND/PID.
+fn row_window_gone(row: &FullscreenPreimage) -> bool {
+    if !crate::ffi::is_window(row.hwnd) {
+        return true;
+    }
+    crate::ffi::window_pid(row.hwnd) != row.pid
 }
 
 /// Self-verify one durable row's exact live lifetime from the row itself (no
@@ -329,45 +361,108 @@ fn lifetime_provably_dead(row: &FullscreenPreimage) -> bool {
     }
 }
 
+/// Restore one candidate set in place and retire each row only after the
+/// production restore sequence reports `restored` and the exact live lifetime
+/// still verifies after that native work. Returns `(restored, store_changed)`.
+fn restore_candidates(
+    rows: &mut Vec<FullscreenPreimage>,
+    candidates: Vec<FullscreenPreimage>,
+) -> (usize, bool) {
+    let mut restored = 0usize;
+    let mut retired = false;
+    for row in &candidates {
+        if !verify_live_lifetime(row) {
+            continue;
+        }
+        if super::fullscreen::restore_owned_chrome(row.hwnd, &row.meta()) != "restored" {
+            continue;
+        }
+        // Re-prove the lifetime after the native work: the window may have
+        // been destroyed or recycled while the chrome was being restored.
+        if verify_live_lifetime(row) {
+            restored += 1;
+            rows.retain(|existing| !existing.same_slot(row));
+            retired = true;
+        }
+    }
+    (restored, retired)
+}
+
 /// Restore verified fullscreen-chrome leftovers at startup and drop their
 /// rows. `current_session` is the restoring process's creation: only rows of a
 /// different session are considered, so the dead owner's rows are foreign and
-/// the current session's own live preimages are never touched. Rows whose
-/// exact process lifetime is provably gone are pruned instead of being
-/// retained forever; a row with an unreadable identity is kept for a later
-/// attempt. Each remaining candidate self-verifies its exact live lifetime
-/// (existing window, stored pid, stored process creation, stored membership
-/// tag) without an observation dependency. The row leaves only after the
-/// production restore sequence reports `restored`; a failed or unproven native
-/// restore keeps the row so the next startup retries. A failed publish only
-/// means a later startup re-checks, and an unreadable store restores nothing.
-/// Returns how many rows were restored.
+/// the current session's own live preimages are never touched. A missing
+/// `current_session` is never restoration authority: the store is left
+/// untouched. Rows whose exact process lifetime is provably gone, whose window
+/// is closed, or whose handle now belongs to another process are pruned
+/// instead of being retained forever; a row with an unreadable identity is
+/// kept for a later attempt. Each remaining candidate self-verifies its exact
+/// live lifetime (existing window, stored pid, stored process creation, stored
+/// membership tag) without an observation dependency. The row leaves only
+/// after the production restore sequence reports `restored` and that lifetime
+/// re-verifies; a failed or unproven native restore keeps the row so the next
+/// startup retries. A failed publish only means a later startup re-checks, and
+/// an unreadable store restores nothing. Returns how many rows were restored.
 pub(super) fn restore_verified_leftovers(dir: &Path, current_session: &str) -> usize {
+    if current_session.is_empty() {
+        return 0;
+    }
     let Ok(mut rows) = read_store(dir) else {
         return 0;
     };
     let before = rows.len();
-    rows.retain(|row| row.session == current_session || !lifetime_provably_dead(row));
+    rows.retain(|row| {
+        row.session == current_session || (!lifetime_provably_dead(row) && !row_window_gone(row))
+    });
     let mut dirty = rows.len() != before;
     let candidates: Vec<FullscreenPreimage> = leftover_candidates(&rows, current_session)
         .into_iter()
         .cloned()
         .collect();
-    let mut restored = 0usize;
-    for row in &candidates {
-        if !verify_live_lifetime(row) {
-            continue;
-        }
-        if super::fullscreen::restore_owned_chrome(row.hwnd, &row.meta()) == "restored" {
-            restored += 1;
-            rows.retain(|existing| !existing.same_slot(row));
-            dirty = true;
-        }
-    }
+    let (restored, retired) = restore_candidates(&mut rows, candidates);
+    dirty |= retired;
     if dirty {
         let _ = write_store(dir, &rows);
     }
     restored
+}
+
+/// Restore this session's own fullscreen-chrome preimages on graceful stop and
+/// report whether residual work remains. `current_session` is the restoring
+/// process's creation: only rows written by exactly that session are
+/// considered, so a foreign crashed predecessor's leftovers are never touched
+/// here (startup recovery owns them) and a missing session restores nothing
+/// and leaves the store untouched. Closed/recycled window rows are pruned (their
+/// lifetime can never verify again). Each candidate self-verifies its exact
+/// live lifetime, is restored, then re-verifies that same lifetime before its
+/// row is retired. Returns `(restored, pending)`, where `pending` is true when
+/// an unreadable store, a failed publish, or any current-session row left
+/// behind still needs the watcher to stay up.
+pub(super) fn restore_verified_current(dir: &Path, current_session: &str) -> (usize, bool) {
+    if current_session.is_empty() {
+        return (0, false);
+    }
+    let Ok(mut rows) = read_store(dir) else {
+        // Unreadable store: residue is unproven, so the watcher stays up.
+        return (0, true);
+    };
+    let before = rows.len();
+    rows.retain(|row| {
+        row.session != current_session || (!lifetime_provably_dead(row) && !row_window_gone(row))
+    });
+    let mut dirty = rows.len() != before;
+    let candidates: Vec<FullscreenPreimage> = current_candidates(&rows, current_session)
+        .into_iter()
+        .cloned()
+        .collect();
+    let (restored, retired) = restore_candidates(&mut rows, candidates);
+    dirty |= retired;
+    let mut pending = false;
+    if dirty {
+        pending = write_store(dir, &rows).is_err();
+    }
+    pending |= rows.iter().any(|row| row.session == current_session);
+    (restored, pending)
 }
 
 #[cfg(test)]
@@ -496,6 +591,138 @@ mod tests {
         assert_eq!(own.len(), 1);
         assert_eq!(own[0].hwnd, 11);
         assert!(leftover_candidates(&rows, "").is_empty());
+
+        // The graceful-stop scope is the exact mirror image: each row is
+        // selected by exactly one of the two scopes.
+        let current = current_candidates(&rows, "session-b");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].hwnd, 11);
+        let current = current_candidates(&rows, "session-a");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].hwnd, 10);
+        assert!(current_candidates(&rows, "").is_empty());
+    }
+
+    fn temp_store(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "omnitester-fullscreen-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    fn self_creation() -> String {
+        crate::native::HeldProcess::open(std::process::id())
+            .expect("self process")
+            .identity()
+            .expect("self identity")
+            .process_creation
+    }
+
+    #[test]
+    fn empty_session_never_touches_or_prunes_the_store() {
+        let dir = temp_store("empty-session");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dead = FullscreenPreimage::new(
+            0,
+            u32::MAX,
+            "creation-a",
+            "tag-a",
+            "session-a",
+            0,
+            true,
+            None,
+        )
+        .expect("row");
+        persist(&dir, &dead).expect("persist");
+        // A missing session is never restoration authority: neither restore
+        // path may prune or retire anything, even a provably dead row.
+        assert_eq!(restore_verified_leftovers(&dir, ""), 0);
+        assert_eq!(restore_verified_current(&dir, ""), (0, false));
+        assert_eq!(
+            load(&dir, 0, u32::MAX, "creation-a", "tag-a"),
+            Some(dead)
+        );
+        assert_eq!(read_store(&dir).expect("store").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn current_restore_prunes_only_its_own_closed_rows() {
+        let dir = temp_store("current-scope");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let pid = std::process::id();
+        let creation = self_creation();
+        let own = FullscreenPreimage::new(
+            0,
+            pid,
+            &creation,
+            "tag-a",
+            "session-self",
+            0,
+            true,
+            None,
+        )
+        .expect("row");
+        let foreign = FullscreenPreimage::new(
+            0,
+            pid,
+            &creation,
+            "tag-b",
+            "session-other",
+            0,
+            true,
+            None,
+        )
+        .expect("row");
+        persist(&dir, &own).expect("persist own");
+        persist(&dir, &foreign).expect("persist foreign");
+        // Handle 0 is closed, so the current-session row can never restore
+        // and is pruned without leaving residue; the other session's row is
+        // not this pass's business.
+        assert_eq!(restore_verified_current(&dir, "session-self"), (0, false));
+        assert!(load(&dir, 0, pid, &creation, "tag-a").is_none());
+        assert_eq!(
+            load(&dir, 0, pid, &creation, "tag-b"),
+            Some(foreign)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unverifiable_current_row_keeps_watcher_pending() {
+        let dir = temp_store("pending");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let window = crate::ffi::TestWindow::create_message_only(
+            "OmniTiler.FullscreenPreimagePendingTest",
+            "fullscreen-preimage",
+        )
+        .expect("window");
+        let pid = std::process::id();
+        let creation = self_creation();
+        // A live window with the exact pid but no matching membership tag:
+        // the row cannot verify, so it must stay and keep the watcher up.
+        let row = FullscreenPreimage::new(
+            window.hwnd(),
+            pid,
+            &creation,
+            "0123456789abcdef",
+            "session-self",
+            0,
+            true,
+            None,
+        )
+        .expect("row");
+        persist(&dir, &row).expect("persist");
+        assert_eq!(restore_verified_current(&dir, "session-self"), (0, true));
+        assert_eq!(
+            load(&dir, window.hwnd(), pid, &creation, "0123456789abcdef"),
+            Some(row)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -548,6 +775,9 @@ mod tests {
         std::fs::write(&path, br#"{"v":2,"rows":[]}"#).expect("write future store");
         assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
         assert!(read_store(&dir).is_err());
+        // An unreadable store leaves residue unproven: pending is set so a
+        // graceful stop keeps the watcher up.
+        assert_eq!(restore_verified_current(&dir, "session-b"), (0, true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

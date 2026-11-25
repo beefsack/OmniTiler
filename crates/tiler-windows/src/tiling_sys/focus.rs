@@ -373,7 +373,11 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
     // Mirror the target's topmost band so a topmost active window stays
     // bordered; ordinary targets demote a previously topmost ring. Read-only
     // style query, never a foreign write.
-    let topmost = crate::ffi::window_exstyle(foreground) & WS_EX_TOPMOST != 0;
+    let Some(exstyle) = crate::ffi::window_exstyle_checked(foreground) else {
+        hide_border(state, "unreadable");
+        return;
+    };
+    let topmost = exstyle & WS_EX_TOPMOST != 0;
     // Uniform presentation: the outer ring rides the last applied reply
     // (computed tick-side from the same normalized facts and core-scaled
     // style); fresh facts only hide when the live foreground moved on.

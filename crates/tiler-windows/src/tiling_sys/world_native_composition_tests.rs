@@ -1926,7 +1926,7 @@ fn cycle_prims() -> NativePrimitives {
         warp_cursor: |_, _| true,
         dpi: s_dpi,
         process_identity: fake_backed_identity,
-        read_topmost: |_| false,
+        read_topmost: |_| Some(false),
         admit: real.admit,
         hide_claim: real.hide_claim,
         reveal_claim: real.reveal_claim,

@@ -144,6 +144,19 @@ fn read_store(dir: &Path) -> Result<Vec<AbovePreimage>, ()> {
     };
     let text = std::str::from_utf8(&bytes).map_err(|_| ())?;
     let document: serde_json::Value = serde_json::from_str(text).map_err(|_| ())?;
+    // The document version is part of the wire contract: a future/foreign
+    // document is unreadable, never guessed, so recovery cannot "restore"
+    // rows it does not understand.
+    let version = u32::try_from(
+        document
+            .get("v")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(())?,
+    )
+    .map_err(|_| ())?;
+    if version != PREIMAGE_VERSION {
+        return Err(());
+    }
     let rows = document
         .get("rows")
         .and_then(serde_json::Value::as_array)
@@ -221,6 +234,169 @@ fn leftover_candidates<'a>(
         .collect()
 }
 
+/// Pure current-session filter: rows written by the restoring session, the
+/// graceful-stop set. A missing session is never restoration authority, so it
+/// selects nothing.
+fn current_candidates<'a>(
+    rows: &'a [AbovePreimage],
+    current_session: &str,
+) -> Vec<&'a AbovePreimage> {
+    if current_session.is_empty() {
+        return Vec::new();
+    }
+    rows.iter()
+        .filter(|row| row.session == current_session)
+        .collect()
+}
+
+/// D5 pruning decision for one durable row: a closed window, a handle now
+/// owned by another process (recycled), or a handle that vanished between the
+/// two reads can never verify its stored lifetime again, so the row is dead
+/// metadata. `GetWindowThreadProcessId` needs no handle access rights: for an
+/// existing HWND it always yields the owning pid, so a mismatch (including the
+/// zero read of a window destroyed mid-query) is a gone lifetime, never an
+/// access-denied guess. Access denied/unknown stays fail-closed in the
+/// held-process identity path ([`lifetime_provably_dead`]) for a matching
+/// live HWND/PID.
+fn row_window_gone(row: &AbovePreimage) -> bool {
+    if !crate::ffi::is_window(row.hwnd) {
+        return true;
+    }
+    crate::ffi::window_pid(row.hwnd) != row.pid
+}
+
+/// Whether one observed band equals the stored preimage. `None` (unreadable
+/// extended style) never matches: an unreadable band is not restoration
+/// proof.
+fn band_matches(prior_topmost: bool, observed: Option<bool>) -> bool {
+    observed == Some(prior_topmost)
+}
+
+/// Restore one verified row's original topmost band and prove the result. An
+/// already-correct band needs no write; an unreadable band holds immediately
+/// (never a blind write), and otherwise the setter must accept and a fresh
+/// read must show the preimage band. An unreadable post-write band keeps the
+/// durable row: retirement is only ever based on proof.
+fn restore_topmost_band(row: &AbovePreimage) -> bool {
+    match super::workspace_mode::read_topmost_now(row.hwnd) {
+        Some(current) if band_matches(row.prior_topmost, Some(current)) => true,
+        Some(_) => {
+            super::workspace_mode::set_topmost_band(row.hwnd, row.prior_topmost)
+                && band_matches(
+                    row.prior_topmost,
+                    super::workspace_mode::read_topmost_now(row.hwnd),
+                )
+        }
+        None => false,
+    }
+}
+
+/// Restore one candidate set in place and retire each row only after its
+/// native restore is proven and the exact live lifetime still verifies after
+/// the native work. Returns `(restored, store_changed)`.
+fn restore_candidates(
+    rows: &mut Vec<AbovePreimage>,
+    candidates: Vec<AbovePreimage>,
+) -> (usize, bool) {
+    let mut restored = 0usize;
+    let mut retired = false;
+    for row in &candidates {
+        if !verify_live_lifetime(row) || !restore_topmost_band(row) {
+            continue;
+        }
+        // Re-prove the lifetime after the native work: the window may have
+        // been destroyed or recycled while the band was being restored, and
+        // the row must never retire authority for a lifetime that drifted.
+        if verify_live_lifetime(row) {
+            restored += 1;
+            rows.retain(|existing| !existing.same_slot(row));
+            retired = true;
+        }
+    }
+    (restored, retired)
+}
+
+/// Restore verified leftovers at startup and drop their rows. `current_session`
+/// is the restoring process's creation: only rows of a different session are
+/// considered, so the dead owner's rows are foreign and the current session's
+/// own live preimages are never touched. A missing `current_session` is never
+/// restoration authority: the store is left untouched. Rows whose exact
+/// process lifetime is provably gone, whose window is closed, or whose handle
+/// now belongs to another process are pruned instead of being retained
+/// forever; a row with an unreadable identity is kept for a later attempt.
+/// Each remaining candidate self-verifies its exact live lifetime (existing
+/// window, stored pid, stored process creation, stored membership tag)
+/// without an observation dependency. A row whose current band already equals
+/// the preimage needs no write but is still cleared once its lifetime is
+/// verified. A failed or unproven native restore keeps the row so the next
+/// startup retries the same idempotent restore; a failed publish only means a
+/// later startup re-checks. An unreadable store restores nothing. Returns how
+/// many rows were restored.
+pub(super) fn restore_verified_leftovers(dir: &Path, current_session: &str) -> usize {
+    if current_session.is_empty() {
+        return 0;
+    }
+    let Ok(mut rows) = read_store(dir) else {
+        return 0;
+    };
+    let before = rows.len();
+    rows.retain(|row| {
+        row.session == current_session || (!lifetime_provably_dead(row) && !row_window_gone(row))
+    });
+    let mut dirty = rows.len() != before;
+    let candidates: Vec<AbovePreimage> = leftover_candidates(&rows, current_session)
+        .into_iter()
+        .cloned()
+        .collect();
+    let (restored, retired) = restore_candidates(&mut rows, candidates);
+    dirty |= retired;
+    if dirty {
+        // Best-effort slot compaction; the native restore above already
+        // happened, so a failed publish only means a later startup retries
+        // an idempotent no-op restore.
+        let _ = write_store(dir, &rows);
+    }
+    restored
+}
+
+/// Restore this session's own preimages on graceful stop and report whether
+/// residual work remains. `current_session` is the restoring process's
+/// creation: only rows written by exactly that session are considered, so a
+/// foreign crashed predecessor's leftovers are never touched here (startup
+/// recovery owns them) and a missing session restores nothing and leaves the
+/// store untouched. Closed/recycled window rows are pruned (their lifetime can
+/// never verify again). Each candidate self-verifies its exact live lifetime,
+/// is restored, then re-verifies that same lifetime before its row is retired;
+/// an unreadable band holds the row. Returns `(restored, pending)`, where
+/// `pending` is true when an unreadable store, a failed publish, or any
+/// current-session row left behind still needs the watcher to stay up.
+pub(super) fn restore_verified_current(dir: &Path, current_session: &str) -> (usize, bool) {
+    if current_session.is_empty() {
+        return (0, false);
+    }
+    let Ok(mut rows) = read_store(dir) else {
+        // Unreadable store: residue is unproven, so the watcher stays up.
+        return (0, true);
+    };
+    let before = rows.len();
+    rows.retain(|row| {
+        row.session != current_session || (!lifetime_provably_dead(row) && !row_window_gone(row))
+    });
+    let mut dirty = rows.len() != before;
+    let candidates: Vec<AbovePreimage> = current_candidates(&rows, current_session)
+        .into_iter()
+        .cloned()
+        .collect();
+    let (restored, retired) = restore_candidates(&mut rows, candidates);
+    dirty |= retired;
+    let mut pending = false;
+    if dirty {
+        pending = write_store(dir, &rows).is_err();
+    }
+    pending |= rows.iter().any(|row| row.session == current_session);
+    (restored, pending)
+}
+
 /// Self-verify one durable row's exact live lifetime from the row itself (no
 /// observation list): the window still exists, its pid is the stored pid, the
 /// held process identity still carries the stored creation time, and the live
@@ -263,53 +439,6 @@ fn lifetime_provably_dead(row: &AbovePreimage) -> bool {
     }
 }
 
-/// Restore verified leftovers at startup and drop their rows. `current_session`
-/// is the restoring process's creation: only rows of a different session are
-/// considered, so the dead owner's rows are foreign and the current session's
-/// own live preimages are never touched. Rows whose exact process lifetime is
-/// provably gone are pruned instead of being retained forever; a row with an
-/// unreadable identity is kept for a later attempt. Each remaining candidate
-/// self-verifies its exact live lifetime (existing window, stored pid, stored
-/// process creation, stored membership tag) without an observation
-/// dependency. A row whose current band already equals the preimage needs no
-/// write but is still cleared once its lifetime is verified. A failed native
-/// restore keeps the row so the next startup retries the same idempotent
-/// restore; a failed publish only means a later startup re-checks. An
-/// unreadable store restores nothing. Returns how many rows were restored.
-pub(super) fn restore_verified_leftovers(dir: &Path, current_session: &str) -> usize {
-    let Ok(mut rows) = read_store(dir) else {
-        return 0;
-    };
-    let before = rows.len();
-    rows.retain(|row| row.session == current_session || !lifetime_provably_dead(row));
-    let mut dirty = rows.len() != before;
-    let candidates: Vec<AbovePreimage> = leftover_candidates(&rows, current_session)
-        .into_iter()
-        .cloned()
-        .collect();
-    let mut restored = 0usize;
-    for row in &candidates {
-        if !verify_live_lifetime(row) {
-            continue;
-        }
-        let current = super::workspace_mode::read_topmost_now(row.hwnd);
-        if current == row.prior_topmost
-            || super::workspace_mode::set_topmost_band(row.hwnd, row.prior_topmost)
-        {
-            restored += 1;
-            rows.retain(|existing| !existing.same_slot(row));
-            dirty = true;
-        }
-    }
-    if dirty {
-        // Best-effort slot compaction; the native restore above already
-        // happened, so a failed publish only means a later startup retries
-        // an idempotent no-op restore.
-        let _ = write_store(dir, &rows);
-    }
-    restored
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,6 +466,62 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_band_is_never_restoration_proof() {
+        // `None` is an unreadable extended style: it can never equal either
+        // stored band, so no row is retired from it.
+        assert!(!band_matches(true, None));
+        assert!(!band_matches(false, None));
+        assert!(band_matches(true, Some(true)));
+        assert!(band_matches(false, Some(false)));
+        assert!(!band_matches(true, Some(false)));
+        assert!(!band_matches(false, Some(true)));
+    }
+
+    #[test]
+    fn row_pruning_is_exact_for_closed_and_recycled_handles() {
+        let (window, _) = tagged_test_window("OmniTiler.AbovePreimagePruneTest");
+        let pid = std::process::id();
+        let creation = self_creation();
+        // A live handle whose pid still matches: not gone.
+        let live =
+            AbovePreimage::new(window.hwnd(), pid, &creation, "tag-a", false, "session-a").unwrap();
+        assert!(!row_window_gone(&live));
+        // The same live handle under another stored pid is recycled.
+        let other_pid = if pid == u32::MAX { pid - 1 } else { pid + 1 };
+        let recycled = AbovePreimage::new(
+            window.hwnd(),
+            other_pid,
+            &creation,
+            "tag-a",
+            false,
+            "session-a",
+        )
+        .unwrap();
+        assert!(row_window_gone(&recycled));
+        // A closed handle is gone even while its process is alive.
+        let closed = AbovePreimage::new(0, pid, &creation, "tag-a", false, "session-a").unwrap();
+        assert!(row_window_gone(&closed));
+    }
+
+    #[test]
+    fn unreadable_extended_style_never_reads_as_not_topmost() {
+        // A closed handle's exstyle is unreadable (`None`), so the topmost
+        // helper must not fabricate `false` from it.
+        assert_eq!(super::super::workspace_mode::read_topmost_now(0), None);
+    }
+
+    #[test]
+    fn unreadable_band_holds_instead_of_writing_blind() {
+        let creation = self_creation();
+        let row =
+            AbovePreimage::new(0, std::process::id(), &creation, "tag-a", false, "session-a")
+                .expect("row");
+        // The pre-read is unreadable, so the restore holds immediately and
+        // performs no native write from a guessed band.
+        assert!(!restore_topmost_band(&row));
+    }
+
+    #[test]
     fn leftover_candidates_skip_current_session_and_missing_session() {
         // Both rows carry a complete exact-lifetime shape (hwnd/pid/creation/
         // tag); only the session differs. Native lifetime verification runs
@@ -354,6 +539,16 @@ mod tests {
         assert_eq!(own[0].hwnd, 11);
         // A missing session is never restoration authority.
         assert!(leftover_candidates(&rows, "").is_empty());
+
+        // The graceful-stop scope is the exact mirror image: each row is
+        // selected by exactly one of the two scopes.
+        let current = current_candidates(&rows, "session-b");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].hwnd, 11);
+        let current = current_candidates(&rows, "session-a");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].hwnd, 10);
+        assert!(current_candidates(&rows, "").is_empty());
     }
 
     fn temp_store(name: &str) -> std::path::PathBuf {
@@ -385,6 +580,67 @@ mod tests {
             std::fs::read(&path).expect("store still present"),
             br#"{"v":1,"rows":[{"v":1,"hwnd":10,"pid":7,"creation":"","tag":"tag-a","priorTopmost":false,"session":"session-a"}]}"#
         );
+        // The top-level document version is validated too: a future/foreign
+        // document or a missing version is unreadable even when it has no
+        // rows, so recovery fails closed instead of treating it as empty.
+        std::fs::write(&path, br#"{"v":2,"rows":[]}"#).expect("write future store");
+        assert!(read_store(&dir).is_err());
+        assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
+        std::fs::write(&path, br#"{"rows":[]}"#).expect("write unversioned store");
+        assert!(read_store(&dir).is_err());
+        // An unreadable store leaves residue unproven: pending is set so a
+        // graceful stop keeps the watcher up.
+        assert_eq!(restore_verified_current(&dir, "session-b"), (0, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn self_creation() -> String {
+        crate::native::HeldProcess::open(std::process::id())
+            .expect("self process")
+            .identity()
+            .expect("self identity")
+            .process_creation
+    }
+
+    fn tagged_test_window(class: &str) -> (crate::ffi::TestWindow, String) {
+        let window =
+            crate::ffi::TestWindow::create_message_only(class, "above-preimage").expect("window");
+        let tag = crate::product_hide::sys::ensure_member_tag(window.hwnd(), std::process::id())
+            .expect("member tag");
+        (window, tag)
+    }
+
+    #[test]
+    fn empty_session_never_touches_or_prunes_the_store() {
+        let dir = temp_store("empty-session");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dead = AbovePreimage::new(0, u32::MAX, "creation-a", "tag-a", false, "session-a")
+            .expect("row");
+        persist(&dir, &dead).expect("persist");
+        // A missing session is never restoration authority: neither restore
+        // path may prune or retire anything, even a provably dead row.
+        assert_eq!(restore_verified_leftovers(&dir, ""), 0);
+        assert_eq!(restore_verified_current(&dir, ""), (0, false));
+        assert_eq!(load(&dir, 0, u32::MAX, "creation-a", "tag-a"), Some(dead));
+        assert_eq!(read_store(&dir).expect("store").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closed_window_of_live_process_is_pruned() {
+        let dir = temp_store("window-gone");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let pid = std::process::id();
+        let creation = self_creation();
+        // Handle 0 is a closed window owned by a still-live process: the
+        // process is not provably dead, so only the window check can prune
+        // this row, and it can never verify its lifetime again.
+        let closed = AbovePreimage::new(0, pid, &creation, "tag-a", false, "session-a")
+            .expect("row");
+        persist(&dir, &closed).expect("persist");
+        assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
+        assert!(load(&dir, 0, pid, &creation, "tag-a").is_none());
+        assert!(read_store(&dir).expect("store").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -411,22 +667,60 @@ mod tests {
     fn unverifiable_live_lifetime_row_is_kept() {
         let dir = temp_store("kept");
         std::fs::create_dir_all(&dir).expect("temp dir");
+        let (window, live_tag) = tagged_test_window("OmniTiler.AbovePreimageKeptTest");
         let pid = std::process::id();
-        let creation = crate::native::HeldProcess::open(pid)
-            .expect("self process")
-            .identity()
-            .expect("self identity")
-            .process_creation;
-        // HWND 0 never verifies, but the process lifetime is still live and
-        // matches: this row is not provably dead and must stay for a later
-        // attempt (and the current session never treats it as leftover).
-        let row = AbovePreimage::new(0, pid, &creation, "tag-a", false, "session-a")
-            .expect("row");
+        let creation = self_creation();
+        // The window and process are live, but the stored tag is not the live
+        // membership tag: this row never verifies, yet its lifetime is not
+        // gone, so recovery must keep it for a later attempt and never guess
+        // a match.
+        let row = AbovePreimage::new(
+            window.hwnd(),
+            pid,
+            &creation,
+            "0123456789abcdef",
+            false,
+            "session-a",
+        )
+        .expect("row");
+        assert_ne!(live_tag, "0123456789abcdef");
         persist(&dir, &row).expect("persist");
         assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
-        assert_eq!(load(&dir, 0, pid, &creation, "tag-a"), Some(row.clone()));
-        assert_eq!(restore_verified_leftovers(&dir, "session-a"), 0);
-        assert_eq!(load(&dir, 0, pid, &creation, "tag-a"), Some(row));
+        assert_eq!(
+            load(&dir, window.hwnd(), pid, &creation, "0123456789abcdef"),
+            Some(row.clone())
+        );
+        // The graceful-stop scope keeps it too: no proof, no retirement, and
+        // the current row residue keeps the watcher up.
+        assert_eq!(restore_verified_current(&dir, "session-a"), (0, true));
+        assert_eq!(
+            load(&dir, window.hwnd(), pid, &creation, "0123456789abcdef"),
+            Some(row)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn current_restore_retires_own_verified_row_and_leftovers_skip_it() {
+        let dir = temp_store("current");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let (window, tag) = tagged_test_window("OmniTiler.AbovePreimageCurrentTest");
+        let pid = std::process::id();
+        let creation = self_creation();
+        let stored = AbovePreimage::new(window.hwnd(), pid, &creation, &tag, false, "session-self")
+            .expect("row");
+        persist(&dir, &stored).expect("persist");
+        // Foreign-only recovery never touches a current-session row.
+        assert_eq!(restore_verified_leftovers(&dir, "session-self"), 0);
+        assert_eq!(
+            load(&dir, window.hwnd(), pid, &creation, &tag),
+            Some(stored.clone())
+        );
+        // Current-only recovery verifies the exact lifetime, proves the band
+        // (the test window is already non-topmost), then retires the row.
+        assert_eq!(restore_verified_current(&dir, "session-self"), (1, false));
+        assert!(load(&dir, window.hwnd(), pid, &creation, &tag).is_none());
+        assert!(read_store(&dir).expect("store").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

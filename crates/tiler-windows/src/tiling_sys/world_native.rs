@@ -168,7 +168,7 @@ pub(super) struct NativePrimitives {
     /// the frame path re-bases once through it instead of pinning a clamp.
     pub dpi: fn(u64) -> Option<u32>,
     pub process_identity: fn(u64) -> Option<ProcessIdentity>,
-    pub read_topmost: fn(u64) -> bool,
+    pub read_topmost: fn(u64) -> Option<bool>,
     pub admit: fn(
         u64,
         &ProcessIdentity,
@@ -357,7 +357,7 @@ fn real_process_identity(hwnd: u64) -> Option<ProcessIdentity> {
     (ident.pid == pid).then_some(ident)
 }
 
-fn real_read_topmost(hwnd: u64) -> bool {
+fn real_read_topmost(hwnd: u64) -> Option<bool> {
     super::workspace_mode::read_topmost_now(hwnd)
 }
 
@@ -1319,9 +1319,10 @@ impl<'a> LiveNative<'a> {
             })
             .map(|w| w.visible);
         let stored = self.stored_tag(key).unwrap_or_default().to_owned();
+        let topmost = (self.prims.read_topmost)(key.hwnd).ok_or(AdmitOutcome::Refused)?;
         let allow_topmost = crate::product_hide::project_topmost_hide_allowed(
             self.above_prior_topmost(key),
-            (self.prims.read_topmost)(key.hwnd),
+            topmost,
         );
         let claim = (self.prims.admit)(key.hwnd, self.me, expected, &stored, allow_topmost)?;
         let hide = if nonactivating {
@@ -1739,18 +1740,17 @@ fn write_above(native: &mut LiveNative<'_>, key: &WindowKey, value: bool) -> Sta
         return StateWrite::NotAttempted;
     };
     if value {
-        let prior = super::workspace_mode::read_topmost_now(key.hwnd);
-        if prior {
-            // Someone else already owns the band: no preimage, no ownership
-            // claim, no write.
+        let Some(false) = super::workspace_mode::read_topmost_now(key.hwnd) else {
+            // Unknown or already owned by the application: no durable
+            // preimage, ownership claim, or native write.
             return StateWrite::NotAttempted;
-        }
+        };
         let Some(row) = super::above_preimage::AbovePreimage::new(
             key.hwnd,
             key.pid,
             &key.creation,
             &tag,
-            prior,
+            false,
             &native.me.process_creation,
         ) else {
             return StateWrite::NotAttempted;
@@ -1765,23 +1765,30 @@ fn write_above(native: &mut LiveNative<'_>, key: &WindowKey, value: bool) -> Sta
         }
         StateWrite::Called(true)
     } else {
-        release_above(native.dir, key, &tag, |prior| {
-            super::workspace_mode::set_topmost_band(key.hwnd, prior)
-        })
+        release_above(
+            native.dir,
+            key,
+            &tag,
+            |prior| super::workspace_mode::set_topmost_band(key.hwnd, prior),
+            || {
+                if crate::ffi::window_pid(key.hwnd) != key.pid || !native.lifetime_ok(key) {
+                    return None;
+                }
+                super::workspace_mode::read_topmost_now(key.hwnd)
+            },
+        )
     }
 }
 
 /// Release one owned `above` row: restore only this lifetime's exact stored
-/// band and clear the durable row only after the native setter reported
-/// success. A failed restore reports [`StateWrite::Threw`] and leaves the
-/// preimage loadable, so the next start can still restore the original
-/// band; a release never deletes the only proof of the state it failed to
-/// undo.
+/// band and clear the durable row only after matched live readback. A
+/// missing or disagreeing readback leaves the row available for recovery.
 fn release_above(
     dir: &Path,
     key: &WindowKey,
     tag: &str,
     restore: impl FnOnce(bool) -> bool,
+    readback: impl FnOnce() -> Option<bool>,
 ) -> StateWrite {
     let Some(row) = super::above_preimage::load(dir, key.hwnd, key.pid, &key.creation, tag) else {
         // No owned preimage: this lifetime's above was never raised by the
@@ -1791,7 +1798,18 @@ fn release_above(
     if !restore(row.prior_topmost) {
         return StateWrite::Threw;
     }
-    let _ = super::above_preimage::clear(dir, key.hwnd, key.pid, &key.creation, tag);
+    if readback() == Some(row.prior_topmost)
+        && super::above_preimage::clear(dir, key.hwnd, key.pid, &key.creation, tag).is_err()
+    {
+        super::trace::log_json_at(
+            &crate::lifecycle::sys::log_path_for(dir, &row.session),
+            serde_json::json!({
+                "event": "durable-preimage-retire",
+                "property": "above",
+                "outcome": "pending",
+            }),
+        );
+    }
     StateWrite::Called(true)
 }
 
@@ -1864,8 +1882,8 @@ fn scripted_intent_storage_of(hwnd: u64) -> Option<IntentStorage> {
 fn enter_fullscreen_at(
     areas: &[MonitorArea],
     device: &str,
-    enter: impl FnOnce(Rect) -> &'static str,
-) -> Option<&'static str> {
+    enter: impl FnOnce(Rect) -> StateWrite,
+) -> Option<StateWrite> {
     let full = areas
         .iter()
         .find(|area| area.device == device)
@@ -1879,8 +1897,11 @@ fn enter_fullscreen_at(
 fn enter_fullscreen_for_frame(
     areas: &[MonitorArea],
     frame: &Rect,
-    enter: impl FnOnce(Rect) -> &'static str,
-) -> Option<&'static str> {
+    enter: impl FnOnce(Rect) -> StateWrite,
+) -> Option<StateWrite> {
+    if !super::directional_resolution::frame_overlaps_output(areas, frame) {
+        return None;
+    }
     let device = super::directional_resolution::output_for_rect(areas, frame);
     enter_fullscreen_at(areas, &device, enter)
 }
@@ -2668,7 +2689,7 @@ impl NativeOps for LiveNative<'_> {
         match property {
             StateProperty::Maximized => Some(super::probes::is_zoomed_now(key.hwnd)),
             StateProperty::Fullscreen => super::probes::live_overlay_flags(key.hwnd, self.fulls).1,
-            StateProperty::Above => Some(super::workspace_mode::read_topmost_now(key.hwnd)),
+            StateProperty::Above => super::workspace_mode::read_topmost_now(key.hwnd),
             // Windows has no native sticky property: the composition caps
             // keep sticky out of the state lane, so this read is honestly
             // unreadable instead of a fabricated mirror.
@@ -2689,10 +2710,7 @@ impl NativeOps for LiveNative<'_> {
             return StateWrite::NotAttempted;
         }
         match property {
-            StateProperty::Maximized => match super::probes::toggle_zoom_async(key.hwnd, value) {
-                "threw" => StateWrite::Threw,
-                _ => StateWrite::Called(true),
-            },
+            StateProperty::Maximized => super::probes::toggle_zoom_async(key.hwnd, value),
             StateProperty::Fullscreen => {
                 if value {
                     // Enter needs a live frame-derived output anchor; an
@@ -2702,15 +2720,10 @@ impl NativeOps for LiveNative<'_> {
                     let Some(frame) = self.read_frame(token) else {
                         return StateWrite::NotAttempted;
                     };
-                    let Some(result) = enter_fullscreen_for_frame(&self.areas, &frame, |full| {
-                        super::fullscreen::enter_fullscreen(key.hwnd, full)
-                    }) else {
-                        return StateWrite::NotAttempted;
-                    };
-                    match result {
-                        "threw" => StateWrite::Threw,
-                        _ => StateWrite::Called(true),
-                    }
+                    enter_fullscreen_for_frame(&self.areas, &frame, |full| {
+                        super::fullscreen::enter_fullscreen(key.hwnd, full, self.dir)
+                    })
+                    .unwrap_or(StateWrite::NotAttempted)
                 } else {
                     // Exit is project-owned only: app-owned fullscreen has
                     // no metadata and is never touched (capture publishes
@@ -2719,10 +2732,7 @@ impl NativeOps for LiveNative<'_> {
                     let Some(meta) = super::fullscreen::read_fullscreen_meta(key.hwnd) else {
                         return StateWrite::NotAttempted;
                     };
-                    match super::fullscreen::exit_fullscreen_owned(key.hwnd, &meta) {
-                        "threw" => StateWrite::Threw,
-                        _ => StateWrite::Called(true),
-                    }
+                    super::fullscreen::exit_fullscreen_owned(key.hwnd, &meta, self.dir)
                 }
             }
             StateProperty::Above => write_above(self, &key, value),
@@ -3055,11 +3065,17 @@ mod r12_native_tests {
         above_preimage::persist(&dir, &row).expect("preimage persists");
 
         let mut calls = 0;
-        let result = release_above(&dir, &key, TAG, |prior| {
-            calls += 1;
-            assert!(!prior, "acquisition only owns a prior-false band");
-            false
-        });
+        let result = release_above(
+            &dir,
+            &key,
+            TAG,
+            |prior| {
+                calls += 1;
+                assert!(!prior, "acquisition only owns a prior-false band");
+                false
+            },
+            || panic!("failed setter must not attempt retirement"),
+        );
         assert_eq!(result, StateWrite::Threw);
         assert_eq!(calls, 1, "exactly one restore attempt");
         let kept = above_preimage::load(&dir, key.hwnd, key.pid, &key.creation, TAG)
@@ -3077,10 +3093,16 @@ mod r12_native_tests {
                 .expect("row builds");
         above_preimage::persist(&dir, &row).expect("preimage persists");
 
-        let result = release_above(&dir, &key, TAG, |prior| {
-            assert!(!prior);
-            true
-        });
+        let result = release_above(
+            &dir,
+            &key,
+            TAG,
+            |prior| {
+                assert!(!prior);
+                true
+            },
+            || Some(false),
+        );
         assert_eq!(result, StateWrite::Called(true));
         assert_eq!(
             above_preimage::load(&dir, key.hwnd, key.pid, &key.creation, TAG),
@@ -3091,12 +3113,35 @@ mod r12_native_tests {
     }
 
     #[test]
+    fn accepted_above_release_keeps_preimage_without_verified_post_band() {
+        let dir = temp_dir("above-pending");
+        let key = key(0x4004);
+        let row = AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
+            .expect("row builds");
+        above_preimage::persist(&dir, &row).expect("preimage persists");
+        for readback in [None, Some(true)] {
+            let result = release_above(&dir, &key, TAG, |prior| !prior, || readback);
+            assert_eq!(result, StateWrite::Called(true));
+            assert_eq!(
+                above_preimage::load(&dir, key.hwnd, key.pid, &key.creation, TAG),
+                Some(row.clone()),
+                "setter acceptance does not establish the prior band"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn above_release_without_owned_row_never_calls_native() {
         let dir = temp_dir("above-none");
         let key = key(0x4003);
-        let result = release_above(&dir, &key, TAG, |_| {
-            panic!("no native restore without an owned preimage")
-        });
+        let result = release_above(
+            &dir,
+            &key,
+            TAG,
+            |_| panic!("no native restore without an owned preimage"),
+            || panic!("no readback without a restore"),
+        );
         assert_eq!(result, StateWrite::NotAttempted);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3107,7 +3152,7 @@ mod r12_native_tests {
         let mut called = false;
         let result = enter_fullscreen_at(&areas, "\\\\.\\DISPLAY9", |_| {
             called = true;
-            "called"
+            StateWrite::Called(true)
         });
         assert_eq!(result, None);
         assert!(!called, "unknown output never reaches enter_fullscreen");
@@ -3124,11 +3169,23 @@ mod r12_native_tests {
             },
             |_| {
                 called = true;
-                "called"
+                StateWrite::Called(true)
             },
         );
         assert_eq!(result, None);
         assert!(!called, "empty topology never falls back to a screen");
+
+        let result = enter_fullscreen_for_frame(
+            &areas,
+            &Rect {
+                x: 1920,
+                y: 0,
+                w: 100,
+                h: 100,
+            },
+            |_| panic!("edge contact cannot select a fullscreen output"),
+        );
+        assert_eq!(result, None);
     }
 
     #[test]
@@ -3148,10 +3205,10 @@ mod r12_native_tests {
             },
             |full| {
                 got = Some(full);
-                "called"
+                StateWrite::Called(true)
             },
         );
-        assert_eq!(result, Some("called"));
+        assert_eq!(result, Some(StateWrite::Called(true)));
         assert_eq!(
             got,
             Some(Rect {

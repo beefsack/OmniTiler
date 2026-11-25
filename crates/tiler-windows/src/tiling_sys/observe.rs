@@ -1305,7 +1305,9 @@ fn observe_window_inner(
         return Err(known(SkipReason::Unreadable));
     };
     let style = crate::ffi::window_style(hwnd_u64);
-    let exstyle = crate::ffi::window_exstyle(hwnd_u64);
+    let Some(exstyle) = crate::ffi::window_exstyle_checked(hwnd_u64) else {
+        return Err(known(SkipReason::Unreadable));
+    };
     let owned = crate::ffi::owner_of(hwnd_u64) != 0;
     let class = class_of(hwnd);
     let captionless = style & WS_CAPTION == 0;

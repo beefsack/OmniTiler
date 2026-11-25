@@ -146,8 +146,8 @@ pub use window::{
     seed_minmax_info, set_foreground_window, set_prop, set_topmost, set_window_placement,
     set_window_pos, set_window_pos_after, set_window_pos_detailed, set_window_style,
     set_window_text, shell_window, show_window, show_window_async, show_window_prev_visible,
-    take_prop, try_class_name, window_at_point, window_exstyle, window_pid, window_placement,
-    window_rect, window_style, window_style_checked, window_thread_id,
+    take_prop, try_class_name, window_at_point, window_exstyle, window_exstyle_checked, window_pid,
+    window_placement, window_rect, window_style, window_style_checked, window_thread_id,
 };
 
 fn hwnd_of(hwnd: u64) -> windows_sys::Win32::Foundation::HWND {

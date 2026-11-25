@@ -1367,26 +1367,6 @@ fn admit_observed(
     me: &crate::model::ProcessIdentity,
     observed: &[ObservedWindow],
 ) {
-    // R12 durable-preimage recovery (once per process): run before the
-    // per-window membership-tag rotation below, so leftovers from a previous
-    // tiler session are restored from the durable slots themselves (every
-    // enumerated window is already live; no observation list gates it). Only
-    // foreign-session rows whose exact lifetime self-verifies are touched,
-    // and the current session's own live preimages are never candidates.
-    if !state.durable_preimage_recovery_done {
-        state.durable_preimage_recovery_done = true;
-        let restored = super::recover_durable_preimages(&state.durable_dir, &me.process_creation);
-        if restored > 0 {
-            super::trace::log_json_at(
-                &state.log_path,
-                serde_json::json!({
-                    "event": "durable-preimage-restore",
-                    "outcome": "restored",
-                    "count": restored,
-                }),
-            );
-        }
-    }
     for window in observed {
         let key = crate::native_guards::WindowKey {
             hwnd: window.hwnd,

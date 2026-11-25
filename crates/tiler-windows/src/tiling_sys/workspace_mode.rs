@@ -13,8 +13,10 @@ pub(super) fn workspace_mode_tiled(state: &TileLoop, output: &str, workspace: &s
 }
 
 /// Fresh `WS_EX_TOPMOST` read on one HWND (official Win32 topmost band).
-pub(super) fn read_topmost_now(hwnd_u64: u64) -> bool {
-    crate::ffi::window_exstyle(hwnd_u64) & WS_EX_TOPMOST != 0
+/// `None` when the extended style is unreadable (closed or denied window):
+/// callers must never treat an unreadable band as "not topmost".
+pub(super) fn read_topmost_now(hwnd_u64: u64) -> Option<bool> {
+    crate::ffi::window_exstyle_checked(hwnd_u64).map(|exstyle| exstyle & WS_EX_TOPMOST != 0)
 }
 
 /// Set one window's topmost band without moving, sizing, or activating it.
