@@ -3693,27 +3693,13 @@ fn tile_fixture_gate_flags_parse_repeatable_and_default_absent() {
 }
 
 #[test]
-fn tile_help_qualifies_authentic_holder_ensure() {
-    // The tile help must not claim zero native-setting writes on every
-    // path: Authentic ensures Switch to Desktop 1..9 holders once at
-    // startup (even with --input off) while Compatible stays zero-touch.
+fn tile_help_describes_explicit_desktop_shortcut_apply() {
     let help = help_text();
-    assert!(
-        help.contains("Compatible writes no native settings"),
-        "tile help must state the Compatible zero-touch path"
-    );
-    assert!(
-        help.contains("Authentic ensures"),
-        "tile help must name the Authentic holder-ensure exception"
-    );
-    assert!(
-        help.contains("even with"),
-        "tile help must state the ensure runs even with input off"
-    );
-    assert!(
-        !help.contains("no native-setting writes on any path"),
-        "blanket no-writes claim must stay removed"
-    );
+    let (_, tile) = help.split_once(" tile --user-start").expect("tile help");
+    let (tile, _) = tile.split_once(" spaces-move").expect("end of tile help");
+    assert!(tile.contains("the preset only selects which chords tile intercepts"));
+    assert!(tile.contains("startup does not change Desktop-N shortcuts"));
+    assert!(tile.contains("Run `spaces-desktop-apply`"));
 }
 
 #[test]

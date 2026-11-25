@@ -534,11 +534,10 @@ pub fn help_text() -> String {
            \x20 \x20 unscoped, explicit harness run directory; absent leaves\n\
            \x20 \x20 the normal product unchanged);\n\
            \x20 \x20 --focus-follows-cursor pushes output.focus-follows-cursor true to the core settings route (CLI only; never writes settings files);\n\
-           \x20 \x20 Compatible writes no native settings; Authentic ensures\n\
-           \x20 \x20 Switch to Desktop 1..9 holders once at startup (even with\n\
-           \x20 \x20 --input off) with owned preimages, explicit\n\
-           \x20 \x20 `spaces-desktop-revert` only; stop leaves windows in\n\
-           \x20 \x20 place, never restores)\n\
+           \x20 \x20 At startup, the preset only selects which chords tile intercepts;\n\
+           \x20 \x20 startup does not change Desktop-N shortcuts. Run `spaces-desktop-apply`\n\
+           \x20 \x20 to enable them explicitly and `spaces-desktop-revert` to revert;\n\
+           \x20 \x20 stop leaves windows in place, never restores)\n\
             \x20 spaces-move --pid PID --nonce HEX --wid WID --space ID [--route direct|bridged] --allow-untested\n\
             \x20 \x20 (owned SLS move with preimage + effect readback; experimental:\n\
             \x20 \x20 one gated dispatch observed no-effect on an owned fixture (direct);\n\
@@ -2704,9 +2703,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             // macOS). Modifier/preset resolve CLI-over-settings-file in
             // `main` (explicitness rides along); exclusions are CLI or file.
             // Scoped lifetimes stay finite; unscoped `--seconds 0` runs
-            // unbounded. Compatible writes no native settings; Authentic
-            // ensures Switch to Desktop 1..9 holders once at startup
-            // (even with --input off) with owned preimages.
+            // unbounded. Desktop-N shortcut changes require explicit Apply.
             let mut user_start = false;
             let mut scopes: Vec<String> = Vec::new();
             let mut seconds = DEFAULT_TILE_SECONDS;
