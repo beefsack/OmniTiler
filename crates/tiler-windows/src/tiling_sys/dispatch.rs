@@ -1,10 +1,6 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// Win+G float toggle (KDE Meta+G parity): fresh observation, exact origin
-/// re-resolution, full gates, one Engine `ToggleFloat` evaluated on a local
-/// candidate that commits only after the target native effects verify, then
-/// sibling reflow through the shared write path. No compensating toggle.
 /// Owner-side launcher backend seam: production spawns detached processes;
 /// tests inject a recorder. Launching never runs in the hook callback (the
 /// callback only queues through [`SnapClassify`]); the owner spawns here on
@@ -138,6 +134,27 @@ pub(super) fn dispatch_launch_intent(
     }
 }
 
+/// World command for one Win+G: always the ordinary float toggle, including
+/// sticky origins. A sticky subject rides the same command so the core clears
+/// sticky and tiles through its composed sticky transition; no adapter-side
+/// `SetSticky` compensation exists.
+fn float_toggle_command(
+    token: &str,
+    float_rect: Option<Rect>,
+) -> tiler_core::world_report::WorldCommand {
+    tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: tiler_core::directional::WindowSubject::Window(
+            tiler_core::directional::WindowId(token.to_owned()),
+        ),
+        float_rect,
+    })
+}
+
+/// Win+G float toggle (KDE Meta+G parity): fresh observation, exact origin
+/// re-resolution, full gates, one world-owned `ToggleFloat` whose applied
+/// reply the host diff actuates with fresh proof, then sibling reflow through
+/// the shared write path. No compensating toggle and no adapter pre-veto: the
+/// core alone resolves workspace-mode and overlay holds.
 pub(super) fn dispatch_float_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -220,33 +237,12 @@ pub(super) fn dispatch_float_intent(
         }
     };
     let is_float = engine_is_float(state, &loc.output, &loc.workspace, &from);
-    // Floating workspaces take no per-window float toggles: the domain is
-    // released and every frame stays native.
-    if !workspace_mode_tiled(state, &loc.output, &loc.workspace) {
-        state.snap_advance = None;
-        let mut line = settle("workspace-floating");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.clone());
-        log_json_at(&log_path, line);
-        return;
-    }
-    // Overlay fences on live state: overlay targets never float, and a
-    // natively overlaid float never unfloats until it reads normal again.
-    // Sticky origins refuse with the sticky vocabulary (KDE parity). The
-    // core alone decides whether a maximized or fullscreen subject may
-    // transition (R-MAX-11): no adapter pre-clear exists.
-    let is_sticky_origin = state.sticky_of(&member_key);
-    if let Some(refusal) = chord_overlay_refusal(is_sticky_origin, &observed, &retained, &member_key)
-    {
-        let mut line = settle(refusal);
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.clone());
-        log_json_at(&log_path, line);
-        return;
-    }
+    // No adapter pre-veto: the core alone resolves workspace-mode and
+    // fullscreen/maximized/overlay holds from its staged facts (R-MAX-10,
+    // R-MAX-11, B9), and this seam mutates no local intent table.
+    //
     // Unfloat carries the live frame rect so a moved/resized float is
-    // retained. The core resolves the float direction and placement from
-    // its staged facts; this seam mutates no local intent table.
+    // retained; the core resolves the float direction and placement.
     let live_rect = observed
         .iter()
         .find(|w| w.hwnd == member_key.hwnd)
@@ -257,25 +253,12 @@ pub(super) fn dispatch_float_intent(
                 .find(|r| r.key == member_key)
                 .and_then(|row| row.rect)
         });
-    // World-owned toggle: sticky-origin Win+G clears sticky and lets the
-    // core re-evaluate the conversion/rehome in the same command; every
-    // other origin toggles the ordinary float. The applied reply IS the
-    // outcome, and the host diff applies sibling reflow with fresh proof.
-    let command = if is_sticky_origin {
-        tiler_core::world_report::WorldCommand::SetSticky {
-            window: tiler_core::directional::WindowSubject::Window(
-                tiler_core::directional::WindowId(from.clone()),
-            ),
-            value: false,
-        }
-    } else {
-        tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: tiler_core::directional::WindowSubject::Window(
-                tiler_core::directional::WindowId(from.clone()),
-            ),
-            float_rect: live_rect,
-        })
-    };
+    // World-owned toggle: Win+G is always the ordinary float toggle, sticky
+    // origins included. The core clears sticky and re-evaluates the
+    // conversion/rehome in the same command (window-state.md); the applied
+    // reply IS the outcome, and the host diff applies sibling reflow with
+    // fresh proof.
+    let command = float_toggle_command(&from, live_rect);
     let foreground = crate::ffi::foreground_window();
     let reply = super::world_tick::run_world_command(
         state,
@@ -303,32 +286,23 @@ pub(super) fn dispatch_float_intent(
     {
         state.float_rects.insert(from.clone(), frame);
     }
-    let (outcome, target) = if is_sticky_origin {
-        super::keyboard_overlays::state_toggle_labels(
-            reply.as_ref(),
-            &from,
-            tiler_core::world_report::StateProperty::Sticky,
-            "sticky",
-        )
-    } else {
-        match reply.as_ref() {
-            None => ("float-unverified", if is_float { "unfloated" } else { "floated" }),
-            Some(outcome) => match outcome.result.as_ref() {
-                Some(tiler_core::world_report::CommandResult::Float { no_space: true, .. }) => {
-                    ("unfloat-no-space", "floated")
-                }
-                Some(tiler_core::world_report::CommandResult::Float { rect: Some(_), .. }) => {
-                    ("float-applied", "floated")
-                }
-                Some(tiler_core::world_report::CommandResult::Float { rect: None, .. }) => {
-                    ("unfloat-applied", "unfloated")
-                }
-                Some(tiler_core::world_report::CommandResult::Rejected { .. }) => {
-                    ("rejected", "float")
-                }
-                _ => ("float-applied", "floated"),
-            },
-        }
+    let (outcome, target) = match reply.as_ref() {
+        None => ("float-unverified", if is_float { "unfloated" } else { "floated" }),
+        Some(outcome) => match outcome.result.as_ref() {
+            Some(tiler_core::world_report::CommandResult::Float { no_space: true, .. }) => {
+                ("unfloat-no-space", "floated")
+            }
+            Some(tiler_core::world_report::CommandResult::Float { rect: Some(_), .. }) => {
+                ("float-applied", "floated")
+            }
+            Some(tiler_core::world_report::CommandResult::Float { rect: None, .. }) => {
+                ("unfloat-applied", "unfloated")
+            }
+            Some(tiler_core::world_report::CommandResult::Rejected { .. }) => {
+                ("rejected", "float")
+            }
+            _ => ("float-applied", "floated"),
+        },
     };
     let mut line = settle(outcome);
     line["origin"] = serde_json::Value::from(origin.token.clone());
@@ -607,12 +581,12 @@ pub(super) fn dispatch_workspace_tiling_intent(
     toggle_workspace_tiling(state, me, store, dir, fulls, areas, &output);
 }
 
-/// Win+Shift+G sticky toggle: every production fence (suspend/elevated,
-/// fresh observation, origin re-resolution, overlay, workspace mode) runs
-/// here, then the world-owned `ToggleSticky` command decides the sticky-on
-/// versus sticky-off direction, the float/tile conversion, and the rehome to
-/// the current workspace. Fullscreen/maximized refuse in the core; failures
-/// commit nothing and never retry.
+/// Win+Shift+G sticky toggle: the adapter fences (suspend/elevated, fresh
+/// observation, origin re-resolution) run here, then the world-owned
+/// `ToggleSticky` command decides the sticky-on versus sticky-off direction,
+/// the float/tile conversion, and the rehome to the current workspace.
+/// Workspace-mode and fullscreen/maximized/overlay holds refuse in the core;
+/// failures commit nothing and never retry.
 pub(super) fn dispatch_sticky_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -678,35 +652,16 @@ pub(super) fn dispatch_sticky_intent(
     let ChordObserved {
         observed, retained, ..
     } = chord;
-    let ChordTarget {
-        from,
-        member_key,
-        loc,
-        ..
-    } = match resolve_chord_target(state, me, areas, &origin) {
+    let ChordTarget { from, .. } = match resolve_chord_target(state, me, areas, &origin) {
         Ok(target) => target,
         Err(reject) => {
             settle_chord_reject(&log_path, &settle, &origin, &reject);
             return;
         }
     };
-    if let Some(refusal) = chord_overlay_refusal(true, &observed, &retained, &member_key) {
-        let mut line = settle(refusal);
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.clone());
-        log_json_at(&log_path, line);
-        return;
-    }
-    // Floating workspaces take no per-window sticky toggles: the domain is
-    // released and every frame stays native.
-    if !workspace_mode_tiled(state, &loc.output, &loc.workspace) {
-        state.snap_advance = None;
-        let mut line = settle("workspace-floating");
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.clone());
-        log_json_at(&log_path, line);
-        return;
-    }
+    // No adapter pre-veto: the core alone resolves workspace-mode and
+    // fullscreen/maximized/overlay holds for the sticky toggle from its
+    // staged facts.
     // World-owned toggle: the core resolves the retained sticky state, the
     // float/tile conversion, and the current-workspace rehome from its
     // staged facts, and the applied reply actuates the retained targets
@@ -748,3 +703,44 @@ pub(super) fn dispatch_sticky_intent(
     log_json_at(&log_path, line);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tiler_core::boundary::CoreCommand;
+    use tiler_core::geometry::Rect;
+
+    #[test]
+    fn win_g_always_sends_toggle_float() {
+        // Sticky origins ride the same command: the core clears sticky and
+        // tiles through its composed transition, so no adapter-side
+        // `SetSticky(false)` may reappear here.
+        let rect = Rect {
+            x: 10,
+            y: 20,
+            w: 300,
+            h: 200,
+        };
+        let command = float_toggle_command("win-a", Some(rect));
+        let tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: tiler_core::directional::WindowSubject::Window(window),
+            float_rect,
+        }) = command
+        else {
+            panic!("Win+G must map to ToggleFloat only");
+        };
+        assert_eq!(window.0, "win-a");
+        assert_eq!(float_rect, Some(rect));
+    }
+
+    #[test]
+    fn win_g_without_a_live_frame_still_sends_toggle_float() {
+        let command = float_toggle_command("win-a", None);
+        assert!(matches!(
+            command,
+            tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
+                float_rect: None,
+                ..
+            })
+        ));
+    }
+}

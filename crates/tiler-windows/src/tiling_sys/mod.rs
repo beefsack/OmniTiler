@@ -40,8 +40,8 @@ use self::admission::{
 use self::assignments::MAX_HIDE_DIAG_PER_SELECT;
 use self::assignments::{ensure_workspace_assignments, workspace_close_cleanup};
 use self::chord_resolution::{
-    ChordObserved, ChordTarget, chord_overlay_refusal, observe_chord_intent,
-    orientation_overlay_refusal, resolve_chord_target, settle_chord_reject,
+    ChordObserved, ChordTarget, observe_chord_intent, orientation_overlay_refusal,
+    resolve_chord_target, settle_chord_reject,
 };
 use self::cli_directional::poll_directional_cli_request;
 use self::cli_migrate_workspace::poll_migrate_workspace_cli_request;

@@ -166,9 +166,9 @@ pub(super) fn reconcile_tick(
     // One shared observation tick through the single world owner: the core
     // converges every monitor from this tick's screens plus window facts,
     // and the host diff applies every accepted reply with fresh proof.
-    // Committed floats join the ordinary float lanes with markers.
+    // Cache committed floats' live frames; intent persistence is core-owned.
     let foreground = crate::ffi::foreground_window();
-    if super::world_tick::run_observation_tick(
+    if let Some(reply) = super::world_tick::run_observation_tick(
         state,
         me,
         store,
@@ -179,13 +179,11 @@ pub(super) fn reconcile_tick(
         foreground,
         fulls,
         super::observation::sample_cursor(),
-    )
-    .is_some()
-    {
+    ) {
         let correlation_str = correlation.as_str();
         super::capacity_floats::adopt_floats_from_reply(
             state,
-            me,
+            &reply,
             tick,
             correlation_str,
             &observed,
