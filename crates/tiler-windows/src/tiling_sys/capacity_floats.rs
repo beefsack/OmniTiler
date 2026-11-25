@@ -1,13 +1,6 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// One committed float adopted into the ordinary float lanes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CommittedFloatAdopted {
-    pub(super) token: String,
-    pub(super) marker_ok: bool,
-}
-
 /// Whether one applied reply row is a committed float: the ordinary
 /// `floating` flag alone. The diagnostic `float_origin` is never read:
 /// ordinary and capacity floats adopt identically through this one path.
@@ -16,13 +9,16 @@ pub(super) fn is_committed_float_row(row: &tiler_core::world_report::WindowDesir
     row.floating
 }
 
-/// Adopt committed floats across every live domain after one world
-/// observation tick: every floating row on the last applied world reply
-/// joins the ordinary float lanes with its live frame plus marker repair.
-/// No Engine session, no geometry writes.
+/// Adopt committed floats after one world observation tick: every floating
+/// row on the applied reply that binds a live non-sticky member caches its
+/// live frame in the ordinary float lane. Frame caching only: intent
+/// persistence belongs to the core's `intent_desired` plus host intent
+/// reconciliation, the single writer, so adoption never writes a marker,
+/// never re-stamps a sticky member's intent, and never invents a float in a
+/// floating-mode workspace. No Engine session, no geometry writes.
 pub(super) fn adopt_floats_from_reply(
     state: &mut TileLoop,
-    me: &ProcessIdentity,
+    reply: &tiler_core::world_report::WorldReplyV4,
     tick: u64,
     correlation: &str,
     observed: &[ObservedWindow],
@@ -31,112 +27,66 @@ pub(super) fn adopt_floats_from_reply(
         .iter()
         .map(|window| (window.token.clone(), window.visible))
         .collect();
-    for output in state.output_devices() {
-        let Some(active) = state.active_view(&output) else {
-            continue;
-        };
-        let domain_key = tiler_core::session::DomainKey {
-            output: tiler_core::directional::OutputId(output.clone()),
-            workspace: tiler_core::directional::WorkspaceId(active),
-        };
-        for adopted in register_committed_floats(state, me, &domain_key, &frames) {
-            log_json_at(
-                &state.log_path,
-                serde_json::json!({
-                    "event": "float-adopted",
-                    "tick": tick,
-                    "correlation": correlation,
-                    "window": adopted.token,
-                    "marker": if adopted.marker_ok { "ok" } else { "unverified" },
-                }),
-            );
-        }
-    }
-}
-/// Register committed floats into the ordinary float lanes:
-/// every floating row on the last applied world reply joins
-/// `floated` with its live frame in `float_rects`. Sticky members keep
-/// their own lane.
-///
-/// Lane registration is idempotent (later passes never rewrite the
-/// frame), while the float-intent marker repairs independently: a
-/// present marker needs no write, and a missing value retries on every
-/// event-driven pass until it reads back. Only first-time and repaired
-/// outcomes report. Reads the last applied reply rows only; no core
-/// mutation, geometry writes, or focus changes.
-pub(super) fn register_committed_floats(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    domain_key: &tiler_core::session::DomainKey,
-    frames: &HashMap<String, Rect>,
-) -> Vec<CommittedFloatAdopted> {
     // Gather under shared borrows first: the applied reply plus the member
-    // tables are read-only here, and the mutation pass below must not run
-    // under any borrow.
-    let mut candidates: Vec<(crate::native_guards::WindowKey, String, Option<Rect>)> = Vec::new();
-    if let Some(reply) = state.world.last_reply() {
-        for row in &reply.windows {
-            if !is_committed_float_row(row) {
-                continue;
-            }
-            if state.device_of(&row.output.0).as_deref() != Some(domain_key.output.0.as_str())
-                || row.workspace != domain_key.workspace.0
-            {
-                continue;
-            }
-            let Some((key, _)) = state
-                .member_tokens
-                .iter()
-                .find(|(_, token)| token.as_str() == row.lifetime.0.as_str())
-            else {
-                continue;
-            };
-            let key = key.clone();
-            let homed_here = state.member_home(&key).is_some_and(|loc| {
-                loc.output == domain_key.output.0 && loc.workspace == domain_key.workspace.0
-            });
-            if !homed_here {
-                continue;
-            }
-            // Applied-reply frame first, caller-carried observed frame
-            // second; intent registers without a snapshot either way.
-            let frame = row
-                .effective_frame
-                .or(row.allocation)
-                .or_else(|| frames.get(&row.lifetime.0).copied());
-            candidates.push((key, row.lifetime.0.clone(), frame));
-        }
-    }
-    let mut adopted = Vec::new();
-    for (key, token, frame) in candidates {
-        if state.sticky.contains_key(&key) {
+    // and intent tables are read-only here, and the mutation pass below must
+    // not run under any borrow.
+    let mut candidates: Vec<(String, Rect)> = Vec::new();
+    for row in &reply.windows {
+        if !is_committed_float_row(row) {
             continue;
         }
-        let fresh_lane = !state.floated.contains(&key);
-        if fresh_lane {
-            state.floated.insert(key.clone());
-            if let Some(frame) = frame {
-                state.float_rects.insert(token.clone(), frame);
-            }
-        }
-        let present = crate::product_hide::sys::read_float_intent_marker(key.hwnd);
-        let marker_ok = if present {
-            true
-        } else {
-            install_float_mark_held(state, me, &key)
+        let Some((key, token)) = state
+            .member_tokens
+            .iter()
+            .find(|(_, token)| token.as_str() == row.lifetime.0.as_str())
+        else {
+            continue;
         };
-        if fresh_lane || (!present && marker_ok) {
-            adopted.push(CommittedFloatAdopted { token, marker_ok });
+        // Sticky members keep their own lane: adoption never relabels them.
+        if state.sticky_of(key) {
+            continue;
         }
+        // Applied-reply frame first, caller-carried observed frame second;
+        // a row with no frame at all seeds nothing.
+        let Some(frame) = row
+            .effective_frame
+            .or(row.allocation)
+            .or_else(|| frames.get(&row.lifetime.0).copied())
+        else {
+            continue;
+        };
+        candidates.push((token.clone(), frame));
     }
-    adopted
+    for (token, frame) in candidates {
+        // Lane registration is idempotent: a lane that already holds a frame
+        // is never rewritten. Only first-time adoption reports.
+        if state.float_rects.contains_key(&token) {
+            continue;
+        }
+        state.float_rects.insert(token.clone(), frame);
+        log_json_at(
+            &state.log_path,
+            serde_json::json!({
+                "event": "float-adopted",
+                "tick": tick,
+                "correlation": correlation,
+                "window": token,
+            }),
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::rmax03_adapter_tests::test_state;
+    use super::super::TileLoop;
     use super::*;
     use tiler_core::directional::{OutputId, WindowId};
-    use tiler_core::world_report::{ScopeAuthority, WindowDesire};
+    use tiler_core::geometry::Rect;
+    use tiler_core::world_report::{
+        BorderHideReasonV4, BorderPresentationV4, ScopeAuthority, WindowDesire,
+        WorldPresentationV4, WorldReplyV4, WORLD_CONTRACT_VERSION,
+    };
 
     fn float_row(origin: Option<tiler_core::world_report::FloatOrigin>) -> WindowDesire {
         WindowDesire {
@@ -157,6 +107,62 @@ mod tests {
         }
     }
 
+    /// Applied reply shell carrying only the float rows under test.
+    fn reply_with(windows: Vec<WindowDesire>) -> WorldReplyV4 {
+        WorldReplyV4 {
+            contract_version: WORLD_CONTRACT_VERSION,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            request_id: "req-1".to_owned(),
+            based_on_observation_seq: 1,
+            state_revision: 1,
+            ready: true,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            windows,
+            transfers: Vec::new(),
+            focus_request: None,
+            drag_preview: None,
+            gesture_settled: None,
+            operation_settled: Vec::new(),
+            native_creations: Vec::new(),
+            warp_request: None,
+            presentation: WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 0,
+                suspended_output: None,
+                border: BorderPresentationV4 {
+                    visible: false,
+                    reason: Some(BorderHideReasonV4::NoTarget),
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
+                pager: Vec::new(),
+            },
+            intent_desired: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn member_state() -> (TileLoop, crate::native_guards::WindowKey) {
+        let mut state = test_state();
+        let key = crate::native_guards::WindowKey {
+            hwnd: 700_101,
+            pid: 201,
+            creation: "proc-a".to_owned(),
+        };
+        state.member_tokens.insert(key.clone(), "w1".to_owned());
+        state.member_tags.insert(key.clone(), "tag-w1".to_owned());
+        (state, key)
+    }
+
     #[test]
     fn float_origin_never_changes_committed_float_parity() {
         assert!(is_committed_float_row(&float_row(None)));
@@ -166,5 +172,104 @@ mod tests {
         let mut tiled = float_row(None);
         tiled.floating = false;
         assert!(!is_committed_float_row(&tiled));
+    }
+
+    #[test]
+    fn adoption_caches_the_frame_without_writing_intent() {
+        // Regression: adoption used to stamp `OmniTiler.IntentSlot.v2` on
+        // every reconcile tick, clobbering sticky intent and poisoning
+        // floating-mode workspaces. Frame caching stays; intent writes are
+        // core-owned.
+        let (mut state, key) = member_state();
+        crate::product_hide::sys::fake::unregister_all();
+        crate::product_hide::sys::fake::register_marks(key.hwnd);
+        assert!(crate::product_hide::sys::fake::remove_float_mark(key.hwnd));
+        assert!(crate::product_hide::sys::fake::remove_sticky_mark(key.hwnd));
+        assert!(crate::product_hide::sys::fake::remove_tile_mark(key.hwnd));
+        let snapshot_before = state.intent_snapshot.clone();
+        let mut row = float_row(None);
+        row.effective_frame = Some(Rect {
+            x: 40,
+            y: 60,
+            w: 400,
+            h: 300,
+        });
+        let reply = reply_with(vec![row]);
+        adopt_floats_from_reply(&mut state, &reply, 9, "corr-9", &[]);
+        assert_eq!(
+            state.float_rects.get("w1"),
+            Some(&Rect {
+                x: 40,
+                y: 60,
+                w: 400,
+                h: 300,
+            }),
+            "the applied float frame seeds the ordinary lane"
+        );
+        assert_eq!(
+            state.intent_snapshot, snapshot_before,
+            "adoption never mutates the durable intent snapshot"
+        );
+        assert_eq!(
+            crate::product_hide::sys::fake::peek_float_mark(key.hwnd),
+            Some(None),
+            "adoption never writes the float intent lane"
+        );
+        assert_eq!(
+            crate::product_hide::sys::fake::peek_sticky_mark(key.hwnd),
+            Some(None),
+            "adoption never rewrites sticky intent"
+        );
+        assert_eq!(
+            crate::product_hide::sys::fake::peek_tile_mark(key.hwnd),
+            Some(None),
+            "adoption never writes a tile override"
+        );
+        crate::product_hide::sys::fake::unregister_all();
+    }
+
+    #[test]
+    fn adoption_never_rewrites_a_cached_float_frame() {
+        let (mut state, _key) = member_state();
+        let old = Rect {
+            x: 10,
+            y: 10,
+            w: 200,
+            h: 200,
+        };
+        state.float_rects.insert("w1".to_owned(), old);
+        let mut row = float_row(None);
+        row.effective_frame = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 560,
+        });
+        let reply = reply_with(vec![row]);
+        adopt_floats_from_reply(&mut state, &reply, 10, "corr-10", &[]);
+        assert_eq!(
+            state.float_rects.get("w1"),
+            Some(&old),
+            "lane registration is idempotent"
+        );
+    }
+
+    #[test]
+    fn sticky_member_keeps_its_own_lane() {
+        let (mut state, key) = member_state();
+        state.seed_sticky(key, true);
+        let mut row = float_row(None);
+        row.effective_frame = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 560,
+        });
+        let reply = reply_with(vec![row]);
+        adopt_floats_from_reply(&mut state, &reply, 11, "corr-11", &[]);
+        assert!(
+            !state.float_rects.contains_key("w1"),
+            "sticky members are never adopted as ordinary floats"
+        );
     }
 }

@@ -78,15 +78,46 @@ impl WorldTransaction<'_> {
             .is_some_and(|ring| ring.iter().any(|kept| kept == id))
     }
 
-    /// Rekey every member homed at `(from_output, workspace)` onto
-    /// `(to_output, workspace)` (migration, swap, displacement, return,
-    /// refusal rollback). Tiling modes ride alongside via the existing
-    /// [`WorldEngine::carry_tiling`] caller.
+    /// Rekey every non-sticky member homed at `(from_output, workspace)`
+    /// onto `(to_output, workspace)` (migration, swap, displacement,
+    /// return, refusal rollback). Tiling modes ride alongside via the
+    /// existing [`WorldEngine::carry_tiling`] caller.
+    ///
+    /// Composed-sticky lifetimes are exempt: their membership home is the
+    /// all-desktop anchor and must not follow swap/migration relocations
+    /// (the physical window stays put while logical units move around it).
+    /// Displaced-output reads still remap onto the survivor through
+    /// [`rehome_displaced_in`]/[`core_homing_in`], so retaining the
+    /// recorded home stays truthful, and [`Self::prune_members_off_live`]
+    /// keeps it while a displacement record exists. Sticky truth comes
+    /// from the staged derived lane, never the raw native fact: hosts
+    /// without native sticky support report a null fact while core's
+    /// retained intent still proves the lifetime.
     pub(crate) fn rekey_members(&mut self, workspace: &str, from_output: &str, to_output: &str) {
         if from_output == to_output {
             return;
         }
-        for state in self.world.workspace.members.values_mut() {
+        // Precompute sticky member keys: the derived map must be read
+        // while `members` is only borrowed immutably, and it is the
+        // authority for composed sticky (raw facts stay null there).
+        let sticky: BTreeSet<WindowId> = self
+            .world
+            .workspace
+            .members
+            .keys()
+            .filter(|window| {
+                self.world
+                    .staged
+                    .derived
+                    .get(*window)
+                    .is_some_and(|derived| derived.sticky)
+            })
+            .cloned()
+            .collect();
+        for (window, state) in self.world.workspace.members.iter_mut() {
+            if sticky.contains(window) {
+                continue;
+            }
             if state.home.output.0 == from_output && state.home.workspace.0 == workspace {
                 state.home.output = OutputId(to_output.to_owned());
             }
@@ -111,7 +142,15 @@ impl WorldTransaction<'_> {
     /// tiled sends), preserving its float/minimized marks. Sticky facts
     /// never reach here (refused upstream).
     pub(crate) fn commit_send_member(&mut self, window: &WindowId, target: &DomainKey) {
+        // A minimized member's restore slot stores the source workspace's
+        // tree; restoring it there after membership moved would regress the
+        // committed home. Forget it on the move: a later restore admits
+        // fresh into the target (D23 option B).
+        let mut stale_slot = None;
         if let Some(state) = self.world.workspace.members.get_mut(window) {
+            if state.minimized {
+                stale_slot = Some(state.home.clone());
+            }
             state.home = target.clone();
         } else {
             self.world.workspace.members.insert(
@@ -123,6 +162,9 @@ impl WorldTransaction<'_> {
                     geometry: None,
                 },
             );
+        }
+        if let Some(source) = stale_slot {
+            self.world.layout.forget_minimized_slot(&source, window);
         }
     }
 

@@ -56,7 +56,7 @@
 //! fresh window and visibility facts, never from echoed desire. Unknown stays
 //! unknown so the core retains pending flights instead of settling on a guess.
 
-use super::world_diff::{FreshWindow, NativeOps, SelectionArrivalGrant};
+use super::world_diff::{FreshWindow, IntentStorage, NativeOps, StateWrite};
 use crate::product_hide::sys::{VisibilityPostDiag, VisibilityPostTrace};
 
 /// Trace-only native hide-claim lane: the world actuator's post sink arms
@@ -78,6 +78,7 @@ pub(super) type RevealClaimFn = fn(
     Option<&mut VisibilityPostTrace>,
 ) -> Result<Revealed, String>;
 use super::{AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, ScopeHostChild, TokenMap};
+use super::visibility_diag::RevealRecord;
 use crate::model::{ProcessIdentity, WindowIdentity};
 use crate::native::HeldProcess;
 use crate::native_guards::WindowKey;
@@ -85,6 +86,8 @@ use crate::storage::LedgerStore;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use tiler_core::geometry::Rect;
+use tiler_core::intent_data::IntentData;
+use tiler_core::world_report::StateProperty;
 use windows_sys::Win32::Foundation::HWND;
 
 #[path = "world_native_frame.rs"]
@@ -163,7 +166,7 @@ pub(super) struct NativePrimitives {
     /// the frame path re-bases once through it instead of pinning a clamp.
     pub dpi: fn(u64) -> Option<u32>,
     pub process_identity: fn(u64) -> Option<ProcessIdentity>,
-    pub read_topmost: fn(u64) -> bool,
+    pub read_topmost: fn(u64) -> Option<bool>,
     pub admit: fn(
         u64,
         &ProcessIdentity,
@@ -352,7 +355,7 @@ fn real_process_identity(hwnd: u64) -> Option<ProcessIdentity> {
     (ident.pid == pid).then_some(ident)
 }
 
-fn real_read_topmost(hwnd: u64) -> bool {
+fn real_read_topmost(hwnd: u64) -> Option<bool> {
     super::workspace_mode::read_topmost_now(hwnd)
 }
 
@@ -486,6 +489,12 @@ impl Default for NativePrimitives {
     }
 }
 
+enum HidePost {
+    Pumped,
+    Nonactivating,
+    ReleaseForeground,
+}
+
 /// Production native actuator over the world-route diff.
 ///
 /// Holds the exact owner pieces the diff needs: shared identity/lifetime
@@ -530,6 +539,10 @@ pub(super) struct LiveNative<'a> {
     pub proven_views: HashMap<String, String>,
     pub member_tags: &'a BTreeMap<WindowKey, String>,
     pub member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
+    /// Opaque member token per lifetime: the same map the caller passes to
+    /// `assemble` (stored for reveal-diagnostic token naming; not a second
+    /// key owner).
+    pub member_tokens: &'a BTreeMap<WindowKey, String>,
     pub hidden_claims: &'a mut BTreeMap<WindowKey, HiddenRecord>,
     /// Hide-commit snapshot seeds drained by the owner tick after apply:
     /// exact-lifetime freshly proven physical frames read before the hide
@@ -538,6 +551,11 @@ pub(super) struct LiveNative<'a> {
     /// the next hidden report stages the proven frame instead of the
     /// pre-write slot.
     pub hidden_seeds: Vec<(WindowKey, Rect)>,
+    /// Genuine hidden-claim reveals actuated this pass, in call order. The
+    /// owner tick drains them into production `workspace-reveal` rows so a
+    /// real hide→show transition is observable; an absent claim records
+    /// nothing (no setter, no row). Never a behavior input.
+    reveals: Vec<RevealRecord>,
     /// Same-pass nonactivating departure hidden by this actuator instance:
     /// the entry foreground when the nonactivating view switch started,
     /// kept only when its hide committed and it still read invisible. The
@@ -552,25 +570,18 @@ pub(super) struct LiveNative<'a> {
     /// another gate's refusal row; consumed only for the
     /// `focus-write-veto` refusal detail.
     focus_veto_detail: Option<FocusWriteVetoDetail>,
-    /// Fresh accepted explicit-selection arrival grant for this pass (see
-    /// [`SelectionArrivalGrant`]): the exact one-shot focus effect ids the
-    /// command path armed before apply. `None` on observation ticks and
-    /// non-selection commands. Consulted only through the effect-bound
-    /// [`NativeOps::focus_window_traced_selected`] lane.
-    selection_arrival: Option<SelectionArrivalGrant>,
     /// Synchronous arm for the dispatch immediately around the current
     /// [`NativeOps::focus_window_traced_selected`] call (see that lane):
-    /// true only between the exact effect-id binding check and the veto
-    /// gate of the same call. Never set on observation ticks, unbound
-    /// calls, or non-selection effects; always cleared before return.
+    /// true only for a core-derived explicit-command selection request with
+    /// a frozen after_shown scope. Never set on observation ticks, unbound
+    /// calls, or other effects; always cleared before return.
     selection_arrival_armed: bool,
     /// Gate-time exact-desktop proof for the current
     /// [`Self::focus_window_traced`] call when the foreground-fullscreen
     /// veto passed through the selection-arrival exception. Reset at each
     /// call entry; the post-prime recheck requires a fresh equal proof.
     desktop_proof: Option<DesktopProof>,
-    pub sticky: &'a BTreeMap<WindowKey, bool>,
-    pub float_topmost_prev: &'a BTreeMap<WindowKey, bool>,
+    pub intent_storage: &'a BTreeMap<WindowKey, IntentStorage>,
     pub scope: &'a [String],
     pub scope_hosts: &'a [ScopeHostChild],
     pub allowlist: Option<&'a Vec<AllowEntry>>,
@@ -617,8 +628,7 @@ impl<'a> LiveNative<'a> {
         member_tags: &'a BTreeMap<WindowKey, String>,
         member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
         hidden_claims: &'a mut BTreeMap<WindowKey, HiddenRecord>,
-        sticky: &'a BTreeMap<WindowKey, bool>,
-        float_topmost_prev: &'a BTreeMap<WindowKey, bool>,
+        intent_storage: &'a BTreeMap<WindowKey, IntentStorage>,
         scope: &'a [String],
         scope_hosts: &'a [ScopeHostChild],
         allowlist: Option<&'a Vec<AllowEntry>>,
@@ -644,14 +654,13 @@ impl<'a> LiveNative<'a> {
             proven_views,
             member_tags,
             member_identity,
+            member_tokens,
             hidden_claims,
             na_hidden_departure: None,
             focus_veto_detail: None,
-            selection_arrival: None,
             selection_arrival_armed: false,
             desktop_proof: None,
-            sticky,
-            float_topmost_prev,
+            intent_storage,
             scope,
             scope_hosts,
             allowlist,
@@ -666,6 +675,7 @@ impl<'a> LiveNative<'a> {
             desired_frames,
             areas,
             hidden_seeds: Vec::new(),
+            reveals: Vec::new(),
         }
     }
 
@@ -686,6 +696,47 @@ impl<'a> LiveNative<'a> {
     /// table.
     fn committed_hidden(&self, key: &WindowKey) -> bool {
         self.hidden_claims.contains_key(key)
+    }
+
+    /// Durable sticky desire for one member: the canonical packed intent
+    /// slot's sticky prior. Unknown storage (unreadable/corrupt/foreign
+    /// lifetime) reads as not sticky, never as an inferred desire.
+    fn sticky_of(&self, key: &WindowKey) -> bool {
+        self.intent_storage
+            .get(key)
+            .is_some_and(|storage| storage.sticky_prior.is_some())
+    }
+
+    fn read_intent_for(&mut self, key: &WindowKey) -> Option<IntentStorage> {
+        #[cfg(test)]
+        if crate::product_hide::sys::fake::marker_active(key.hwnd) {
+            let expected = self.member_identity.get(key).cloned()?;
+            if !self.identity_ok(key, &expected) || !self.lifetime_ok(key) {
+                return None;
+            }
+            return slot_storage(crate::product_hide::sys::read_intent_slot(key.hwnd));
+        }
+        intent_storage_of(key, self.stored_tag(key)?)
+    }
+
+    fn window_intent(&mut self, key: &WindowKey) -> IntentStorage {
+        #[cfg(test)]
+        if !crate::ffi::is_window(key.hwnd)
+            && !crate::product_hide::sys::fake::marker_active(key.hwnd)
+        {
+            return self.intent_storage.get(key).copied().unwrap_or_default();
+        }
+        self.read_intent_for(key).unwrap_or_default()
+    }
+
+    /// Prior topmost band owned by this exact window lifetime, read from the
+    /// durable `above` preimage (written only when the project raises the
+    /// band and cleared only after a proven restore). Absent means the
+    /// project never raised it, so no hide bypass.
+    fn above_prior_topmost(&self, key: &WindowKey) -> Option<bool> {
+        let tag = self.stored_tag(key)?;
+        super::above_preimage::load(self.dir, key.hwnd, key.pid, &key.creation, tag)
+            .map(|row| row.prior_topmost)
     }
 
     fn stored_tag(&self, key: &WindowKey) -> Option<&str> {
@@ -715,6 +766,39 @@ impl<'a> LiveNative<'a> {
         }
         let live = (self.prims.member_tag)(key.hwnd);
         crate::native_guards::visible_lifetime_ok(&stored, live.as_deref())
+    }
+
+    /// Iconic-subject fallback for one unobservable, not-committed-hidden
+    /// member: a minimized window fails the visible observer (minimize
+    /// omission), so its live facts and frame are unreadable. The identity
+    /// (member-identity map plus live process read) and the lifetime tag
+    /// must still prove; only then does the membership lane get a
+    /// frameless, factless row (`iconic: true`). Never geometry or facts
+    /// that were not read.
+    fn read_iconic_window(&mut self, key: WindowKey, token: &str) -> Option<FreshWindow> {
+        if !(self.prims.is_iconic)(key.hwnd) {
+            return None;
+        }
+        let expected = self.member_identity.get(&key).cloned()?;
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return None;
+        }
+        let (output, workspace) = self.committed_homing(token).unwrap_or_default();
+        let intent = self.window_intent(&key);
+        let live_tag = (self.prims.member_tag)(key.hwnd);
+        Some(FreshWindow {
+            key,
+            token: token.to_owned(),
+            frame: None,
+            facts: None,
+            output,
+            workspace,
+            iconic: true,
+            hidden: false,
+            sticky: intent.sticky_prior.is_some(),
+            floating: intent.is_floating(),
+            live_tag,
+        })
     }
 
     /// Shared admission fences for one hide (proof-mode gate, scope,
@@ -1059,14 +1143,6 @@ impl<'a> LiveNative<'a> {
         self.prove_exact_desktop(fg, &gate_obs)
     }
 
-    /// Arm the fresh accepted explicit-selection arrival grant for this
-    /// pass. Called only by the command path with
-    /// [`SelectionArrivalGrant::for_accepted`]; observation ticks and
-    /// non-selection commands leave the default `None`.
-    pub(super) fn set_selection_arrival(&mut self, grant: Option<SelectionArrivalGrant>) {
-        self.selection_arrival = grant;
-    }
-
     /// Trace-gated veto stash: the builder runs only when trace is
     /// armed, so off-trace calls neither build the payload (no exe
     /// allocation) nor store anything. Callers must pass the builder
@@ -1111,7 +1187,7 @@ impl<'a> LiveNative<'a> {
     /// otherwise visible exactly when the desired workspace is the
     /// desired view on its output.
     fn expected_visible(&self, key: &WindowKey, desired: &(String, String)) -> bool {
-        if self.sticky.contains_key(key) {
+        if self.sticky_of(key) {
             return true;
         }
         self.core_views
@@ -1151,7 +1227,7 @@ impl<'a> LiveNative<'a> {
             // occluded, minimized omission): fail closed, never proof.
             return None;
         }
-        if self.sticky.contains_key(key) {
+        if self.sticky_of(key) {
             return Some(desired);
         }
         if let Some(target) = self.desired_frames.get(token).copied() {
@@ -1215,7 +1291,7 @@ impl<'a> LiveNative<'a> {
         }
         if !hidden
             && visible
-            && !self.sticky.contains_key(key)
+            && !self.sticky_of(key)
             && let Some(target) = self.desired_frames.get(token).copied()
             && self.core_homing.get(token).is_some_and(|d| d == &homing)
         {
@@ -1237,16 +1313,16 @@ impl<'a> LiveNative<'a> {
         expected: &ProcessIdentity,
         iconic: bool,
     ) -> Result<(), AdmitOutcome> {
-        self.commit_hide_with(key, expected, iconic, false)
+        self.commit_hide_with(key, expected, iconic, HidePost::Pumped)
     }
 
-    /// Mode-parameterized hide; `true` takes the nonactivating lane.
+    /// Choose the hide post after the exact-lifetime and claim gates.
     fn commit_hide_with(
         &mut self,
         key: &WindowKey,
         expected: &ProcessIdentity,
         iconic: bool,
-        nonactivating: bool,
+        post: HidePost,
     ) -> Result<(), AdmitOutcome> {
         self.admit_gates(key, expected)?;
         if !self.identity_ok(key, expected) {
@@ -1265,15 +1341,22 @@ impl<'a> LiveNative<'a> {
             })
             .map(|w| w.visible);
         let stored = self.stored_tag(key).unwrap_or_default().to_owned();
+        let topmost = (self.prims.read_topmost)(key.hwnd).ok_or(AdmitOutcome::Refused)?;
         let allow_topmost = crate::product_hide::project_topmost_hide_allowed(
-            self.float_topmost_prev.get(key).copied(),
-            (self.prims.read_topmost)(key.hwnd),
+            self.above_prior_topmost(key),
+            topmost,
         );
         let claim = (self.prims.admit)(key.hwnd, self.me, expected, &stored, allow_topmost)?;
-        let hide = if nonactivating {
-            self.prims.hide_claim_na
-        } else {
-            self.prims.hide_claim
+        let hide = match post {
+            HidePost::Pumped => self.prims.hide_claim,
+            HidePost::ReleaseForeground if (self.prims.foreground)() == key.hwnd => {
+                // Hiding with SWP_NOACTIVATE can leave this now-invisible
+                // HWND as native foreground. With no arrival grant to
+                // preserve, use the ordinary SW_HIDE transition only for
+                // the live departing foreground, not for bystanders.
+                self.prims.hide_claim
+            }
+            HidePost::Nonactivating | HidePost::ReleaseForeground => self.prims.hide_claim_na,
         };
         // Trace-armed sink only: unarmed passes `None` so the native post
         // records nothing and skips the clock. Early vetos above return
@@ -1314,21 +1397,56 @@ impl<'a> LiveNative<'a> {
         key: &WindowKey,
         expected: &ProcessIdentity,
     ) -> Result<(), AdmitOutcome> {
-        self.commit_reveal_with(key, expected, false)
+        self.commit_reveal_with(key, expected, false).map(|_| ())
     }
 
     /// Mode-parameterized reveal; `true` takes the nonactivating lane.
+    /// Every call with a committed hide claim is recorded as one genuine
+    /// hide→show attempt; the resulting row carries the honest categorical
+    /// outcome (`revealed`/`retired`/`refused`/`uncertain`), never the raw
+    /// product error text. A call with no claim is a no-op and records
+    /// nothing.
     fn commit_reveal_with(
         &mut self,
         key: &WindowKey,
         expected: &ProcessIdentity,
         nonactivating: bool,
-    ) -> Result<(), AdmitOutcome> {
+    ) -> Result<bool, AdmitOutcome> {
         let record = self.hidden_claims.get(key).cloned();
         let Some(record) = record else {
             // Nothing hidden: no native effect.
-            return Ok(());
+            return Ok(false);
         };
+        let result = self.reveal_claim(key, expected, nonactivating, &record);
+        let (outcome, detail) = match result {
+            Ok(true) => ("revealed", None),
+            Ok(false) => ("retired", Some("absent")),
+            Err(AdmitOutcome::IdentityChanged) => ("refused", Some("identity-stale")),
+            Err(AdmitOutcome::Refused) => ("refused", Some("reveal-refused")),
+            Err(AdmitOutcome::Uncertain) => ("uncertain", Some("reveal-uncertain")),
+            Err(AdmitOutcome::OriginVanished) => ("retired", Some("origin-vanished")),
+        };
+        self.reveals.push(RevealRecord {
+            token: self.member_tokens.get(key).cloned(),
+            outcome,
+            detail,
+            phase: None,
+            mono_ms: super::trace::log_mono_ms(),
+        });
+        result
+    }
+
+    /// Identity-fenced reveal actuation for one committed claim. `Ok(true)`
+    /// means the product reveal posted (or proved already visible); `Ok(false)`
+    /// retires a verifiably absent claim; errors keep the claim for the
+    /// caller's hold.
+    fn reveal_claim(
+        &mut self,
+        key: &WindowKey,
+        expected: &ProcessIdentity,
+        nonactivating: bool,
+        record: &HiddenRecord,
+    ) -> Result<bool, AdmitOutcome> {
         if !self.identity_ok(key, expected) {
             return Err(AdmitOutcome::IdentityChanged);
         }
@@ -1357,14 +1475,14 @@ impl<'a> LiveNative<'a> {
         };
         let outcome = reveal_fn(store, me, &record.claim, iconic, sink);
         match outcome {
-            Ok(_) => {
+            Ok(outcome) => {
                 self.hidden_claims.remove(key);
-                Ok(())
+                Ok(outcome == Revealed::Shown)
             }
             Err(message) => {
                 if message.starts_with("absent:") {
                     self.hidden_claims.remove(key);
-                    Ok(())
+                    Ok(false)
                 } else if message.starts_with("uncertain:") {
                     Err(AdmitOutcome::Uncertain)
                 } else {
@@ -1391,7 +1509,7 @@ impl<'a> LiveNative<'a> {
             let Some(key) = self.key_of(token) else {
                 continue;
             };
-            if self.sticky.contains_key(&key) {
+            if self.sticky_of(&key) {
                 continue;
             }
             out.push((token.clone(), ws.clone(), key));
@@ -1418,7 +1536,7 @@ impl<'a> LiveNative<'a> {
             .filter(|(_, (member_out, ws))| member_out == output && ws != logical)
             .filter_map(|(token, _)| {
                 let key = self.key_of(token)?;
-                if self.sticky.contains_key(&key) {
+                if self.sticky_of(&key) {
                     return None;
                 }
                 let identity = self.member_identity.get(&key).cloned()?;
@@ -1437,7 +1555,12 @@ impl<'a> LiveNative<'a> {
                 continue;
             }
             let iconic = (self.prims.is_iconic)(key.hwnd);
-            match self.commit_hide_with(key, expected, iconic, nonactivating) {
+            let post = if nonactivating {
+                HidePost::Nonactivating
+            } else {
+                HidePost::Pumped
+            };
+            match self.commit_hide_with(key, expected, iconic, post) {
                 Ok(()) => {
                     if nonactivating
                         && Some(key.hwnd) == entry_fg
@@ -1485,7 +1608,7 @@ impl<'a> LiveNative<'a> {
         let mut refused = false;
         for (key, expected) in &entering {
             match self.commit_reveal_with(key, expected, nonactivating) {
-                Ok(()) => {}
+                Ok(_) => {}
                 Err(AdmitOutcome::Refused) | Err(AdmitOutcome::OriginVanished) => {
                     refused = true;
                 }
@@ -1539,6 +1662,12 @@ impl<'a> LiveNative<'a> {
     /// freshly proven frames, oldest first.
     pub(super) fn take_hidden_seeds(&mut self) -> Vec<(WindowKey, Rect)> {
         std::mem::take(&mut self.hidden_seeds)
+    }
+
+    /// Drain the genuine hidden-claim reveals actuated this pass (oldest
+    /// first) so the owner tick can emit production `workspace-reveal` rows.
+    pub(super) fn take_reveals(&mut self) -> Vec<RevealRecord> {
+        std::mem::take(&mut self.reveals)
     }
 
     /// Trace-only refusal detail for one `Ok(false)` pre-primitive focus
@@ -1629,6 +1758,135 @@ pub(super) fn apply_hidden_seeds(
     }
 }
 
+/// Raise or release the persistent `WS_EX_TOPMOST` band under the R12 durable
+/// preimage. A raise persists the original band first and never runs native
+/// when persistence fails; a release restores only this lifetime's exact
+/// stored row and clears it only after a verified successful restore. No
+/// retries, no guessed lifetimes.
+fn write_above(native: &mut LiveNative<'_>, key: &WindowKey, value: bool) -> StateWrite {
+    let Some(tag) = native
+        .member_tags
+        .get(key)
+        .cloned()
+        .filter(|tag| !tag.is_empty())
+    else {
+        return StateWrite::NotAttempted;
+    };
+    if value {
+        let Some(false) = super::workspace_mode::read_topmost_now(key.hwnd) else {
+            // Unknown or already owned by the application: no durable
+            // preimage, ownership claim, or native write.
+            return StateWrite::NotAttempted;
+        };
+        let Some(row) = super::above_preimage::AbovePreimage::new(
+            key.hwnd,
+            key.pid,
+            &key.creation,
+            &tag,
+            false,
+            &native.me.process_creation,
+        ) else {
+            return StateWrite::NotAttempted;
+        };
+        if super::above_preimage::persist(native.dir, &row).is_err() {
+            return StateWrite::NotAttempted;
+        }
+        if !super::workspace_mode::set_topmost_band(key.hwnd, true) {
+            // The durable row stays: a later release still owns the original
+            // band.
+            return StateWrite::Threw;
+        }
+        StateWrite::Called(true)
+    } else {
+        release_above(
+            native.dir,
+            key,
+            &tag,
+            |prior| super::workspace_mode::set_topmost_band(key.hwnd, prior),
+            || {
+                if crate::ffi::window_pid(key.hwnd) != key.pid || !native.lifetime_ok(key) {
+                    return None;
+                }
+                super::workspace_mode::read_topmost_now(key.hwnd)
+            },
+        )
+    }
+}
+
+/// Release one owned `above` row: restore only this lifetime's exact stored
+/// band and clear the durable row only after matched live readback. A
+/// missing or disagreeing readback leaves the row available for recovery.
+fn release_above(
+    dir: &Path,
+    key: &WindowKey,
+    tag: &str,
+    restore: impl FnOnce(bool) -> bool,
+    readback: impl FnOnce() -> Option<bool>,
+) -> StateWrite {
+    let Some(row) = super::above_preimage::load(dir, key.hwnd, key.pid, &key.creation, tag) else {
+        // No owned preimage: this lifetime's above was never raised by the
+        // project, so there is nothing to restore.
+        return StateWrite::NotAttempted;
+    };
+    if !restore(row.prior_topmost) {
+        return StateWrite::Threw;
+    }
+    if readback() == Some(row.prior_topmost)
+        && super::above_preimage::clear(dir, key.hwnd, key.pid, &key.creation, tag).is_err()
+    {
+        super::trace::log_json_at(
+            &crate::lifecycle::sys::log_path_for(dir, &row.session),
+            serde_json::json!({
+                "event": "durable-preimage-retire",
+                "property": "above",
+                "outcome": "pending",
+            }),
+        );
+    }
+    StateWrite::Called(true)
+}
+
+/// Read the slot only for the caller's exact, tagged member lifetime.
+pub(super) fn intent_storage_of(key: &WindowKey, tag: &str) -> Option<IntentStorage> {
+    slot_storage(crate::product_hide::sys::read_intent_slot_for(key, tag))
+}
+
+/// A verified absent property is empty; an unverified read stays unknown.
+fn slot_storage(slot: Option<Option<IntentStorage>>) -> Option<IntentStorage> {
+    Some(slot?.unwrap_or_default())
+}
+
+/// Resolve the project-owned fullscreen rectangle for one frame-derived
+/// output device. The device must match an observed monitor area exactly: an
+/// unknown output refuses (returns `None`) with no native call instead of
+/// borrowing another screen's full rectangle.
+fn enter_fullscreen_at(
+    areas: &[MonitorArea],
+    device: &str,
+    enter: impl FnOnce(Rect) -> StateWrite,
+) -> Option<StateWrite> {
+    let full = areas
+        .iter()
+        .find(|area| area.device == device)
+        .map(|area| area.full)?;
+    Some(enter(full))
+}
+
+/// Resolve the live-frame-derived output and enter fullscreen on that exact
+/// area. A frame whose output has no matching area returns `None` before any
+/// native call; the caller reports `NotAttempted`.
+fn enter_fullscreen_for_frame(
+    areas: &[MonitorArea],
+    frame: &Rect,
+    enter: impl FnOnce(Rect) -> StateWrite,
+) -> Option<StateWrite> {
+    if !super::directional_resolution::frame_overlaps_output(areas, frame) {
+        return None;
+    }
+    let device = super::directional_resolution::output_for_rect(areas, frame);
+    enter_fullscreen_at(areas, &device, enter)
+}
+
 impl NativeOps for LiveNative<'_> {
     fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
         let key = self.key_of(token)?;
@@ -1644,10 +1902,7 @@ impl NativeOps for LiveNative<'_> {
                 // Committed homing comes from the core projection; the
                 // hidden flag from the hide-claim ledger only.
                 let (output, workspace) = self.committed_homing(token).unwrap_or_default();
-                let sticky = self.sticky.contains_key(&live_key);
-                let float_marked = crate::product_hide::sys::peek_float_intent_raw(key.hwnd);
-                let floating =
-                    sticky || !matches!(float_marked, crate::native_guards::MarkerSlot::Absent);
+                let intent = self.window_intent(&live_key);
                 Some(FreshWindow {
                     key: live_key.clone(),
                     token: token.to_owned(),
@@ -1657,8 +1912,8 @@ impl NativeOps for LiveNative<'_> {
                     workspace,
                     iconic: w.facts.minimized || (self.prims.is_iconic)(key.hwnd),
                     hidden: self.committed_hidden(&live_key),
-                    sticky,
-                    floating,
+                    sticky: intent.sticky_prior.is_some(),
+                    floating: intent.is_floating(),
                     live_tag: (self.prims.member_tag)(key.hwnd),
                 })
             }
@@ -1669,7 +1924,7 @@ impl NativeOps for LiveNative<'_> {
                 // lifetime tag must still match and the window must read
                 // back invisible. Only committed-hidden members ride here.
                 if !self.committed_hidden(&key) {
-                    return None;
+                    return self.read_iconic_window(key, token);
                 }
                 if (self.prims.is_visible)(key.hwnd) {
                     return None;
@@ -1677,32 +1932,52 @@ impl NativeOps for LiveNative<'_> {
                 if !self.lifetime_ok(&key) {
                     return None;
                 }
-                let record = self.hidden_claims.get(&key)?;
-                if !crate::model::valid_claim_tag(&record.claim.tag)
-                    || record.claim.hwnd != key.hwnd
-                    || record.claim.process.pid != key.pid
-                    || record.claim.process.process_creation != key.creation
-                {
-                    return None;
-                }
+                let claim_hwnd = {
+                    let record = self.hidden_claims.get(&key)?;
+                    if !crate::model::valid_claim_tag(&record.claim.tag)
+                        || record.claim.hwnd != key.hwnd
+                        || record.claim.process.pid != key.pid
+                        || record.claim.process.process_creation != key.creation
+                    {
+                        return None;
+                    }
+                    record.claim.hwnd
+                };
                 let stored = self.stored_tag(&key)?;
                 if stored.is_empty() {
                     return None;
                 }
+                // The observed-hidden lane is the only source of the
+                // cloak/host-hidden fact (`DWMWA_CLOAKED` inside
+                // `observe_window_inner`). A failed or identity-mismatched
+                // read leaves facts unknown (fail closed); nothing is
+                // synthesized here.
+                let hidden_ok = (self.prims.observe_hidden)(
+                    claim_hwnd,
+                    self.me,
+                    self.fulls,
+                    &mut self.tokens,
+                )
+                .ok()
+                .filter(|w| {
+                    w.hwnd == claim_hwnd
+                        && w.identity.pid == key.pid
+                        && w.identity.process_creation == key.creation
+                });
                 let (output, workspace) = self.committed_homing(token).unwrap_or_default();
-                let sticky = self.sticky.contains_key(&key);
+                let intent = self.window_intent(&key);
                 Some(FreshWindow {
                     key,
                     token: token.to_owned(),
                     frame: None,
-                    facts: None,
+                    facts: hidden_ok.map(|w| w.facts),
                     output,
                     workspace,
-                    iconic: (self.prims.is_iconic)(record.claim.hwnd),
+                    iconic: (self.prims.is_iconic)(claim_hwnd),
                     hidden: true,
-                    sticky,
-                    floating: sticky,
-                    live_tag: (self.prims.member_tag)(record.claim.hwnd),
+                    sticky: intent.sticky_prior.is_some(),
+                    floating: intent.is_floating(),
+                    live_tag: (self.prims.member_tag)(claim_hwnd),
                 })
             }
         }
@@ -1720,6 +1995,11 @@ impl NativeOps for LiveNative<'_> {
             return None;
         }
         Some(w.visible)
+    }
+
+    fn read_output_affinity(&mut self, token: &str) -> Option<String> {
+        let frame = self.read_frame(token)?;
+        self.affinity_of(&frame)
     }
 
     fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
@@ -1797,7 +2077,7 @@ impl NativeOps for LiveNative<'_> {
                     continue;
                 }
                 let key = self.key_of(token)?;
-                if self.sticky.contains_key(&key) {
+                if self.sticky_of(&key) {
                     continue;
                 }
                 let expected = self.member_identity.get(&key).cloned()?;
@@ -1910,7 +2190,7 @@ impl NativeOps for LiveNative<'_> {
         // Still a validated no-effect transaction: full identity, lifetime,
         // scope/hosted gates, and live visibility must all prove. Never a
         // bare setter boolean.
-        if self.sticky.contains_key(&key) {
+        if self.sticky_of(&key) {
             if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
                 return Err(());
             }
@@ -2016,7 +2296,7 @@ impl NativeOps for LiveNative<'_> {
         if visible != expected_visible || !visible {
             return false;
         }
-        if self.sticky.contains_key(&key) {
+        if self.sticky_of(&key) {
             return true;
         }
         if floating {
@@ -2050,57 +2330,64 @@ impl NativeOps for LiveNative<'_> {
         self.switch_view_inner(output, logical, true)
     }
 
-    fn reveal_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
-        // Same pre-gates as the combined switch: racing input fails
-        // closed, an unknown target refuses. Arrival proof itself stays
-        // with the caller (fresh re-reads, never the setter boolean).
+    fn reveal_window(&mut self, token: &str) -> Result<bool, ()> {
+        // Same fail-closed pre-gates as the legacy combined switch: racing
+        // input refuses, unknown/identity-stale targets refuse without a
+        // post. Arrival proof stays with the caller's fresh re-reads.
         if (self.prims.hook_pending)() {
             return Err(());
         }
-        if !self
-            .core_rings
-            .get(output)
-            .is_some_and(|ring| ring.iter().any(|id| id == logical))
-        {
+        let key = self.key_of(token).ok_or(())?;
+        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
+        // No committed claim means there is no native reveal to post; the
+        // caller's fresh read decides the row.
+        if !self.hidden_claims.contains_key(&key) {
             return Ok(false);
         }
-        let (ambiguous, refused) = self.reveal_entering(output, logical, true);
-        if ambiguous {
-            return Err(());
+        match self.commit_reveal_with(&key, &expected, true) {
+            Ok(shown) => Ok(shown),
+            Err(AdmitOutcome::Refused | AdmitOutcome::OriginVanished) => Ok(false),
+            Err(_) => Err(()),
         }
-        if refused {
-            return Ok(false);
-        }
-        Ok(true)
     }
 
-    fn hide_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
-        // Same pre-gates as the combined switch. The caller revalidates
-        // latest desire and proven foreground before reaching this setter.
+    fn hide_window(&mut self, token: &str, release_foreground: bool) -> Result<bool, ()> {
         if (self.prims.hook_pending)() {
             return Err(());
         }
-        if !self
-            .core_rings
-            .get(output)
-            .is_some_and(|ring| ring.iter().any(|id| id == logical))
-        {
-            return Ok(false);
+        let key = self.key_of(token).ok_or(())?;
+        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
+        let post = if release_foreground {
+            HidePost::ReleaseForeground
+        } else {
+            HidePost::Nonactivating
+        };
+        match self.commit_hide_with(&key, &expected, false, post) {
+            Ok(()) => Ok(true),
+            Err(AdmitOutcome::Refused | AdmitOutcome::OriginVanished) => Ok(false),
+            Err(_) => Err(()),
         }
-        let (ambiguous, refused) = self.hide_departures(output, logical, true);
-        if ambiguous {
-            return Err(());
-        }
-        if refused {
-            return Ok(false);
-        }
-        Ok(true)
     }
 
-    fn selection_arrival_allows(&mut self, request_id: &str, target: &str) -> bool {
-        self.selection_arrival
-            .as_ref()
-            .is_some_and(|grant| grant.allows(request_id, target))
+    fn fallback_hide_allowed(&mut self, token: &str) -> bool {
+        self.key_of(token).is_some_and(|key| !self.write_vetoed(key.hwnd))
+    }
+
+    fn foreground_managed(&mut self) -> Option<String> {
+        let fg = (self.prims.foreground)();
+        if fg == 0 {
+            return None;
+        }
+        let token = self
+            .token_key
+            .iter()
+            .find_map(|(token, key)| (key.hwnd == fg).then(|| token.clone()))?;
+        let key = self.token_key.get(&token).cloned()?;
+        let expected = self.member_identity.get(&key).cloned()?;
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return None;
+        }
+        Some(token)
     }
 
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
@@ -2110,19 +2397,12 @@ impl NativeOps for LiveNative<'_> {
     fn focus_window_traced_selected(
         &mut self,
         token: &str,
-        effect_id: &str,
+        selection_provenance: bool,
     ) -> (Result<bool, ()>, super::world_diff::FocusCallDiag) {
-        // Exact effect binding, checked synchronously with the exact effect
-        // id and dispatch target: only a pair in the fresh accepted
-        // selection grant arms the desktop exception for the dispatch
-        // immediately below. Any other effect (directional, send/migrate
-        // follow, automatic admission, cursor-follow, observation) or a
-        // tampered id/target pair runs the existing gates unchanged. The
-        // flag clears before return, so no later call can ride it.
-        self.selection_arrival_armed = self
-            .selection_arrival
-            .as_ref()
-            .is_some_and(|grant| grant.allows(effect_id, token));
+        // The desktop exception is armed only for a request the core
+        // derived as explicit-command selection with a frozen after_shown
+        // scope. The flag clears before return, so no later call rides it.
+        self.selection_arrival_armed = selection_provenance;
         let outcome = self.focus_window_traced(token);
         self.selection_arrival_armed = false;
         outcome
@@ -2387,6 +2667,81 @@ impl NativeOps for LiveNative<'_> {
         (self.prims.hook_pending)()
     }
 
+    fn read_state(&mut self, token: &str, property: StateProperty) -> Option<bool> {
+        let key = self.key_of(token)?;
+        match property {
+            StateProperty::Maximized => Some(super::probes::is_zoomed_now(key.hwnd)),
+            StateProperty::Fullscreen => super::probes::live_overlay_flags(key.hwnd, self.fulls).1,
+            StateProperty::Above => super::workspace_mode::read_topmost_now(key.hwnd),
+            // Windows has no native sticky property: the composition caps
+            // keep sticky out of the state lane, so this read is honestly
+            // unreadable instead of a fabricated mirror.
+            StateProperty::Sticky => None,
+        }
+    }
+
+    fn write_state(&mut self, token: &str, property: StateProperty, value: bool) -> StateWrite {
+        let Some(key) = self.key_of(token) else {
+            return StateWrite::NotAttempted;
+        };
+        let Some(expected) = self.member_identity.get(&key).cloned() else {
+            return StateWrite::NotAttempted;
+        };
+        // Full identity plus lifetime proof immediately before any native
+        // write: a recycled handle or a stale tag never takes actuation.
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return StateWrite::NotAttempted;
+        }
+        match property {
+            StateProperty::Maximized => super::probes::toggle_zoom_async(key.hwnd, value),
+            StateProperty::Fullscreen => {
+                if value {
+                    // Enter needs a live frame-derived output anchor; an
+                    // unreadable frame refuses before any write, and an
+                    // output with no matching area refuses too instead of
+                    // borrowing another screen's full rectangle.
+                    let Some(frame) = self.read_frame(token) else {
+                        return StateWrite::NotAttempted;
+                    };
+                    enter_fullscreen_for_frame(&self.areas, &frame, |full| {
+                        super::fullscreen::enter_fullscreen(key.hwnd, full, self.dir)
+                    })
+                    .unwrap_or(StateWrite::NotAttempted)
+                } else {
+                    // Exit is project-owned only: app-owned fullscreen has
+                    // no metadata and is never touched (capture publishes
+                    // `fullscreen_exitable=false` there, so the core never
+                    // asks).
+                    let Some(meta) = super::fullscreen::read_fullscreen_meta(key.hwnd) else {
+                        return StateWrite::NotAttempted;
+                    };
+                    super::fullscreen::exit_fullscreen_owned(key.hwnd, &meta, self.dir)
+                }
+            }
+            StateProperty::Above => write_above(self, &key, value),
+            StateProperty::Sticky => StateWrite::NotAttempted,
+        }
+    }
+
+    fn read_intent_storage(&mut self, token: &str) -> Option<IntentStorage> {
+        let key = self.key_of(token)?;
+        self.read_intent_for(&key)
+    }
+
+    fn write_intent_storage(&mut self, token: &str, data: Option<IntentData>) -> Result<(), ()> {
+        let key = self.key_of(token).ok_or(())?;
+        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return Err(());
+        }
+        let desired = IntentStorage::from_data(data);
+        #[cfg(test)]
+        if crate::product_hide::sys::fake::marker_active(key.hwnd) {
+            return crate::product_hide::sys::write_intent_slot(key.hwnd, desired);
+        }
+        crate::product_hide::sys::write_intent_slot_for(&key, self.stored_tag(&key).ok_or(())?, desired)
+    }
+
     fn foreground_state(&mut self) -> super::world_diff::ForegroundState {
         use super::world_diff::{ForegroundIdentity, ForegroundState};
         let hwnd = (self.prims.foreground)();
@@ -2453,6 +2808,17 @@ impl NativeOps for LiveNative<'_> {
         (self.prims.read_cursor)()
     }
 
+    fn warp_capable(&mut self) -> bool {
+        super::settings::WARP_SUPPORTED
+    }
+
+    /// The loop-thread Raw Input witness registered against the tray HWND.
+    /// `None` while the witness is not installed (proof/tray-less runs and
+    /// registration failure); never a synthesized zero.
+    fn pointer_activity(&mut self) -> Option<u64> {
+        crate::ffi::raw_input::pointer_activity()
+    }
+
     /// Mechanical warp with mechanical-only vetoes: a racing external
     /// invalidation or an out-of-bound core point fails closed (the core
     /// never emits those, so this is backstop, never policy). Game,
@@ -2502,7 +2868,7 @@ impl<'a> LiveNative<'a> {
         if !visible {
             return false;
         }
-        if self.sticky.contains_key(key) {
+        if self.sticky_of(key) {
             return true;
         }
         if !row.floating {
@@ -2594,7 +2960,7 @@ impl<'a> LiveNative<'a> {
                 );
                 continue;
             }
-            let expected_visible = if self.sticky.contains_key(&key) {
+            let expected_visible = if self.sticky_of(&key) {
                 true
             } else {
                 self.core_views
@@ -2626,3 +2992,228 @@ impl<'a> LiveNative<'a> {
 #[cfg(test)]
 #[path = "world_native_tests.rs"]
 mod world_native_tests;
+
+/// Offline R12 native-lane coverage: the durable `above` preimage survives a
+/// failed release, and fullscreen enter refuses an output with no matching
+/// area before any native call. Both seams take the native effect as a
+/// closure so production ordering runs unchanged without a live window.
+#[cfg(test)]
+mod r12_native_tests {
+    use super::super::above_preimage::{self, AbovePreimage};
+    use super::*;
+    use std::path::PathBuf;
+
+    const TAG: &str = "abcdef0123456789";
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "omnitiler-r12-native-{}-{tag}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn key(hwnd: u64) -> WindowKey {
+        WindowKey {
+            hwnd,
+            pid: 4242,
+            creation: "proc-creation".to_owned(),
+        }
+    }
+
+    fn area(device: &str, x: i32, y: i32, w: i32, h: i32) -> MonitorArea {
+        let full = Rect { x, y, w, h };
+        MonitorArea {
+            device: device.to_owned(),
+            work: full,
+            full,
+            dpi: 96,
+        }
+    }
+
+    #[test]
+    fn failed_above_release_reports_threw_and_keeps_preimage() {
+        let dir = temp_dir("above-fail");
+        let key = key(0x4001);
+        let row =
+            AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
+                .expect("row builds");
+        above_preimage::persist(&dir, &row).expect("preimage persists");
+
+        let mut calls = 0;
+        let result = release_above(
+            &dir,
+            &key,
+            TAG,
+            |prior| {
+                calls += 1;
+                assert!(!prior, "acquisition only owns a prior-false band");
+                false
+            },
+            || panic!("failed setter must not attempt retirement"),
+        );
+        assert_eq!(result, StateWrite::Threw);
+        assert_eq!(calls, 1, "exactly one restore attempt");
+        let kept = above_preimage::load(&dir, key.hwnd, key.pid, &key.creation, TAG)
+            .expect("failed release keeps the durable preimage loadable");
+        assert_eq!(kept, row);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verified_above_release_clears_preimage() {
+        let dir = temp_dir("above-ok");
+        let key = key(0x4002);
+        let row =
+            AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
+                .expect("row builds");
+        above_preimage::persist(&dir, &row).expect("preimage persists");
+
+        let result = release_above(
+            &dir,
+            &key,
+            TAG,
+            |prior| {
+                assert!(!prior);
+                true
+            },
+            || Some(false),
+        );
+        assert_eq!(result, StateWrite::Called(true));
+        assert_eq!(
+            above_preimage::load(&dir, key.hwnd, key.pid, &key.creation, TAG),
+            None,
+            "verified restore clears the owned row"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accepted_above_release_keeps_preimage_without_verified_post_band() {
+        let dir = temp_dir("above-pending");
+        let key = key(0x4004);
+        let row = AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
+            .expect("row builds");
+        above_preimage::persist(&dir, &row).expect("preimage persists");
+        for readback in [None, Some(true)] {
+            let result = release_above(&dir, &key, TAG, |prior| !prior, || readback);
+            assert_eq!(result, StateWrite::Called(true));
+            assert_eq!(
+                above_preimage::load(&dir, key.hwnd, key.pid, &key.creation, TAG),
+                Some(row.clone()),
+                "setter acceptance does not establish the prior band"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn above_release_without_owned_row_never_calls_native() {
+        let dir = temp_dir("above-none");
+        let key = key(0x4003);
+        let result = release_above(
+            &dir,
+            &key,
+            TAG,
+            |_| panic!("no native restore without an owned preimage"),
+            || panic!("no readback without a restore"),
+        );
+        assert_eq!(result, StateWrite::NotAttempted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fullscreen_enter_refuses_unknown_output_without_native_call() {
+        let areas = vec![area("\\\\.\\DISPLAY1", 0, 0, 1920, 1080)];
+        let mut called = false;
+        let result = enter_fullscreen_at(&areas, "\\\\.\\DISPLAY9", |_| {
+            called = true;
+            StateWrite::Called(true)
+        });
+        assert_eq!(result, None);
+        assert!(!called, "unknown output never reaches enter_fullscreen");
+
+        // No observed area means the frame-derived output has no anchor.
+        let mut called = false;
+        let result = enter_fullscreen_for_frame(
+            &[],
+            &Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+            },
+            |_| {
+                called = true;
+                StateWrite::Called(true)
+            },
+        );
+        assert_eq!(result, None);
+        assert!(!called, "empty topology never falls back to a screen");
+
+        let result = enter_fullscreen_for_frame(
+            &areas,
+            &Rect {
+                x: 1920,
+                y: 0,
+                w: 100,
+                h: 100,
+            },
+            |_| panic!("edge contact cannot select a fullscreen output"),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn fullscreen_enter_uses_the_frame_outputs_exact_area() {
+        let areas = vec![
+            area("\\\\.\\DISPLAY1", 0, 0, 800, 600),
+            area("\\\\.\\DISPLAY2", 800, 0, 800, 600),
+        ];
+        let mut got = None;
+        let result = enter_fullscreen_for_frame(
+            &areas,
+            &Rect {
+                x: 900,
+                y: 100,
+                w: 100,
+                h: 100,
+            },
+            |full| {
+                got = Some(full);
+                StateWrite::Called(true)
+            },
+        );
+        assert_eq!(result, Some(StateWrite::Called(true)));
+        assert_eq!(
+            got,
+            Some(Rect {
+                x: 800,
+                y: 0,
+                w: 800,
+                h: 600
+            })
+        );
+    }
+
+    #[test]
+    fn corrupt_intent_slot_reads_unknown_not_default() {
+        assert_eq!(slot_storage(None), None);
+        assert_ne!(
+            slot_storage(None),
+            Some(IntentStorage::default()),
+            "a corrupt/foreign slot is unknown, never canonical absence"
+        );
+        assert_eq!(
+            slot_storage(Some(None)),
+            Some(IntentStorage::default()),
+            "an absent slot is canonical no-intent"
+        );
+        let storage = IntentStorage {
+            sticky_prior: Some(true),
+            float: Some(true),
+        };
+        assert_eq!(slot_storage(Some(Some(storage))), Some(storage));
+    }
+}

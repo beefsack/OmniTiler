@@ -605,6 +605,21 @@ export interface WorldRosterFeedback {
     steps: readonly WorldRosterStepFeedback[];
 }
 
+// One retained cross-output warp request (outbound only): the frozen
+// destination lifetime, its issuing focus-decision revision, the frozen
+// destination output/workspace, the carried point, and the pointer-activity
+// generation frozen at mint (null when unknown). At most one per reply;
+// warp:false hosts accept and ignore a structurally valid request.
+export interface WorldWarpRequest {
+    id: string;
+    target: string;
+    rev: string;
+    out: string;
+    ws: string;
+    point: [number, number];
+    pointerBaseline: string | null;
+}
+
 export interface WorldReply {
     adapter: string;
     gen: string;
@@ -645,9 +660,12 @@ export interface WorldReply {
     // Core-owned native creation authorizations for this reply: explicit
     // desires only, at most one entry per outstanding creation op.
     nativeCreations: WorldNativeCreation[];
-    // Desired cursor warp point (cross-output focus only) or null. The
-    // adapter never warps (unsupported): null or ignored, never chased.
-    warpCursor: [number, number] | null;
+    // Retained cross-output warp request (the core freezes the winning
+    // focus decision's exact target, revision, output, workspace, point,
+    // and pointer baseline) or null. This adapter declares warp:false and
+    // never warps: any structurally valid request is accepted and ignored,
+    // never chased.
+    warpRequest: WorldWarpRequest | null;
     // Retained intent desire for one window lifetime (never policy):
     // string is the exact saved bytes, null is an explicit desired slot
     // absence kept after a successful clear, missing rows carry no storage
@@ -2083,10 +2101,69 @@ export function parseIntentDesired(value: unknown): WorldIntentDesire[] | null {
 // the bindings default without validation.
 const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "consumed",
     "scopes", "workspaces", "outputs", "windows", "transfers", "focusRequest", "dragPreview",
-    "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation",
+    "gestureSettled", "operationSettled", "nativeCreations", "warpRequest", "presentation",
     "intentDesired", "switchSettled", "diagnostics"] as const;
 const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc", "gestureSettledAssoc"] as const;
 const ROSTER_REPLY_KEYS = [...BOUND_REPLY_KEYS, "rosterPlan"] as const;
+
+// Strict retained warp-request parse: null carries no warp intent. Any
+// present object must be closed over exactly
+// {id,target,rev,out,ws,point,pointerBaseline}: opaque id/target/out/ws, a
+// canonical issuing revision, a carried integer point, and a null or
+// canonical pointer baseline. Anything else refuses the whole reply.
+function parseWarpRequest(value: unknown): WorldWarpRequest | null {
+    if (value === null) {
+        return null;
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("warp");
+    }
+    const o = value as Record<string, unknown>;
+    if (!hasExactKeys(o, ["id", "target", "rev", "out", "ws", "point", "pointerBaseline"])) {
+        throw new Error("warp");
+    }
+    const id = o["id"];
+    const target = o["target"];
+    const rev = o["rev"];
+    const out = o["out"];
+    const ws = o["ws"];
+    if (
+        !isOpaqueId(id) || !isOpaqueId(target) || !isCanonicalU64(rev) ||
+        !isOpaqueId(out) || !isOpaqueId(ws)
+    ) {
+        throw new Error("warp");
+    }
+    const rawPoint = o["point"];
+    if (!Array.isArray(rawPoint) || rawPoint.length !== 2) {
+        throw new Error("warp");
+    }
+    const pair = rawPoint as ReadonlyArray<unknown>;
+    if (
+        typeof pair[0] !== "number" || !Number.isInteger(pair[0] as number) ||
+        typeof pair[1] !== "number" || !Number.isInteger(pair[1] as number) ||
+        !isCarriedPoint(pair[0] as number, pair[1] as number)
+    ) {
+        throw new Error("warp");
+    }
+    const rawBaseline = o["pointerBaseline"];
+    let pointerBaseline: string | null;
+    if (rawBaseline === null) {
+        pointerBaseline = null;
+    } else if (isCanonicalU64(rawBaseline)) {
+        pointerBaseline = rawBaseline;
+    } else {
+        throw new Error("warp");
+    }
+    return {
+        id,
+        target,
+        rev,
+        out,
+        ws,
+        point: [pair[0] as number, pair[1] as number],
+        pointerBaseline,
+    };
+}
 
 function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): WorldReply | null {
     const hasRoster = Object.prototype.hasOwnProperty.call(r, "rosterPlan");
@@ -2252,22 +2329,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             "gesture-settled-assoc-missing",
             "gesture-settled-assoc",
         );
-        const warpRaw = r["warpCursor"];
-        let warpCursor: WorldReply["warpCursor"] = null;
-        if (warpRaw !== null && warpRaw !== undefined) {
-            if (!Array.isArray(warpRaw) || warpRaw.length !== 2) {
-                throw new Error("warp");
-            }
-            const pair = warpRaw as ReadonlyArray<unknown>;
-            if (
-                typeof pair[0] !== "number" || !Number.isInteger(pair[0] as number) ||
-                typeof pair[1] !== "number" || !Number.isInteger(pair[1] as number) ||
-                !isCarriedPoint(pair[0] as number, pair[1] as number)
-            ) {
-                throw new Error("warp");
-            }
-            warpCursor = [pair[0] as number, pair[1] as number];
-        }
+        const warpRequest = parseWarpRequest(r["warpRequest"]);
         const presentation = parsePresentation(r["presentation"]);
         // Accepted core intent desire: the required v4 lane; malformed
         // refuses the whole reply.
@@ -2279,7 +2341,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
             scopes, workspaces, outputs, windows, transfers, focusRequest, dragPreview,
-            gestureSettled, gestureAssoc, gestureSettledAssoc, operationSettled, nativeCreations, warpCursor, intentDesired, presentation,
+            gestureSettled, gestureAssoc, gestureSettledAssoc, operationSettled, nativeCreations, warpRequest, intentDesired, presentation,
             switchSettled, diagnostics,
             source, nativeInvalid, clock,
             ...(rosterPlan === undefined ? {} : { rosterPlan }),
@@ -3621,6 +3683,7 @@ export function freezeWorldReportV4InnerJson(input: Omit<WorldReportV4Input, "fo
         `"focused":${focused},"foregroundKnown":${encodeV4Bool(foregroundKnown)},"focusChanges":`;
     const suffix = `,"complete":${encodeV4Bool(observation.complete)},` +
         `"gesture":${encodeV4Bool(observation.gesture)},"cursor":${cursor},` +
+        `"pointerActivity":null,"warpSpent":null,` +
         `"actionForeground":${actionForeground},"actionCached":${actionCached},` +
         `"actionOutputs":[${actionOutputs.join(",")}],` +
         `"presentation":${presentation}${lanes},` +

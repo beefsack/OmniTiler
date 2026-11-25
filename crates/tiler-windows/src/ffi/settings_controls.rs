@@ -189,6 +189,18 @@ pub fn show_window(hwnd: HWND, show: bool) {
     }
 }
 
+/// Place one child at a physical-pixel rect and repaint it. The settings
+/// layout passes DPI-mapped coordinates, so no scaling lives here.
+pub fn place_child(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::MoveWindow;
+    if hwnd.is_null() {
+        return;
+    }
+    unsafe {
+        MoveWindow(hwnd, x, y, w, h, 1);
+    }
+}
+
 pub fn set_tab_sel(strip: HWND, index: usize) {
     use windows_sys::Win32::UI::Controls::TCM_SETCURSEL;
     use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;

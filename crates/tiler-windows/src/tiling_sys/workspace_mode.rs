@@ -13,8 +13,10 @@ pub(super) fn workspace_mode_tiled(state: &TileLoop, output: &str, workspace: &s
 }
 
 /// Fresh `WS_EX_TOPMOST` read on one HWND (official Win32 topmost band).
-pub(super) fn read_topmost_now(hwnd_u64: u64) -> bool {
-    crate::ffi::window_exstyle(hwnd_u64) & WS_EX_TOPMOST != 0
+/// `None` when the extended style is unreadable (closed or denied window):
+/// callers must never treat an unreadable band as "not topmost".
+pub(super) fn read_topmost_now(hwnd_u64: u64) -> Option<bool> {
+    crate::ffi::window_exstyle_checked(hwnd_u64).map(|exstyle| exstyle & WS_EX_TOPMOST != 0)
 }
 
 /// Set one window's topmost band without moving, sizing, or activating it.
@@ -199,17 +201,4 @@ pub(super) fn toggle_workspace_tiling(
         refresh_active_border(state, me, fulls);
     }
     let _ = tick;
-}
-
-/// Retry unconfirmed workspace-domain releases: deleted. Mode toggles
-/// dispatch synchronously through the world owner and report the honest
-/// outcome inline; nothing queues, so no topology-edge retry exists.
-/// unknown on the output. Stale-intent detection must distinguish unknown
-/// (still releasable with empty rows) from tiled (never releasable).
-pub(super) fn workspace_mode_known(
-    state: &TileLoop,
-    output: &str,
-    workspace: &str,
-) -> Option<bool> {
-    state.workspace_mode_known_here(output, workspace)
 }

@@ -77,7 +77,7 @@ function replyText(opts: {
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: opts.focusRequest,
         operationSettled: [], nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],

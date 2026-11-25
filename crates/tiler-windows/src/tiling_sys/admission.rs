@@ -1,321 +1,6 @@
 #![forbid(unsafe_code)]
 use super::*;
 
-/// D2 admission pin shared by the clear seam and the slot-deferral mirror:
-/// the live Engine snapshot proves this token was admitted ordinary/tiled
-/// (present, neither an exception nor automatic), so the required clear plans
-/// regardless of later fresh-hint changes: hint drift must never reclassify
-/// retained admission. Either override record (adapter runtime set or core
-/// committed override) carves out to fresh classification instead: with no
-/// fixed-specific signal surviving hint loss, authoritative fixed wins keep
-/// current semantics pending an explicit product decision (no new lifetime
-/// state is invented here).
-pub(super) fn committed_ordinary_pin(
-    state: &TileLoop,
-    key: &crate::native_guards::WindowKey,
-    token: &str,
-) -> bool {
-    let Some(loc) = state.member_home(key) else {
-        return false;
-    };
-    // D2 admission pin over the last applied world reply: the token rides
-    // ordinary/tiled (present, not floating, not automatic) on its homed
-    // logical workspace. The core snapshot IS the committed record now;
-    // hint drift must never reclassify retained admission.
-    if state.fixed_tile_overrides.contains(key) {
-        return false;
-    }
-    let Some(reply) = state.world.last_reply() else {
-        return false;
-    };
-    reply.windows.iter().any(|row| {
-        row.lifetime.0 == token
-            && row.output.0 == state.wire_of(&loc.output).as_deref().unwrap_or("")
-            && row.workspace == loc.workspace
-            && !row.floating
-    }) && !state.core_is_automatic_token(token)
-}
-
-/// Fresh classify-before-clear disposition for one retained maximized row
-/// (R-SPC-04 D6): the production-connected decision seam behind
-/// `clear_maximize_at_admission`, factored so adapter regressions can assert
-/// the planned CLEAR vs SKIP without native windows or writes. Mirrors every
-/// cheap pre-query gate in the production loop (first-exit deferral, D4
-/// latch plus Engine automatic, tiled-domain floating gate, eligibility,
-/// slotless one-shot, keep-overlay latch), then the D2 admission pin
-/// (committed ordinary/tiled plans the required clear despite later hint
-/// drift), then queries fresh hints under the live predicate with
-/// failure-as-unknown: fixed floats (no clear), unknown or non-fixed clears,
-/// budget defers to the next tick with no hold, no retry, and no attempt
-/// recorded. Assumes unattempted (the production loop re-checks the full
-/// attempt identity before any restore); records nothing, so repeated peeks
-/// are side-effect free.
-pub(super) fn admission_clear_planned(
-    state: &TileLoop,
-    row: &RetainedRow,
-    hint_cx: &HintCx,
-) -> bool {
-    if row.fullscreen || !row.maximized {
-        return false;
-    }
-    if state.born_first_exit.contains(&row.key) {
-        return false;
-    }
-    if state.fixed_auto_seen.contains(&row.key) || member_is_automatic_fixed(state, &row.key) {
-        return false;
-    }
-    // R-SPC-04 D3/D4/D6/D7: durable fixed-origin overrides never clear.
-    // They keep their tiled base through the reserved-maximized slot lane
-    // under both `core.born_maximized` values, across hint loss and
-    // predicate changes, and never acquire automatic origin. Generic
-    // non-fixed wins keep the existing clear/overlay rules below.
-    if state.fixed_origin_overrides.contains(&row.key) {
-        return false;
-    }
-    let tiled = state
-        .member_home(&row.key)
-        .and_then(|loc| workspace_mode_known(state, &loc.output, &loc.workspace));
-    if !matches!(tiled, Some(true)) {
-        return false;
-    }
-    if !row
-        .facts
-        .is_some_and(|facts| classify_focus(&facts).is_ok())
-    {
-        return false;
-    }
-    if state.member_rects.contains_key(&row.token) {
-        return false;
-    }
-    // R-MAX-06 born overlay and R-MAX-03 retile overlay converge through the
-    // retained-slot machinery with no native clear, under their own lanes.
-    if state.born_keep_overlay.contains(&row.key) || state.retile_keep_overlay.contains(&row.key) {
-        return false;
-    }
-    if committed_ordinary_pin(state, &row.key, &row.token) {
-        return true;
-    }
-    let fresh = hidden_hint_for(state, &row.key, hint_cx);
-    let (hints, outcome) = (fresh.hints, fresh.outcome);
-    if outcome == HintOutcome::Budget {
-        return false;
-    }
-    if hints.is_empty() {
-        return true;
-    }
-    !tiler_core::size_hints::is_fixed_size_with(
-        hints,
-        fixed_predicate_for(state.settings_live.as_ref()),
-    )
-}
-
-/// One-shot maximize clear at admission (KDE `clearMaximizeAtAdmission`
-/// parity). Call after `ensure_workspace_assignments` (lifetime tags stamped)
-/// and before the first Engine admission of the tick. For every retained
-/// maximized, non-fullscreen row that is otherwise eligible, scoped,
-/// hosted-gated, and proof-verified with fresh identity, and that holds no
-/// retained tile slot (`member_rects`), restore the native maximize exactly
-/// once with no automatic retry. Fullscreen never clears. The cleared window
-/// converges as eligible on the next tick.
-///
-/// R-MAX-06: the keep-overlay policy binds to the exact fresh lifetime at
-/// tiled-first slotless admission (`born_keep_overlay`, set only after every
-/// ownership fence in `admit_slotless_maximized`). A latched row skips the
-/// clear and converges through the existing retained-slot overlay machinery
-/// instead (slotless admission seeds the slot on the tiled domain, row
-/// assembly rides the canonical retained rect, and the retained-only token
-/// takes no geometry write until a native restore lands it in the slot).
-/// R-MAX-03 floating-first rows bind `retile_keep_overlay` at the same
-/// admission and converge through the same machinery under both
-/// `core.born_maximized` values. Pre-existing, born-fullscreen-exit, and
-/// later maxima rows never latch; a live flip applies only to subsequent
-/// first admissions and never moves an already-bound lifetime.
-///
-/// Attempts key on HWND plus process creation plus the live lifetime tag, so
-/// a recycled HWND re-arms for the fresh window while the same window never
-/// retries. Stale attempts prune when the HWND leaves the enumeration or the
-/// live occupant's pid/creation moved on.
-pub(super) fn clear_maximize_at_admission(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    retained: &[RetainedRow],
-) {
-    let log_path = state.log_path.clone();
-    // Bounded fresh-classification budget for this pass: the same per-query
-    // timeout and aggregate constants as row assembly, spent only on slotless
-    // maximized candidates (the cheap gates above/below skip everything else
-    // before any query).
-    let hint_cx = HintCx::new();
-    for row in retained {
-        if row.fullscreen || !row.maximized {
-            continue;
-        }
-        // R-SPC-04 D5: a first born-fullscreen exit classifies with current
-        // hints and predicate before any maximize-clear/restore/slot side
-        // effect. Peek only: the mark is consumed after committed
-        // classification (see `consume_classified_first_exits`), never here,
-        // so a deferred tick can never lose it before assembly reads it.
-        // Fixed exits then float automatic and skip the clear via the Engine
-        // mark; non-fixed exits tile and take the normal one-shot clear on
-        // a later pass.
-        if state.born_first_exit.contains(&row.key) {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "maximize-admission-clear",
-                    "window": row.token,
-                    "outcome": "deferred-first-exit",
-                }),
-            );
-            continue;
-        }
-        // R-SPC-04 D4/D8: fixed max-births and Engine-marked automatic fixed
-        // floats never clear: they float beneath native maximize with no
-        // geometry, focus, stacking, or keep-above writes from admission.
-        // Core-fixed max birth wins over the `core.born_maximized` clear.
-        if state.fixed_auto_seen.contains(&row.key) || member_is_automatic_fixed(state, &row.key) {
-            continue;
-        }
-        // R-SPC-04 D6 classify-before-clear: query fresh hints under the live
-        // predicate before any restore. Fixed floats beneath maximize (no
-        // clear under either `core.born_maximized` value); unknown or
-        // non-fixed clears once (failure-as-unknown tiles, so a persistent
-        // query failure still clears instead of holding silently); budget
-        // defers to the next tick with no hold and no attempt recorded. The
-        // single source is `admission_clear_planned` (which re-validates the
-        // cheap gates above to stay production-connected); the gates above
-        // run first so obvious skips spend no budget.
-        if !admission_clear_planned(state, row, &hint_cx) {
-            continue;
-        }
-        // Floating workspaces preserve the native maximum until the first
-        // tiled admission (KDE floating-gate parity). Unassigned rows fail
-        // closed: `ensure_workspace_assignments` owns membership and runs
-        // before this clear on every path.
-        let domain_tiled = state
-            .member_home(&row.key)
-            .and_then(|loc| workspace_mode_known(state, &loc.output, &loc.workspace));
-        let tiled = matches!(domain_tiled, Some(true));
-        if !row
-            .facts
-            .is_some_and(|facts| classify_focus(&facts).is_ok())
-        {
-            continue;
-        }
-        // Truly no retained tile slot: a slotted member keeps its allocation
-        // and never re-clears. Workspace membership alone is not a slot.
-        if state.member_rects.contains_key(&row.token) {
-            continue;
-        }
-        // Fresh identity: the live window must still be the retained one with
-        // a same-session, medium-integrity identity. Scope, hosted-child, and
-        // proof gates match observation admission exactly.
-        let live_pid = crate::ffi::window_pid(row.key.hwnd);
-        if live_pid == 0 || live_pid != row.key.pid {
-            continue;
-        }
-        let live = match HeldProcess::open(live_pid).and_then(|held| {
-            let ident = held.identity()?;
-            let rid = held.integrity()?;
-            Ok((ident, rid))
-        }) {
-            Ok((ident, rid)) => {
-                if ident.pid != live_pid
-                    || ident.process_creation != row.key.creation
-                    || ident.user_sid != me.user_sid
-                    || ident.session_id != me.session_id
-                    || !is_medium_rid(rid)
-                {
-                    continue;
-                }
-                ident
-            }
-            Err(_) => continue,
-        };
-        if !scope_allows(&state.scope, &live.exe_path) {
-            continue;
-        }
-        if !hosted_gate_allows(&live.exe_path, row.key.hwnd, live_pid, &state.scope_hosts) {
-            continue;
-        }
-        if let Some(entries) = state.allowlist.as_ref() {
-            let Some(entry) = entries.iter().find(|e| e.hwnd == row.key.hwnd) else {
-                continue;
-            };
-            if verify_proof_owned(row.key.hwnd, entry, me).is_err() {
-                continue;
-            }
-        }
-        let live_tag = crate::product_hide::sys::read_member_tag(row.key.hwnd);
-        let attempt_key = format!(
-            "{}:{}:{}:{}",
-            row.key.hwnd,
-            row.key.creation,
-            live_pid,
-            live_tag.as_deref().unwrap_or("")
-        );
-        if !tiler_core::window_policy::should_clear_maximize_at_admission_with_mode(
-            row.fullscreen,
-            row.maximized,
-            false,
-            state.maximize_admission_attempted.contains(&attempt_key),
-            tiled,
-            state.born_keep_overlay.contains(&row.key)
-                || state.retile_keep_overlay.contains(&row.key),
-        ) {
-            continue;
-        }
-        // Mark before the native call so a failed write never retries.
-        state.maximize_admission_attempted.insert(attempt_key);
-        let outcome = restore_zoom_placement(row.key.hwnd);
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "maximize-admission-clear",
-                "window": row.token,
-                "outcome": outcome,
-            }),
-        );
-    }
-    // Prune attempts whose window left the enumeration or whose HWND now hosts
-    // a different pid/creation: the set stays bounded without ever re-arming
-    // a live window.
-    state.maximize_admission_attempted.retain(|key| {
-        let mut parts = key.splitn(4, ':');
-        let (Some(hwnd), Some(creation), Some(pid)) = (parts.next(), parts.next(), parts.next())
-        else {
-            return false;
-        };
-        let Ok(hwnd_u64) = hwnd.parse::<u64>() else {
-            return false;
-        };
-        if !state.last_hwnds.contains(&hwnd_u64) {
-            return false;
-        }
-        let Ok(pid_u32) = pid.parse::<u32>() else {
-            return false;
-        };
-        if !crate::ffi::is_window(hwnd_u64) {
-            return false;
-        }
-        let live_pid = crate::ffi::window_pid(hwnd_u64);
-        live_pid == pid_u32 && {
-            let key = crate::native_guards::WindowKey {
-                hwnd: hwnd_u64,
-                pid: pid_u32,
-                creation: creation.to_owned(),
-            };
-            // A same-process reuse drops membership tables at assignment; a
-            // pruned attempt re-arms the fresh window below.
-            state.member_tags.contains_key(&key) || {
-                HeldProcess::open(live_pid)
-                    .and_then(|held| held.identity())
-                    .is_ok_and(|ident| ident.process_creation == creation)
-            }
-        }
-    });
-}
-
 /// Overlay refusal for one verified member before any Engine mutation (KDE
 /// move/pointer isolation parity): fullscreen wins, then maximize. Returns
 /// the refusal cause or `None` when the route may proceed.
@@ -325,11 +10,10 @@ pub(super) fn overlay_refusal_for(row: &RetainedRow) -> Option<&'static str> {
 
 /// Whether one Engine token is currently an intentional-float exception in
 /// its domain session (floated windows hold no tile slot). Born-fullscreen
-/// holds are exceptions too; the intentional lane additionally keys off the
-/// `float_topmost_prev` preimage map. `false` when the session is unknown.
+/// holds are exceptions too. `false` when the session is unknown.
 ///
-/// World-owned: the last applied reply row plus the adapter intent lanes
-/// (`floated`, `sticky`) carry the answer; no local session exists.
+/// World-owned: the last applied reply row plus the durable intent snapshot
+/// carry the answer; no local session exists.
 pub(super) fn engine_is_float(
     state: &TileLoop,
     _output: &str,
@@ -337,20 +21,6 @@ pub(super) fn engine_is_float(
     token: &str,
 ) -> bool {
     state.core_is_float_token(token)
-}
-
-/// Whether one Engine token floats by automatic fixed-size classification
-/// (R-SPC-04 D8 membership-only) rather than intentional float. Automatic
-/// floats take no geometry, focus, stacking, or keep-above writes from
-/// classification; only an explicit user tile (override) may write them.
-/// `false` when the session is unknown.
-pub(super) fn engine_is_automatic_fixed(
-    state: &TileLoop,
-    _output: &str,
-    _workspace: &str,
-    token: &str,
-) -> bool {
-    state.core_is_automatic_token(token)
 }
 
 /// Whether one intentional-float mover may send tiled-to-tiled through the
@@ -376,51 +46,13 @@ pub(super) fn float_send_admits(
     if !engine_is_float(state, output, workspace, token) {
         return false;
     }
-    if state.fixed_tile_overrides.contains(mover_key) {
+    if state.tile_override_of(mover_key) {
         return false;
     }
     match state.overlay_now.get(token) {
         Some((maximized, fullscreen)) => !(*maximized && *fullscreen),
         None => false,
     }
-}
-
-/// Whether one member key floats by automatic fixed-size classification in
-/// its workspace domain. Resolves the domain from live membership; `false`
-/// without membership or without a retained session.
-fn member_is_automatic_fixed(state: &TileLoop, key: &crate::native_guards::WindowKey) -> bool {
-    let Some(token) = state.member_tokens.get(key).cloned() else {
-        return false;
-    };
-    let Some(loc) = state.member_home(key) else {
-        return false;
-    };
-    engine_is_automatic_fixed(state, &loc.output, &loc.workspace, &token)
-}
-
-/// Fixed-origin provenance for one settled user tile win (R-SPC-04 D7):
-/// true only when the prior float is known automatic fixed: the live Engine
-/// automatic mark, the D4 latch, or the durable override set (verified
-/// hydration). The committed core override is deliberately NOT consulted:
-/// core records every unfloat win including generic non-fixed ones, so it
-/// cannot prove fixed origin. The live on-window marker is deliberately NOT
-/// peeked here either: an unfenced native read in the win path could mistake
-/// a stale marker for provenance. Verified hydration already records genuine
-/// markers into the durable set under the full held fence; a stale marker
-/// with no durable record self-heals on the next restart adoption.
-/// Generic non-fixed unfloats read false here and persist no marker.
-///
-/// Call BEFORE the winning Engine assignment commits: the assignment
-/// withdraws the automatic mark, so a later read would lose the evidence.
-/// Takes no native reads and performs no writes.
-pub(super) fn fixed_origin_provenance(
-    state: &TileLoop,
-    key: &crate::native_guards::WindowKey,
-) -> bool {
-    if state.fixed_auto_seen.contains(key) || state.fixed_origin_overrides.contains(key) {
-        return true;
-    }
-    member_is_automatic_fixed(state, key)
 }
 
 /// R-SPC-04 D1 predicate for subsequent fixed-size admissions: the last-good
@@ -440,6 +72,8 @@ pub(super) fn fixed_predicate_for(
 // prunes them on receipt. No adapter fanout exists: fixed-size admission
 // observation flags are deleted with the Engine-event path. The core
 // reads fullscreen, fixed-auto, and fixed-suppress truth from every world
-// report's window facts plus the adapter intent lanes
-// (`fixed_auto_seen`, `fixed_tile_overrides`, `overlay_now`); no adapter
-// stamping exists.
+// report's window facts plus the adapter intent snapshot
+// (`fixed_auto_seen`, `overlay_now`); no adapter stamping exists.
+//
+// R-MAX-11 (maximize clear at admission) is core-owned exclusively: the
+// adapter no longer pre-clears maximizes and carries no attempt table.

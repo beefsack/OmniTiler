@@ -384,3 +384,29 @@ pub const fn inspect_stateless_verdict(
     }
     StatelessVerdict::NeedsGeometry
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_retire_requires_restored_style_and_live_nonfullscreen() {
+        assert!(stale_fullscreen_retire_eligible(1, true, Some(false)));
+        assert!(
+            !stale_fullscreen_retire_eligible(0, true, Some(false)),
+            "a zero-bit marker is not a restore proof"
+        );
+        assert!(
+            !stale_fullscreen_retire_eligible(1, false, Some(false)),
+            "chrome not yet restored keeps the marker"
+        );
+        assert!(
+            !stale_fullscreen_retire_eligible(1, true, Some(true)),
+            "still fullscreen keeps the marker"
+        );
+        assert!(
+            !stale_fullscreen_retire_eligible(1, true, None),
+            "unknown fullscreen keeps the marker"
+        );
+    }
+}

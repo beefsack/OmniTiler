@@ -428,6 +428,27 @@ pub struct FocusRequest {
     pub after_shown: Option<AfterShown>,
 }
 
+/// One retained cursor-warp request (outbound only): at most one per
+/// reply, minted by the core from a cross-output focus decision and
+/// retained across later publications until spent, superseded, or
+/// canceled. Every tuple field is frozen at mint: the same `id` never
+/// retargets or recenters on relayout, so a re-emitted request is
+/// byte-identical while nothing changes. `revision` is the focus decision
+/// revision that minted the request (quoted on the wire).
+/// `pointer_baseline` is the cumulative hardware-origin pointer-activity
+/// generation observed at mint (`None` when unknown; a request is never
+/// minted without a known baseline).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarpRequest {
+    pub id: String,
+    pub target: WindowId,
+    pub revision: u64,
+    pub output: OutputId,
+    pub workspace: WorkspaceId,
+    pub point: (i32, i32),
+    pub pointer_baseline: Option<u64>,
+}
+
 /// One-shot effect: the adapter marks it spent BEFORE first native dispatch;
 /// duplicates and repeated diffs never reapply. Lost/stale effects drop
 /// (at-most-once), never steal focus on a later unrelated report.
@@ -1431,6 +1452,15 @@ pub struct WorldReportV4 {
     pub held_native: Vec<HeldNativeRow>,
     /// Normalized cursor position in adapter units, `None` when unreadable.
     pub cursor: Option<(i32, i32)>,
+    /// Cumulative hardware-origin pointer-activity generation, `None` when
+    /// the host cannot witness raw pointer input (unknown). The generation
+    /// increases for genuine user motion only; an adapter's own warp must
+    /// never advance it.
+    pub pointer_activity: Option<u64>,
+    /// Exact retained warp id the adapter spent (accepted or no-call),
+    /// `None` when no warp was consumed on this report. Core retires only
+    /// the matching pending request.
+    pub warp_spent: Option<String>,
     /// Normalized cursor-hit managed lifetime, `None` when unreadable.
     pub cursor_hit: Option<WindowId>,
     /// Global active window id ("" when none).
@@ -2758,7 +2788,11 @@ pub struct WorldReplyV4 {
     pub gesture_settled: Option<GestureSettled>,
     pub operation_settled: Vec<OperationEvent>,
     pub native_creations: Vec<NativeCreationDesire>,
-    pub cursor_warp: Option<(i32, i32)>,
+    /// One retained cursor-warp request (`null` carries none). Retention
+    /// is independent of `focus_request`: a satisfied focus may clear the
+    /// focus row while the warp still awaits adapter spend or the final
+    /// retry.
+    pub warp_request: Option<WarpRequest>,
     pub presentation: WorldPresentationV4,
     pub intent_desired: Vec<IntentDesire>,
     pub switch_settled: Vec<SwitchEvent>,

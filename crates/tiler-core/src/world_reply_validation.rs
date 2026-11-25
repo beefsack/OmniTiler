@@ -552,8 +552,13 @@ pub fn validate_reply_v4(reply: &WorldReplyV4, host: Option<&HostCapabilities>) 
         }
         validate_switch_event(event)?;
     }
-    if let Some((x, y)) = reply.cursor_warp {
-        if !valid_carried_point(x, y) {
+    if let Some(request) = reply.warp_request.as_ref() {
+        if !is_opaque_id(&request.id)
+            || !is_opaque_id(&request.target.0)
+            || !is_opaque_id(&request.output.0)
+            || !is_opaque_id(&request.workspace.0)
+            || !valid_carried_point(request.point.0, request.point.1)
+        {
             return Err(ReplyValidationError::unknown_value());
         }
         if let Some(host) = host

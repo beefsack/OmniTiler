@@ -285,13 +285,25 @@ pub const fn pair_admits_resize(pair_w: i64, pair_h: i64, axis: Axis) -> bool {
 /// keyboard path clamps one-sided, see [`clamp_keyboard_shrink_pair`]).
 #[must_use]
 pub fn clamp_pair_split(pair_total: i64, desired_first: i64, axis: Axis) -> Option<(i64, i64)> {
-    let min = child_min_for_axis(axis);
-    if pair_total < min * 2 {
+    clamp_pair_split_with(pair_total, desired_first, child_min_for_axis(axis))
+}
+
+/// Logical [`clamp_pair_split`] arithmetic parameterized by the physical
+/// child minimum, so per-output scaled metrics
+/// ([`crate::policy::ScaledResize`]) reuse the one source rule instead of
+/// restating it. Same two-sided correction and infeasibility contract.
+#[must_use]
+pub fn clamp_pair_split_with(
+    pair_total: i64,
+    desired_first: i64,
+    child_min: i64,
+) -> Option<(i64, i64)> {
+    if pair_total < child_min * 2 {
         return None;
     }
-    let first = desired_first.clamp(min, pair_total - min);
+    let first = desired_first.clamp(child_min, pair_total - child_min);
     let second = pair_total - first;
-    if first < min || second < min {
+    if first < child_min || second < child_min {
         return None;
     }
     Some((first, second))
@@ -314,12 +326,31 @@ pub fn clamp_keyboard_shrink_pair(
     amount: i64,
     axis: Axis,
 ) -> Option<(i64, i64)> {
+    clamp_keyboard_shrink_pair_with(
+        shrink,
+        grow,
+        amount,
+        pair_min_for_axis(axis),
+        child_min_for_axis(axis),
+    )
+}
+
+/// Logical [`clamp_keyboard_shrink_pair`] arithmetic parameterized by the
+/// physical pair and child minima, so per-output scaled metrics
+/// ([`crate::policy::ScaledResize`]) reuse the one source rule.
+#[must_use]
+pub fn clamp_keyboard_shrink_pair_with(
+    shrink: i64,
+    grow: i64,
+    amount: i64,
+    pair_min: i64,
+    child_min: i64,
+) -> Option<(i64, i64)> {
     let pair_total = shrink.checked_add(grow)?;
-    if pair_total < pair_min_for_axis(axis) {
+    if pair_total < pair_min {
         return None;
     }
-    let min = child_min_for_axis(axis);
-    let new_shrink = (shrink - amount).max(min);
+    let new_shrink = (shrink - amount).max(child_min);
     let removed = shrink - new_shrink;
     let new_grow = grow.checked_add(removed)?;
     Some((new_shrink, new_grow))
@@ -357,9 +388,29 @@ pub struct PriorGroupEdge {
 /// independently against `last_overview_hover`.
 #[must_use]
 pub fn group_edge_depth_for(group: &NodeId, edge: DragSide, prior: Option<&PriorGroupEdge>) -> i32 {
+    group_edge_depth_with(
+        group,
+        edge,
+        prior,
+        COSMIC_GROUP_EDGE_INACTIVE_PX,
+        COSMIC_GROUP_EDGE_ACTIVE_PX,
+    )
+}
+
+/// Logical [`group_edge_depth_for`] arithmetic parameterized by the physical
+/// inactive/active depths, so per-output scaled metrics
+/// ([`crate::policy::ScaledResize`]) reuse the one source rule.
+#[must_use]
+pub fn group_edge_depth_with(
+    group: &NodeId,
+    edge: DragSide,
+    prior: Option<&PriorGroupEdge>,
+    inactive: i32,
+    active: i32,
+) -> i32 {
     match prior {
-        Some(p) if p.group == *group && p.edge == edge => COSMIC_GROUP_EDGE_ACTIVE_PX,
-        _ => COSMIC_GROUP_EDGE_INACTIVE_PX,
+        Some(p) if p.group == *group && p.edge == edge => active,
+        _ => inactive,
     }
 }
 
@@ -386,16 +437,41 @@ pub fn classify_group_point(
     y: i32,
     prior: Option<&PriorGroupEdge>,
 ) -> Option<DragSide> {
+    classify_group_point_with(
+        rect,
+        group,
+        x,
+        y,
+        prior,
+        COSMIC_GROUP_EDGE_INACTIVE_PX,
+        COSMIC_GROUP_EDGE_ACTIVE_PX,
+    )
+}
+
+/// Logical [`classify_group_point`] arithmetic parameterized by the physical
+/// edge depths, so per-output scaled metrics
+/// ([`crate::policy::ScaledResize`]) reuse the one source rule.
+#[must_use]
+pub fn classify_group_point_with(
+    rect: &Rect,
+    group: &NodeId,
+    x: i32,
+    y: i32,
+    prior: Option<&PriorGroupEdge>,
+    inactive: i32,
+    active: i32,
+) -> Option<DragSide> {
     if rect.w <= 0 || rect.h <= 0 {
         return None;
     }
+    let depth = |edge: DragSide| group_edge_depth_with(group, edge, prior, inactive, active);
     let dx = x.checked_sub(rect.x)?;
     let dy = y.checked_sub(rect.y)?;
     if dx < 0 || dy < 0 || dx >= rect.w || dy >= rect.h {
         return None;
     }
-    let left_depth = group_edge_depth_for(group, DragSide::Left, prior).min(rect.w);
-    let top_depth = group_edge_depth_for(group, DragSide::Top, prior).min(rect.h);
+    let left_depth = depth(DragSide::Left).min(rect.w);
+    let top_depth = depth(DragSide::Top).min(rect.h);
     // Build order: left full-height strip, then top of the remainder, then
     // right of the remainder, then bottom of the remainder.
     if dx < left_depth {
@@ -408,7 +484,7 @@ pub fn classify_group_point(
     // Right zone lives in R2 (remainder after left+top): y from top_depth.
     let h2 = rect.h - top_depth;
     if h2 > 0 && w1 > 0 {
-        let right_depth = group_edge_depth_for(group, DragSide::Right, prior).min(w1);
+        let right_depth = depth(DragSide::Right).min(w1);
         let right_start = rect.w - right_depth;
         if dx >= right_start && dy >= top_depth {
             return Some(DragSide::Right);
@@ -422,12 +498,12 @@ pub fn classify_group_point(
     if h2 <= 0 {
         return None;
     }
-    let right_depth = group_edge_depth_for(group, DragSide::Right, prior).min(w1);
+    let right_depth = depth(DragSide::Right).min(w1);
     let w3 = w1 - right_depth;
     if w3 <= 0 {
         return None;
     }
-    let bottom_depth = group_edge_depth_for(group, DragSide::Bottom, prior).min(h2);
+    let bottom_depth = depth(DragSide::Bottom).min(h2);
     let bottom_start = rect.h - bottom_depth;
     if dx >= left_depth && dx < rect.w - right_depth && dy >= bottom_start {
         return Some(DragSide::Bottom);

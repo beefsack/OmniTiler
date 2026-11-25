@@ -199,6 +199,7 @@ fn pager_frame(pager: &OutputPager, active_fill: (u8, u8, u8)) -> PagerFrame {
         active: pager.active_index,
         active_fill,
         focused_highlight: pager.focused_highlight,
+        rev: pager.drawn_rev,
         minis: pager
             .cells
             .iter()
@@ -491,11 +492,10 @@ impl PagerOverlays {
         let clicks = Arc::clone(queue);
         let sink: PagerClickSink = Arc::new(move |click: PagerClick| {
             if let Ok(mut slot) = clicks.lock() {
-                *slot = Some(SelectScope::new(
-                    &click.output,
-                    &click.workspace,
-                    click.ordinal,
-                ));
+                *slot = Some(
+                    SelectScope::new(&click.output, &click.workspace, click.ordinal)
+                        .with_render_rev(click.render_rev),
+                );
             }
         });
         // Calibration hook at broadcast time (the exact monitor-dirty
@@ -519,17 +519,11 @@ impl PagerOverlays {
         Self::write_line(self.log_path.as_ref(), value);
     }
 
-    /// Lock-free best-effort JSON line append (create/append, single row).
+    /// Best-effort JSON line append through the bounded run-log sink.
     /// Ignores all errors; never touches Win32 or channel locks.
     fn write_line(path: Option<&PathBuf>, value: serde_json::Value) {
-        use std::io::Write;
-        if let Some(path) = path
-            && let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-        {
-            let _ = writeln!(file, "{value}");
+        if let Some(path) = path {
+            let _ = crate::log_sink::append_json(path, &value);
         }
     }
 
@@ -912,6 +906,7 @@ mod tests {
                 })
                 .collect(),
             active_index: active,
+            drawn_rev: None,
             focused_highlight: (0xbd, 0x93, 0xf9),
             dpi: 96,
         }

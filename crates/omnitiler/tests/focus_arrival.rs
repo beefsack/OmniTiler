@@ -128,7 +128,7 @@ fn inner(
           \"occupancy\":[{occ}]}}],\
           \"focused\":\"{focused}\",\"foregroundKnown\":{foreground_known},\
           \"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
           \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\

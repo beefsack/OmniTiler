@@ -116,6 +116,8 @@ fn send_refused_when_target_unrepresentable_source_preserved() {
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     };
 
     // Source ws-1 roomy with a, b (b focused); the named target domain
@@ -477,12 +479,26 @@ fn drag_preview_and_finish_agree_on_exhausted_cross_output() {
         observed: &obs,
         closed: &[],
     };
-    let preview = layout.run_pair_drag_preview(&ctx, &WindowId("b".to_owned()), 0, 0, None);
+    let preview = layout.run_pair_drag_preview(
+        &ctx,
+        crate::policy::ScaledResize::unscaled(),
+        &WindowId("b".to_owned()),
+        0,
+        0,
+        None,
+    );
     assert!(
         matches!(preview, Err(PairOperationFailure::Layout(_))),
         "preview refuses honestly (resolve or projection stage), got {preview:?}"
     );
-    let release = layout.run_pair_drag_drop(&ctx, &WindowId("b".to_owned()), 0, 0, None);
+    let release = layout.run_pair_drag_drop(
+        &ctx,
+        crate::policy::ScaledResize::unscaled(),
+        &WindowId("b".to_owned()),
+        0,
+        0,
+        None,
+    );
     match release {
         Ok(out) if out.revision == out.base_revision => {}
         Err(PairOperationFailure::Layout(_)) => {}

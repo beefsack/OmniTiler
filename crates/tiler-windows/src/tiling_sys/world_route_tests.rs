@@ -53,6 +53,7 @@ fn plain_facts() -> crate::tiling::WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -101,6 +102,12 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     };
     state.member_tokens.insert(key.clone(), "w1".to_owned());
     state.member_tags.insert(key.clone(), "tag-1".to_owned());
+    // Production records the empty-hints read (`rows.rs` stores
+    // `WindowSizeHints::none()` for a successful no-hint read); leaving it
+    // `None` here would fabricate unreadability the adapter never sees.
+    state
+        .hint_logged
+        .insert("w1".to_owned(), tiler_core::size_hints::WindowSizeHints::none());
     state.member_identity.insert(
         key.clone(),
         crate::model::ProcessIdentity {
@@ -141,6 +148,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             0,
             0,
             None,
+            None,
         )
         .expect("dispatch");
     assert_eq!(report.windows.len(), 1);
@@ -173,6 +181,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             &areas,
             0,
             0,
+            None,
             None,
         )
         .expect("dispatch");
@@ -215,6 +224,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
                 output: tiler_core::directional::OutputId(state.output_token("DEV1")),
                 workspace: tiler_core::directional::WorkspaceId(target.clone()),
             }),
+            None,
         )
         .expect("command dispatch");
     // The command report still proves the actual (old) view, never the
@@ -245,6 +255,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             0,
             0,
             None,
+            None,
         )
         .expect("dispatch");
     let reply = match seq.deliver(&pending) {
@@ -273,6 +284,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             &areas,
             0,
             0,
+            None,
             None,
         )
         .expect("dispatch");
@@ -325,15 +337,8 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     assert!(
         vviews.iter().any(|a| {
             a.operation_id == view_op
-                && a.post.as_ref().is_some_and(|reference| {
-                    matches!(
-                        reference,
-                        tiler_core::world_report::WorkspaceRef::Logical {
-                            output,
-                            workspace,
-                        } if output.0 == out_token && workspace.0 == target
-                    )
-                })
+                && a.target_output.0 == out_token
+                && a.post.as_deref() == Some(target.as_str())
         }),
         "view actuation proves: {vviews:?}"
     );
@@ -353,6 +358,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             &areas,
             0,
             0,
+            None,
             None,
         )
         .expect("dispatch");
@@ -389,10 +395,11 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &mut Vec::new(),
         0,
     );
-    // The pure-observation reply carries no placement, so the facade
-    // holds its lone row without writing.
-    assert_eq!(stats.held, 1, "stats: {stats:?}");
-    assert_eq!(stats.geometry_writes, 0, "stats: {stats:?}");
+    // The pure-observation reply carries the single placement the core
+    // computed from the readable facts, so the facade actuates exactly that
+    // geometry write and holds nothing.
+    assert_eq!(stats.geometry_writes, 1, "stats: {stats:?}");
+    assert_eq!(stats.held, 0, "stats: {stats:?}");
     diff.gate.note_applied(&geometry_reply);
     // A racing native invalidation stops the pass before any setter.
     native.pending_invalidation = true;
@@ -436,6 +443,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             0,
             0,
             None,
+            None,
         )
         .expect("dispatch");
     assert!(seq.has_flight());
@@ -457,7 +465,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         closed_acked: vec![("w9".to_owned(), homing)],
         frames_acked: Vec::new(),
         members_acked: Vec::new(),
-        views_acked: Vec::new(),
     };
     let pruned = seq.apply_close_receipt(&mut pending, &ack_receipt);
     assert_eq!(pruned, vec!["w9".to_owned()]);
@@ -539,7 +546,6 @@ fn production_observation_tick_proves_nothing_on_unreadable_natives() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("tick converges");
     assert!(reply.ready);
@@ -603,7 +609,6 @@ fn production_tick_captures_paired_proof_under_trace_only() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed tick converges");
     let proof = state.world.trace_proof().expect("proof captured").clone();
@@ -633,7 +638,6 @@ fn production_tick_captures_paired_proof_under_trace_only() {
         0,
         &fulls2,
         None,
-        false,
     )
     .expect("dark tick converges");
     assert!(dark.world.trace_proof().is_none());
@@ -682,7 +686,6 @@ fn production_select_route_reports_honest_outcome_without_proof() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed tick converges");
     assert!(first.ready);
@@ -716,12 +719,11 @@ fn production_select_route_reports_honest_outcome_without_proof() {
         &fulls,
         &areas,
         &mut observed,
+        &[],
         "DEV1",
         &target,
-        &ctx,
         None,
-        false,
-        false,
+        &ctx,
     );
     assert_eq!(effect.outcome, "ok", "effect: {:?}", effect.outcome);
     assert_eq!(effect.target_workspace, target);
@@ -783,7 +785,6 @@ fn production_send_route_reports_honest_outcome_without_proof() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed tick converges");
     assert!(first.ready);
@@ -879,7 +880,7 @@ fn arrival_reply(
         gesture_settled: None,
         operation_settled: Vec::new(),
         native_creations: Vec::new(),
-        cursor_warp: None,
+        warp_request: None,
         presentation: WorldPresentationV4 {
             foreground: String::new(),
             rev: 0,
@@ -1102,7 +1103,6 @@ fn busy_command_reports_unverified_not_cached_reply() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     assert!(
@@ -1120,20 +1120,16 @@ fn busy_command_reports_unverified_not_cached_reply() {
             ref member_rects,
             ref float_rects,
             ref hint_logged,
-            ref sticky,
-            ref floated,
-            ref restart_reject_hold,
             ref born_fullscreen,
             ref born_first_exit,
             ref fixed_auto_seen,
-            ref fixed_tile_overrides,
-            ref fixed_origin_overrides,
             ref hidden_claims,
             ref minimized_omitted,
             ref pending_closed,
             ref scope,
             ref settings_live,
             ref output_tokens,
+            ref monitor_identities,
             ref active_output,
             ref applied_homing,
             ref applied_views,
@@ -1148,20 +1144,16 @@ fn busy_command_reports_unverified_not_cached_reply() {
             member_rects,
             float_rects,
             hint_logged,
-            sticky,
-            floated,
-            restart_reject_hold,
             born_fullscreen,
             born_first_exit,
             fixed_auto_seen,
-            fixed_tile_overrides,
-            fixed_origin_overrides,
             hidden_claims,
             minimized_omitted,
             pending_closed,
             scope,
             settings_live,
             output_tokens,
+            monitor_identities,
             active_output.as_str(),
             applied_homing,
             applied_views,
@@ -1172,7 +1164,6 @@ fn busy_command_reports_unverified_not_cached_reply() {
             None,
             false,
             String::new(),
-            false,
             Vec::new(),
         );
         world
@@ -1311,7 +1302,6 @@ fn rejected_command_catchup_never_strands_the_next_command() {
         101,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     let focus = |window: &str, direction: &str| WorldCommand::FocusDirectional {
@@ -1583,7 +1573,6 @@ fn journey_snapshot_refreshes_at_command_delivery_before_callback() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed tick converges");
     assert!(super::observe::take_switch_edges().is_empty());
@@ -1650,7 +1639,6 @@ fn journey_snapshot_refreshes_at_command_delivery_before_callback() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("observation delivers");
     super::observe::JourneyEventSink.on_win_event(crate::ffi::WinEvent {
@@ -1710,7 +1698,6 @@ fn real_command_turn_consumes_pending_without_extra_pass() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     // The drained own edge, exactly as `run_tile_loop` pushes it after
@@ -1817,7 +1804,6 @@ fn real_command_with_hook_drain_needs_no_extra_pass() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     inject_pending_suspend(Some(false));

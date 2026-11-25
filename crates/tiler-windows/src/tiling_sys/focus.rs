@@ -40,13 +40,62 @@ pub(super) fn note_focus_advance(
         });
 }
 
-/// Managed origins for chord resolution: eligible observed windows plus
-/// verified overlay-retained members (maximized/fullscreen). An overlay
-/// member is retained, never eligible, so eligible-only origins break Win+M
-/// restore, Win+F11 exit, focus while overlaid, and send from a maximized
-/// foreground. Only existing members with full identity plus live
-/// lifetime-tag match ride along: no foreign or invented members. Exactness
-/// stays with the per-intent owner recheck.
+/// One verified member origin: existing member with full stored identity, a
+/// live matching lifetime tag, an in-scope executable, the hosted-child gate,
+/// and (for proof owners) the frozen allowlist. Exactness stays with the
+/// per-intent owner recheck.
+fn verified_snap_origin(
+    state: &TileLoop,
+    me: &ProcessIdentity,
+    key: &crate::native_guards::WindowKey,
+    token: &str,
+) -> Option<SnapOrigin> {
+    let stored = state.member_identity.get(key)?;
+    if stored.pid != key.pid
+        || stored.process_creation != key.creation
+        || stored.user_sid != me.user_sid
+        || stored.session_id != me.session_id
+    {
+        return None;
+    }
+    let live_tag = crate::product_hide::sys::read_member_tag(key.hwnd);
+    let tag = state.member_tags.get(key)?;
+    if !crate::native_guards::visible_lifetime_ok(tag, live_tag.as_deref()) {
+        return None;
+    }
+    if !scope_allows(&state.scope, &stored.exe_path) {
+        return None;
+    }
+    if !hosted_gate_allows(
+        &stored.exe_path,
+        key.hwnd,
+        stored.pid,
+        &state.scope_hosts,
+    ) {
+        return None;
+    }
+    if let Some(entries) = state.allowlist.as_ref() {
+        let entry = entries.iter().find(|e| e.hwnd == key.hwnd)?;
+        if verify_proof_owned(key.hwnd, entry, me).is_err() {
+            return None;
+        }
+    }
+    Some(SnapOrigin {
+        hwnd: key.hwnd,
+        token: token.to_owned(),
+        pid: key.pid,
+        creation: key.creation.clone(),
+    })
+}
+
+/// Managed origins for chord resolution: eligible observed windows, verified
+/// overlay-retained members (maximized/fullscreen), and verified iconic
+/// members that Windows can hold as foreground. Only existing members with
+/// full identity plus a live lifetime-tag match ride along: no foreign or
+/// invented members. An iconic candidate must also avoid the exact-lifetime
+/// hidden claims (the ledger owns those reveals) and still be hosted by the
+/// member's process: a recycled HWND never proves a stale key iconic.
+/// Exactness stays with the per-intent owner recheck.
 fn managed_origins(
     state: &TileLoop,
     me: &ProcessIdentity,
@@ -58,48 +107,39 @@ fn managed_origins(
         if !row.maximized && !row.fullscreen {
             continue;
         }
-        let Some(stored) = state.member_identity.get(&row.key) else {
-            continue;
-        };
-        if stored.pid != row.key.pid
-            || stored.process_creation != row.key.creation
-            || stored.user_sid != me.user_sid
-            || stored.session_id != me.session_id
-        {
+        if let Some(origin) = verified_snap_origin(state, me, &row.key, &row.token) {
+            out.push(origin);
+        }
+    }
+    // Iconic members are observed-ineligible, so they are neither in the fresh
+    // rows nor the overlay-retained set, yet Windows can hold an iconic window
+    // as foreground. A verified existing member stays an origin so an
+    // iconic-subject command reaches the core settlement path instead of being
+    // refused as unmanaged before it runs. Membership is live-checked here so
+    // stale tokens for non-iconic or dead windows never enter the map.
+    for (key, token) in &state.member_tokens {
+        // A live hidden claim owns this exact lifetime through the ledger and
+        // its identity-safe reveal path, so the member is not an iconic
+        // origin. The lookup is exact-lifetime: a same-HWND claim for another
+        // lifetime must never mask this member.
+        if state.hidden_claims.contains_key(key) {
             continue;
         }
-        let live_tag = crate::product_hide::sys::read_member_tag(row.key.hwnd);
-        let Some(tag) = state.member_tags.get(&row.key) else {
-            continue;
-        };
-        if !crate::native_guards::visible_lifetime_ok(tag, live_tag.as_deref()) {
-            continue;
-        }
-        if !scope_allows(&state.scope, &stored.exe_path) {
+        // Reject a recycled HWND before any iconic proof: the member's live
+        // window must still belong to the member's process, never another
+        // process's window that merely reused the number.
+        if live_window_pid(key.hwnd) != key.pid {
             continue;
         }
-        if !hosted_gate_allows(
-            &stored.exe_path,
-            row.key.hwnd,
-            stored.pid,
-            &state.scope_hosts,
-        ) {
+        if !live_is_iconic(key.hwnd) {
             continue;
         }
-        if let Some(entries) = state.allowlist.as_ref() {
-            let Some(entry) = entries.iter().find(|e| e.hwnd == row.key.hwnd) else {
-                continue;
-            };
-            if verify_proof_owned(row.key.hwnd, entry, me).is_err() {
-                continue;
-            }
+        if out.iter().any(|origin| origin.hwnd == key.hwnd) {
+            continue;
         }
-        out.push(SnapOrigin {
-            hwnd: row.key.hwnd,
-            token: row.token.clone(),
-            pid: row.key.pid,
-            creation: row.key.creation.clone(),
-        });
+        if let Some(origin) = verified_snap_origin(state, me, key, token) {
+            out.push(origin);
+        }
     }
     out
 }
@@ -178,6 +218,88 @@ pub(super) fn hide_border(state: &mut TileLoop, reason: &str) {
     );
 }
 
+/// Anchored outer rectangle and core-provided paint style from the applied
+/// anchored-border row (v4 carries the ring as a witness frame plus per-side
+/// outsets, never a precomputed outer rect). The reply's foreground token must
+/// name this live target, the row must be visible, and the witness must join
+/// the same target at the reply's capture observation. The LIVE frame is
+/// expanded by the uniform core-provided outsets; width and radius come from
+/// the core descriptor (width > 0, radius >= 0, outsets >= width), with the
+/// gap derived as `outsets[0] - width`. Missing/non-uniform outsets, a missing
+/// or unjoined witness, an observation mismatch, or frame arithmetic overflow
+/// is the geometry veto (`None`), never a stale or guessed rectangle. Pure
+/// over its arguments so the anchored path unit-tests without a desktop.
+fn anchored_outer_rect(
+    presentation_foreground: &str,
+    border: &tiler_core::world_report::BorderPresentationV4,
+    target: &str,
+    live_frame: Rect,
+    capture_obs: u64,
+) -> Option<(Rect, i32, i32, i32)> {
+    if presentation_foreground != target || !border.visible {
+        return None;
+    }
+    let witness = border.witness.as_ref()?;
+    // The row must be about this exact live target at every leg: the
+    // border subject, the witness subject (`win`), the observed foreground
+    // token, and the capture observation the reply is based on. A cross-window
+    // or stale row never paints at the current foreground frame.
+    if border
+        .subject
+        .as_ref()
+        .is_none_or(|subject| subject.0 != target)
+        || witness.win.0 != target
+        || witness.foreground.0 != target
+        || witness.obs != capture_obs
+    {
+        return None;
+    }
+    let [left, top, right, bottom] = border.outsets?;
+    if left != top || top != right || right != bottom {
+        return None;
+    }
+    let width = border.width?;
+    let radius = border.radius?;
+    if width <= 0 || radius < 0 {
+        return None;
+    }
+    let gap = left.checked_sub(width)?;
+    if gap < 0 {
+        return None;
+    }
+    Some((
+        Rect {
+            x: live_frame.x.checked_sub(left)?,
+            y: live_frame.y.checked_sub(top)?,
+            w: live_frame.w.checked_add(left)?.checked_add(right)?,
+            h: live_frame.h.checked_add(top)?.checked_add(bottom)?,
+        },
+        width,
+        gap,
+        radius,
+    ))
+}
+
+/// Change-only dedup signature for the active-border "shown" log line: every
+/// resolved paint input that changes the on-screen ring rides it, including
+/// the core-provided `radius_px` (a radius-only restyle repaints the same
+/// geometry and must still log once). Shared by the `Unchanged` and
+/// shown/redrew arms so both compare against the same vocabulary.
+fn border_shown_signature(
+    token: &str,
+    outer: Rect,
+    dimensions: (i32, i32, i32),
+    topmost: bool,
+    color_hex: &str,
+    sourced: &str,
+) -> String {
+    let (width_px, gap_px, radius_px) = dimensions;
+    format!(
+        "shown:{token}:{}:{}:{}:{}:{width_px}:{gap_px}:{radius_px}:{topmost}:{color_hex}:{sourced}",
+        outer.x, outer.y, outer.w, outer.h
+    )
+}
+
 /// Fast active-border refresh for one loop wake: reads only the foreground
 /// window (fresh identity plus fresh visibility facts), without full window
 /// observation, so gesture following never waits on reconciliation. Shapes
@@ -249,17 +371,15 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
         hide_border(state, "scope-excluded");
         return;
     }
-    let hidden_workspace = state.hidden_claims.keys().any(|k| k.hwnd == foreground)
-        && state
-            .member_home(
-                &state
-                    .hidden_claims
-                    .keys()
-                    .find(|k| k.hwnd == foreground)
-                    .cloned()
-                    .expect("hidden key present"),
-            )
-            .is_some_and(|loc| loc.hidden);
+    // Hidden-workspace eligibility joins the exact observed lifetime, never an
+    // HWND-only guess: a recycled number must not inherit a stale claim.
+    let key = crate::native_guards::WindowKey {
+        hwnd: window.hwnd,
+        pid: window.identity.pid,
+        creation: window.identity.process_creation.clone(),
+    };
+    let hidden_workspace = state.hidden_claims.contains_key(&key)
+        && state.member_home(&key).is_some_and(|loc| loc.hidden);
     // Targeted shell-popup gate (border-only): base tiling shell plus
     // Start/taskbar-flyout/Alt+Tab/TaskView analogues. Ordinary dialogs,
     // tool windows, and owned windows stay eligible here.
@@ -287,45 +407,28 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
     // Mirror the target's topmost band so a topmost active window stays
     // bordered; ordinary targets demote a previously topmost ring. Read-only
     // style query, never a foreign write.
-    let topmost = crate::ffi::window_exstyle(foreground) & WS_EX_TOPMOST != 0;
-    let dpi = crate::ffi::dpi_for_window(foreground);
-    let Some((width_px, gap_px, radius_px)) = scale_style(&state.border.style, dpi) else {
-        hide_border(state, "dpi-scale");
+    let Some(exstyle) = crate::ffi::window_exstyle_checked(foreground) else {
+        hide_border(state, "unreadable");
         return;
     };
-    if width_px == 0 {
-        hide_border(state, "zero-width");
-        return;
-    }
+    let topmost = exstyle & WS_EX_TOPMOST != 0;
     // Uniform presentation: the outer ring rides the last applied reply
-    // (computed tick-side from the same normalized facts and host-scaled
-    // style); the adapter never recomputes border shapes here. The reply
-    // token must name this live foreground or the shapes stay hidden with
-    // the geometry veto, never a stale paint.
+    // (computed tick-side from the same normalized facts and core-scaled
+    // style); fresh facts only hide when the live foreground moved on.
     // v4 carries the anchored ring as the witness frame plus per-side
-    // outsets, never a precomputed outer rect. Expand the witness frame by
-    // the core-provided outsets; the local style values remain the paint
-    // widths (the reply width/gap/radius describe the same host-scaled
-    // style). Missing or non-uniform outsets are a geometry veto.
-    let outer = (|| {
-        let reply = state.world.last_reply()?;
-        if reply.presentation.foreground != window.token || !reply.presentation.border.visible {
-            return None;
-        }
-        let border = &reply.presentation.border;
-        let witness = border.witness.as_ref()?;
-        let [left, top, right, bottom] = border.outsets?;
-        if left != top || top != right || right != bottom {
-            return None;
-        }
-        Some(Rect {
-            x: witness.frame.x.checked_sub(left)?,
-            y: witness.frame.y.checked_sub(top)?,
-            w: witness.frame.w.checked_add(left)?.checked_add(right)?,
-            h: witness.frame.h.checked_add(top)?.checked_add(bottom)?,
-        })
-    })();
-    let Some(outer) = outer else {
+    // outsets, never a precomputed outer rect. Expand the LIVE frame by the
+    // core-provided outsets and consume the core width/gap/radius. Missing,
+    // non-uniform or unjoined witness/outsets/style, an observation mismatch,
+    // or frame arithmetic overflow is the geometry veto, never a stale paint.
+    let Some((outer, width_px, gap_px, radius_px)) = state.world.last_reply().and_then(|reply| {
+        anchored_outer_rect(
+            &reply.presentation.foreground,
+            &reply.presentation.border,
+            &window.token,
+            window.visible,
+            reply.based_on_observation_seq,
+        )
+    }) else {
         hide_border(state, "geometry");
         return;
     };
@@ -427,7 +530,8 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
             // Resolved accent-or-fallback colour rides the signature so a
             // theme change that repaints the same geometry still logs once;
             // the accent source rides it too so a source flip logs even
-            // when both paints share one RGB. An unchanged surface with a
+            // when both paints share one RGB, and the core radius rides it
+            // so a radius-only restyle logs too. An unchanged surface with a
             // changed signature is exactly that flip: log it in
             // production (normal trace-silent Unchanged stays silent).
             let color_hex = state
@@ -437,18 +541,13 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 .unwrap_or_else(|| crate::active_border::render_color(state.border.style.color));
             let sourced =
                 crate::active_border::accent_source_label(state.border_overlay.from_accent());
-            let signature = format!(
-                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                window.token,
-                outer.x,
-                outer.y,
-                outer.w,
-                outer.h,
-                width_px,
-                gap_px,
+            let signature = border_shown_signature(
+                &window.token,
+                outer,
+                (width_px, gap_px, radius_px),
                 topmost,
-                color_hex,
-                sourced
+                &color_hex,
+                sourced,
             );
             let changed = state.border_last.as_deref() != Some(signature.as_str());
             if changed {
@@ -511,18 +610,13 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 .unwrap_or_else(|| crate::active_border::render_color(state.border.style.color));
             let sourced =
                 crate::active_border::accent_source_label(state.border_overlay.from_accent());
-            let signature = format!(
-                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                window.token,
-                outer.x,
-                outer.y,
-                outer.w,
-                outer.h,
-                width_px,
-                gap_px,
+            let signature = border_shown_signature(
+                &window.token,
+                outer,
+                (width_px, gap_px, radius_px),
                 topmost,
-                color_hex,
-                sourced
+                &color_hex,
+                sourced,
             );
             let changed = state.border_last.as_deref() != Some(signature.as_str());
             if changed {
@@ -577,5 +671,456 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 }),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod anchored_outer_tests {
+    use super::anchored_outer_rect;
+    use tiler_core::directional::WindowId;
+    use tiler_core::geometry::Rect;
+    use tiler_core::world_report::{BorderPresentationV4, FrameWitness};
+
+    const OBS: u64 = 7;
+
+    fn live_frame() -> Rect {
+        Rect {
+            x: 200,
+            y: 100,
+            w: 40,
+            h: 90,
+        }
+    }
+
+    fn witness() -> FrameWitness {
+        FrameWitness {
+            win: WindowId("win-a".to_owned()),
+            obs: OBS,
+            frame: Rect {
+                x: 100,
+                y: 50,
+                w: 40,
+                h: 90,
+            },
+            foreground: WindowId("win-a".to_owned()),
+        }
+    }
+
+    fn visible_border() -> BorderPresentationV4 {
+        BorderPresentationV4 {
+            visible: true,
+            reason: None,
+            subject: Some(WindowId("win-a".to_owned())),
+            outsets: Some([5, 5, 5, 5]),
+            width: Some(2),
+            radius: Some(4),
+            witness: Some(witness()),
+        }
+    }
+
+    #[test]
+    fn live_frame_expands_by_uniform_outsets_and_carries_core_style() {
+        let (outer, width, gap, radius) = anchored_outer_rect(
+            "win-a",
+            &visible_border(),
+            "win-a",
+            live_frame(),
+            OBS,
+        )
+        .expect("joined visible row yields the anchored outer rect");
+        assert_eq!(
+            outer,
+            Rect {
+                x: 195,
+                y: 95,
+                w: 50,
+                h: 100,
+            }
+        );
+        assert_eq!((width, gap, radius), (2, 3, 4));
+    }
+
+    #[test]
+    fn non_uniform_outsets_veto_geometry() {
+        let mut border = visible_border();
+        border.outsets = Some([5, 6, 5, 5]);
+        assert!(
+            anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none()
+        );
+    }
+
+    #[test]
+    fn missing_witness_or_outsets_veto_geometry() {
+        let mut no_witness = visible_border();
+        no_witness.witness = None;
+        assert!(
+            anchored_outer_rect("win-a", &no_witness, "win-a", live_frame(), OBS).is_none()
+        );
+        let mut no_outsets = visible_border();
+        no_outsets.outsets = None;
+        assert!(
+            anchored_outer_rect("win-a", &no_outsets, "win-a", live_frame(), OBS).is_none()
+        );
+    }
+
+    #[test]
+    fn hidden_row_or_other_foreground_vetoes_geometry() {
+        let mut hidden = visible_border();
+        hidden.visible = false;
+        assert!(
+            anchored_outer_rect("win-a", &hidden, "win-a", live_frame(), OBS).is_none()
+        );
+        assert!(
+            anchored_outer_rect("win-b", &visible_border(), "win-a", live_frame(), OBS)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn row_legs_must_all_join_the_live_target() {
+        // Border subject missing or naming another window: the row is not
+        // about this target, even with a plausible witness frame.
+        let mut no_subject = visible_border();
+        no_subject.subject = None;
+        assert!(
+            anchored_outer_rect("win-a", &no_subject, "win-a", live_frame(), OBS).is_none()
+        );
+        let mut other_subject = visible_border();
+        other_subject.subject = Some(WindowId("win-b".to_owned()));
+        assert!(
+            anchored_outer_rect("win-a", &other_subject, "win-a", live_frame(), OBS).is_none()
+        );
+        // Witness subject leg (`win`) and observed-foreground leg must join
+        // the same live target as the presentation foreground token.
+        let mut cross_win = visible_border();
+        cross_win.witness = Some(FrameWitness {
+            win: WindowId("win-b".to_owned()),
+            ..witness()
+        });
+        assert!(
+            anchored_outer_rect("win-a", &cross_win, "win-a", live_frame(), OBS).is_none()
+        );
+        let mut cross_foreground = visible_border();
+        cross_foreground.witness = Some(FrameWitness {
+            foreground: WindowId("win-b".to_owned()),
+            ..witness()
+        });
+        assert!(
+            anchored_outer_rect("win-a", &cross_foreground, "win-a", live_frame(), OBS)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn witness_obs_mismatch_vetoes_geometry() {
+        let mut border = visible_border();
+        border.witness = Some(FrameWitness {
+            obs: OBS + 1,
+            ..witness()
+        });
+        assert!(
+            anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none()
+        );
+    }
+
+    #[test]
+    fn stale_witness_frame_does_not_move_the_outer_rect() {
+        let mut border = visible_border();
+        border.witness = Some(FrameWitness {
+            frame: Rect {
+                x: 10,
+                y: 20,
+                w: 30,
+                h: 40,
+            },
+            ..witness()
+        });
+        let (outer, width, gap, radius) = anchored_outer_rect(
+            "win-a",
+            &border,
+            "win-a",
+            live_frame(),
+            OBS,
+        )
+        .expect("a stale witness frame never vetoes a joined live frame");
+        assert_eq!(
+            outer,
+            Rect {
+                x: 195,
+                y: 95,
+                w: 50,
+                h: 100,
+            }
+        );
+        assert_eq!((width, gap, radius), (2, 3, 4));
+    }
+
+    #[test]
+    fn core_width_and_radius_drive_the_returned_style() {
+        let mut border = visible_border();
+        border.width = Some(7);
+        border.radius = Some(0);
+        border.outsets = Some([10, 10, 10, 10]);
+        let (outer, width, gap, radius) = anchored_outer_rect(
+            "win-a",
+            &border,
+            "win-a",
+            live_frame(),
+            OBS,
+        )
+        .expect("core style and outsets yield a joined anchored rect");
+        assert_eq!(
+            outer,
+            Rect {
+                x: 190,
+                y: 90,
+                w: 60,
+                h: 110,
+            }
+        );
+        assert_eq!((width, gap, radius), (7, 3, 0));
+    }
+
+    #[test]
+    fn missing_invalid_or_too_wide_core_style_vetoes_geometry() {
+        let mut zero_width = visible_border();
+        zero_width.width = Some(0);
+        assert!(
+            anchored_outer_rect("win-a", &zero_width, "win-a", live_frame(), OBS).is_none()
+        );
+        let mut missing_width = visible_border();
+        missing_width.width = None;
+        assert!(
+            anchored_outer_rect("win-a", &missing_width, "win-a", live_frame(), OBS).is_none()
+        );
+        let mut missing_radius = visible_border();
+        missing_radius.radius = None;
+        assert!(
+            anchored_outer_rect("win-a", &missing_radius, "win-a", live_frame(), OBS).is_none()
+        );
+        let mut negative_radius = visible_border();
+        negative_radius.radius = Some(-1);
+        assert!(
+            anchored_outer_rect("win-a", &negative_radius, "win-a", live_frame(), OBS).is_none()
+        );
+        let mut too_wide = visible_border();
+        too_wide.outsets = Some([1, 1, 1, 1]);
+        assert!(
+            anchored_outer_rect("win-a", &too_wide, "win-a", live_frame(), OBS).is_none()
+        );
+    }
+
+    #[test]
+    fn overflow_vetoes_geometry_instead_of_wrapping() {
+        let mut border = visible_border();
+        border.outsets = Some([i32::MAX, i32::MAX, i32::MAX, i32::MAX]);
+        assert!(
+            anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none()
+        );
+    }
+}
+
+/// Offline regression fences for the active-border log signature and the
+/// chord/iconic origin selection. They run on the existing proof harness (no
+/// HWNDs, hooks, or live effects) plus the fake window backend for the native
+/// leaf reads (`live_window_pid`, `live_is_iconic`, `read_member_tag`).
+#[cfg(test)]
+mod focus_fence_tests {
+    use super::{border_shown_signature, managed_origins, TileLoop};
+    use crate::native_guards::WindowKey;
+    use crate::product_hide::sys::fake::{self, FakeWindow};
+    use tiler_core::geometry::Rect;
+
+    const TAG: &str = "member-tag-1";
+    const USER_SID: &str = "S-1-5-21-1000";
+
+    fn me() -> crate::model::ProcessIdentity {
+        identity(1, "owner-creation")
+    }
+
+    fn identity(pid: u32, creation: &str) -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid,
+            process_creation: creation.to_owned(),
+            user_sid: USER_SID.to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        }
+    }
+
+    fn member_key(hwnd: u64, pid: u32, creation: &str) -> WindowKey {
+        WindowKey {
+            hwnd,
+            pid,
+            creation: creation.to_owned(),
+        }
+    }
+
+    fn seed_member(state: &mut TileLoop, key: &WindowKey, token: &str) {
+        state.member_tokens.insert(key.clone(), token.to_owned());
+        state.member_tags.insert(key.clone(), TAG.to_owned());
+        state
+            .member_identity
+            .insert(key.clone(), identity(key.pid, &key.creation));
+    }
+
+    fn script_window(key: &WindowKey, iconic: bool, live_pid: u32) {
+        fake::register(
+            key.hwnd,
+            FakeWindow {
+                pid: live_pid,
+                process: identity(live_pid, &key.creation),
+                nonce: None,
+                member_tag: Some(TAG.to_owned()),
+                visible: true,
+                iconic,
+                maximized: false,
+                alive: true,
+                post_ok: true,
+                defer: false,
+            },
+        );
+    }
+
+    fn hidden_record(key: &WindowKey) -> super::HiddenRecord {
+        super::HiddenRecord {
+            claim: crate::model::WindowIdentity {
+                hwnd: key.hwnd,
+                process: identity(key.pid, &key.creation),
+                tag: TAG.to_owned(),
+                kind: crate::model::WindowClaimKind::Product,
+                show: crate::model::WindowShowState::default(),
+            },
+            iconic: true,
+        }
+    }
+
+    fn fresh_state() -> TileLoop {
+        super::super::rmax03_adapter_tests::test_state()
+    }
+
+    #[test]
+    fn shown_signature_carries_the_core_radius() {
+        let outer = Rect {
+            x: 1,
+            y: 2,
+            w: 30,
+            h: 40,
+        };
+        let base = border_shown_signature("w1", outer, (2, 3, 4), false, "#102030", "fallback");
+        assert_eq!(base, "shown:w1:1:2:30:40:2:3:4:false:#102030:fallback");
+        // A radius-only restyle repaints the same geometry, so the dedup
+        // signature must differ and let the change log once.
+        let rounder = border_shown_signature("w1", outer, (2, 3, 9), false, "#102030", "fallback");
+        assert_ne!(base, rounder);
+        // The remaining ring inputs keep participating too.
+        for (input, changed) in [
+            (
+                "token",
+                border_shown_signature("w2", outer, (2, 3, 4), false, "#102030", "fallback"),
+            ),
+            (
+                "outer",
+                border_shown_signature(
+                    "w1",
+                    Rect {
+                        x: 5,
+                        y: 2,
+                        w: 30,
+                        h: 40,
+                    },
+                    (2, 3, 4),
+                    false,
+                    "#102030",
+                    "fallback",
+                ),
+            ),
+            (
+                "width",
+                border_shown_signature("w1", outer, (5, 3, 4), false, "#102030", "fallback"),
+            ),
+            (
+                "gap",
+                border_shown_signature("w1", outer, (2, 5, 4), false, "#102030", "fallback"),
+            ),
+            (
+                "topmost",
+                border_shown_signature("w1", outer, (2, 3, 4), true, "#102030", "fallback"),
+            ),
+            (
+                "color",
+                border_shown_signature("w1", outer, (2, 3, 4), false, "#405060", "fallback"),
+            ),
+            (
+                "source",
+                border_shown_signature("w1", outer, (2, 3, 4), false, "#102030", "accent"),
+            ),
+        ] {
+            assert_ne!(base, changed, "{input} must ride the signature");
+        }
+    }
+
+    #[test]
+    fn iconic_member_with_matching_live_pid_and_tag_is_an_origin() {
+        let mut state = fresh_state();
+        let key = member_key(0x9A01, 4242, "creation-1");
+        seed_member(&mut state, &key, "w1");
+        script_window(&key, true, key.pid);
+        let origins = managed_origins(&state, &me(), &[], &[]);
+        assert_eq!(origins.len(), 1, "one verified iconic origin");
+        assert_eq!(origins[0].hwnd, key.hwnd);
+        assert_eq!(origins[0].token, "w1");
+        assert_eq!(origins[0].pid, key.pid);
+        assert_eq!(origins[0].creation, key.creation);
+        fake::unregister_all();
+    }
+
+    #[test]
+    fn recycled_hwnd_with_another_process_pid_never_proves_an_iconic_origin() {
+        let mut state = fresh_state();
+        let key = member_key(0x9A02, 4242, "creation-1");
+        seed_member(&mut state, &key, "w1");
+        // The number now hosts another process's iconic window: the stale
+        // member key must never inherit its iconic proof.
+        script_window(&key, true, 5151);
+        assert!(
+            managed_origins(&state, &me(), &[], &[]).is_empty(),
+            "live pid mismatch rejects before the iconic proof"
+        );
+        fake::unregister_all();
+    }
+
+    #[test]
+    fn exact_hidden_claim_is_never_an_iconic_origin() {
+        let mut state = fresh_state();
+        let key = member_key(0x9A03, 4242, "creation-1");
+        seed_member(&mut state, &key, "w1");
+        script_window(&key, true, key.pid);
+        state
+            .hidden_claims
+            .insert(key.clone(), hidden_record(&key));
+        assert!(
+            managed_origins(&state, &me(), &[], &[]).is_empty(),
+            "the ledger owns an exact hidden claim's reveal, not the chord map"
+        );
+        fake::unregister_all();
+    }
+
+    #[test]
+    fn same_hwnd_hidden_claim_for_another_lifetime_does_not_mask_the_member() {
+        let mut state = fresh_state();
+        let key = member_key(0x9A04, 4242, "creation-1");
+        let other = member_key(key.hwnd, 6161, "creation-0");
+        seed_member(&mut state, &key, "w1");
+        script_window(&key, true, key.pid);
+        // An exact-lifetime lookup must ignore a same-HWND claim belonging to
+        // a different process lifetime.
+        state
+            .hidden_claims
+            .insert(other.clone(), hidden_record(&other));
+        let origins = managed_origins(&state, &me(), &[], &[]);
+        assert_eq!(origins.len(), 1, "another lifetime's claim never masks");
+        assert_eq!(origins[0].hwnd, key.hwnd);
+        fake::unregister_all();
     }
 }

@@ -9,7 +9,9 @@
 //! `output_tokens` only; the core speaks wire ids and logical workspace ids.
 //! Nothing here mutates policy: float/session answers additionally consult
 //! the last applied reply (a read-only presentation projection) and the
-//! adapter-owned intent lanes (`floated`, `sticky`, `fixed_auto_seen`).
+//! adapter's verified intent snapshot and automatic fixed-float origins.
+
+#![forbid(unsafe_code)]
 
 use super::*;
 use tiler_core::world_report::TilingMode;
@@ -86,25 +88,6 @@ impl TileLoop {
             self.world.engine().logical_tiling(&wire, workspace),
             TilingMode::Tiled
         )
-    }
-
-    /// Core tiling mode as `Some`, or `None` when the workspace is unknown
-    /// on the output (stale-intent detection needs the distinction).
-    pub(super) fn workspace_mode_known_here(&self, device: &str, workspace: &str) -> Option<bool> {
-        let wire = self.wire_of(device)?;
-        if !self
-            .world
-            .engine()
-            .logical_ring(&wire)
-            .iter()
-            .any(|id| id == workspace)
-        {
-            return None;
-        }
-        Some(matches!(
-            self.world.engine().logical_tiling(&wire, workspace),
-            TilingMode::Tiled
-        ))
     }
 
     /// World-backed home for one member key: the stable token binds the
@@ -208,8 +191,33 @@ impl TileLoop {
             .unwrap_or(true)
     }
 
+    /// Whether the durable intent snapshot marks one member sticky. The
+    /// snapshot is the tick's fresh read of the packed lifetime-bound
+    /// marker slot, never an adapter mirror.
+    pub(super) fn sticky_of(&self, key: &crate::native_guards::WindowKey) -> bool {
+        self.intent_snapshot
+            .get(key)
+            .is_some_and(|storage| storage.sticky_prior.is_some())
+    }
+
+    /// Whether the durable intent snapshot marks one member floating
+    /// (sticky intent dominates and implies float).
+    pub(super) fn floating_of(&self, key: &crate::native_guards::WindowKey) -> bool {
+        self.intent_snapshot
+            .get(key)
+            .is_some_and(|storage| storage.is_floating())
+    }
+
+    /// Whether the durable snapshot has an active explicit tile override.
+    #[cfg(test)]
+    pub(super) fn tile_override_of(&self, key: &crate::native_guards::WindowKey) -> bool {
+        self.intent_snapshot
+            .get(key)
+            .is_some_and(|storage| storage.is_tiled())
+    }
+
     /// Whether the core currently homes one token as an intentional float:
-    /// the last applied reply row, else the adapter intent lanes.
+    /// the last applied reply row, else the durable intent snapshot.
     pub(super) fn core_is_float_token(&self, token: &str) -> bool {
         if let Some(reply) = self.world.last_reply()
             && reply
@@ -220,7 +228,7 @@ impl TileLoop {
             return true;
         }
         self.member_tokens.iter().any(|(key, bound)| {
-            bound == token && (self.floated.contains(key) || self.sticky.contains_key(key))
+            bound == token && self.floating_of(key)
         })
     }
 
@@ -231,5 +239,73 @@ impl TileLoop {
         self.member_tokens
             .iter()
             .any(|(key, bound)| bound == token && self.fixed_auto_seen.contains(key))
+    }
+}
+
+/// Test-fixture seam over the single durable intent lane: fixtures seed the
+/// same snapshot a production tick reads, so no test-only mirror exists.
+#[cfg(test)]
+impl TileLoop {
+    pub(super) fn sticky_prior_value(
+        &self,
+        key: &crate::native_guards::WindowKey,
+    ) -> Option<bool> {
+        self.intent_snapshot
+            .get(key)
+            .and_then(|storage| storage.sticky_prior)
+    }
+
+    /// Mirror one seeded lane onto the scripted marker slots of a fixture
+    /// handle, exactly as the production write path would leave them: ticks
+    /// re-read the slots, so a snapshot-only seed would be erased.
+    fn script_intent_slot(&self, key: &crate::native_guards::WindowKey, row: &IntentStorage) {
+        if crate::product_hide::sys::fake::marker_active(key.hwnd) {
+            crate::product_hide::sys::write_intent_slot(key.hwnd, *row)
+                .expect("script intent slot");
+        }
+    }
+
+    pub(super) fn seed_sticky(&mut self, key: crate::native_guards::WindowKey, prior: bool) {
+        let row = self.intent_snapshot.entry(key.clone()).or_default();
+        row.sticky_prior = Some(prior);
+        row.float = None;
+        let row = *row;
+        self.script_intent_slot(&key, &row);
+    }
+
+    pub(super) fn seed_float(&mut self, key: crate::native_guards::WindowKey) {
+        let row = self.intent_snapshot.entry(key.clone()).or_default();
+        if row.sticky_prior.is_none() {
+            row.float = Some(true);
+        }
+        let row = *row;
+        self.script_intent_slot(&key, &row);
+    }
+
+    pub(super) fn seed_tile(&mut self, key: crate::native_guards::WindowKey) {
+        let row = self.intent_snapshot.entry(key.clone()).or_default();
+        row.float = Some(false);
+        let row = *row;
+        self.script_intent_slot(&key, &row);
+    }
+
+    pub(super) fn clear_float(&mut self, key: &crate::native_guards::WindowKey) {
+        if let Some(row) = self.intent_snapshot.get_mut(key)
+            && row.float == Some(true)
+        {
+            row.float = None;
+            let row = *row;
+            self.script_intent_slot(key, &row);
+        }
+    }
+
+    pub(super) fn clear_tile(&mut self, key: &crate::native_guards::WindowKey) {
+        if let Some(row) = self.intent_snapshot.get_mut(key)
+            && row.float == Some(false)
+        {
+            row.float = None;
+            let row = *row;
+            self.script_intent_slot(key, &row);
+        }
     }
 }

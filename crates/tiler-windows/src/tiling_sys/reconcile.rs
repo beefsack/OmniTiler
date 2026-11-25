@@ -1,28 +1,27 @@
 #![forbid(unsafe_code)]
-use super::focus_actuation::overlay_expected;
 use super::*;
 
-/// Auto-retire positively restored owned-fullscreen markers on verified
-/// workspace members through the shared exact-lifetime sequence, so no
-/// special clear action is needed to trigger it. Global game/elevated gate
-/// only: per-action home/focus do not apply to background retirement, but
-/// every candidate still passes the exact member/window-tag/held-identity/
-/// scope proof inside the sequence plus the double live restoration proof.
-/// Metadata removal only, never a geometry write; fullscreen, transitional,
-/// unreadable, recycled, and zero-bit shapes keep their markers. Candidates
-/// need verified workspace membership; `overlay_expected` supplies the
-/// retained-aware expectation the pin requires.
-pub(super) fn sweep_retire_stale_fullscreen(
-    effects: &mut dyn UnfloatClearEffects,
+/// Auto-retire owned fullscreen markers whose chrome the application has
+/// already restored, so no clear action is needed to trigger cleanup.
+///
+/// This is the Task 8 legacy-policy retirement's one intended survivor:
+/// core-only observation never mints a fullscreen exit (commands do), so a
+/// marker left behind after an external restore would otherwise keep
+/// claiming tiler ownership, be replayed over the window by a later explicit
+/// exit, and survive as a durable R12 row that a future startup could restore
+/// over already-normal chrome. Metadata removal only: no style, frame,
+/// activation or z-order write runs here, and a fullscreen/transitional/
+/// unreadable/recycled/drifted shape keeps its marker. Candidates need a
+/// verified workspace home and a fresh observed or retained row whose live
+/// fullscreen fact is positively false; the retirement re-proves the exact
+/// lifetime, style restoration and marker equality immediately before
+/// clearing (see [`super::fullscreen::retire_restored_fullscreen`]).
+pub(super) fn sweep_retire_restored_fullscreen(
     state: &mut TileLoop,
-    me: &ProcessIdentity,
+    dir: &Path,
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
-    fulls: &[Rect],
 ) {
-    if effects.suspend_block(state, me, fulls) || effects.elevated(me) {
-        return;
-    }
     let candidates: Vec<(crate::native_guards::WindowKey, String)> = state
         .member_tokens
         .iter()
@@ -32,21 +31,50 @@ pub(super) fn sweep_retire_stale_fullscreen(
         if state.member_home(&key).is_none() {
             continue;
         }
-        let Some(expected) = overlay_expected(state, observed, retained, &token) else {
+        let Some(meta) = super::read_fullscreen_meta(key.hwnd) else {
             continue;
         };
-        if expected.hwnd != key.hwnd
-            || expected.identity.pid != key.pid
-            || expected.identity.process_creation != key.creation
-        {
+        if meta.changed == 0 {
             continue;
         }
-        let pre = effects.fullscreen_meta(key.hwnd);
-        if pre.is_none() {
+        let live_fullscreen =
+            match observed
+                .iter()
+                .find(|window| window.token == token && window.identity.hwnd == key.hwnd)
+            {
+                Some(window) => Some(window.facts.captionless_fullscreen),
+                None => match retained
+                    .iter()
+                    .find(|row| row.token == token && row.key == key)
+                {
+                    Some(row) => Some(row.fullscreen),
+                    None => continue,
+                },
+            };
+        // Only a positive non-fullscreen read retires: unknown or fullscreen
+        // keeps the marker.
+        if live_fullscreen != Some(false) {
             continue;
         }
-        let _ =
-            effective_stale_meta_via_effects(effects, state, &key, &expected, me, pre, true, fulls);
+        let Some(tag) = state
+            .member_tags
+            .get(&key)
+            .cloned()
+            .filter(|tag| !tag.is_empty())
+        else {
+            continue;
+        };
+        if super::fullscreen::retire_restored_fullscreen(dir, &key, &tag, &meta) {
+            log_json_at(
+                &state.log_path,
+                serde_json::json!({
+                    "event": "fullscreen-retired",
+                    "tick": state.tick,
+                    "window": token,
+                    "reason": "restored",
+                }),
+            );
+        }
     }
 }
 
@@ -82,15 +110,12 @@ pub(super) fn reconcile_tick(
         );
         return;
     };
-    {
-        let mut native_retire = NativeUnfloatClear;
-        sweep_retire_stale_fullscreen(&mut native_retire, state, me, &observed, &retained, fulls);
-    }
+    // Retire owned fullscreen markers whose chrome the application already
+    // restored before this tick's capture reads ownership metadata: metadata
+    // only, exact-lifetime fenced, and never a geometry or style write.
+    sweep_retire_restored_fullscreen(state, dir, &observed, &retained);
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    // First-seen maximized windows restore once here: lifetime tags are
-    // stamped, and the cleared window converges as eligible next tick.
-    clear_maximize_at_admission(state, me, &retained);
     workspace_close_cleanup(state);
     // Bounded normal-level visibility/exception snapshots over the observation
     // just taken: managed visibility/cloak transitions and exception-lane
@@ -141,9 +166,9 @@ pub(super) fn reconcile_tick(
     // One shared observation tick through the single world owner: the core
     // converges every monitor from this tick's screens plus window facts,
     // and the host diff applies every accepted reply with fresh proof.
-    // Committed floats join the ordinary float lanes with markers.
+    // Cache committed floats' live frames; intent persistence is core-owned.
     let foreground = crate::ffi::foreground_window();
-    if super::world_tick::run_observation_tick(
+    if let Some(reply) = super::world_tick::run_observation_tick(
         state,
         me,
         store,
@@ -154,14 +179,11 @@ pub(super) fn reconcile_tick(
         foreground,
         fulls,
         super::observation::sample_cursor(),
-        false,
-    )
-    .is_some()
-    {
+    ) {
         let correlation_str = correlation.as_str();
         super::capacity_floats::adopt_floats_from_reply(
             state,
-            me,
+            &reply,
             tick,
             correlation_str,
             &observed,
@@ -212,9 +234,8 @@ pub(super) fn reconcile_limited_tick(
         fulls,
         // Focused fullscreen game: geometry for other windows converges,
         // but no cursor work runs here (no sampling, no overlay reads).
-        // The paused presentation ingress skips projection work and
-        // publishes hidden shapes with an empty pager.
+        // Core derives suspension from the foreground facts; the adapter
+        // no longer blanks presentation.
         None,
-        true,
     );
 }

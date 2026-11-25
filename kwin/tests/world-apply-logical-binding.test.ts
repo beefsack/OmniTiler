@@ -118,7 +118,7 @@ function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<
         v: 4, adapter: "broker-1", gen: "gen-1", req: "req-1",
         obs: "1", rev: "1", ready: true, consumed: false,
         source: "req-1", nativeInvalid: "1", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpRequest: null,
         presentation: PRESENTATION,
         scopes: [{ scope: { kind: "output", out: "out-1" }, auth: "controlled", reason: "" }],
         workspaces,

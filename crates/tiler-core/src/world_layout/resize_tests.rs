@@ -93,6 +93,7 @@ fn keyboard_resize_initial_12px_and_repeat_schedule_caps_at_20px() {
             0,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("initial outwards");
     assert_eq!(first.base_revision, 1);
@@ -114,6 +115,7 @@ fn keyboard_resize_initial_12px_and_repeat_schedule_caps_at_20px() {
                 press_index,
                 &window("w2"),
                 &observed,
+                crate::policy::ScaledResize::unscaled(),
             )
             .expect("repeat press");
         let w1 = geom_for(&outcome.geometry, "w1").w;
@@ -139,6 +141,7 @@ fn keyboard_resize_inwards_reverses_outwards() {
             0,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("grow");
     assert_eq!(geom_for(&grown.geometry, "w2").w, 800);
@@ -152,6 +155,7 @@ fn keyboard_resize_inwards_reverses_outwards() {
             0,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("shrink");
     assert_eq!(geom_for(&shrunk.geometry, "w1"), rect(8, 8, 788, 884));
@@ -186,6 +190,7 @@ fn keyboard_resize_refusal_keeps_pre_op_focus_sync_local_and_other_domain_untouc
             0,
             &window("w1"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect_err("outer edge must refuse");
     assert_eq!(err, LayoutFailure::Semantics(RefusalKind::Unchanged));
@@ -201,6 +206,7 @@ fn keyboard_resize_refusal_keeps_pre_op_focus_sync_local_and_other_domain_untouc
             0,
             &window("w1"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect_err("focus mismatch must refuse before cross-axis exhaustion");
     assert_eq!(err, LayoutFailure::Semantics(RefusalKind::FocusMismatch));
@@ -230,6 +236,7 @@ fn keyboard_resize_minimum_clamps_shrink_and_below_minimum_refuses() {
             0,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("clamped grow");
     assert_eq!(geom_for(&clamped.geometry, "w1"), rect(8, 8, 784, 884));
@@ -247,6 +254,7 @@ fn keyboard_resize_minimum_clamps_shrink_and_below_minimum_refuses() {
             0,
             &window("w2"),
             &narrow_obs,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect_err("pair below minimum");
     assert_eq!(err, LayoutFailure::Semantics(RefusalKind::PairBelowMinimum));
@@ -301,6 +309,7 @@ fn resize_commit_tail_preserves_last_active_history_and_capacity_provenance() {
             0,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("resize");
     assert_eq!(outcome.revision, 2);
@@ -340,6 +349,7 @@ fn resize_revision_limit_refuses_without_mutation() {
             0,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect_err("revision limit");
     assert_eq!(
@@ -369,6 +379,7 @@ fn pointer_resize_non_focused_and_overlay_flags_distinction() {
             700,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("pointer resize on non-focused w1");
     assert_eq!(outcome.base_revision, 1);
@@ -390,6 +401,7 @@ fn pointer_resize_non_focused_and_overlay_flags_distinction() {
             650,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect_err("flagged subject refuses");
     assert_eq!(
@@ -407,6 +419,7 @@ fn pointer_resize_non_focused_and_overlay_flags_distinction() {
             1601,
             &window("w2"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect_err("out of bounds refuses");
     assert_eq!(err, LayoutFailure::Semantics(RefusalKind::MalformedInput));
@@ -459,6 +472,7 @@ fn pointer_resize_corner_normalizes_axes_and_refuses_atomically() {
             900,
             &window("w1"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect_err("same axis must refuse");
     assert_eq!(err, LayoutFailure::Semantics(RefusalKind::MalformedInput));
@@ -477,6 +491,7 @@ fn pointer_resize_corner_normalizes_axes_and_refuses_atomically() {
             300,
             &window("w1"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect_err("partial corner must refuse atomically");
     assert_eq!(err, LayoutFailure::Semantics(RefusalKind::Unchanged));
@@ -494,6 +509,7 @@ fn pointer_resize_corner_normalizes_axes_and_refuses_atomically() {
             700,
             &window("w1"),
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("corner resize");
     assert_eq!(outcome.base_revision, 5);

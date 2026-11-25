@@ -54,10 +54,12 @@ mod probe {
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
 
+    use tiler_live_fixture::pipe_win::ffi_ext;
     use tiler_windows::native_guards::{WindowKey, member_matches, visible_lifetime_ok};
 
     // -----------------------------------------------------------------------
-    // Constants (mirrors; fixture is a binary crate, so no import possible).
+    // Constants (mirrors; the fixture library exposes only the Windows FFI
+    // root, so protocol constants stay mirrored here).
     // TITLE_SENTINEL mirrors tiler-live-fixture src/protocol.rs; PROBE_PROP
     // is dedicated to this probe and never a production/member property.
     // -----------------------------------------------------------------------
@@ -75,6 +77,9 @@ mod probe {
     pub const TOPMOST_FALSE_CODE: u64 = 0xFA15_E000_0000_0001;
     pub const TOPMOST_TRUE_CODE: u64 = 0x7A1E_0000_0000_0001;
     const WS_EX_TOPMOST_BIT: u32 = 0x0000_0008;
+    /// Client nonce channel on Windows: the fixture `send` CLI reads it from
+    /// the environment, never argv (argv is visible to same-user processes).
+    const NONCE_ENV: &str = "TILER_LIVE_FIXTURE_NONCE";
 
     // -----------------------------------------------------------------------
     // Titles: server-controlled `sentinel/id/run-tag` plus optional suffix.
@@ -932,7 +937,7 @@ mod probe {
         }
         tiler_windows::ffi::window::show_window(hwnd, cmd);
         counts.policy_writes += 1;
-        if !ffi_ext::wait_visible(hwnd, expect_visible, 5_000) {
+        if !wait_visible(hwnd, expect_visible, 5_000) {
             return WriteOutcome::PostcheckFailed;
         }
         let Ok((post, _)) = rejoin_live(handoff, entry, hwnd) else {
@@ -1253,162 +1258,20 @@ mod probe {
     }
 
     // -----------------------------------------------------------------------
-    // Example-local reviewed FFI gap module (sole unsafe owner in this
-    // example): checked exstyle read (the shared raw `window_exstyle` cannot
-    // discriminate errors) and a title-text getter for the exact
-    // sentinel/id/run-tag join. No other unsafe in this file.
+    // Safe visibility polling used by the guarded hide/reveal leg. The
+    // Win32 wrappers themselves live in the approved FFI root
+    // (`tiler_live_fixture::pipe_win::ffi_ext`).
     // -----------------------------------------------------------------------
-    #[allow(unsafe_code)]
-    mod ffi_ext {
-        use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GWL_EXSTYLE, GetWindowLongW, GetWindowTextLengthW, GetWindowTextW,
-        };
-
-        /// Checked exstyle read mirroring `window_style_checked`: `None`
-        /// only when the word reads zero with a live error.
-        pub fn window_exstyle_checked(hwnd: u64) -> Option<u32> {
-            unsafe {
-                SetLastError(0);
-                let value = GetWindowLongW(hwnd as isize as _, GWL_EXSTYLE);
-                let err = GetLastError();
-                if value == 0 && err != 0 {
-                    None
-                } else {
-                    Some(value as u32)
-                }
+    fn wait_visible(hwnd: u64, want: bool, timeout_ms: u64) -> bool {
+        let start = std::time::Instant::now();
+        loop {
+            if tiler_windows::ffi::window::is_visible(hwnd) == want {
+                return true;
             }
-        }
-
-        /// Best-effort window title text; `None` when unreadable.
-        /// Never used as a write vector: join evidence only.
-        pub fn window_text(hwnd: u64) -> Option<String> {
-            let len = unsafe { GetWindowTextLengthW(hwnd as isize as _) };
-            if len < 0 {
-                return None;
+            if start.elapsed().as_millis() >= u128::from(timeout_ms) {
+                return false;
             }
-            // Length excludes the NUL; empty titles read as Some("").
-            let mut buf = vec![0u16; (len as usize) + 1];
-            let copied =
-                unsafe { GetWindowTextW(hwnd as isize as _, buf.as_mut_ptr(), buf.len() as i32) };
-            if copied == 0 {
-                let err = unsafe { GetLastError() };
-                if err != 0 {
-                    return None;
-                }
-                return Some(String::new());
-            }
-            Some(String::from_utf16_lossy(&buf[..copied as usize]))
-        }
-
-        /// Screen-space client rect via GetClientRect + ClientToScreen
-        /// mapping of both corners. `None` when the window is gone or the
-        /// mapping fails. Read-only geometry evidence.
-        pub fn client_rect_screen(hwnd: u64) -> Option<(i32, i32, i32, i32)> {
-            use windows_sys::Win32::Foundation::POINT;
-            use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
-            use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
-            unsafe {
-                let mut rc: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-                if GetClientRect(hwnd as isize as _, &mut rc) == 0 {
-                    return None;
-                }
-                let mut top_left = POINT {
-                    x: rc.left,
-                    y: rc.top,
-                };
-                let mut bottom_right = POINT {
-                    x: rc.right,
-                    y: rc.bottom,
-                };
-                if ClientToScreen(hwnd as isize as _, &mut top_left) == 0 {
-                    return None;
-                }
-                if ClientToScreen(hwnd as isize as _, &mut bottom_right) == 0 {
-                    return None;
-                }
-                Some((top_left.x, top_left.y, bottom_right.x, bottom_right.y))
-            }
-        }
-
-        /// Virtual-desktop rect `(x, y, w, h)` via `GetSystemMetrics`.
-        /// Read-only; used to normalize absolute `SendInput` coordinates.
-        pub fn virtual_desktop_px() -> Option<(i32, i32, i32, i32)> {
-            use windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics;
-            const SM_XVIRTUALSCREEN: i32 = 76;
-            const SM_YVIRTUALSCREEN: i32 = 77;
-            const SM_CXVIRTUALSCREEN: i32 = 78;
-            const SM_CYVIRTUALSCREEN: i32 = 79;
-            unsafe {
-                let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-                let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-                let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-                let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-                if w <= 0 || h <= 0 {
-                    return None;
-                }
-                Some((x, y, w, h))
-            }
-        }
-
-        /// One `SendInput` mouse record. Returns the accepted-event count
-        /// (0 when the API refused it). Sole synthetic-input write vector in
-        /// this example; every caller re-verifies guards immediately before
-        /// each batch and releases the button in a RAII guard.
-        pub fn send_mouse_input(dx: i32, dy: i32, mouse_data: u32, flags: u32) -> u32 {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-                INPUT, INPUT_MOUSE, MOUSEINPUT, SendInput,
-            };
-            unsafe {
-                let mut input: INPUT = std::mem::zeroed();
-                input.r#type = INPUT_MOUSE;
-                input.Anonymous.mi = MOUSEINPUT {
-                    dx,
-                    dy,
-                    mouseData: mouse_data,
-                    dwFlags: flags,
-                    time: 0,
-                    dwExtraInfo: 0,
-                };
-                let size = std::mem::size_of::<INPUT>() as i32;
-                SendInput(1, &input, size)
-            }
-        }
-
-        /// Show-command constants for the hide/reveal leg (own fixture only).
-        pub const SW_HIDE: i32 = 0;
-        pub const SW_SHOWNA: i32 = 8;
-
-        /// Public `DwmSetWindowAttribute(DWMWA_CLOAK)` write probe. Returns
-        /// the raw HRESULT (0 == S_OK). The caller records the HRESULT plus
-        /// the native `cloaked()` readback before/after and restores 0.
-        pub fn dwm_set_cloak(hwnd: u64, cloak: bool) -> i32 {
-            use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
-            const DWMWA_CLOAK: u32 = 14;
-            let value: i32 = if cloak { 1 } else { 0 };
-            unsafe {
-                DwmSetWindowAttribute(
-                    hwnd as isize as _,
-                    DWMWA_CLOAK,
-                    (&value as *const i32).cast(),
-                    std::mem::size_of::<i32>() as u32,
-                )
-            }
-        }
-
-        /// Bounded visibility poll: true only when `is_visible` reports the
-        /// wanted state inside the budget. Read-only.
-        pub fn wait_visible(hwnd: u64, want: bool, timeout_ms: u64) -> bool {
-            let start = std::time::Instant::now();
-            loop {
-                if tiler_windows::ffi::window::is_visible(hwnd) == want {
-                    return true;
-                }
-                if start.elapsed().as_millis() >= u128::from(timeout_ms) {
-                    return false;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
@@ -1501,6 +1364,19 @@ mod probe {
         send_all(exe, socket, nonce, &[payload.to_string()])
     }
 
+    /// Remove the top-level `nonce` before a request crosses the argv
+    /// boundary. The fixture `send` client injects it from `NONCE_ENV`, so
+    /// the secret never appears in a same-user-readable command line.
+    fn without_nonce_arg(payload: &str) -> Result<String, String> {
+        let mut value: serde_json::Value =
+            serde_json::from_str(payload).map_err(|e| format!("parse send payload: {e}"))?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| "send payload is not a JSON object".to_string())?;
+        object.remove("nonce");
+        serde_json::to_string(&value).map_err(|e| format!("serialize send payload: {e}"))
+    }
+
     /// One client connection carrying several ordered payload lines (one
     /// reply line per payload). Same hung-client bound as `send_one`.
     fn send_all(
@@ -1513,14 +1389,16 @@ mod probe {
         // send_mutation(s) which re-verify the fixture immediately before send.
         // Bounded: spawn + wait_timeout + kill-hung-client, 30s cap.
         use std::io::Read;
+        // The fixture client CLI takes the scope nonce from the environment
+        // on Windows (the argv route is Unix-legacy only), so the secret
+        // never appears in this process's command line.
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("send")
             .arg("--socket")
             .arg(socket)
-            .arg("--nonce")
-            .arg(nonce);
+            .env(NONCE_ENV, nonce);
         for payload in payloads {
-            cmd.arg(payload);
+            cmd.arg(without_nonce_arg(payload)?);
         }
         let mut child = cmd
             .stdout(std::process::Stdio::piped())

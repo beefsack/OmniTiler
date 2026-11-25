@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::ids::{CorrelationId, OwnerId};
+use crate::policy::ScaledResize;
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::world_report::{HoldReason, WorldCommand, WorldReportV4};
@@ -20,6 +21,11 @@ pub(crate) struct StagedDomain {
     pub(crate) bounds: Rect,
     pub(crate) gap: i32,
     pub(crate) outer_gap: i32,
+    /// Per-output physical resize metrics, scaled once from this screen's
+    /// [`crate::world_report::ScreenReport::scale`] during staging. Frozen
+    /// integers so an operation never re-rounds mid-gesture; an overflowed
+    /// scale stages [`ScaledResize::zeroed`] with the unreadable hold.
+    pub(crate) resize: ScaledResize,
     /// Homed non-minimized facts with readable frames, as Engine carriers.
     pub(crate) windows: Vec<EngineWindow>,
     /// Adapter-observed focused lifetime homed here (empty when none):
@@ -57,6 +63,11 @@ pub(crate) struct StagedObservation {
     pub(crate) closed: Vec<WindowId>,
     pub(crate) native: Vec<crate::world_report::NativeObservation>,
     pub(crate) cursor: Option<(i32, i32)>,
+    /// Cumulative hardware-origin pointer-activity generation, `None` when
+    /// the host cannot witness raw pointer input.
+    pub(crate) pointer_activity: Option<u64>,
+    /// Exact retained warp id the adapter spent this report, `None` none.
+    pub(crate) warp_spent: Option<String>,
     pub(crate) cursor_hit: Option<WindowId>,
     pub(crate) focused_global: String,
     pub(crate) action_foreground: Option<OutputId>,

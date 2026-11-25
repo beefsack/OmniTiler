@@ -49,8 +49,10 @@
 //! `nativeCreations`: [] or one `{"op","ws","out"}` object per outstanding
 //! core-owned native creation authorization (capability-gated, at most once
 //! per op), plus
-//! `warpCursor`: null or the desired `[x,y]` cursor-warp point
-//! (cross-output focus only), plus `presentation`: the uniform
+//! `warpRequest`: null or the one retained
+//! `{"id","target","rev","out","ws","point","pointerBaseline"}` cursor-warp
+//! request (cross-output focus only; frozen at mint, retained until spent,
+//! superseded, or canceled), plus `presentation`: the uniform
 //! border/underlay/pager presentation (`foreground` token, required `rev`
 //! issuing label, `border` shape, `underlay` found/hidden shape, `pager`
 //! content), plus `diagnostics`: []
@@ -97,9 +99,9 @@ use tiler_core::world_report::{
     RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
     ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget, SwitchEvent,
     SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4, VisibilityFact,
-    VisibilityReason, VisibilitySample, VisibilityTarget, WindowDesire, WindowFact, WindowType,
-    WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
-    check_screen_structure, check_window_structure,
+    VisibilityReason, VisibilitySample, VisibilityTarget, WarpRequest, WindowDesire, WindowFact,
+    WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReplyV4,
+    WorldReportV4, check_screen_structure, check_window_structure,
 };
 use tiler_core::world_roster::SharedRosterPlan;
 
@@ -3786,6 +3788,8 @@ pub fn decode_report_v4_map(
             "propertyAttempts",
             "focusFeedback",
             "rendererInput",
+            "pointerActivity",
+            "warpSpent",
         ],
         &[
             "cursorHit",
@@ -4149,6 +4153,23 @@ pub fn decode_report_v4_map(
         native,
         held_native,
         cursor: opt_point_or_null(map, "cursor")?,
+        pointer_activity: match map.get("pointerActivity") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) => {
+                Some(parse_u64_decimal(text).ok_or_else(unknown_value)?)
+            }
+            Some(_) => return Err(unknown_value()),
+        },
+        warp_spent: match map.get("warpSpent") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) => {
+                if !is_opaque_id(text) {
+                    return Err(unknown_value());
+                }
+                Some(text.clone())
+            }
+            Some(_) => return Err(unknown_value()),
+        },
         cursor_hit: match map.get("cursorHit") {
             None => None,
             Some(serde_json::Value::Null) => None,
@@ -4825,6 +4846,40 @@ pub(crate) fn decode_focus_request(value: &serde_json::Value) -> Result<Option<F
     }
 }
 
+/// One retained cursor-warp request (`null` carries none): bounded opaque
+/// id/target/output/workspace, quoted focus-decision revision, a required
+/// carried point, and a nullable quoted pointer-activity baseline. Never a
+/// second shape and never a point-only compatibility lane.
+fn decode_warp_request(value: &serde_json::Value) -> Result<Option<WarpRequest>> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Object(map) => {
+            check_keys(
+                map,
+                &[
+                    "id",
+                    "target",
+                    "rev",
+                    "out",
+                    "ws",
+                    "point",
+                    "pointerBaseline",
+                ],
+            )?;
+            Ok(Some(WarpRequest {
+                id: req_id(map, "id")?,
+                target: WindowId(req_id(map, "target")?),
+                revision: req_u64_str(map, "rev")?,
+                output: OutputId(req_id(map, "out")?),
+                workspace: WorkspaceId(req_id(map, "ws")?),
+                point: opt_point_or_null(map, "point")?.ok_or_else(unknown_value)?,
+                pointer_baseline: opt_u64_or_null(map, "pointerBaseline")?,
+            }))
+        }
+        _ => Err(malformed()),
+    }
+}
+
 fn decode_domain_key(
     map: &serde_json::Map<String, serde_json::Value>,
     out_key: &str,
@@ -5351,7 +5406,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             "gestureSettled",
             "operationSettled",
             "nativeCreations",
-            "warpCursor",
+            "warpRequest",
             "presentation",
             "intentDesired",
             "switchSettled",
@@ -5475,7 +5530,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
         }
         native_creations.push(creation);
     }
-    let cursor_warp = opt_point_or_null(map, "warpCursor")?;
+    let warp_request = decode_warp_request(map.get("warpRequest").ok_or_else(malformed)?)?;
     let presentation =
         decode_reply_presentation_v4(map.get("presentation").ok_or_else(malformed)?)?;
     let writes_value = map.get("intentDesired").ok_or_else(malformed)?;
@@ -5552,7 +5607,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             gesture_settled,
             operation_settled,
             native_creations,
-            cursor_warp,
+            warp_request,
             presentation,
             intent_desired,
             switch_settled,
@@ -5587,7 +5642,7 @@ pub fn decode_reply_v4_for_host(
     {
         return Err(reply_snapshot("above-capability-false"));
     }
-    if !host.warp && decoded.reply.cursor_warp.is_some() {
+    if !host.warp && decoded.reply.warp_request.is_some() {
         return Err(reply_snapshot("warp-capability-false"));
     }
     if !host.native_sticky
@@ -6692,6 +6747,20 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
     });
     out.push_str(",\"cursor\":");
     push_opt_point(&mut out, &report.cursor);
+    out.push_str(",\"pointerActivity\":");
+    match report.pointer_activity {
+        None => out.push_str("null"),
+        Some(activity) => {
+            out.push('"');
+            out.push_str(&activity.to_string());
+            out.push('"');
+        }
+    }
+    out.push_str(",\"warpSpent\":");
+    match &report.warp_spent {
+        None => out.push_str("null"),
+        Some(id) => push_json_string(&mut out, id),
+    }
     out.push_str(",\"actionForeground\":");
     push_opt_output(&mut out, &report.action_foreground);
     out.push_str(",\"actionCached\":");
@@ -6969,7 +7038,7 @@ mod tests {
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
-            cursor_warp: None,
+            warp_request: None,
             presentation: tiler_core::world_report::WorldPresentationV4 {
                 foreground: String::new(),
                 rev: 0,
@@ -7039,7 +7108,7 @@ mod tests {
               \"command\":{command_json},\"screens\":[],\"windows\":[],\"closed\":[],\
               \"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"focusChanges\":null,\
               \"complete\":true,\"gesture\":false,\
-              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[],\
               \"presentation\":{{\"foreground\":\"\",\"minimized\":null,\
               \"maximized\":null,\"fullscreen\":null,\"hostHidden\":null,\

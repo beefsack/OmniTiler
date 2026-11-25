@@ -5,13 +5,13 @@ use super::{
 };
 use crate::lifecycle::{exe_paths_equal, is_medium_rid};
 use crate::model::{
-    FLOAT_INTENT_PROP, MEMBER_TAG_PROP, PRODUCT_CLAIM_PROP, ProcessIdentity, ProductShowRestore,
-    STICKY_PROP, TILE_OVERRIDE_PROP, WindowClaimKind, WindowIdentity, WindowShowState,
-    generate_claim_tag, product_show_restore, valid_claim_tag, watcher_may_restore,
+    MEMBER_TAG_PROP, PRODUCT_CLAIM_PROP, ProcessIdentity, ProductShowRestore, WindowClaimKind,
+    WindowIdentity, WindowShowState, generate_claim_tag, product_show_restore, valid_claim_tag,
+    watcher_may_restore,
 };
 use crate::native::{HeldProcess, IdentityError};
-use crate::native_guards::MarkerSlot;
 use crate::storage::{LEDGER_FILE_NAME, LedgerStore};
+use crate::tiling_sys::IntentStorage;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -135,7 +135,8 @@ pub fn query_candidate(
     if crate::ffi::owner_of(hwnd_u64) != 0 {
         return Err(err("refuse: owned dialog"));
     }
-    let ex = crate::ffi::window_exstyle(hwnd_u64);
+    let ex = crate::ffi::window_exstyle_checked(hwnd_u64)
+        .ok_or_else(|| err("uncertain: target extended style unreadable"))?;
     if ex & WS_EX_TOOLWINDOW != 0 {
         return Err(err("refuse: tool window"));
     }
@@ -325,6 +326,19 @@ pub fn install_tag_attempts() -> u64 {
     INSTALL_TAG_ATTEMPTS.with(|slot| slot.get())
 }
 
+/// Bind visible membership to a window-lifetime tag without rotating a live
+/// tag. A surviving tag is the same window object's identity (properties die
+/// with the window), so a restarted owner adopts it and the durable `.v2`
+/// intent slot plus R12 preimages stay bound to the exact lifetime they were
+/// written for. Only a window with no valid tag receives a fresh stamp, so
+/// same-process HWND reuse still fails closed. Read-only when adopting.
+pub fn ensure_member_tag(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
+    if let Some(tag) = read_member_tag(hwnd_u64) {
+        return Ok(tag);
+    }
+    install_member_tag(hwnd_u64, owner_pid)
+}
+
 /// Stamp a fresh random window-lifetime tag for visible membership, then
 /// read it back. Only call when admitting a window with no trusted stored
 /// tag (first sight or same-process reuse repair), after the caller bound
@@ -364,218 +378,414 @@ pub fn nonce_tag_matches(live: Option<&str>, expected: &str) -> bool {
     live.is_some_and(|tag| tag == expected)
 }
 
-/// One honest `GetPropW` read of our own property name. The `GetPropW`
-/// contract promises NULL when the list does not contain the string and
-/// promises no last-error distinction, so NULL reads as
-/// [`MarkerSlot::Absent`] unconditionally: absent reads on real windows
-/// report a nonzero error (e.g. `ERROR_FILE_NOT_FOUND`), which must
-/// never diagnose as [`MarkerSlot::Unreadable`]. A destroyed HWND reads
-/// absent (the marker dies with the window). Same convention as
-/// [`get_nonce`], [`read_member_tag`], and the helper lifetime read.
-fn read_prop_slot(hwnd_u64: u64, name: &str) -> MarkerSlot {
-    if !crate::ffi::is_window(hwnd_u64) {
-        return MarkerSlot::Absent;
+// One packed, lifetime-bound intent slot on the window.
+//
+// Both canonical `v:1` intent choices (`float: Option<bool>` and
+// `sticky_prior: Option<bool>`, all nine semantic states) move in one native
+// mutation, and the value binds to the exact live window lifetime (PID plus
+// the FNV-1a hash over the process creation and member tag) so a recycled
+// HWND or a same-process reuse can never read a foreign value as its own.
+// The retired per-lane `OmniTiler.Sticky.v1` / `.FloatIntent.v1` /
+// `.TileOverride.v1` properties are never read (D1): pre-upgrade residue can
+// neither resurrect intent nor shadow this slot.
+//
+// Layout of the encoded value (stored as `encoded + 1`, so a stored zero is
+// never valid):
+// - bits 0-1: sticky prior code (0 none, 1 prior false, 2 prior true, 3 invalid)
+// - bits 2-3: float code (0 none, 1 float true/explicit float, 2 float false/tile override, 3 invalid)
+// - bits 4-7: reserved, must read zero
+// - bits 8-39: window PID (32 bits)
+// - bits 40-63: low 24 bits of FNV-1a over `process_creation` then the tag
+pub(crate) const INTENT_SLOT_PROP: &str = "OmniTiler.IntentSlot.v2";
+const INTENT_STICKY_MASK: u64 = 0b11;
+const INTENT_FLOAT_SHIFT: u32 = 2;
+const INTENT_FLOAT_MASK: u64 = 0b11 << INTENT_FLOAT_SHIFT;
+const INTENT_RESERVED_MASK: u64 = 0xf0;
+const INTENT_PID_SHIFT: u32 = 8;
+const INTENT_PID_MASK: u64 = 0xffff_ffff << INTENT_PID_SHIFT;
+const INTENT_HASH_SHIFT: u32 = 40;
+const INTENT_HASH_MASK: u64 = 0x00ff_ffff << INTENT_HASH_SHIFT;
+
+/// 32-bit FNV-1a over `process_creation` bytes followed by the tag bytes,
+/// truncated to the low 24 bits. Deliberately dependency-free: the hash is
+/// only a lifetime discriminator, never a security boundary.
+fn intent_slot_hash(process_creation: &str, tag: &str) -> u32 {
+    const OFFSET: u32 = 0x811c_9dc5;
+    const PRIME: u32 = 0x0100_0193;
+    let mut hash = OFFSET;
+    for byte in process_creation
+        .as_bytes()
+        .iter()
+        .chain(tag.as_bytes())
+    {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
     }
-    match crate::ffi::get_prop(hwnd_u64, name) {
-        None => MarkerSlot::Absent,
-        // Non-NULL handles are nonzero; zero is unrepresentable here
-        // (NULL reads absent above), so `Value(0)` never escapes.
-        Some(v) => MarkerSlot::Value(v as u64),
+    hash & 0x00ff_ffff
+}
+
+fn intent_storage_empty(storage: &IntentStorage) -> bool {
+    storage.sticky_prior.is_none() && storage.float.is_none()
+}
+
+/// Pack one three-valued intent choice into its two-bit code.
+const fn intent_option_code(value: Option<bool>) -> u64 {
+    match value {
+        None => 0,
+        Some(false) => 1,
+        Some(true) => 2,
     }
 }
 
-/// Sticky-float marker slot: absent is silent no-intent, a wrong value
-/// is logged no-intent, a failed read is diagnosed no-intent.
-/// Read-only. A recycled HWND starts without our property.
-pub fn peek_sticky_raw(hwnd_u64: u64) -> MarkerSlot {
-    read_prop_slot(hwnd_u64, STICKY_PROP)
+/// Unpack one two-bit intent code. `None` for the invalid code `3`.
+const fn intent_option_from_code(code: u64) -> Option<Option<bool>> {
+    match code {
+        0 => Some(None),
+        1 => Some(Some(false)),
+        2 => Some(Some(true)),
+        _ => None,
+    }
 }
 
-/// Intentional-float marker slot. Same honest absences as
-/// [`peek_sticky_raw`]. Registered test fakes read their scripted slot.
-pub fn peek_float_intent_raw(hwnd_u64: u64) -> MarkerSlot {
+/// Baseline `.v2` float lane: bit 2 is the explicit float intent and bit 3
+/// is the explicit tile override. Same live slot name, so the established
+/// bit patterns must keep their original meaning.
+const fn intent_float_code(value: Option<bool>) -> u64 {
+    match value {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    }
+}
+
+const fn intent_float_from_code(code: u64) -> Option<Option<bool>> {
+    match code {
+        0 => Some(None),
+        1 => Some(Some(true)),
+        2 => Some(Some(false)),
+        _ => None,
+    }
+}
+
+/// Encode one storage value into the packed slot's *stored* value
+/// (`encoded + 1`). `None` only on the representational overflow no valid
+/// bit pattern can reach; callers fail closed instead of wrapping.
+pub(crate) fn encode_intent_slot(
+    storage: &IntentStorage,
+    pid: u32,
+    process_creation: &str,
+    tag: &str,
+) -> Option<usize> {
+    let mut encoded = intent_option_code(storage.sticky_prior);
+    encoded |= intent_float_code(storage.float) << INTENT_FLOAT_SHIFT;
+    encoded |= u64::from(pid) << INTENT_PID_SHIFT;
+    encoded |= u64::from(intent_slot_hash(process_creation, tag)) << INTENT_HASH_SHIFT;
+    // A stored zero is never a valid slot, so every encoding adds one.
+    usize::try_from(encoded.checked_add(1)?).ok()
+}
+
+/// Decode one stored slot value for the live lifetime. `None` covers every
+/// corrupt or foreign-lifetime shape: stored zero, an invalid sticky or
+/// float code, a stray reserved bit, a different PID, or a different
+/// creation/tag hash. Callers read that as unreadable, never as absent.
+pub(crate) fn decode_intent_slot(
+    stored: usize,
+    pid: u32,
+    process_creation: &str,
+    tag: &str,
+) -> Option<IntentStorage> {
+    let encoded = u64::try_from(stored).ok()?.checked_sub(1)?;
+    if encoded & INTENT_RESERVED_MASK != 0 {
+        return None;
+    }
+    let sticky_prior = intent_option_from_code(encoded & INTENT_STICKY_MASK)?;
+    let float = intent_float_from_code((encoded & INTENT_FLOAT_MASK) >> INTENT_FLOAT_SHIFT)?;
+    if encoded & INTENT_PID_MASK != u64::from(pid) << INTENT_PID_SHIFT {
+        return None;
+    }
+    if encoded & INTENT_HASH_MASK
+        != u64::from(intent_slot_hash(process_creation, tag)) << INTENT_HASH_SHIFT
+    {
+        return None;
+    }
+    Some(IntentStorage {
+        sticky_prior,
+        float,
+    })
+}
+
+/// Resolve the exact live lifetime the packed slot binds to: the window's
+/// live PID, that process's creation stamp, and the live member tag. Any
+/// unverifiable read returns `None`; a slot that cannot be bound to a live
+/// lifetime is never trusted.
+fn intent_slot_identity(hwnd: u64) -> Option<(u32, String, String)> {
+    if !crate::ffi::is_window(hwnd) {
+        return None;
+    }
+    let pid = crate::ffi::window_pid(hwnd);
+    if pid == 0 {
+        return None;
+    }
+    let held = HeldProcess::open(pid).ok()?;
+    let identity = held.identity().ok()?;
+    if identity.pid != pid {
+        return None;
+    }
+    let tag = read_member_tag(hwnd).filter(|tag| !tag.is_empty())?;
+    Some((pid, identity.process_creation, tag))
+}
+
+/// Open the caller's expected lifetime and keep that process alive while the
+/// caller touches the window property: the HWND must be live, its live PID
+/// must equal `key.pid`, the held process must report `key.creation`, and the
+/// live member tag must equal `tag` (nonempty). Every mismatch fails closed.
+fn verified_slot_lifetime(
+    key: &crate::native_guards::WindowKey,
+    tag: &str,
+) -> Option<HeldProcess> {
+    if tag.is_empty() || !crate::ffi::is_window(key.hwnd) {
+        return None;
+    }
+    let pid = crate::ffi::window_pid(key.hwnd);
+    if pid == 0 || pid != key.pid {
+        return None;
+    }
+    let held = HeldProcess::open(pid).ok()?;
+    let identity = held.identity().ok()?;
+    if identity.pid != pid
+        || identity.process_creation != key.creation
+        || read_member_tag(key.hwnd).as_deref() != Some(tag)
+    {
+        return None;
+    }
+    Some(held)
+}
+
+/// Re-run the exact lifetime proof after the property access: the held
+/// process pins the creation stamp, and the live HWND must still resolve to
+/// `key.pid` and carry the same member tag. A window that died or was
+/// recycled mid-access fails closed with no value trusted.
+fn slot_lifetime_still_live(
+    key: &crate::native_guards::WindowKey,
+    tag: &str,
+    held: &HeldProcess,
+) -> bool {
+    held.identity().is_ok_and(|identity| {
+        identity.pid == key.pid && identity.process_creation == key.creation
+    }) && crate::ffi::is_window(key.hwnd)
+        && crate::ffi::window_pid(key.hwnd) == key.pid
+        && read_member_tag(key.hwnd).as_deref() == Some(tag)
+}
+
+/// Read the packed slot: `None` when the property is present but
+/// unverifiable (corrupt value, or bound to a different lifetime), never as
+/// absent. `Some(None)` is the canonical no-intent state (property absent),
+/// and `Some(Some(storage))` is a value proven against the live lifetime.
+/// Registered test fakes read their scripted per-lane marker tables.
+pub(crate) fn read_intent_slot(hwnd: u64) -> Option<Option<IntentStorage>> {
     #[cfg(test)]
-    if let Some(slot) = fake::peek_float_mark(hwnd_u64) {
-        return match slot {
-            Some(value) => MarkerSlot::Value(value),
-            None => MarkerSlot::Absent,
+    if fake::marker_active(hwnd) {
+        return fake_read_intent_slot(hwnd);
+    }
+    if !crate::ffi::is_window(hwnd) {
+        // Properties die with the window: nothing can be present to trust.
+        return Some(None);
+    }
+    let Some(stored) = crate::ffi::get_prop(hwnd, INTENT_SLOT_PROP) else {
+        return Some(None);
+    };
+    // The identity proof runs after the property read: a value fetched from a
+    // window that dies before the proof can only decode against the live
+    // lifetime, and a recycled window never carries the old tag.
+    let (pid, creation, tag) = intent_slot_identity(hwnd)?;
+    decode_intent_slot(stored, pid, &creation, &tag).map(Some)
+}
+
+/// Read the packed slot only for the caller's exact expected lifetime.
+/// `None` covers every stale, recycled, unreadable, or foreign shape
+/// (including an unverifiable window or process); `Some(None)` is the
+/// verified empty slot and `Some(Some(storage))` the verified value. The
+/// process is held and the identity/tag proof runs on both sides of the
+/// property read.
+pub(crate) fn read_intent_slot_for(
+    key: &crate::native_guards::WindowKey,
+    tag: &str,
+) -> Option<Option<IntentStorage>> {
+    let held = verified_slot_lifetime(key, tag)?;
+    let stored = crate::ffi::get_prop(key.hwnd, INTENT_SLOT_PROP);
+    if !slot_lifetime_still_live(key, tag, &held) {
+        return None;
+    }
+    match stored {
+        None => Some(None),
+        Some(stored) => decode_intent_slot(stored, key.pid, &key.creation, tag).map(Some),
+    }
+}
+
+/// Commit one whole packed storage value with exactly one slot mutation.
+///
+/// Empty storage removes the packed slot, so the removal is the single
+/// atomic commit and the old value stays readable if it fails. Non-empty
+/// storage performs one `set` and proves the readback. Split from the native
+/// calls so the transition order is testable with scripted effects.
+fn commit_intent_slot(
+    storage: IntentStorage,
+    identity: (u32, &str, &str),
+    set: impl FnOnce(usize) -> bool,
+    remove: impl FnOnce(),
+    read: impl FnOnce() -> Option<Option<IntentStorage>>,
+) -> std::result::Result<(), ()> {
+    let (pid, process_creation, tag) = identity;
+    if intent_storage_empty(&storage) {
+        remove();
+        return match read() {
+            Some(None) => Ok(()),
+            _ => Err(()),
         };
     }
-    read_prop_slot(hwnd_u64, FLOAT_INTENT_PROP)
-}
-
-/// Reserved tile-override marker slot (item 13 D7). No admission path
-/// reads it in item 8.
-#[allow(dead_code)]
-pub fn peek_tile_override_raw(hwnd_u64: u64) -> MarkerSlot {
-    read_prop_slot(hwnd_u64, TILE_OVERRIDE_PROP)
-}
-
-/// Fresh read of the sticky-float marker. `None` means not sticky:
-/// absent, unreadable, zero, or unknown values fail closed. Read-only.
-pub fn read_sticky_marker(hwnd_u64: u64) -> Option<bool> {
-    match peek_sticky_raw(hwnd_u64) {
-        MarkerSlot::Value(value) => crate::tiling::parse_sticky_marker(value),
-        MarkerSlot::Absent | MarkerSlot::Unreadable => None,
+    let stored = encode_intent_slot(&storage, pid, process_creation, tag).ok_or(())?;
+    if !set(stored) {
+        return Err(());
+    }
+    match read() {
+        Some(Some(back)) if back == storage => Ok(()),
+        _ => Err(()),
     }
 }
 
-/// Stamp the sticky-float marker for one verified managed window, then
-/// read it back. Only call after the caller bound the window to its
-/// expected full identity plus lifetime tag, scope, hosted-child, and
-/// proof fences. Overwrites only our own property name. A readback
-/// mismatch fails closed with no runtime map change and no removal.
-pub fn install_sticky_marker(hwnd_u64: u64, prior_floating: bool) -> Result<()> {
-    let value = crate::tiling::sticky_marker_value(prior_floating);
-    if !crate::ffi::set_prop(hwnd_u64, STICKY_PROP, value as usize) {
-        return Err(err("error: SetProp failed"));
+/// Write one whole intent storage into the packed lifetime-bound slot and
+/// prove the readback. One slot mutation runs per transition: one `SetProp`
+/// for non-empty storage, or one `RemoveProp` for the canonical empty state.
+/// Registered test fakes write their scripted per-lane marker tables.
+pub(crate) fn write_intent_slot(hwnd: u64, storage: IntentStorage) -> std::result::Result<(), ()> {
+    #[cfg(test)]
+    if fake::marker_active(hwnd) {
+        return fake_write_intent_slot(hwnd, storage);
     }
-    match read_sticky_marker(hwnd_u64) {
-        Some(back) if back == prior_floating => Ok(()),
-        _ => Err(err("error: sticky marker readback mismatch")),
-    }
-}
-
-/// Remove the sticky marker only when the live value still equals the
-/// expected pre-sticky state. Returns `true` when verifiably absent
-/// afterwards (removed or already absent), `false` when a different value
-/// owns the window now (never touch it). A failed read errors without
-/// mutating. Identity fencing stays with the caller.
-pub fn remove_sticky_marker(hwnd_u64: u64, expected_prior: bool) -> Result<bool> {
-    if !crate::ffi::is_window(hwnd_u64) {
-        return Ok(true);
-    }
-    match peek_sticky_raw(hwnd_u64) {
-        MarkerSlot::Absent => return Ok(true),
-        MarkerSlot::Unreadable => return Err(err("error: sticky marker read error")),
-        MarkerSlot::Value(value) => {
-            if crate::tiling::parse_sticky_marker(value) != Some(expected_prior) {
-                return Ok(false);
-            }
-        }
-    }
-    crate::ffi::remove_prop(hwnd_u64, STICKY_PROP);
-    match peek_sticky_raw(hwnd_u64) {
-        MarkerSlot::Absent => Ok(true),
-        MarkerSlot::Unreadable => Err(err("error: sticky marker read error")),
-        MarkerSlot::Value(_) => Err(err("error: sticky marker remove failed")),
-    }
-}
-
-/// Fresh read of the intentional-float marker. `true` only when the
-/// value parses (1); everything else fails closed. Read-only.
-pub fn read_float_intent_marker(hwnd_u64: u64) -> bool {
-    matches!(
-        peek_float_intent_raw(hwnd_u64),
-        MarkerSlot::Value(value)
-            if crate::tiling::parse_float_intent_marker(value).is_some()
+    let Some((pid, creation, tag)) = intent_slot_identity(hwnd) else {
+        return Err(());
+    };
+    commit_intent_slot(
+        storage,
+        (pid, &creation, &tag),
+        |stored| crate::ffi::set_prop(hwnd, INTENT_SLOT_PROP, stored),
+        || crate::ffi::remove_prop(hwnd, INTENT_SLOT_PROP),
+        || read_intent_slot(hwnd),
     )
 }
 
-/// Fresh read of the reserved tile-override marker. No admission path
-/// reads it in item 8.
-#[allow(dead_code)]
-pub fn read_tile_override_marker(hwnd_u64: u64) -> bool {
-    matches!(
-        peek_tile_override_raw(hwnd_u64),
-        MarkerSlot::Value(value)
-            if crate::tiling::parse_tile_override_marker(value).is_some()
-    )
+/// Write the packed slot only for the caller's exact expected lifetime and
+/// prove the readback. The process is held across the whole mutation so a
+/// process exit mid-write recycles the HWND and the readback proof fails;
+/// every stale, recycled, foreign, or unverifiable target fails closed with
+/// no trusted success.
+pub(crate) fn write_intent_slot_for(
+    key: &crate::native_guards::WindowKey,
+    tag: &str,
+    storage: IntentStorage,
+) -> std::result::Result<(), ()> {
+    let held = verified_slot_lifetime(key, tag).ok_or(())?;
+    let result = commit_intent_slot(
+        storage,
+        (key.pid, &key.creation, tag),
+        |stored| crate::ffi::set_prop(key.hwnd, INTENT_SLOT_PROP, stored),
+        || crate::ffi::remove_prop(key.hwnd, INTENT_SLOT_PROP),
+        || read_intent_slot_for(key, tag),
+    );
+    drop(held);
+    result
 }
 
-/// Stamp the intentional-float marker for one verified managed window,
-/// then read it back. Only call after the caller bound the window to its
-/// expected full identity plus lifetime tag, scope, hosted-child, and
-/// proof fences, and only after the native float circa Engine commit
-/// verified. A readback mismatch fails closed with no runtime map change
-/// and no removal.
-pub fn install_float_intent_marker(hwnd_u64: u64) -> Result<()> {
-    let value = crate::tiling::float_intent_marker_value();
-    #[cfg(test)]
-    if fake::active(hwnd_u64) {
-        if !fake::store_float_mark(hwnd_u64, value) {
-            return Err(err("error: SetProp failed"));
-        }
-        return match peek_float_intent_raw(hwnd_u64) {
-            MarkerSlot::Value(back) if crate::tiling::parse_float_intent_marker(back).is_some() => {
-                Ok(())
-            }
-            MarkerSlot::Unreadable => Err(err("error: float intent marker read error")),
-            _ => Err(err("error: float intent marker readback mismatch")),
-        };
-    }
-    if !crate::ffi::set_prop(hwnd_u64, FLOAT_INTENT_PROP, value as usize) {
-        return Err(err("error: SetProp failed"));
-    }
-    match peek_float_intent_raw(hwnd_u64) {
-        MarkerSlot::Value(back) if crate::tiling::parse_float_intent_marker(back).is_some() => {
-            Ok(())
-        }
-        MarkerSlot::Unreadable => Err(err("error: float intent marker read error")),
-        _ => Err(err("error: float intent marker readback mismatch")),
-    }
+/// Canonical intent read for integration proofs: the window's own live
+/// lifetime resolves the packed slot. `None` is an unverifiable (corrupt,
+/// foreign-lifetime, or unreadable) slot; `Some((None, None))` is the
+/// verified empty slot. Returns `(float, sticky_prior)` in canonical `v:1`
+/// order.
+pub fn read_window_intent(hwnd_u64: u64) -> Option<(Option<bool>, Option<bool>)> {
+    read_intent_slot(hwnd_u64)
+        .map(|slot| slot.map_or((None, None), |storage| (storage.float, storage.sticky_prior)))
 }
 
-/// Stamp the reserved tile-override marker, then read it back. Reserved
-/// for item 13 D7; no caller in item 8.
-#[allow(dead_code)]
-pub fn install_tile_override_marker(hwnd_u64: u64) -> Result<()> {
-    let value = crate::tiling::tile_override_marker_value();
-    if !crate::ffi::set_prop(hwnd_u64, TILE_OVERRIDE_PROP, value as usize) {
-        return Err(err("error: SetProp failed"));
-    }
-    match peek_tile_override_raw(hwnd_u64) {
-        MarkerSlot::Value(back) if crate::tiling::parse_tile_override_marker(back).is_some() => {
-            Ok(())
-        }
-        MarkerSlot::Unreadable => Err(err("error: tile override marker read error")),
-        _ => Err(err("error: tile override marker readback mismatch")),
-    }
+/// Canonical intent write for integration proofs: binds both canonical lanes
+/// to the window's own live lifetime (PID, process creation, member tag) and
+/// proves the readback. Fails closed when the window, its identity, or its
+/// member tag cannot be verified.
+pub fn write_window_intent(
+    hwnd_u64: u64,
+    float: Option<bool>,
+    sticky_prior: Option<bool>,
+) -> Result<()> {
+    write_intent_slot(hwnd_u64, IntentStorage { float, sticky_prior })
+        .map_err(|()| err("error: intent slot write failed"))
 }
 
-/// Remove the intentional-float marker on settled unfloat. Returns
-/// `Ok(())` when verifiably absent afterwards (removed, already absent,
-/// or a destroyed HWND); errors on a failed read or remove without
-/// mutating further. Corrupt residue on our own property name is
-/// cleaned under the caller's identity plus lifetime fences.
-pub fn remove_float_intent_marker(hwnd_u64: u64) -> Result<()> {
-    if !crate::ffi::is_window(hwnd_u64) {
-        return Ok(());
-    }
-    match peek_float_intent_raw(hwnd_u64) {
-        MarkerSlot::Absent => return Ok(()),
-        MarkerSlot::Unreadable => {
-            return Err(err("error: float intent marker read error"));
+/// Reconstruct canonical storage from the scripted per-lane marker tables.
+/// The fake lane stands in for the window property table, so the same
+/// three-valued mapping as the packed slot applies: float `Some(true)` is the
+/// float-intent marker, float `Some(false)` the tile-override marker, and a
+/// conflicting or corrupt present value is unreadable (`None`), never absent.
+#[cfg(test)]
+fn fake_read_intent_slot(hwnd: u64) -> Option<Option<IntentStorage>> {
+    let sticky_prior = match fake::peek_sticky_mark(hwnd)? {
+        None => None,
+        Some(value) => Some(crate::tiling::parse_sticky_marker(value)?),
+    };
+    let float = match (
+        fake::peek_float_mark(hwnd).flatten(),
+        fake::peek_tile_mark(hwnd).flatten(),
+    ) {
+        (None, None) => None,
+        (Some(value), None) => {
+            Some(crate::tiling::parse_float_intent_marker(value).map(|()| true)?)
         }
-        MarkerSlot::Value(_) => {}
-    }
-    crate::ffi::remove_prop(hwnd_u64, FLOAT_INTENT_PROP);
-    match peek_float_intent_raw(hwnd_u64) {
-        MarkerSlot::Absent => Ok(()),
-        MarkerSlot::Unreadable => Err(err("error: float intent marker read error")),
-        MarkerSlot::Value(_) => Err(err("error: float intent marker remove failed")),
-    }
+        (None, Some(value)) => {
+            Some(crate::tiling::parse_tile_override_marker(value).map(|()| false)?)
+        }
+        (Some(_), Some(_)) => return None,
+    };
+    let storage = IntentStorage {
+        sticky_prior,
+        float,
+    };
+    Some(if intent_storage_empty(&storage) {
+        None
+    } else {
+        Some(storage)
+    })
 }
 
-/// Remove the reserved tile-override marker. Reserved for item 13 D7;
-/// no caller in item 8.
-#[allow(dead_code)]
-pub fn remove_tile_override_marker(hwnd_u64: u64) -> Result<()> {
-    if !crate::ffi::is_window(hwnd_u64) {
-        return Ok(());
-    }
-    match peek_tile_override_raw(hwnd_u64) {
-        MarkerSlot::Absent => return Ok(()),
-        MarkerSlot::Unreadable => {
-            return Err(err("error: tile override marker read error"));
-        }
-        MarkerSlot::Value(_) => {}
-    }
-    crate::ffi::remove_prop(hwnd_u64, TILE_OVERRIDE_PROP);
-    match peek_tile_override_raw(hwnd_u64) {
-        MarkerSlot::Absent => Ok(()),
-        MarkerSlot::Unreadable => Err(err("error: tile override marker read error")),
-        MarkerSlot::Value(_) => Err(err("error: tile override marker remove failed")),
+/// Test-only packed-slot write over the scripted marker tables: a synthetic
+/// HWND has no real lifetime to bind, so the fake lane applies both lanes to
+/// the same tables [`fake_read_intent_slot`] (and therefore the peeks) reads,
+/// then proves the readback against those values. Production semantics are
+/// untouched; every store/remove must report success or the transition
+/// fails.
+#[cfg(test)]
+fn fake_write_intent_slot(hwnd: u64, storage: IntentStorage) -> std::result::Result<(), ()> {
+    let sticky_ok = match storage.sticky_prior {
+        Some(prior) => fake::store_sticky_mark(hwnd, crate::tiling::sticky_marker_value(prior)),
+        None => fake::remove_sticky_mark(hwnd),
+    };
+    let (float_ok, tile_ok) = match storage.float {
+        Some(true) => (
+            fake::store_float_mark(hwnd, crate::tiling::float_intent_marker_value()),
+            fake::remove_tile_mark(hwnd),
+        ),
+        Some(false) => (
+            fake::remove_float_mark(hwnd),
+            fake::store_tile_mark(hwnd, crate::tiling::tile_override_marker_value()),
+        ),
+        None => (fake::remove_float_mark(hwnd), fake::remove_tile_mark(hwnd)),
+    };
+    let expected = if intent_storage_empty(&storage) {
+        Some(None)
+    } else {
+        Some(Some(storage))
+    };
+    if sticky_ok && float_ok && tile_ok && fake_read_intent_slot(hwnd) == expected {
+        Ok(())
+    } else {
+        Err(())
     }
 }
 
@@ -1391,7 +1601,9 @@ pub fn classify_candidate_for_hide(
     if crate::ffi::owner_of(hwnd_u64) != 0 {
         return CandidateStatus::Refused("owned-dialog");
     }
-    let ex = crate::ffi::window_exstyle(hwnd_u64);
+    let Some(ex) = crate::ffi::window_exstyle_checked(hwnd_u64) else {
+        return CandidateStatus::Uncertain;
+    };
     if ex & WS_EX_TOOLWINDOW != 0 {
         return CandidateStatus::Refused("tool");
     }
@@ -2077,10 +2289,6 @@ pub(crate) mod fake {
     pub(crate) struct FakeWindow {
         pub pid: u32,
         pub process: ProcessIdentity,
-        /// Scripted target integrity RID standing in for the OS token
-        /// read: the fake-branch gates consume it with the real
-        /// medium predicate, never the ambient runner level.
-        pub integrity_rid: u32,
         pub nonce: Option<String>,
         pub member_tag: Option<String>,
         pub visible: bool,
@@ -2112,6 +2320,20 @@ pub(crate) mod fake {
         /// marker install/peek roundtrips run offline; unregistered HWNDs
         /// fall through to the OS exactly as before.
         static FLOAT_MARKS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+        /// Scripted sticky-float marker slots by HWND (same shape as
+        /// [`FLOAT_MARKS`]): the sticky property stores the prior-float
+        /// value the durable intent record carries.
+        static STICKY_MARKS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+        /// Scripted tile-override marker slots by HWND (same shape as
+        /// [`FLOAT_MARKS`]); presence means the explicit tile win owns the
+        /// window.
+        static TILE_MARKS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+        /// HWNDs with scripted marker slots only: the rest of the native
+        /// surface stays with the caller's primitives. Lets fixtures that
+        /// script everything else through their own tables still exercise
+        /// the marker install/read-back lane offline.
+        static MARK_ONLY: RefCell<std::collections::HashSet<u64>> =
+            RefCell::new(std::collections::HashSet::new());
     }
 
     pub(crate) fn any_registered() -> bool {
@@ -2131,6 +2353,9 @@ pub(crate) mod fake {
     pub(crate) fn unregister_all() {
         WINDOWS.with(|map| map.borrow_mut().clear());
         FLOAT_MARKS.with(|map| map.borrow_mut().clear());
+        STICKY_MARKS.with(|map| map.borrow_mut().clear());
+        TILE_MARKS.with(|map| map.borrow_mut().clear());
+        MARK_ONLY.with(|set| set.borrow_mut().clear());
         POST_LOG.with(|log| log.borrow_mut().clear());
         POST_MODE_LOG.with(|log| log.borrow_mut().clear());
         SNAPSHOT_LOG.with(|log| log.borrow_mut().clear());
@@ -2139,6 +2364,25 @@ pub(crate) mod fake {
 
     pub(crate) fn active(hwnd: u64) -> bool {
         WINDOWS.with(|map| map.borrow().contains_key(&hwnd))
+    }
+
+    /// Test-only marker-only registration: the HWND owns scripted marker
+    /// slots without standing in for any other OS read. Fixtures script
+    /// the rest of the native surface through their own tables.
+    pub(crate) fn register_marks(hwnd: u64) {
+        MARK_ONLY.with(|set| {
+            set.borrow_mut().insert(hwnd);
+        });
+    }
+
+    pub(crate) fn clear_marks() {
+        MARK_ONLY.with(|set| set.borrow_mut().clear());
+    }
+
+    /// Scripted marker slots exist for full fakes and marker-only
+    /// registrations alike.
+    pub(crate) fn marker_active(hwnd: u64) -> bool {
+        active(hwnd) || MARK_ONLY.with(|set| set.borrow().contains(&hwnd))
     }
 
     pub(crate) fn with<R>(hwnd: u64, f: impl FnOnce(&FakeWindow) -> R) -> Option<R> {
@@ -2154,7 +2398,7 @@ pub(crate) mod fake {
     /// value present, `None` absent, including destroyed fakes whose
     /// markers die with the window).
     pub(crate) fn peek_float_mark(hwnd: u64) -> Option<Option<u64>> {
-        if !active(hwnd) {
+        if !marker_active(hwnd) {
             return None;
         }
         Some(FLOAT_MARKS.with(|map| map.borrow().get(&hwnd).copied()))
@@ -2164,15 +2408,85 @@ pub(crate) mod fake {
     /// OS (unregistered HWND) or mirrors a failed `SetProp` (destroyed
     /// fake); `true` stores and reads back through the same table.
     pub(crate) fn store_float_mark(hwnd: u64, value: u64) -> bool {
-        if !active(hwnd) {
+        store_mark(&FLOAT_MARKS, hwnd, value)
+    }
+
+    /// Scripted sticky-float marker read: same contract as
+    /// [`Self::peek_float_mark`].
+    pub(crate) fn peek_sticky_mark(hwnd: u64) -> Option<Option<u64>> {
+        if !marker_active(hwnd) {
+            return None;
+        }
+        Some(STICKY_MARKS.with(|map| map.borrow().get(&hwnd).copied()))
+    }
+
+    /// Scripted sticky-float marker write: same contract as
+    /// [`Self::store_float_mark`].
+    pub(crate) fn store_sticky_mark(hwnd: u64, value: u64) -> bool {
+        store_mark(&STICKY_MARKS, hwnd, value)
+    }
+
+    /// Scripted tile-override marker read: same contract as
+    /// [`Self::peek_float_mark`].
+    pub(crate) fn peek_tile_mark(hwnd: u64) -> Option<Option<u64>> {
+        if !marker_active(hwnd) {
+            return None;
+        }
+        Some(TILE_MARKS.with(|map| map.borrow().get(&hwnd).copied()))
+    }
+
+    /// Scripted tile-override marker write: same contract as
+    /// [`Self::store_float_mark`].
+    pub(crate) fn store_tile_mark(hwnd: u64, value: u64) -> bool {
+        store_mark(&TILE_MARKS, hwnd, value)
+    }
+
+    /// Scripted marker removal: `true` when verifiably absent afterwards
+    /// (removed or already absent), `false` for an unregistered HWND so
+    /// the caller falls through to the OS.
+    pub(crate) fn remove_sticky_mark(hwnd: u64) -> bool {
+        remove_mark(&STICKY_MARKS, hwnd)
+    }
+
+    pub(crate) fn remove_tile_mark(hwnd: u64) -> bool {
+        remove_mark(&TILE_MARKS, hwnd)
+    }
+
+    pub(crate) fn remove_float_mark(hwnd: u64) -> bool {
+        remove_mark(&FLOAT_MARKS, hwnd)
+    }
+
+    fn store_mark(
+        table: &'static std::thread::LocalKey<RefCell<HashMap<u64, u64>>>,
+        hwnd: u64,
+        value: u64,
+    ) -> bool {
+        if !marker_active(hwnd) {
             return false;
         }
-        if with(hwnd, |w| w.alive).unwrap_or(false) {
-            FLOAT_MARKS.with(|map| map.borrow_mut().insert(hwnd, value));
+        let alive = if active(hwnd) {
+            with(hwnd, |w| w.alive).unwrap_or(false)
+        } else {
+            // Marker-only registrations are test-trusted live slots.
+            true
+        };
+        if alive {
+            table.with(|map| map.borrow_mut().insert(hwnd, value));
             true
         } else {
             false
         }
+    }
+
+    fn remove_mark(
+        table: &'static std::thread::LocalKey<RefCell<HashMap<u64, u64>>>,
+        hwnd: u64,
+    ) -> bool {
+        if !marker_active(hwnd) {
+            return false;
+        }
+        table.with(|map| map.borrow_mut().remove(&hwnd));
+        true
     }
 
     pub(crate) fn record_post(hwnd: u64, hide: bool, pumped: bool) {
@@ -2241,12 +2555,19 @@ pub(crate) mod fake {
 #[cfg(test)]
 mod mode_tests {
     use super::fake::{self, FakeWindow};
-    use super::{VisibilityMode, hide_managed_claim_with_mode, reveal_product_claim_to_with_mode};
+    use super::{
+        INTENT_FLOAT_MASK, INTENT_FLOAT_SHIFT, INTENT_HASH_SHIFT, INTENT_PID_MASK,
+        INTENT_PID_SHIFT, INTENT_RESERVED_MASK, INTENT_STICKY_MASK, VisibilityMode,
+        commit_intent_slot, decode_intent_slot, encode_intent_slot,
+        hide_managed_claim_with_mode, reveal_product_claim_to_with_mode,
+    };
     use crate::model::{
         LEDGER_SCHEMA_VERSION, ProcessIdentity, RecoveryLedger, WindowClaimKind, WindowIdentity,
         WindowShowState,
     };
     use crate::storage::LedgerStore;
+    use crate::tiling_sys::IntentStorage;
+    use std::cell::{Cell, RefCell};
     use std::path::PathBuf;
 
     const TAG: &str = "abcdef0123456789";
@@ -2306,7 +2627,6 @@ mod mode_tests {
             FakeWindow {
                 pid: 4242,
                 process: target_process(),
-                integrity_rid: 0x2000,
                 nonce,
                 member_tag: Some("member-tag-1".to_owned()),
                 visible,
@@ -2475,7 +2795,6 @@ mod mode_tests {
             FakeWindow {
                 pid: 4242,
                 process: target_process(),
-                integrity_rid: 0x2000,
                 nonce: Some(TAG.to_owned()),
                 member_tag: Some("member-tag-1".to_owned()),
                 visible: true,
@@ -2612,5 +2931,478 @@ mod mode_tests {
         assert_eq!(rows.len(), MAX_VISIBILITY_POSTS);
         assert_eq!(total, MAX_VISIBILITY_POSTS + 3);
         assert_eq!(rows[0].hwnd, 9200);
+    }
+
+    // ---- one packed lifetime-bound intent slot (D1/D2) ----
+
+    const SLOT_PID: u32 = 4242;
+    const SLOT_CREATION: &str = "create-slot";
+
+    fn slot_storage(sticky: Option<bool>, float: Option<bool>) -> IntentStorage {
+        IntentStorage {
+            sticky_prior: sticky,
+            float,
+        }
+    }
+
+    /// Scripted slot table stand-in for the native window property: `None`
+    /// is an absent property, `Some(stored)` is present. Decoding against
+    /// the fixed test lifetime mirrors [`super::read_intent_slot_for`].
+    fn read_scripted(table: &RefCell<Option<usize>>) -> Option<Option<IntentStorage>> {
+        match *table.borrow() {
+            None => Some(None),
+            Some(stored) => decode_intent_slot(stored, SLOT_PID, SLOT_CREATION, TAG).map(Some),
+        }
+    }
+
+    #[test]
+    fn intent_slot_round_trips_all_nine_states() {
+        let mut distinct = Vec::new();
+        for sticky in [None, Some(false), Some(true)] {
+            for float in [None, Some(false), Some(true)] {
+                let storage = slot_storage(sticky, float);
+                let stored = encode_intent_slot(&storage, SLOT_PID, SLOT_CREATION, TAG)
+                    .expect("every valid storage encodes");
+                assert_ne!(stored, 0, "a stored zero is never a valid slot");
+                assert_eq!(
+                    decode_intent_slot(stored, SLOT_PID, SLOT_CREATION, TAG),
+                    Some(storage),
+                    "round trip for {storage:?}"
+                );
+                distinct.push(stored);
+            }
+        }
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            9,
+            "all nine float x sticky states encode distinctly"
+        );
+    }
+
+    #[test]
+    fn intent_slot_layout_pins_two_bits_per_lane() {
+        let stored = encode_intent_slot(
+            &slot_storage(Some(true), Some(false)),
+            SLOT_PID,
+            SLOT_CREATION,
+            TAG,
+        )
+        .expect("encodes");
+        let encoded = u64::try_from(stored).expect("64-bit") - 1;
+        assert_eq!(encoded & INTENT_STICKY_MASK, 2, "sticky(true) is code 2");
+        assert_eq!(
+            (encoded & INTENT_FLOAT_MASK) >> INTENT_FLOAT_SHIFT,
+            2,
+            "float(false), the tile override, is code 2 (bit 3)"
+        );
+        let float_true = encode_intent_slot(
+            &slot_storage(None, Some(true)),
+            SLOT_PID,
+            SLOT_CREATION,
+            TAG,
+        )
+        .expect("encodes");
+        let float_true = u64::try_from(float_true).expect("64-bit") - 1;
+        assert_eq!(
+            (float_true & INTENT_FLOAT_MASK) >> INTENT_FLOAT_SHIFT,
+            1,
+            "float(true), the explicit float, is code 1 (bit 2)"
+        );
+        assert_eq!(encoded & INTENT_RESERVED_MASK, 0, "reserved bits stay zero");
+        assert_eq!(
+            encoded & INTENT_PID_MASK,
+            u64::from(SLOT_PID) << INTENT_PID_SHIFT
+        );
+    }
+
+    #[test]
+    fn legacy_v2_raw_bit_patterns_recover_the_same_intent() {
+        // The packed slot keeps the `.v2` property name, so values written
+        // by the baseline encoder must keep their meaning: bit 2 is the
+        // explicit float true and bit 3 the explicit tile override, while
+        // the sticky lane's 1/2 stay ex-tiled/ex-float.
+        let base = (u64::from(SLOT_PID) << INTENT_PID_SHIFT)
+            | (u64::from(super::intent_slot_hash(SLOT_CREATION, TAG)) << INTENT_HASH_SHIFT);
+        let decode = |bits: u64| {
+            let stored = usize::try_from(bits + 1).expect("legacy bits fit");
+            decode_intent_slot(stored, SLOT_PID, SLOT_CREATION, TAG)
+        };
+        assert_eq!(
+            decode(base | (1 << INTENT_FLOAT_SHIFT)),
+            Some(slot_storage(None, Some(true))),
+            "legacy bit 2 is the explicit float true"
+        );
+        assert_eq!(
+            decode(base | (2 << INTENT_FLOAT_SHIFT)),
+            Some(slot_storage(None, Some(false))),
+            "legacy bit 3 is the explicit tile override"
+        );
+        assert_eq!(
+            decode(base | 1),
+            Some(slot_storage(Some(false), None)),
+            "sticky lane 1 stays ex-tiled"
+        );
+        assert_eq!(
+            decode(base | 2),
+            Some(slot_storage(Some(true), None)),
+            "sticky lane 2 stays ex-float"
+        );
+        assert_eq!(
+            decode(base | 1 | (1 << INTENT_FLOAT_SHIFT)),
+            Some(slot_storage(Some(false), Some(true))),
+            "legacy combined sticky + float patterns stay decodable"
+        );
+        assert_eq!(
+            decode(base | 2 | (2 << INTENT_FLOAT_SHIFT)),
+            Some(slot_storage(Some(true), Some(false))),
+            "legacy combined sticky + tile patterns stay decodable"
+        );
+        assert_eq!(
+            decode(base | (3 << INTENT_FLOAT_SHIFT)),
+            None,
+            "the legacy both-bit float shape was never a valid intent"
+        );
+    }
+
+    #[test]
+    fn intent_slot_foreign_pid_or_lifetime_reads_unreadable() {
+        let storage = slot_storage(Some(true), Some(true));
+        let stored =
+            encode_intent_slot(&storage, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
+        assert_eq!(
+            decode_intent_slot(stored, SLOT_PID + 1, SLOT_CREATION, TAG),
+            None,
+            "wrong pid is unreadable"
+        );
+        assert_eq!(
+            decode_intent_slot(stored, SLOT_PID, "other-creation", TAG),
+            None,
+            "wrong process creation is unreadable"
+        );
+        assert_eq!(
+            decode_intent_slot(stored, SLOT_PID, SLOT_CREATION, "fedcba9876543210"),
+            None,
+            "wrong member tag is unreadable"
+        );
+        assert_ne!(
+            decode_intent_slot(stored, SLOT_PID + 1, SLOT_CREATION, TAG),
+            Some(IntentStorage::default()),
+            "a foreign lifetime never reads as canonical no-intent"
+        );
+    }
+
+    #[test]
+    fn intent_slot_corrupt_code_or_zero_reads_unreadable() {
+        assert_eq!(
+            decode_intent_slot(0, SLOT_PID, SLOT_CREATION, TAG),
+            None,
+            "the never-stored zero value is corrupt"
+        );
+        let storage = slot_storage(Some(false), Some(true));
+        let stored = encode_intent_slot(&storage, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
+        let encoded = u64::try_from(stored).expect("64-bit") - 1;
+
+        let sticky3 = (encoded & !INTENT_STICKY_MASK) | 0b11;
+        assert_eq!(
+            decode_intent_slot(usize::try_from(sticky3 + 1).expect("fits"), SLOT_PID, SLOT_CREATION, TAG),
+            None,
+            "sticky code 3 is invalid"
+        );
+
+        let float3 = (encoded & !INTENT_FLOAT_MASK) | (0b11 << INTENT_FLOAT_SHIFT);
+        assert_eq!(
+            decode_intent_slot(usize::try_from(float3 + 1).expect("fits"), SLOT_PID, SLOT_CREATION, TAG),
+            None,
+            "float code 3 is invalid"
+        );
+
+        let reserved = usize::try_from(encoded | 0x10).expect("fits");
+        assert_eq!(
+            decode_intent_slot(reserved + 1, SLOT_PID, SLOT_CREATION, TAG),
+            None,
+            "a stray reserved bit is corrupt"
+        );
+
+        let foreign_hash = usize::try_from(encoded ^ (1 << 40)).expect("fits");
+        assert_eq!(
+            decode_intent_slot(foreign_hash + 1, SLOT_PID, SLOT_CREATION, TAG),
+            None,
+            "a foreign creation/tag hash is unreadable"
+        );
+    }
+
+    #[test]
+    fn intent_slot_transition_rewrites_all_bits_in_one_set() {
+        let table = RefCell::new(None);
+        let sets = Cell::new(0u32);
+        let removes = Cell::new(0u32);
+        let commit = |desired: IntentStorage| {
+            commit_intent_slot(
+                desired,
+                (SLOT_PID, SLOT_CREATION, TAG),
+                |stored| {
+                    sets.set(sets.get() + 1);
+                    *table.borrow_mut() = Some(stored);
+                    true
+                },
+                || {
+                    removes.set(removes.get() + 1);
+                    *table.borrow_mut() = None;
+                },
+                || read_scripted(&table),
+            )
+        };
+
+        commit(slot_storage(Some(false), None)).expect("install sticky");
+        let before = u64::try_from(table.borrow().expect("slot present")).expect("64-bit") - 1;
+        sets.set(0);
+
+        commit(slot_storage(None, Some(true))).expect("one rewrite to float");
+        assert_eq!(sets.get(), 1, "exactly one native set per transition");
+        assert_eq!(removes.get(), 0, "no remove on a non-empty transition");
+        let after = u64::try_from(table.borrow().expect("slot present")).expect("64-bit") - 1;
+        assert_ne!(
+            before & 0b11,
+            after & 0b11,
+            "sticky code changed in the same write"
+        );
+        assert_eq!(
+            (after & INTENT_FLOAT_MASK) >> INTENT_FLOAT_SHIFT,
+            1,
+            "float(true), the explicit float, moved into the float lane in the same write"
+        );
+        assert_eq!(
+            read_scripted(&table),
+            Some(Some(slot_storage(None, Some(true))))
+        );
+    }
+
+    #[test]
+    fn intent_slot_failed_set_keeps_previous_storage() {
+        let previous = slot_storage(Some(true), Some(true));
+        let stored =
+            encode_intent_slot(&previous, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
+        let table = RefCell::new(Some(stored));
+        let set_calls = Cell::new(0u32);
+        let result = commit_intent_slot(
+            slot_storage(None, Some(false)),
+            (SLOT_PID, SLOT_CREATION, TAG),
+            |_| {
+                set_calls.set(set_calls.get() + 1);
+                false
+            },
+            || panic!("the empty branch must not run"),
+            || read_scripted(&table),
+        );
+        assert_eq!(result, Err(()), "a refused SetProp fails the transition");
+        assert_eq!(set_calls.get(), 1, "exactly one attempted set");
+        assert_eq!(
+            read_scripted(&table),
+            Some(Some(previous)),
+            "the previous storage stays readable and unchanged"
+        );
+    }
+
+    #[test]
+    fn intent_slot_empty_transition_removes_the_single_slot() {
+        let stored = encode_intent_slot(
+            &slot_storage(None, Some(true)),
+            SLOT_PID,
+            SLOT_CREATION,
+            TAG,
+        )
+        .expect("encodes");
+        let table = RefCell::new(Some(stored));
+        let remove_calls = Cell::new(0u32);
+        let result = commit_intent_slot(
+            IntentStorage::default(),
+            (SLOT_PID, SLOT_CREATION, TAG),
+            |_| panic!("an empty transition never sets"),
+            || {
+                remove_calls.set(remove_calls.get() + 1);
+                *table.borrow_mut() = None;
+            },
+            || read_scripted(&table),
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(remove_calls.get(), 1, "the slot removal is the single commit");
+        assert_eq!(read_scripted(&table), Some(None));
+    }
+
+    #[test]
+    fn intent_slot_empty_transition_fails_when_removal_does_not_verify() {
+        let previous = slot_storage(None, Some(true));
+        let stored =
+            encode_intent_slot(&previous, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
+        let table = RefCell::new(Some(stored));
+        let result = commit_intent_slot(
+            IntentStorage::default(),
+            (SLOT_PID, SLOT_CREATION, TAG),
+            |_| panic!("an empty transition never sets"),
+            || {},
+            || read_scripted(&table),
+        );
+        assert_eq!(result, Err(()), "an unverified removal is never success");
+        assert_eq!(
+            read_scripted(&table),
+            Some(Some(previous)),
+            "the previous storage stays readable"
+        );
+    }
+
+    fn live_intent_window() -> (crate::ffi::TestWindow, crate::model::ProcessIdentity, String) {
+        let window = crate::ffi::TestWindow::create_message_only(
+            "OmniTiler.IntentSlotTest",
+            "intent-slot",
+        )
+        .expect("message-only test window creates");
+        let me = crate::native::current_identity().expect("current identity reads");
+        let tag = super::install_member_tag(window.hwnd(), me.pid).expect("member tag installs");
+        (window, me, tag)
+    }
+
+    fn live_intent_key(
+        hwnd: u64,
+        me: &crate::model::ProcessIdentity,
+    ) -> crate::native_guards::WindowKey {
+        crate::native_guards::WindowKey {
+            hwnd,
+            pid: me.pid,
+            creation: me.process_creation.clone(),
+        }
+    }
+
+    #[test]
+    fn intent_slot_for_rejects_foreign_pid_creation_and_tag() {
+        let (window, me, tag) = live_intent_window();
+        let key = live_intent_key(window.hwnd(), &me);
+        let storage = slot_storage(Some(true), Some(false));
+        super::write_intent_slot_for(&key, &tag, storage).expect("exact lifetime writes");
+        assert_eq!(
+            super::read_intent_slot_for(&key, &tag),
+            Some(Some(storage)),
+            "the exact lifetime reads its own slot"
+        );
+
+        let wrong_pid = crate::native_guards::WindowKey {
+            pid: key.pid.wrapping_add(1),
+            ..key.clone()
+        };
+        assert_eq!(
+            super::read_intent_slot_for(&wrong_pid, &tag),
+            None,
+            "a foreign pid never reads the slot"
+        );
+        let wrong_creation = crate::native_guards::WindowKey {
+            creation: "create-other".to_owned(),
+            ..key.clone()
+        };
+        assert_eq!(
+            super::read_intent_slot_for(&wrong_creation, &tag),
+            None,
+            "a foreign creation stamp never reads the slot"
+        );
+        assert_eq!(
+            super::read_intent_slot_for(&key, "fedcba9876543210"),
+            None,
+            "a foreign member tag never reads the slot"
+        );
+        // A write under a foreign expectation fails closed and never mutates.
+        assert!(
+            super::write_intent_slot_for(&key, "fedcba9876543210", IntentStorage::default())
+                .is_err(),
+            "a foreign tag never writes"
+        );
+        assert!(
+            super::write_intent_slot_for(&wrong_pid, &tag, IntentStorage::default()).is_err(),
+            "a foreign pid never writes"
+        );
+        assert_eq!(
+            super::read_intent_slot_for(&key, &tag),
+            Some(Some(storage)),
+            "refused writes leave the slot untouched"
+        );
+    }
+
+    #[test]
+    fn intent_slot_for_never_trusts_a_replaced_lifetime_tag() {
+        let (window, me, tag) = live_intent_window();
+        let key = live_intent_key(window.hwnd(), &me);
+        let old = slot_storage(None, Some(true));
+        super::write_intent_slot_for(&key, &tag, old).expect("writes under the first tag");
+        let replacement = super::install_member_tag(window.hwnd(), me.pid)
+            .expect("replacement tag installs");
+        assert_ne!(replacement, tag);
+        assert_eq!(
+            super::read_intent_slot_for(&key, &tag),
+            None,
+            "the stale tag never reads the replaced lifetime's slot"
+        );
+        assert_eq!(
+            super::read_intent_slot_for(&key, &replacement),
+            None,
+            "the surviving slot stays bound to the dead tag, not the new one"
+        );
+        assert!(
+            super::write_intent_slot_for(&key, &tag, IntentStorage::default()).is_err(),
+            "a stale-tag write fails closed"
+        );
+        // The new lifetime can only own a fresh value, never the old one.
+        let fresh = slot_storage(Some(false), None);
+        super::write_intent_slot_for(&key, &replacement, fresh).expect("new tag writes");
+        assert_eq!(
+            super::read_intent_slot_for(&key, &replacement),
+            Some(Some(fresh))
+        );
+    }
+
+    #[test]
+    fn intent_slot_for_rejects_a_destroyed_window() {
+        let (window, me, tag) = live_intent_window();
+        let key = live_intent_key(window.hwnd(), &me);
+        super::write_intent_slot_for(&key, &tag, slot_storage(None, Some(true)))
+            .expect("writes on the live window");
+        drop(window);
+        assert_eq!(
+            super::read_intent_slot_for(&key, &tag),
+            None,
+            "a destroyed window never reads a slot"
+        );
+        assert!(
+            super::write_intent_slot_for(&key, &tag, IntentStorage::default()).is_err(),
+            "a destroyed window never writes"
+        );
+    }
+
+    #[test]
+    fn retired_v1_markers_never_fall_back_to_intent() {
+        let (window, me, _tag) = live_intent_window();
+        assert!(crate::ffi::set_prop(
+            window.hwnd(),
+            "OmniTiler.Sticky.v1",
+            usize::try_from(crate::tiling::sticky_marker_value(true)).expect("fits")
+        ));
+        assert!(crate::ffi::set_prop(
+            window.hwnd(),
+            "OmniTiler.FloatIntent.v1",
+            usize::try_from(crate::tiling::float_intent_marker_value()).expect("fits")
+        ));
+        assert!(crate::ffi::set_prop(
+            window.hwnd(),
+            "OmniTiler.TileOverride.v1",
+            usize::try_from(crate::tiling::tile_override_marker_value()).expect("fits")
+        ));
+        assert_eq!(
+            super::read_intent_slot(window.hwnd()),
+            Some(None),
+            "pre-upgrade residue is never intent (D1)"
+        );
+        assert_eq!(
+            super::read_intent_slot_for(&live_intent_key(window.hwnd(), &me), ""),
+            None,
+            "an empty expected tag never reads"
+        );
     }
 }

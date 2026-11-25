@@ -424,13 +424,15 @@ fn build_report(
 }
 
 fn stop_requested(dir: &Path, owner_creation: &str) -> std::result::Result<bool, String> {
-    match std::fs::read_to_string(dir.join(crate::lifecycle::STOP_REQUEST_FILE)) {
-        Ok(text) => Ok(crate::lifecycle::stop_request_matches(
-            &text,
-            owner_creation,
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(format!("error: stop read: {e}")),
+    match crate::tiling::read_control_request(&dir.join(crate::lifecycle::STOP_REQUEST_FILE)) {
+        crate::tiling::ControlRequestRead::Body(text) => {
+            Ok(crate::lifecycle::stop_request_matches(&text, owner_creation))
+        }
+        crate::tiling::ControlRequestRead::Missing => Ok(false),
+        crate::tiling::ControlRequestRead::Rejected => Ok(false),
+        crate::tiling::ControlRequestRead::Unreadable => {
+            Err("error: stop read: unreadable".to_owned())
+        }
     }
 }
 

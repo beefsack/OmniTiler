@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+use super::world_diff::StateWrite;
 use super::*;
 
 /// Style bits the project-owned fullscreen toggle clears on entry
@@ -147,7 +148,7 @@ fn remove_fullscreen_meta_props(hwnd: HWND) {
 /// A partial `SetProp` sequence cleans up before returning false, so a later
 /// press never mistakes residue for an owned preimage. Non-maximized entries
 /// always carry their pre-fullscreen frame; maximized entries carry none.
-fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
+pub(super) fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
     let hwnd = hwnd_u64 as isize as HWND;
     if !crate::ffi::is_window(hwnd_u64) {
         return false;
@@ -200,109 +201,175 @@ pub(super) fn clear_fullscreen_meta(hwnd_u64: u64) -> bool {
     read_fullscreen_meta(hwnd_u64).is_none()
 }
 
-/// Live style read for stale-metadata retirement: `None` when the window is
-/// dead or the style word is unreadable (fail closed, never guessed).
-pub(super) fn live_style_for_retire(hwnd_u64: u64) -> Option<u32> {
-    if !crate::ffi::is_window(hwnd_u64) {
-        return None;
-    }
-    crate::ffi::window_style_checked(hwnd_u64)
+/// Maximum excess tolerated between a maximized visible frame and its work
+/// area: a frame that still covers the full monitor (the fullscreen
+/// rectangle) exceeds the work area by the taskbar strip, so a couple of
+/// pixels absorb rounding while that failure can never pass.
+const MAXIMIZED_WORK_AREA_EXCESS_PX: i32 = 2;
+/// Maximum inset tolerated on each edge: DWM excludes the invisible resize
+/// border on a manually placed maximized window (~8 logical pixels), so a
+/// larger allowance still refuses a genuinely smaller frame.
+const MAXIMIZED_WORK_AREA_INSET_PX: i32 = 24;
+
+/// Pure work-area match for one maximized visible frame: the frame must lie
+/// within its work area (no taskbar overlap) and must still fill it except
+/// for a small border inset. Used only for a positive post-maximize proof;
+/// a full-monitor frame, a pending maximize frame, or a genuinely smaller
+/// frame refuses.
+pub(super) fn frame_settled_on_work_area(visible: Rect, work: Rect) -> bool {
+    let visible_left = i64::from(visible.x);
+    let visible_top = i64::from(visible.y);
+    let visible_right = visible_left + i64::from(visible.w);
+    let visible_bottom = visible_top + i64::from(visible.h);
+    let work_left = i64::from(work.x);
+    let work_top = i64::from(work.y);
+    let work_right = work_left + i64::from(work.w);
+    let work_bottom = work_top + i64::from(work.h);
+    let excess = i64::from(MAXIMIZED_WORK_AREA_EXCESS_PX);
+    let inset = i64::from(MAXIMIZED_WORK_AREA_INSET_PX);
+    let contained = visible_left >= work_left - excess
+        && visible_top >= work_top - excess
+        && visible_right <= work_right + excess
+        && visible_bottom <= work_bottom + excess;
+    let covering = visible_left <= work_left + inset
+        && visible_top <= work_top + inset
+        && visible_right >= work_right - inset
+        && visible_bottom >= work_bottom - inset;
+    contained && covering
 }
 
-/// Shared stale-retirement ordering for owned fullscreen markers (user
-/// decision 2026-10-12): the single production sequence used by the
-/// directional move-clear, the B9 unfloat-clear, and the reconcile sweep, so
-/// no special action is needed to trigger it. A stale marker whose chrome
-/// provably restored by other means retires here (metadata removal only,
-/// never a geometry write); every other shape keeps its marker so the veto
-/// below still holds.
-///
-/// Sequence: no work without a pre-read marker or when the caller's
-/// home/focus/suspend/elevation guards already fail (no mutation then,
-/// preserving scope and game safety); quick pid fence; first live
-/// restoration proof (style contains all `changed` plus live no-cover);
-/// immediately-before-removal exact revalidation (member key, window tag,
-/// held process/identity, scope/hosted/proof via the existing target
-/// fences); re-read metadata must equal the probed preimage; second live
-/// proof must still hold; pid still current; only then best-effort removal
-/// with an absence re-read. Any unreadable leg, drift, re-fullscreen, tag
-/// change, same-PID reuse, zero-bit preimage, or failed removal keeps the
-/// marker for a later press. No resurrection of incomplete preimages (a
-/// missing companion never reads as a preimage), no writes whatsoever on
-/// fullscreen/transition.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn effective_stale_meta_via_effects(
-    effects: &mut dyn UnfloatClearEffects,
-    state: &mut TileLoop,
-    member_key: &crate::native_guards::WindowKey,
-    expected: &ObservedWindow,
-    me: &ProcessIdentity,
-    meta: Option<FullscreenMeta>,
-    guards_ok: bool,
-    fulls: &[Rect],
-) -> Option<FullscreenMeta> {
-    let pre = meta?;
-    if !guards_ok {
-        return Some(pre);
+/// Pure monitor selection for one frame: the work area of the enumerated
+/// display whose full bounds contain the frame's center. `None` when no
+/// display qualifies: never a guessed or borrowed work area.
+pub(super) fn covering_work_area(visible: Rect, monitors: &[(Rect, Rect)]) -> Option<Rect> {
+    let cx = i64::from(visible.x) + i64::from(visible.w) / 2;
+    let cy = i64::from(visible.y) + i64::from(visible.h) / 2;
+    monitors.iter().find_map(|(full, work)| {
+        let inside = cx >= i64::from(full.x)
+            && cx < i64::from(full.x) + i64::from(full.w)
+            && cy >= i64::from(full.y)
+            && cy < i64::from(full.y) + i64::from(full.h);
+        inside.then_some(*work)
+    })
+}
+
+/// Fresh native display list as `(full, work)` pairs; `None` when the
+/// enumeration fails or yields no readable display (never a fallback).
+fn live_monitor_rects() -> Option<Vec<(Rect, Rect)>> {
+    let monitors = crate::ffi::enumerate_monitors()?;
+    let mut pairs = Vec::with_capacity(monitors.len());
+    for info in &monitors {
+        let (Some(full), Some(work)) = (rect_from_win(info.full), rect_from_win(info.work)) else {
+            continue;
+        };
+        pairs.push((full, work));
     }
-    if !effects.pid_current(member_key.hwnd, expected.identity.pid) {
-        return Some(pre);
+    (!pairs.is_empty()).then_some(pairs)
+}
+
+/// Fresh proof that a maximized frame has really returned to a monitor work
+/// area: the window reads maximized, its DWM visible frame is readable, and
+/// that frame lies within the work area of the display it covers while still
+/// filling it ([`frame_settled_on_work_area`]). `ShowWindowAsync` completion
+/// is asynchronous, so a pending request reads `false`; the caller keeps the
+/// preimage and retries (the retirement sweep applies the same proof) instead
+/// of claiming a restore it did not observe.
+fn maximized_work_area_settled(hwnd_u64: u64) -> bool {
+    if !crate::ffi::is_zoomed(hwnd_u64) {
+        return false;
     }
-    let (style_opt, fullscreen_opt) = effects.retire_probe(member_key.hwnd, fulls);
-    let restored = style_opt.is_some_and(|live| live & pre.changed == pre.changed);
-    if !crate::tiling::stale_fullscreen_retire_eligible(pre.changed, restored, fullscreen_opt) {
-        return Some(pre);
-    }
-    // Immediately-before-removal lifetime pin: member key, window tag, held
-    // process/identity, scope/hosted/proof. Any drift fails closed.
-    let held = match effects.revalidate(state, member_key, expected, me, fulls) {
-        Ok(target) => target.held,
-        Err(_) => return Some(pre),
+    let Some(visible) = crate::ffi::extended_frame_bounds(hwnd_u64).and_then(rect_from_win) else {
+        return false;
     };
-    let _ = &held;
-    // The marker must still equal the probed preimage: a changed marker
-    // (including a genuine re-fullscreen) never deletes another preimage.
-    // An externally vanished marker reads absent and stays absent.
-    let cur = effects.fullscreen_meta(member_key.hwnd);
-    if cur != Some(pre) {
-        return cur;
-    }
-    // The restoration proof must still be live after the pin.
-    let (style2, fullscreen2) = effects.retire_probe(member_key.hwnd, fulls);
-    let restored2 = style2.is_some_and(|live| live & pre.changed == pre.changed);
-    if !crate::tiling::stale_fullscreen_retire_eligible(pre.changed, restored2, fullscreen2) {
-        return Some(pre);
-    }
-    if !effects.pid_current(member_key.hwnd, expected.identity.pid) {
-        return effects.fullscreen_meta(member_key.hwnd).or(Some(pre));
-    }
-    if effects.retire_clear(member_key.hwnd) {
-        effects.fullscreen_meta(member_key.hwnd)
-    } else {
-        effects.fullscreen_meta(member_key.hwnd).or(Some(pre))
-    }
+    let Some(monitors) = live_monitor_rects() else {
+        return false;
+    };
+    covering_work_area(visible, &monitors)
+        .is_some_and(|work| frame_settled_on_work_area(visible, work))
 }
 
-/// Enter project-owned fullscreen: store the restoration preimage first, then
-/// clear the frame bits and cover the monitor without activating. No blind
-/// input synthesis; the official style/frame APIs only. The preimage keeps
-/// the pre-fullscreen outer frame for non-maximized windows (floats and
-/// tiled alike) so exit can move the window back; an unreadable frame fails
-/// closed before any write. Re-entry never
-/// overwrites an existing preimage: an owned frame always exits first, so an
-/// entry that finds metadata returns without a write. Returns the
-/// readback-settled outcome: `fullscreen` when the frame bits read back
-/// cleared, `dispatched` when a setter accepted but completion is pending or
-/// uncertain (including a `SetWindowPos` failure after the chrome changed,
-/// where the preimage is preserved for a later exit), `threw` when no style
-/// effect happened (the fresh preimage is cleared, nothing is left trusted).
-/// No automatic retries on any path.
-pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
+/// One bounded corrective placement for a maximized frame that the async
+/// reassert left at the fullscreen rectangle: move it to the work area of the
+/// display it covers (exactly the frame a maximized entry had before the
+/// project stripped the chrome). No activation or z-order change; an
+/// unreadable display list or coverage refuses rather than borrowing another
+/// screen's work area.
+fn restore_maximized_work_area(hwnd_u64: u64) -> bool {
+    let current = crate::ffi::extended_frame_bounds(hwnd_u64)
+        .and_then(rect_from_win)
+        .or_else(|| live_outer_rect(hwnd_u64));
+    let Some(current) = current else {
+        return false;
+    };
+    let Some(monitors) = live_monitor_rects() else {
+        return false;
+    };
+    let Some(work) = covering_work_area(current, &monitors) else {
+        return false;
+    };
+    crate::ffi::set_window_pos(
+        hwnd_u64,
+        work.x,
+        work.y,
+        work.w,
+        work.h,
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    )
+}
+
+/// Pure settled-outer-geometry proof for a non-maximized preimage restore:
+/// the live `GetWindowRect` must equal the recorded pre-fullscreen frame
+/// exactly. A refused/read-failed move, a clamped placement, an application
+/// or window-manager adjustment, and a still-fullscreen rectangle all fail.
+/// This is the proof the owned exit was missing before it retires its R12
+/// evidence; a maximized restore proves the work-area frame separately
+/// ([`frame_settled_on_work_area`]) because its outer rectangle is not a
+/// direct placement target.
+pub(super) fn outer_rect_settled(expected: Rect, actual: Option<Rect>) -> bool {
+    actual.is_some_and(|actual| actual == expected)
+}
+
+/// Best-effort degraded-slot line after a verified restore: the native state
+/// is already restored, so a failed durable removal is reported (a later
+/// startup re-checks the slot) and never turned into another window write.
+fn log_pending_durable_retire(dir: &Path, property: &str) {
+    let Ok(session) = crate::native::current_identity() else {
+        return;
+    };
+    super::trace::log_json_at(
+        &crate::lifecycle::sys::log_path_for(dir, &session.process_creation),
+        serde_json::json!({
+            "event": "durable-preimage-retire",
+            "property": property,
+            "outcome": "pending",
+        }),
+    );
+}
+
+/// Enter project-owned fullscreen: persist the durable R12 preimage first,
+/// store the window-prop restoration preimage, then clear the frame bits and
+/// cover the monitor without activating. No blind input synthesis; the
+/// official style/frame APIs only. The preimage keeps the pre-fullscreen
+/// outer frame for non-maximized windows (floats and tiled alike) so exit can
+/// move the window back; an unreadable frame fails closed before any write.
+/// Re-entry never overwrites an existing preimage: an owned frame always
+/// exits first, so an entry that finds metadata returns without a write.
+///
+/// Typed outcome: [`StateWrite::NotAttempted`] for every pre-actuator refusal
+/// (dead window, existing preimage, unreadable live frame, unreadable durable
+/// identity/slot/session, failed durable publish, or a metadata write that
+/// read back unverifiable: the target property never changed and the fresh
+/// preimages are cleared), [`StateWrite::Called(false)`] when the style setter
+/// explicitly refused, [`StateWrite::Threw`] when the chrome changed but the
+/// covering move or the readback did not settle (ambiguous; the preimage is
+/// preserved for a later exit), and [`StateWrite::Called(true)`] only when the
+/// owned bits read back cleared. No automatic retries on any path.
+pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect, dir: &Path) -> StateWrite {
     if !crate::ffi::is_window(hwnd_u64) {
-        return "threw";
+        return StateWrite::NotAttempted;
     }
     if read_fullscreen_meta(hwnd_u64).is_some() {
-        return "dispatched";
+        return StateWrite::NotAttempted;
     }
     let style = crate::ffi::window_style(hwnd_u64);
     let was_maximized = is_zoomed_now(hwnd_u64);
@@ -311,7 +378,7 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
     } else {
         match live_outer_rect(hwnd_u64) {
             Some(frame) => Some(frame),
-            None => return "threw",
+            None => return StateWrite::NotAttempted,
         }
     };
     let meta = FullscreenMeta {
@@ -319,14 +386,43 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
         was_maximized,
         frame,
     };
+    // R12 durable preimage: the crash/restart authority is written before any
+    // chrome write, and an unreadable identity/tag/session or a failed atomic
+    // publish fails closed with no window props written.
+    let Ok(session) = crate::native::current_identity() else {
+        return StateWrite::NotAttempted;
+    };
+    let Some((pid, creation, tag)) = durable_identity(hwnd_u64) else {
+        return StateWrite::NotAttempted;
+    };
+    let Some(row) = super::fullscreen_preimage::FullscreenPreimage::new(
+        hwnd_u64,
+        pid,
+        &creation,
+        &tag,
+        &session.process_creation,
+        meta.changed,
+        meta.was_maximized,
+        meta.frame,
+    ) else {
+        return StateWrite::NotAttempted;
+    };
+    if super::fullscreen_preimage::persist(dir, &row).is_err() {
+        return StateWrite::NotAttempted;
+    }
     if !write_fullscreen_meta(hwnd_u64, &meta) {
-        return "threw";
+        // No chrome changed: the durable row never gained restoration
+        // authority, so drop it rather than let a later startup touch
+        // untouched state.
+        let _ = super::fullscreen_preimage::clear(dir, hwnd_u64, pid, &creation, &tag);
+        return StateWrite::NotAttempted;
     }
     let next = (style & !FULLSCREEN_STYLE_BITS) as i32;
     let (prev, style_err) = crate::ffi::set_window_style(hwnd_u64, next);
     if prev == 0 && style_err != 0 {
         clear_fullscreen_meta(hwnd_u64);
-        return "threw";
+        let _ = super::fullscreen_preimage::clear(dir, hwnd_u64, pid, &creation, &tag);
+        return StateWrite::Called(false);
     }
     let placed = crate::ffi::set_window_pos(
         hwnd_u64,
@@ -337,34 +433,232 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
         SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
     );
     if !placed {
-        return "dispatched";
+        return StateWrite::Threw;
     }
     if crate::ffi::window_style(hwnd_u64) & FULLSCREEN_STYLE_BITS == 0 {
-        "fullscreen"
+        StateWrite::Called(true)
     } else {
-        "dispatched"
+        StateWrite::Threw
     }
+}
+
+/// Live exact lifetime of one window for the durable preimage slot: pid,
+/// held-process creation, and the installed membership tag. Any unreadable
+/// leg is `None` (fail closed, never guessed).
+fn durable_identity(hwnd_u64: u64) -> Option<(u32, String, String)> {
+    let pid = crate::ffi::window_pid(hwnd_u64);
+    if pid == 0 {
+        return None;
+    }
+    let held = crate::native::HeldProcess::open(pid).ok()?;
+    let live = held.identity().ok()?;
+    if live.pid != pid || live.process_creation.is_empty() {
+        return None;
+    }
+    let tag = crate::product_hide::sys::read_member_tag(hwnd_u64)?;
+    if tag.is_empty() {
+        return None;
+    }
+    Some((pid, live.process_creation, tag))
+}
+
+/// Typed result of the owned-exit ordering, projected onto [`StateWrite`] by
+/// [`exit_fullscreen_owned`]. `Refused` is an explicit native refusal after a
+/// call; `Unproven` is an acted-on but unobserved shape (pending asynchronous
+/// maximize, disagreeing readback, or retained metadata); `NotAttempted` means
+/// no actuator ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OwnedExitOutcome {
+    NotAttempted,
+    Refused,
+    Unproven,
+    Restored,
 }
 
 /// Exit project-owned fullscreen: restore exactly the owned mask bits
 /// (unrelated application style changes meanwhile are preserved), reapply
 /// the frame without moving (so externally moved frames still exit), move a
-/// non-maximized window back to its pre-fullscreen frame, reassert
-/// a preexisting maximize, then drop the metadata. A failed restore keeps
-/// the metadata so a later press can retry; nothing is guessed and nothing
-/// retries automatically. `meta.changed` is already validated to the owned
-/// mask on read, so restoration never touches arbitrary bits. A legacy
-/// preimage without a frame restores style only (old behavior, no strand).
-pub(super) fn exit_fullscreen_owned(hwnd_u64: u64, meta: &FullscreenMeta) -> &'static str {
-    exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta)
+/// non-maximized window back to its pre-fullscreen frame, verify the live
+/// style *and the settled actual outer rectangle*, reassert a preexisting
+/// maximize, then retire the exact durable R12 row *before* dropping the
+/// window metadata. A failed restore, an unsettled outer rectangle, or a
+/// durable row that cannot clear keeps the metadata so a later press or the
+/// retirement sweep can retry; nothing is guessed and nothing retries
+/// automatically. `meta.changed` is already validated to the owned mask on
+/// read, so restoration never touches arbitrary bits. A legacy preimage
+/// without a frame restores style only (old behavior, no strand).
+///
+/// A maximized exit must also prove the async maximize really returned the
+/// frame to the covered display's work area (a window already maximized at
+/// entry keeps the fullscreen rectangle otherwise): one bounded corrective
+/// move runs when the first fresh proof fails, and an unsettled result keeps
+/// the metadata for the next press or the retirement sweep. Only a verified
+/// `Restored` outcome clears the durable row, and only when the live exact
+/// lifetime is still readable; keeping the marker on a degraded durable slot
+/// means a stale row can never replay an old frame on the next startup.
+pub(super) fn exit_fullscreen_owned(
+    hwnd_u64: u64,
+    meta: &FullscreenMeta,
+    dir: &Path,
+) -> StateWrite {
+    let retire_durable = || -> bool {
+        let Some((pid, creation, tag)) = durable_identity(hwnd_u64) else {
+            log_pending_durable_retire(dir, "fullscreen");
+            return false;
+        };
+        if super::fullscreen_preimage::clear(dir, hwnd_u64, pid, &creation, &tag).is_err() {
+            log_pending_durable_retire(dir, "fullscreen");
+            return false;
+        }
+        true
+    };
+    match exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta, retire_durable) {
+        OwnedExitOutcome::NotAttempted => StateWrite::NotAttempted,
+        OwnedExitOutcome::Refused => StateWrite::Called(false),
+        OwnedExitOutcome::Unproven => StateWrite::Threw,
+        OwnedExitOutcome::Restored => StateWrite::Called(true),
+    }
+}
+
+/// Restore one durable fullscreen-chrome leftover through the exact
+/// production owned-exit sequence (no ledger identity needed here: the
+/// durable row already carries the verified lifetime). Used only by
+/// [`super::fullscreen_preimage`] startup recovery, whose contract is the
+/// `"restored"` verdict and which retires its own durable rows after that
+/// verdict re-verifies; the exit's durable-clear phase is therefore a no-op
+/// here. Every other outcome (`"dispatched"` for an unproven shape,
+/// `"threw"` for not attempted/refused) leaves the row for a later attempt.
+pub(super) fn restore_owned_chrome(hwnd_u64: u64, meta: &FullscreenMeta) -> &'static str {
+    // Startup and graceful restore are already PMv2; the independent
+    // restore command and crash watcher are not. R12 stores physical
+    // pixels, so both the write and its independent readback need PMv2.
+    match crate::ffi::with_pm_v2(|| {
+        exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta, || true)
+    }) {
+        Some(OwnedExitOutcome::Restored) => "restored",
+        Some(OwnedExitOutcome::Unproven) => "dispatched",
+        None | Some(OwnedExitOutcome::NotAttempted | OwnedExitOutcome::Refused) => "threw",
+    }
+}
+
+/// Fresh native proof behind one metadata-retirement decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RetireProof {
+    /// Live style read: every originally cleared owned bit reads restored.
+    pub(super) style_restored: bool,
+    /// Live fullscreen probe (`None` = unreadable, never restored).
+    pub(super) fullscreen: Option<bool>,
+    /// Live maximize read (`false` = positively not maximized).
+    pub(super) maximized: bool,
+    /// Fresh work-area proof of a maximized frame (ignored otherwise).
+    pub(super) maximize_settled: bool,
+}
+
+/// Pure retirement decision over one fresh native proof: the original
+/// nonzero chrome mask must read restored and fullscreen must read positively
+/// false; a maximized preimage that still reads maximized must also prove the
+/// work-area frame (a restored caption can make a full-monitor frame read
+/// non-fullscreen while the maximize placement is still the fullscreen
+/// rectangle). A window the application has since restored to normal is
+/// app-owned and needs no work-area proof. Any unreadable or transitional
+/// shape refuses.
+pub(super) fn retire_eligible(meta: &FullscreenMeta, proof: RetireProof) -> bool {
+    crate::tiling::stale_fullscreen_retire_eligible(
+        meta.changed,
+        proof.style_restored,
+        proof.fullscreen,
+    ) && (!meta.was_maximized || !proof.maximized || proof.maximize_settled)
+}
+
+/// Retirement ordering: the durable row leaves before the window properties,
+/// and a failed durable removal keeps the marker (no success is claimed).
+/// Clearing the properties first could strand a stale durable row that a
+/// later startup would replay over already-normal chrome.
+pub(super) fn retire_metadata(
+    clear_durable: impl FnOnce() -> bool,
+    clear_properties: impl FnOnce() -> bool,
+) -> bool {
+    clear_durable() && clear_properties()
+}
+
+/// Retire one owned fullscreen marker whose chrome has provably been
+/// restored by other means (the application or an external caller put every
+/// owned style bit back and the live window is positively non-fullscreen).
+///
+/// Metadata removal only: this function performs no style, frame, activation
+/// or z-order write, so retirement can never undo the restored chrome or move
+/// the window. It re-proves the exact native lifetime (pid, held-process
+/// creation, live membership tag), the live style restoration, and that the
+/// marker still equals the caller's probed preimage immediately before
+/// clearing. The fullscreen verdict is a fresh native read (live monitor
+/// rects plus the live caption/frame probe), never the caller's observation
+/// and never a hardcoded false; a maximized preimage that still reads
+/// maximized must additionally prove the work-area frame.
+///
+/// Clearing drops the matching durable R12 row *before* the window props,
+/// otherwise a later startup could restore chrome and a pre-fullscreen frame
+/// over a window that is already normal; a failed durable removal keeps the
+/// marker so a later sweep retries and no success is claimed. Any unreadable
+/// or drifted leg fails closed.
+pub(super) fn retire_restored_fullscreen(
+    dir: &std::path::Path,
+    key: &crate::native_guards::WindowKey,
+    tag: &str,
+    meta: &FullscreenMeta,
+) -> bool {
+    if meta.changed == 0 || tag.is_empty() || !crate::ffi::is_window(key.hwnd) {
+        return false;
+    }
+    if crate::ffi::window_pid(key.hwnd) != key.pid {
+        return false;
+    }
+    let Some(held) = HeldProcess::open(key.pid).ok() else {
+        return false;
+    };
+    let Ok(live) = held.identity() else {
+        return false;
+    };
+    if live.pid != key.pid || live.process_creation != key.creation {
+        return false;
+    }
+    if crate::product_hide::sys::read_member_tag(key.hwnd).as_deref() != Some(tag) {
+        return false;
+    }
+    let Some(style) = crate::ffi::window_style_checked(key.hwnd) else {
+        return false;
+    };
+    if read_fullscreen_meta(key.hwnd).as_ref() != Some(meta) {
+        return false;
+    }
+    // Second, independent native proof immediately before removal: fresh
+    // style, monitor rects, caption/frame fullscreen read and maximize read.
+    let Some(monitors) = live_monitor_rects() else {
+        return false;
+    };
+    let fulls: Vec<Rect> = monitors.iter().map(|(full, _)| *full).collect();
+    let (maximized, fullscreen) = super::probes::live_overlay_flags(key.hwnd, &fulls);
+    let proof = RetireProof {
+        style_restored: style & meta.changed == meta.changed,
+        fullscreen,
+        maximized,
+        maximize_settled: !maximized || maximized_work_area_settled(key.hwnd),
+    };
+    if !retire_eligible(meta, proof) {
+        return false;
+    }
+    retire_metadata(
+        || super::fullscreen_preimage::clear(dir, key.hwnd, key.pid, &key.creation, tag).is_ok(),
+        || clear_fullscreen_meta(key.hwnd),
+    )
 }
 
 /// Native effects behind the project-owned fullscreen exit, split from the
 /// effect ordering so hermetic tests can substitute scripted answers while
 /// the production sequence (style restore, frame reapply, pre-fullscreen
-/// frame move, readback verify, maximize reassert, metadata removal) runs
-/// unchanged. [`NativeOwnedExit`]
-/// calls exactly the functions the inline code called; behavior is identical.
+/// frame move, readback verify, maximize reassert, work-area settle proof,
+/// metadata removal) runs unchanged. [`NativeOwnedExit`]
+/// calls exactly the functions the inline code called; the added settle
+/// reads are bounded observation, never another writable state change.
 /// Message-only owned windows cannot carry this path (never enumerated with
 /// live frames), so scripted stubs are the hermetic route.
 pub(super) trait OwnedExitEffects {
@@ -375,8 +669,18 @@ pub(super) trait OwnedExitEffects {
     fn reapply_frame(&mut self, hwnd: u64) -> bool;
     /// Move to the pre-fullscreen frame (non-maximized exits only).
     fn restore_rect(&mut self, hwnd: u64, rect: Rect) -> bool;
+    /// Fresh actual outer rectangle (`GetWindowRect`) after the move. `None`
+    /// is unreadable and never a settled frame.
+    fn outer_rect(&mut self, hwnd: u64) -> Option<Rect>;
     fn style_readback(&mut self, hwnd: u64) -> u32;
     fn reassert_maximize(&mut self, hwnd: u64) -> bool;
+    /// Fresh readback of the maximized frame: reads maximized and covers
+    /// exactly its display's work area. Asynchronous completion may read
+    /// false; this is a proof, never a guess.
+    fn maximize_settled(&mut self, hwnd: u64) -> bool;
+    /// One bounded corrective move back to the covered display's work area
+    /// when the async reassert left the fullscreen rectangle in place.
+    fn restore_maximized_frame(&mut self, hwnd: u64) -> bool;
     fn clear_meta(&mut self, hwnd: u64) -> bool;
 }
 
@@ -412,6 +716,10 @@ impl OwnedExitEffects for NativeOwnedExit {
         )
     }
 
+    fn outer_rect(&mut self, hwnd: u64) -> Option<Rect> {
+        crate::ffi::window_rect(hwnd).and_then(rect_from_win)
+    }
+
     fn style_readback(&mut self, hwnd: u64) -> u32 {
         crate::ffi::window_style(hwnd)
     }
@@ -420,50 +728,95 @@ impl OwnedExitEffects for NativeOwnedExit {
         crate::ffi::show_window_async(hwnd, SW_MAXIMIZE)
     }
 
+    fn maximize_settled(&mut self, hwnd: u64) -> bool {
+        maximized_work_area_settled(hwnd)
+    }
+
+    fn restore_maximized_frame(&mut self, hwnd: u64) -> bool {
+        restore_maximized_work_area(hwnd)
+    }
+
     fn clear_meta(&mut self, hwnd: u64) -> bool {
         clear_fullscreen_meta(hwnd)
     }
 }
 
 /// Owned-exit effect ordering shared by the native wrapper and hermetic
-/// tests: metadata is removed only after the style restore, frame reapply,
-/// pre-fullscreen frame move, style readback, and maximize reassert all
-/// verify. Any failure keeps the metadata so a later explicit press can
-/// retry. Maximized entries and legacy preimages without a frame skip the
-/// move and keep the old style-only path.
+/// tests: the exact durable row is retired only after the style restore,
+/// frame reapply, pre-fullscreen frame move, style readback, settled actual
+/// outer geometry (non-maximized frame preimages only), and maximize
+/// reassert all verify, and the native marker is dropped only after that
+/// durable retirement succeeded. A maximized entry additionally proves the
+/// async maximize really returned the frame to the covered display's work
+/// area, with one bounded corrective move when the first proof fails; an
+/// unsettled frame keeps the metadata for a later explicit press or the
+/// retirement sweep. Any explicit refusal is [`OwnedExitOutcome::Refused`];
+/// an acted-on but unobserved shape (including a durable row that cannot
+/// clear) is [`OwnedExitOutcome::Unproven`], so a stale durable row never
+/// outlives the marker it could replay over. Legacy preimages without a
+/// frame keep the style-only path. Recovery passes a no-op durable retirement
+/// because its durable store owner retires rows itself.
 pub(super) fn exit_fullscreen_owned_with(
     effects: &mut dyn OwnedExitEffects,
     hwnd_u64: u64,
     meta: &FullscreenMeta,
-) -> &'static str {
+    retire_durable: impl FnOnce() -> bool,
+) -> OwnedExitOutcome {
     if !effects.is_window(hwnd_u64) {
-        return "threw";
+        return OwnedExitOutcome::NotAttempted;
     }
     let current = effects.current_style(hwnd_u64);
     let next = (current | meta.changed) as i32;
     let (prev, style_err) = effects.restore_style(hwnd_u64, next);
     if prev == 0 && style_err != 0 {
-        return "threw";
+        return OwnedExitOutcome::Refused;
     }
     if !effects.reapply_frame(hwnd_u64) {
-        return "threw";
+        return OwnedExitOutcome::Refused;
     }
     if !meta.was_maximized
         && let Some(frame) = meta.frame
         && !effects.restore_rect(hwnd_u64, frame)
     {
-        return "threw";
+        return OwnedExitOutcome::Refused;
     }
     if effects.style_readback(hwnd_u64) & meta.changed != meta.changed {
-        return "dispatched";
+        return OwnedExitOutcome::Unproven;
     }
-    if meta.was_maximized && !effects.reassert_maximize(hwnd_u64) {
-        return "dispatched";
+    // Settled actual outer geometry: the move must have produced exactly the
+    // recorded pre-fullscreen frame before any restore evidence is retired.
+    // A read failure or a drifted/clamped frame keeps the metadata for a
+    // later press or the retirement sweep; nothing is guessed.
+    if !meta.was_maximized
+        && let Some(frame) = meta.frame
+        && !outer_rect_settled(frame, effects.outer_rect(hwnd_u64))
+    {
+        return OwnedExitOutcome::Unproven;
+    }
+    if meta.was_maximized {
+        // The pre-maximized frame was the covered display's work area. The
+        // async reassert alone is not proof: a window already maximized on
+        // entry keeps the fullscreen rectangle, so verify the settled frame
+        // and make one bounded corrective move before dropping the preimage.
+        if !effects.reassert_maximize(hwnd_u64) {
+            return OwnedExitOutcome::Unproven;
+        }
+        if !effects.maximize_settled(hwnd_u64)
+            && (!effects.restore_maximized_frame(hwnd_u64)
+                || !effects.maximize_settled(hwnd_u64))
+        {
+            return OwnedExitOutcome::Unproven;
+        }
+    }
+    if !retire_durable() {
+        // The exact row could not be retired: keep the native marker so a
+        // later sweep retries and no success is claimed over a stale row.
+        return OwnedExitOutcome::Unproven;
     }
     if effects.clear_meta(hwnd_u64) {
-        "restored"
+        OwnedExitOutcome::Restored
     } else {
-        "dispatched"
+        OwnedExitOutcome::Unproven
     }
 }
 
@@ -515,7 +868,7 @@ pub(super) fn holdable_key(
     if crate::ffi::owner_of(hwnd_u64) != 0 {
         return None;
     }
-    let exstyle = crate::ffi::window_exstyle(hwnd_u64);
+    let exstyle = crate::ffi::window_exstyle_checked(hwnd_u64)?;
     if exstyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) != 0 {
         return None;
     }
@@ -649,7 +1002,7 @@ fn consume_classified_first_exits(state: &mut TileLoop) {
         // Intentional lanes own the window now (settled explicit float or
         // sticky, including restart-adopted intent): the exit already
         // resolved through them.
-        if state.floated.contains(key) || state.sticky.contains_key(key) {
+        if state.floating_of(key) || state.sticky_of(key) {
             done.push(key.clone());
             continue;
         }

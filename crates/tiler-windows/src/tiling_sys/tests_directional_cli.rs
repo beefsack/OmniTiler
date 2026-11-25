@@ -65,6 +65,7 @@ fn revealed_window(me: &crate::model::ProcessIdentity) -> super::ObservedWindow 
             owned: false,
             captionless_fullscreen: false,
             no_activate: false,
+            topmost: false,
             dialog: false,
         },
         member_tag: Some("tag-4311".to_owned()),

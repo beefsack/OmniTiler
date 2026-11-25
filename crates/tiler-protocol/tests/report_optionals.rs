@@ -25,6 +25,7 @@ use tiler_core::world_report_v4_checks::report_digest_v4 as report_digest;
 use tiler_protocol::world_protocol::{
     CursorHitWire, DecodedReplyV4, DecodedReportV4, GestureIngressWire, ReportWireOptionals,
     WorldOutcome, decode_reply_v4, decode_request, decode_request_with_wire, encode_reply_v4,
+    encode_report_v4,
 };
 use tiler_protocol::world_reply_write::count_reply_v4;
 
@@ -1354,4 +1355,75 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
         }
         other => panic!("expected reused rejection, got {other:?}"),
     }
+}
+
+#[test]
+fn pointer_activity_and_warp_spent_round_trip_and_reject_bad_spellings() {
+    // `pointerActivity` is a quoted u64 generation, `warpSpent` an opaque
+    // bounded id; both are observation-only and null when unknown/absent.
+    for (activity, spent, want_activity, want_spent) in [
+        (
+            serde_json::json!("42"),
+            serde_json::json!("warp-7"),
+            Some(42),
+            Some("warp-7"),
+        ),
+        (serde_json::Value::Null, serde_json::Value::Null, None, None),
+    ] {
+        let mut value = base_value();
+        value["cursor"] = serde_json::json!([100, 200]);
+        value["pointerActivity"] = activity;
+        value["warpSpent"] = spent;
+        let decoded = decode_request_with_wire(&value.to_string()).expect("witness fields decode");
+        assert_eq!(decoded.report.pointer_activity, want_activity);
+        assert_eq!(decoded.report.warp_spent.as_deref(), want_spent);
+        let encoded = encode_report_v4(&decoded).expect("witness fields encode");
+        let again = decode_request_with_wire(&encoded).expect("witness fields re-decode");
+        assert_eq!(again.report.pointer_activity, want_activity);
+        assert_eq!(again.report.warp_spent.as_deref(), want_spent);
+        assert_eq!(
+            encode_report_v4(&again).expect("canonical re-encode"),
+            encoded
+        );
+    }
+
+    let bad = [
+        ("float-activity", serde_json::json!(42.5)),
+        ("unquoted-activity", serde_json::json!(42)),
+        ("negative-activity-text", serde_json::json!("-1")),
+        ("empty-spent", serde_json::json!("")),
+        ("overlong-spent", serde_json::json!("i".repeat(129))),
+        ("unquoted-spent", serde_json::json!(7)),
+    ];
+    for (case, spelling) in bad {
+        let mut value = base_value();
+        value["cursor"] = serde_json::json!([100, 200]);
+        let key = if case.contains("activity") {
+            "pointerActivity"
+        } else {
+            "warpSpent"
+        };
+        value[key] = spelling;
+        decode_request(&value.to_string()).expect_err(case);
+    }
+}
+
+#[test]
+fn pointer_activity_and_warp_spent_are_required_nullable() {
+    // Both witness fields are required nullable: absence refuses on both
+    // decode APIs, while explicit null stays the unknown spelling.
+    for key in ["pointerActivity", "warpSpent"] {
+        let mut missing = base_value();
+        missing["cursor"] = serde_json::json!([100, 200]);
+        missing.as_object_mut().expect("object").remove(key);
+        let (kind, _) = assert_same_rejection(&missing.to_string());
+        assert_eq!(kind, "malformed", "{key} is required");
+    }
+    let mut nulled = base_value();
+    nulled["cursor"] = serde_json::json!([100, 200]);
+    nulled["pointerActivity"] = serde_json::Value::Null;
+    nulled["warpSpent"] = serde_json::Value::Null;
+    let decoded = decode_request(&nulled.to_string()).expect("required nullable accepts null");
+    assert_eq!(decoded.pointer_activity, None);
+    assert_eq!(decoded.warp_spent, None);
 }

@@ -78,7 +78,17 @@ fn preview_samples_agree_with_final_drop() {
     let revision = layout.accepted_revision(&key);
     let (proposed, prior) = {
         let plan = layout
-            .run_local_drag_preview(&domain, 8, &w1, &w1, &rows(), edge.0, edge.1, None)
+            .run_local_drag_preview(
+                &domain,
+                8,
+                crate::policy::ScaledResize::unscaled(),
+                &w1,
+                &w1,
+                &rows(),
+                edge.0,
+                edge.1,
+                None,
+            )
             .expect("edge preview must resolve");
         assert_eq!(plan.base_revision, revision);
         (plan.proposed_rect, plan.hover.clone())
@@ -90,7 +100,17 @@ fn preview_samples_agree_with_final_drop() {
     // preview/drop agreement with the sticky carry in place.
     let (proposed2, prior2) = {
         let plan = layout
-            .run_local_drag_preview(&domain, 8, &w1, &w1, &rows(), edge.0, edge.1, Some(&prior))
+            .run_local_drag_preview(
+                &domain,
+                8,
+                crate::policy::ScaledResize::unscaled(),
+                &w1,
+                &w1,
+                &rows(),
+                edge.0,
+                edge.1,
+                Some(&prior),
+            )
             .expect("carried preview must resolve");
         (plan.proposed_rect, plan.hover.clone())
     };
@@ -100,7 +120,17 @@ fn preview_samples_agree_with_final_drop() {
     // points still name the intended targets.
     let centre = (target.x + target.w / 2, target.y + target.h / 2);
     assert_eq!(
-        layout.run_local_drag_preview(&domain, 8, &w1, &w1, &rows(), centre.0, centre.1, None),
+        layout.run_local_drag_preview(
+            &domain,
+            8,
+            crate::policy::ScaledResize::unscaled(),
+            &w1,
+            &w1,
+            &rows(),
+            centre.0,
+            centre.1,
+            None
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::UnsupportedCapability))
     );
     let itself = (
@@ -108,17 +138,47 @@ fn preview_samples_agree_with_final_drop() {
         mover_rect.y + mover_rect.h / 2,
     );
     assert_eq!(
-        layout.run_local_drag_preview(&domain, 8, &w1, &w1, &rows(), itself.0, itself.1, None),
+        layout.run_local_drag_preview(
+            &domain,
+            8,
+            crate::policy::ScaledResize::unscaled(),
+            &w1,
+            &w1,
+            &rows(),
+            itself.0,
+            itself.1,
+            None
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::Unchanged))
     );
     assert_eq!(
-        layout.run_local_drag_preview(&domain, 8, &w1, &w1, &rows(), -50, -50, None),
+        layout.run_local_drag_preview(
+            &domain,
+            8,
+            crate::policy::ScaledResize::unscaled(),
+            &w1,
+            &w1,
+            &rows(),
+            -50,
+            -50,
+            None
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::CrossDomainMismatch))
     );
     // The final drop forwards the carried prior and lands exactly on
     // the preview's proposed rect.
     let _drop_out = layout
-        .run_local_drag_drop(&domain, 8, &w1, &w1, &rows(), edge.0, edge.1, Some(&prior2))
+        .run_local_drag_drop(
+            &domain,
+            8,
+            crate::policy::ScaledResize::unscaled(),
+            &w1,
+            &w1,
+            &rows(),
+            edge.0,
+            edge.1,
+            Some(&prior2),
+        )
         .expect("carried drop must plan");
     let hints: std::collections::BTreeMap<_, _> =
         rows().into_iter().map(|r| (r.window, r.hints)).collect();
@@ -204,7 +264,17 @@ fn preview_sticky_journey_agrees_with_drop() {
     let leg2 = (gap_x, strip_top + 50);
     let (proposed1, prior1) = {
         let plan = layout
-            .run_local_drag_preview(&domain, 8, &w1, &w1, &rows(), leg1.0, leg1.1, None)
+            .run_local_drag_preview(
+                &domain,
+                8,
+                crate::policy::ScaledResize::unscaled(),
+                &w1,
+                &w1,
+                &rows(),
+                leg1.0,
+                leg1.1,
+                None,
+            )
             .expect("gap leg must resolve a group edge");
         assert!(
             plan.hover.prior.is_some(),
@@ -217,25 +287,54 @@ fn preview_sticky_journey_agrees_with_drop() {
     // GroupEdge resolves only through the carried prior. Contrast:
     // without the prior the same point must NOT return the sticky
     // result (refusal or a different interior placement).
-    let no_prior_sticky =
-        match layout.run_local_drag_preview(&domain, 8, &w1, &w1, &rows(), leg2.0, leg2.1, None) {
-            Ok(plan) => plan.proposed_rect == proposed1 && plan.hover.prior.is_some(),
-            Err(_) => false,
-        };
+    let no_prior_sticky = match layout.run_local_drag_preview(
+        &domain,
+        8,
+        crate::policy::ScaledResize::unscaled(),
+        &w1,
+        &w1,
+        &rows(),
+        leg2.0,
+        leg2.1,
+        None,
+    ) {
+        Ok(plan) => plan.proposed_rect == proposed1 && plan.hover.prior.is_some(),
+        Err(_) => false,
+    };
     assert!(
         !no_prior_sticky,
         "leg2 without prior must not reproduce the sticky target"
     );
     let (proposed2, prior2) = {
         let plan = layout
-            .run_local_drag_preview(&domain, 8, &w1, &w1, &rows(), leg2.0, leg2.1, Some(&prior1))
+            .run_local_drag_preview(
+                &domain,
+                8,
+                crate::policy::ScaledResize::unscaled(),
+                &w1,
+                &w1,
+                &rows(),
+                leg2.0,
+                leg2.1,
+                Some(&prior1),
+            )
             .expect("sticky leg must resolve");
         (plan.proposed_rect, plan.hover.clone())
     };
     assert_eq!(proposed2, proposed1, "sticky leg keeps the target");
     assert_eq!(prior2.prior, prior1.prior, "sticky prior carries unchanged");
     let _drop_out = layout
-        .run_local_drag_drop(&domain, 8, &w1, &w1, &rows(), leg2.0, leg2.1, Some(&prior2))
+        .run_local_drag_drop(
+            &domain,
+            8,
+            crate::policy::ScaledResize::unscaled(),
+            &w1,
+            &w1,
+            &rows(),
+            leg2.0,
+            leg2.1,
+            Some(&prior2),
+        )
         .expect("sticky drop must plan");
     let hints: std::collections::BTreeMap<_, _> =
         rows().into_iter().map(|r| (r.window, r.hints)).collect();

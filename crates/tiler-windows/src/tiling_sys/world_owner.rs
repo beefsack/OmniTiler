@@ -1,15 +1,10 @@
 #![forbid(unsafe_code)]
-//! Single runtime WorldEngine owner (stage 2b, standby: unwired).
+//! Single runtime Windows world owner, used by every observation and command.
 //!
-//! `TileLoop` owns exactly one [`WorldOwner`]; the owner wraps the adapted
-//! [`WorldSequencer`](super::world_sequencer::WorldSequencer) (in-process
-//! holder over [`WorldEngine`](tiler_core::world_engine::WorldEngine)).
-//! Standby status: the owner bootstraps and sequences offline (holder
-//! boundary tests), but no production tick or command route dispatches
-//! through it yet and it actuates nothing: the legacy Engine path remains
-//! the single active runtime owner until the follow-up cutover unit wires
-//! all tick/command routes and deletes the legacy path. No second active
-//! owner exists at any point.
+//! `TileLoop` owns exactly one [`WorldOwner`]. It wraps the
+//! [`WorldSequencer`](super::world_sequencer::WorldSequencer), an in-process
+//! holder over [`WorldEngine`](tiler_core::world_engine::WorldEngine), and
+//! applies accepted desires through the native diff.
 //!
 //! Native binding/claim/identity/lifetime caches stay adapter-mechanical;
 //! the last applied [`WorldReplyV4`](tiler_core::world_report::WorldReplyV4) is a
@@ -18,10 +13,9 @@
 //! Durable restart: this carrier persists no logical rings. Every report
 //! is a fresh-observation report: the core mints rings/views from the live
 //! screens, remaining windows admit as genuinely new through the ordinary
-//! path, and restart truth rides the native marker/recovery lanes
-//! (sticky/float/tile-override window markers plus the hide-claim ledger
-//! and the visible-membership lifetime tags), which capture consumes as
-//! ordinary facts/lanes on the first observation.
+//! path. Restart truth rides the packed window intent slot, the hide-claim
+//! ledger and the member lifetime tags; capture consumes these with the
+//! normal observation.
 //!
 //! v4 core owns cross-output capacity handling: an exhausted target holds
 //! its scope (`ConstraintClamp`) instead of floating a transferred row, so
@@ -38,7 +32,7 @@ use super::world_sequencer::{AckOutcome, AckReceipt, DispatchError, WorldSequenc
 use super::{MonitorArea, ObservedWindow, RetainedRow};
 use std::collections::{BTreeMap, HashMap};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{WorldCommand, WorldReplyV4, WorldReportV4};
+use tiler_core::world_report::{RendererInput, WorldCommand, WorldReplyV4, WorldReportV4};
 
 /// Single runtime world policy owner: bootstraps and sequences online.
 /// All production lifecycle/history/tiling/scope/select/send/migration
@@ -59,7 +53,18 @@ pub(super) struct WorldOwner {
     /// rendered, so later state can never relabel captured proof. Never a
     /// second policy, never regenerated from current caches.
     last_proof: Option<serde_json::Value>,
+    /// Raw native-state attempts drained by the most recent apply pass
+    /// (TRACE-ONLY): the exact rows pushed into the sequencer for the next
+    /// report, kept for the `world-apply` diag so a pass whose only evidence
+    /// is a state write still emits its row with the original revision and
+    /// stamp. Reset at the start of every apply; never policy input.
+    last_state_attempts: Vec<tiler_core::world_report::StateAttempt>,
     has_accepted: bool,
+    /// Offline-test scripting for the two report witness fields (live
+    /// pointer generation, spent warp id). Never present in production;
+    /// unit tests must never read or advance real raw-input state.
+    #[cfg(test)]
+    witness_override: Option<(Option<u64>, Option<String>)>,
 }
 
 /// Owned core projections for one diff pass (homing, rings, views).
@@ -116,7 +121,10 @@ impl WorldOwner {
             diff,
             last_reply: None,
             last_proof: None,
+            last_state_attempts: Vec::new(),
             has_accepted: false,
+            #[cfg(test)]
+            witness_override: None,
         }
     }
 
@@ -199,6 +207,42 @@ impl WorldOwner {
         self.diff.gate.note_applied(reply);
     }
 
+    /// Stage the next report's witness fields from their live sources: the
+    /// loop-thread Raw Input generation (`None` when uninstalled) and the
+    /// generation-scoped exact warp spend. Called before every dispatch; a
+    /// test may script both through [`Self::script_report_witness`] instead
+    /// of touching the OS.
+    fn note_report_witness(&mut self) {
+        #[cfg(test)]
+        if let Some((pointer, spent)) = self.witness_override.clone() {
+            self.seq.note_report_witness(pointer, spent);
+            return;
+        }
+        self.seq.note_report_witness(
+            crate::ffi::raw_input::pointer_activity(),
+            self.diff.warp_spent(),
+        );
+    }
+
+    /// Test-only: script both report witness fields without touching the
+    /// real Raw Input witness or a real setter.
+    #[cfg(test)]
+    pub(super) fn script_report_witness(
+        &mut self,
+        pointer_activity: Option<u64>,
+        warp_spent: Option<String>,
+    ) {
+        self.witness_override = Some((pointer_activity, warp_spent));
+    }
+
+    /// Read back the report witness staged for the dispatched report: the
+    /// raw-input pointer generation (`None` when uninstalled) and the exact
+    /// warp id spent this generation. Trace rows publish these verbatim.
+    #[must_use]
+    pub(super) fn report_witness(&self) -> (Option<u64>, Option<String>) {
+        self.seq.report_witness()
+    }
+
     #[allow(dead_code)]
     pub(super) fn push_foreground_events(&mut self, hwnds: Vec<u64>) {
         self.diff.push_foreground_events(hwnds);
@@ -243,9 +287,9 @@ impl WorldOwner {
     }
 
     /// Run one diff pass for an accepted reply. Returns stats; attempted
-    /// writes append mechanical rows to `frame_out`, `member_out`,
-    /// `view_out` for the next report (each stamped with
-    /// `attempt_ms`).
+    /// writes append to `frame_out` and `member_out` for the next report;
+    /// `view_out` is local proof for the receipt and trace. All carry
+    /// `attempt_ms`.
     /// No verdicts are produced: the core derives every completion from
     /// the raw attempts plus staged observation. The arguments are the
     /// disjoint pass products; bundling would hide the borrow split the
@@ -258,9 +302,12 @@ impl WorldOwner {
         ops: &mut dyn super::world_diff::NativeOps,
         frame_out: &mut Vec<tiler_core::world_report::FrameAttempt>,
         member_out: &mut Vec<tiler_core::world_report::MemberAttempt>,
-        view_out: &mut Vec<tiler_core::world_report::ViewAttempt>,
+        view_out: &mut Vec<super::world_diff::LogicalViewWrite>,
         attempt_ms: u64,
     ) -> super::world_diff::ApplyStats {
+        self.last_state_attempts.clear();
+        let selection_focus_authority = self.seq.selection_focus_authority(reply);
+        self.diff.arm_selection_focus(selection_focus_authority);
         let stats = apply_world_reply(
             &mut self.diff,
             reply,
@@ -274,7 +321,20 @@ impl WorldOwner {
         for attempt in self.diff.take_visibility_attempts() {
             self.seq.note_visibility_attempt(attempt);
         }
+        self.last_state_attempts = self.diff.take_state_attempts();
+        for attempt in &self.last_state_attempts {
+            self.seq.note_state_attempt(attempt.clone());
+        }
+        for feedback in self.diff.take_focus_feedback() {
+            self.seq.note_focus_feedback(feedback);
+        }
         stats
+    }
+
+    /// Raw native-state attempts drained by the most recent apply pass. Empty
+    /// when the pass dispatched no state write; never a cached policy fact.
+    pub(super) fn last_state_attempts(&self) -> &[tiler_core::world_report::StateAttempt] {
+        &self.last_state_attempts
     }
 
     pub(super) fn last_reply(&self) -> Option<&WorldReplyV4> {
@@ -287,6 +347,14 @@ impl WorldOwner {
     /// already-consumed, or rejected).
     pub(super) fn last_command_result(&self) -> Option<&tiler_core::world_report::CommandResult> {
         self.seq.last_command_result()
+    }
+
+    /// Test-only: the desktop-exception authority the owner derives for one
+    /// reply from the sequencer's actual latest accepted command state.
+    /// Production arms the diff through the same sequencer call.
+    #[cfg(test)]
+    pub(super) fn selection_focus_authority(&self, reply: &WorldReplyV4) -> bool {
+        self.seq.selection_focus_authority(reply)
     }
 
     /// Borrow the bounded accepted trace-proof row for the current
@@ -319,18 +387,6 @@ impl WorldOwner {
         self.seq.note_member_attempt(attempt);
     }
 
-    /// Stage one raw view attempt for the next report.
-    pub(super) fn note_view_attempt(&mut self, attempt: tiler_core::world_report::ViewAttempt) {
-        self.seq.note_view_attempt(attempt);
-    }
-
-    /// Host-owned workspace domains capability (see
-    /// [`WorldSequencer::host_owned_workspace_domains`]).
-    #[must_use]
-    pub(super) fn host_owned_workspace_domains(&self) -> bool {
-        self.seq.host_owned_workspace_domains()
-    }
-
     /// No durable restoration ingress exists.
     /// Capture source-first and sequence one typed report. Read-only over
     /// the inputs; the seam (never `&TileLoop`) keeps the `&mut WorldOwner`
@@ -345,6 +401,7 @@ impl WorldOwner {
         foreground_hwnd: u64,
         monotonic_ms: u64,
     ) -> Result<WorldReportV4, DispatchError> {
+        self.note_report_witness();
         self.seq.try_dispatch(
             inputs,
             observed,
@@ -352,6 +409,7 @@ impl WorldOwner {
             areas,
             foreground_hwnd,
             monotonic_ms,
+            None,
             None,
         )
     }
@@ -368,7 +426,9 @@ impl WorldOwner {
         foreground_hwnd: u64,
         monotonic_ms: u64,
         command: WorldCommand,
+        renderer_input: Option<RendererInput>,
     ) -> Result<WorldReportV4, DispatchError> {
+        self.note_report_witness();
         self.seq.try_dispatch_with_command(
             inputs,
             observed,
@@ -377,6 +437,7 @@ impl WorldOwner {
             foreground_hwnd,
             monotonic_ms,
             command,
+            renderer_input,
         )
     }
 

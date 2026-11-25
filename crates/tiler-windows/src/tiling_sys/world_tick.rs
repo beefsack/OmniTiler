@@ -14,11 +14,15 @@
 //! its desires with fresh proof.
 
 use super::world_capture::capture_world;
-use super::world_diff::{FreshHost, NativeOps};
+use super::world_diff::{FreshHost, LogicalViewWrite, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
-use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window};
-use std::collections::HashMap;
-use tiler_core::world_report::{CommandResult, TransferKind, WorldCommand, WorldReplyV4};
+use super::{
+    FullscreenMeta, MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window,
+};
+use std::collections::{BTreeMap, HashMap};
+use tiler_core::world_report::{
+    CommandResult, RendererInput, TransferKind, WorldCommand, WorldReplyV4,
+};
 
 /// One ordered world command's outcome: the incorporated v4 reply plus the
 /// correlated settlement result (`None` when the command did not execute:
@@ -160,7 +164,7 @@ impl TileLoop {
 pub(super) fn merge_applied_transfers(
     reply: &tiler_core::world_report::WorldReplyV4,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
-    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    view_attempts: &[LogicalViewWrite],
     fresh: &FreshHost,
     native: &mut LiveNative,
     proven_h: &mut HashMap<String, (String, String)>,
@@ -199,13 +203,7 @@ pub(super) fn merge_applied_transfers(
                 attempt.operation_id == transfer.operation_id
                     && attempt.target_output == transfer.target_output
                     && attempt.target_workspace == transfer.target_workspace
-                    && attempt.post.as_ref().is_some_and(|reference| {
-                        workspace_ref_covers(
-                            reference,
-                            &transfer.target_output,
-                            &transfer.target_workspace,
-                        )
-                    })
+                    && attempt.post.as_deref() == Some(transfer.target_workspace.as_str())
             }),
         };
         if !proven {
@@ -422,14 +420,19 @@ fn should_log_apply(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
-    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    view_attempts: &[LogicalViewWrite],
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
+    state_attempts: &[tiler_core::world_report::StateAttempt],
     reply: &WorldReplyV4,
 ) -> bool {
     if command_kind != "observation" {
         return true;
     }
-    if !member_attempts.is_empty() || !view_attempts.is_empty() || !frame_attempts.is_empty() {
+    if !member_attempts.is_empty()
+        || !view_attempts.is_empty()
+        || !frame_attempts.is_empty()
+        || !state_attempts.is_empty()
+    {
         return true;
     }
     if !reply.operation_settled.is_empty() {
@@ -594,8 +597,10 @@ fn workspace_ref_covers(
 /// the logical views; `desired_workspaces`) rides from the exact accepted
 /// `reply`, never synthesized from native observations or expectations.
 /// The geometry basis (`desired_geometry` screen rows with wire `output`,
-/// `full`/`work` rects, per-screen `gap`/`outer_gap`, `complete`, `primary`)
-/// rides from the actual dispatched `report` screens, never a separate
+/// `full`/`work` rects, `complete`, `primary`, the target `scale`, and
+/// presence-only `identity` booleans for manufacturer/model/serial/
+/// connector — never the identity text) rides from the actual dispatched
+/// `report` screens, never a separate
 /// native area copy: the row is published only when the report/report-reply
 /// binding proves the screens are the reply's own accepted input
 /// (`request_id`, `observation_seq` vs `based_on_observation_seq`,
@@ -616,7 +621,7 @@ fn workspace_ref_covers(
 /// refusal as `Ok(false)` and torn state as `Err` without a native errno,
 /// so deeper refusal detail would need a broader seam change (reported as a
 /// limitation, not papered over here).
-// Fifteen inputs are the disjoint trace context plus the pass products
+// Sixteen inputs are the disjoint trace context plus the pass products
 // (reply, delivery, command kind, stats, raw attempts, fresh receipt proof,
 // cursor-hit/FFC, dispatched-report geometry basis); bundling would hide
 // the call-site borrow split the tick relies on.
@@ -628,9 +633,10 @@ fn apply_diag_value(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
-    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    view_attempts: &[LogicalViewWrite],
     command_result: Option<&CommandResult>,
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
+    state_attempts: &[tiler_core::world_report::StateAttempt],
     fresh_route: serde_json::Value,
     cursor_hit: Option<String>,
     ffc_enabled: bool,
@@ -658,14 +664,21 @@ fn apply_diag_value(
         .iter()
         .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|item| {
+            let logical_view = |ws: &String| {
+                serde_json::json!({
+                    "kind": "logical",
+                    "out": item.target_output.0,
+                    "ws": ws,
+                })
+            };
             serde_json::json!({
                 "op": item.operation_id.clone(),
                 "out": item.target_output.0.clone(),
                 "ws": item.target_workspace.clone(),
                 "setter": item.disposition.as_str(),
-                "pre": item.pre.as_ref().map(workspace_ref_value),
-                "post": item.post.as_ref().map(workspace_ref_value),
-                "base": item.baseline.as_ref().map(workspace_ref_value),
+                "pre": item.pre.as_ref().map(logical_view),
+                "post": item.post.as_ref().map(logical_view),
+                "base": item.baseline.as_ref().map(logical_view),
                 "attempt_ms": item.attempt_ms,
             })
         })
@@ -718,6 +731,28 @@ fn apply_diag_value(
                 "dpi_before": item.dpi_before,
                 "dpi_after": item.dpi_after,
                 "attempt_id": item.attempt_id,
+                "attempt_ms": item.attempt_ms,
+            })
+        })
+        .collect();
+    // Raw native-state writes this pass produced (fullscreen/maximize/sticky/
+    // above), bounded with an honest omitted count: window/property/target
+    // correlation plus the original acted-on revision and stamp, the setter
+    // disposition vocabulary shared with frame setters, and the live
+    // pre/post property reads. `null` pre/post means unreadable, never a
+    // fabricated false. Never a verdict: the core owns completion.
+    let state_rows: Vec<serde_json::Value> = state_attempts
+        .iter()
+        .take(MAX_APPLY_DIAG_ATTEMPTS)
+        .map(|item| {
+            serde_json::json!({
+                "window": item.window.0.clone(),
+                "property": item.property.as_str(),
+                "target": item.target,
+                "rev": item.revision,
+                "setter": item.disposition.as_str(),
+                "pre": item.pre,
+                "post": item.post,
                 "attempt_ms": item.attempt_ms,
             })
         })
@@ -777,6 +812,12 @@ fn apply_diag_value(
                 "floating": row.floating,
                 "float_origin": row.float_origin.map(|origin| origin.as_str()),
                 "frame_op": row.frame_operation.clone(),
+                "automatic_clear_pending": row.state.iter().any(|state| {
+                    state.property == tiler_core::world_report::StateProperty::Maximized
+                        && !state.value
+                        && state.automatic_clear
+                        && state.authority == tiler_core::world_report::ScopeAuthority::Controlled
+                }),
             })
         })
         .collect();
@@ -837,11 +878,64 @@ fn apply_diag_value(
                     "full": screen.full_rect.map(rect_value),
                     "work": screen.work_area.map(rect_value),
                     "complete": screen.complete,
+                    "scale": screen.scale,
+                    "identity": {
+                        "manufacturer": screen.identity.manufacturer.is_some(),
+                        "model": screen.identity.model.is_some(),
+                        "serial": screen.identity.serial.is_some(),
+                        "connector": screen.identity.connector.is_some(),
+                    },
                 })
             })
             .collect()
     } else {
         Vec::new()
+    };
+    // Preserve the actual W2 evidence that rode the matching report, not a
+    // reconstruction from desired homing or eventual foreground. Cap the
+    // flattened rows across all grants, with the same provenance as geometry.
+    let (arrival_brackets, arrival_brackets_omitted) = if geometry_paired {
+        use tiler_core::world_report::{ArrivalLocation, VisibilitySample};
+        let sample = |read: &VisibilitySample| {
+            serde_json::json!({
+                "obs": read.obs,
+                "lifetime_matched": read.lifetime_matched,
+                "visible": read.visibility.visible,
+                "suppression_owned": read.visibility.suppression_owned,
+                "minimized": read.minimized,
+                "host_hidden": read.host_hidden,
+            })
+        };
+        let rows: Vec<_> = report
+            .focus_feedback
+            .iter()
+            .flat_map(|feedback| feedback.arrival.iter().map(move |row| (feedback, row)))
+            .take(MAX_APPLY_DIAG_ATTEMPTS)
+            .map(|(feedback, row)| {
+                let out = match &row.location {
+                    ArrivalLocation::Output { out } => out.as_ref().map(|id| id.0.as_str()),
+                    ArrivalLocation::Native { .. } => None,
+                };
+                serde_json::json!({
+                    "id": feedback.id,
+                    "target": feedback.target.0,
+                    "rev": feedback.revision,
+                    "foreground_proven": feedback.foreground_proven,
+                    "window": row.window.0,
+                    "obs": row.obs,
+                    "kind": row.location.kind_str(),
+                    "out": out,
+                    "frame": row.frame.map(rect_value),
+                    "before": sample(&row.before),
+                    "after": sample(&row.after),
+                })
+            })
+            .collect();
+        let total: usize = report.focus_feedback.iter().map(|f| f.arrival.len()).sum();
+        let omitted = total.saturating_sub(rows.len());
+        (rows, Some(omitted))
+    } else {
+        (Vec::new(), None)
     };
     let held_scopes: Vec<serde_json::Value> = reply
         .scopes
@@ -1066,6 +1160,23 @@ fn apply_diag_value(
         },
         "cursor_hit": cursor_hit,
         "ffc_enabled": ffc_enabled,
+        "warp_capability": super::settings::WARP_SUPPORTED,
+        "warp_request": reply.warp_request.as_ref().map_or(
+            serde_json::Value::Null,
+            |request| serde_json::json!({
+                "id": request.id.clone(),
+                "target": request.target.0.clone(),
+                "rev": request.revision,
+                "out": request.output.0.clone(),
+                "ws": request.workspace.0.clone(),
+                "point": [request.point.0, request.point.1],
+                "pointer_baseline": request.pointer_baseline,
+            }),
+        ),
+        // Witness defaults: the production sites attach the staged values
+        // from `WorldOwner::report_witness`; absent staging is null.
+        "pointer_activity": serde_json::Value::Null,
+        "warp_spent": serde_json::Value::Null,
         "members": member_rows,
         "members_omitted": member_attempts
             .len()
@@ -1117,6 +1228,14 @@ fn apply_diag_value(
             .saturating_sub(stats.visibility_posts.len().min(MAX_APPLY_DIAG_FOCUS)),
         "fresh_route": fresh_route,
     });
+    out["arrival_brackets"] = serde_json::Value::Array(arrival_brackets);
+    out["arrival_brackets_omitted"] = serde_json::json!(arrival_brackets_omitted);
+    out["states"] = serde_json::Value::Array(state_rows);
+    out["states_omitted"] = serde_json::json!(
+        state_attempts
+            .len()
+            .saturating_sub(state_attempts.len().min(MAX_APPLY_DIAG_ATTEMPTS))
+    );
     out["receipt_views"] = serde_json::Value::Array(receipt_rows);
     out["receipt_views_omitted"] = serde_json::json!(
         receipt_views
@@ -1204,15 +1323,25 @@ fn apply_diag_value(
     out
 }
 
+/// Attach the staged report witness to a `world-apply` row: the loop-thread
+/// raw-input pointer generation (`None` when uninstalled, never a fabricated
+/// count) and the exact warp id spent this generation. Both keys are set
+/// unconditionally so an absent witness is explicit `null`.
+fn attach_warp_witness(value: &mut serde_json::Value, witness: (Option<u64>, Option<String>)) {
+    let (pointer_activity, warp_spent) = witness;
+    value["pointer_activity"] = serde_json::json!(pointer_activity);
+    value["warp_spent"] = serde_json::json!(warp_spent);
+}
+
 /// Trace-only emission for one apply pass. Event-driven owner trace only:
 /// no input-hook cost, no native re-read, no per-window dump. Returns true
 /// when a row was emitted (the caller records the hover triple then, never
 /// on quiet ticks).
-// Twenty inputs are the disjoint trace context plus the pass products
+// Twenty-two inputs are the disjoint trace context plus the pass products
 // (reply, delivery, command kind, stats, raw attempts, fresh receipt proof,
-// cursor-hit/FFC, dispatched-report geometry basis, hover-change,
-// receipt-change, command-receipt stamp); bundling would hide the
-// call-site borrow split.
+// cursor-hit/FFC, dispatched-report geometry basis, staged report witness,
+// hover-change, receipt-change, command-receipt stamp); bundling would hide
+// the call-site borrow split.
 #[allow(clippy::too_many_arguments)]
 fn log_apply_diag(
     log_path: &std::path::Path,
@@ -1223,15 +1352,17 @@ fn log_apply_diag(
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
-    view_attempts: &[tiler_core::world_report::ViewAttempt],
+    view_attempts: &[LogicalViewWrite],
     command_result: Option<&CommandResult>,
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
+    state_attempts: &[tiler_core::world_report::StateAttempt],
     fresh_route: serde_json::Value,
     cursor_hit: Option<String>,
     ffc_enabled: bool,
     report: &tiler_core::world_report::WorldReportV4,
     receipt_views: &[(String, String)],
     receipt_proof_mono_ms: Option<u64>,
+    witness: (Option<u64>, Option<String>),
     hover_changed: bool,
     receipt_changed: bool,
     recv_mono_ms: u64,
@@ -1243,9 +1374,11 @@ fn log_apply_diag(
             member_attempts,
             view_attempts,
             frame_attempts,
+            state_attempts,
             reply,
         ) || hover_changed
-            || receipt_changed)
+            || receipt_changed
+            || report.focus_feedback.iter().any(|row| !row.arrival.is_empty()))
     {
         return false;
     }
@@ -1264,6 +1397,7 @@ fn log_apply_diag(
         view_attempts,
         command_result,
         frame_attempts,
+        state_attempts,
         fresh_route,
         cursor_hit,
         ffc_enabled,
@@ -1271,6 +1405,7 @@ fn log_apply_diag(
         receipt_views,
         receipt_proof_mono_ms,
     );
+    attach_warp_witness(&mut value, witness);
     value["recv_mono_ms"] = serde_json::json!(recv_mono_ms);
     super::trace::log_json_at(log_path, value);
     true
@@ -1381,14 +1516,14 @@ fn admit_observed(
                 continue;
             }
         }
-        let fresh_tag = match crate::product_hide::sys::install_member_tag(key.hwnd, me.pid) {
+        let member_tag = match crate::product_hide::sys::ensure_member_tag(key.hwnd, me.pid) {
             Ok(tag) => tag,
             Err(_) => continue,
         };
         let post_ok = crate::product_hide::sys::hold_target_verified(live.pid, &live).is_ok()
             && crate::ffi::window_pid(key.hwnd) == key.pid
             && crate::product_hide::sys::read_member_tag(key.hwnd).as_deref()
-                == Some(fresh_tag.as_str());
+                == Some(member_tag.as_str());
         if !post_ok {
             continue;
         }
@@ -1396,7 +1531,16 @@ fn admit_observed(
             .member_tokens
             .insert(key.clone(), window.token.clone());
         state.member_identity.insert(key.clone(), live);
-        state.member_tags.insert(key.clone(), fresh_tag);
+        state.member_tags.insert(key.clone(), member_tag);
+        // R14 adoption baseline: adapter evidence only, never a window write
+        // and never an exit authority. A store failure fails closed for the
+        // baseline alone and never blocks admission.
+        super::adoption_baseline::capture_with_trace(
+            &state.preimage_dir,
+            window,
+            state.trace,
+            &state.log_path,
+        );
         // Trace-only token<->HWND join for native correlation: the stable
         // token plus the full member identity (HWND/PID/creation). No
         // titles, exe paths, or raw input. Fresh admissions only.
@@ -1412,6 +1556,38 @@ fn admit_observed(
                     "creation": key.creation,
                 }),
             );
+        }
+    }
+}
+
+/// Refresh the per-tick intent snapshot from the canonical packed slot for
+/// each currently bound member. Unreadable or foreign-lifetime slots leave
+/// their key absent (unknown, never an inferred desire).
+pub(super) fn refresh_intent_snapshot(state: &mut TileLoop) {
+    state
+        .intent_snapshot
+        .retain(|key, _| state.member_tokens.contains_key(key));
+    for key in state.member_tokens.keys() {
+        // Offline fixtures have synthetic HWNDs; keep their seeded intent.
+        #[cfg(test)]
+        if !crate::ffi::is_window(key.hwnd)
+            && !crate::product_hide::sys::fake::marker_active(key.hwnd)
+            && state.intent_snapshot.contains_key(key)
+        {
+            continue;
+        }
+        let read = state
+            .member_tags
+            .get(key)
+            .and_then(|tag| super::world_native::intent_storage_of(key, tag));
+        if let Some(storage) = read {
+            if let Some(existing) = state.intent_snapshot.get_mut(key) {
+                *existing = storage;
+            } else {
+                state.intent_snapshot.insert(key.clone(), storage);
+            }
+        } else {
+            state.intent_snapshot.remove(key);
         }
     }
 }
@@ -1434,7 +1610,7 @@ pub(super) fn snapshot_frames(state: &mut TileLoop, observed: &[ObservedWindow])
         if bound != window.token {
             continue;
         }
-        let float_lane = state.sticky.contains_key(&key)
+        let float_lane = state.sticky_of(&key)
             || state.fixed_auto_seen.contains(&key)
             || state.core_is_float_token(&bound)
             || state.born_fullscreen.contains(&key);
@@ -1449,23 +1625,17 @@ pub(super) fn snapshot_frames(state: &mut TileLoop, observed: &[ObservedWindow])
     }
 }
 
-/// World preamble for retained-only arrivals and quiet restores: bind
-/// first-seen fullscreen/maximized members slotless, re-adopt surviving
-/// float/sticky/tile-override markers, then clear first-seen maximizes
-/// exactly once. Idempotent with the reconcile preamble (all three
-/// early-out on membership, hydration, and attempt state).
-fn admit_retained_and_marks(
+/// Bind first-seen fullscreen and maximized members without allocating a
+/// tile slot until the core owns the transition.
+fn admit_retained(
     state: &mut TileLoop,
     me: &crate::model::ProcessIdentity,
-    observed: &[ObservedWindow],
     retained: &[RetainedRow],
     areas: &[MonitorArea],
 ) {
     super::restart::admit_born_fullscreen(state, me, retained, areas);
     let mut hint_cx = super::HintCx::new();
     super::restart::admit_slotless_maximized(state, me, retained, areas, &mut hint_cx);
-    super::restart::adopt_restart_markers(state, me, observed, retained, areas, &mut hint_cx);
-    super::admission::clear_maximize_at_admission(state, me, retained);
 }
 
 /// Run one observation tick through the single world owner. Returns the
@@ -1485,13 +1655,13 @@ pub(super) fn run_observation_tick(
     foreground_hwnd: u64,
     fulls: &[tiler_core::geometry::Rect],
     cursor: Option<(i32, i32)>,
-    presentation_paused: bool,
 ) -> Option<tiler_core::world_report::WorldReplyV4> {
     let trace = state.trace;
     let tick = state.tick;
     let log_path = state.log_path.clone();
     admit_observed(state, me, observed);
-    admit_retained_and_marks(state, me, observed, retained, areas);
+    admit_retained(state, me, retained, areas);
+    refresh_intent_snapshot(state);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
     // The native stacking snapshot stashed by the latest observation;
@@ -1507,8 +1677,9 @@ pub(super) fn run_observation_tick(
     let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
     // Normalized presentation ingress rides this tick's capture (stage 5):
     // the foreground observation, chord/move facts, and host-scaled style,
-    // computed before the disjoint split borrows the loop. The game lane
-    // sets `presentation_paused` so the core skips presentation work.
+    // computed before the disjoint split borrows the loop. Focused-fullscreen
+    // presentation suspension is core-owned from the foreground facts; the
+    // adapter never blanks the ingress.
     let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
     // Project-suppressed claim rows carry their own lightweight live reads
@@ -1527,14 +1698,10 @@ pub(super) fn run_observation_tick(
         ref mut member_rects,
         ref mut float_rects,
         ref hint_logged,
-        ref sticky,
-        ref floated,
-        ref restart_reject_hold,
+        ref intent_snapshot,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
-        ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
         ref mut pending_closed,
@@ -1542,15 +1709,23 @@ pub(super) fn run_observation_tick(
         ref scope_hosts,
         ref settings_live,
         ref output_tokens,
+        ref monitor_identities,
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
         ref active,
         ref allowlist,
         workspace_proof,
-        ref float_topmost_prev,
         ..
     } = *state;
+    // Canonical fullscreen ownership for this tick's bound lifetimes, built
+    // from the disjoint table borrows before every capture below (capture
+    // stays pure over the seam). A failed read leaves its key absent:
+    // unknown/app-owned fullscreen, never an inferred desire.
+    let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
+        .keys()
+        .filter_map(|key| super::read_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
+        .collect();
     // Invalidate synchronously on every tick input (dirty-until-ack).
     world.invalidate();
     // One monotonic sample for this tick (same epoch as the log stamp):
@@ -1564,20 +1739,16 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
         scope,
         settings_live,
         output_tokens,
+        monitor_identities,
         active_output.as_str(),
         applied_homing,
         applied_views,
@@ -1588,10 +1759,11 @@ pub(super) fn run_observation_tick(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.fullscreen_meta = Some(&fullscreen_meta);
+    inputs.intent_storage = Some(intent_snapshot);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -1628,20 +1800,16 @@ pub(super) fn run_observation_tick(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
         scope,
         settings_live,
         output_tokens,
+        monitor_identities,
         active_output.as_str(),
         applied_homing,
         applied_views,
@@ -1652,46 +1820,12 @@ pub(super) fn run_observation_tick(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.fullscreen_meta = Some(&fullscreen_meta);
+    inputs.intent_storage = Some(intent_snapshot);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
-    let mut inputs = TileLoop::owner_inputs(
-        member_tokens,
-        member_identity,
-        member_tags,
-        member_rects,
-        float_rects,
-        hint_logged,
-        sticky,
-        floated,
-        restart_reject_hold,
-        born_fullscreen,
-        born_first_exit,
-        fixed_auto_seen,
-        fixed_tile_overrides,
-        fixed_origin_overrides,
-        hidden_claims,
-        minimized_omitted,
-        pending_closed,
-        scope,
-        settings_live,
-        output_tokens,
-        active_output.as_str(),
-        applied_homing,
-        applied_views,
-        active,
-        cursor,
-        hit_hwnd,
-        gesture.clone(),
-        presentation_foreground.clone(),
-        presentation_chord,
-        presentation_move.clone(),
-        presentation_paused,
-        presentation_native_order.clone(),
-    );
-    inputs.hidden_reads = Some(&hidden_reads);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
     let proven_homing = applied_homing.clone();
@@ -1723,8 +1857,7 @@ pub(super) fn run_observation_tick(
         member_tags,
         member_identity,
         hidden_claims,
-        sticky,
-        float_topmost_prev,
+        intent_snapshot,
         scope,
         scope_hosts,
         allowlist.as_ref(),
@@ -1833,6 +1966,7 @@ pub(super) fn run_observation_tick(
             &view_attempts,
             None,
             &frame_attempts,
+            world.last_state_attempts(),
             fresh_route_value(
                 &captured.focused_global,
                 captured.cursor,
@@ -1846,6 +1980,7 @@ pub(super) fn run_observation_tick(
             &receipt_views,
             receipt_proof_mono_ms,
         );
+        attach_warp_witness(&mut row, world.report_witness());
         row["recv_mono_ms"] = serde_json::json!(tick_ms);
         Some(row)
     } else {
@@ -1872,6 +2007,7 @@ pub(super) fn run_observation_tick(
         &view_attempts,
         None,
         &frame_attempts,
+        world.last_state_attempts(),
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -1884,6 +2020,7 @@ pub(super) fn run_observation_tick(
         &report,
         &receipt_views,
         receipt_proof_mono_ms,
+        world.report_witness(),
         hover_changed,
         receipt_changed,
         tick_ms,
@@ -1902,29 +2039,33 @@ pub(super) fn run_observation_tick(
     // same lane row assembly uses, so the next hidden report stages the
     // proven frame instead of the pre-write slot.
     let hidden_seeds = native.take_hidden_seeds();
+    let reveals = native.take_reveals();
     drop(native);
+    super::visibility_diag::emit_reveal_records(
+        &log_path,
+        tick,
+        &format!("tick-{tick}"),
+        &reveals,
+    );
     super::world_native::apply_hidden_seeds(
         hidden_seeds,
         member_tokens,
         member_rects,
         float_rects,
         |key| {
-            let sticky = sticky.contains_key(key);
-            let durable =
-                fixed_tile_overrides.contains(key) || fixed_origin_overrides.contains(key);
-            let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
-            crate::native_guards::float_lane(
-                sticky,
-                automatic,
-                durable,
+            let storage = intent_snapshot.get(key);
+            crate::native_guards::hidden_snapshot_uses_float(
+                storage.is_some_and(|s| s.sticky_prior.is_some()),
+                fixed_auto_seen.contains(key),
                 born_first_exit.contains(key),
-                floated.contains(key),
-                restart_reject_hold.contains(key),
+                storage.and_then(|s| s.float),
                 born_fullscreen.contains(key),
-                true,
             )
         },
     );
+    // Durable marker storage is authoritative over the adapter's former
+    // mechanical mirrors (deleted): the next tick re-reads the canonical
+    // packed slot, so nothing can lead the native truth.
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
     }
@@ -1939,11 +2080,6 @@ pub(super) fn run_observation_tick(
     }
     for attempt in member_attempts {
         world.note_member_attempt(attempt);
-    }
-    if world.host_owned_workspace_domains() {
-        for attempt in view_attempts {
-            world.note_view_attempt(attempt);
-        }
     }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
@@ -1975,14 +2111,38 @@ pub(super) fn run_observation_tick(
     }
 }
 
+/// Canonical owned-fullscreen marker read for one tick input. Tests inject
+/// scripted metadata (synthetic HWNDs cannot carry real Win32 properties);
+/// production always reads the live marker.
+fn read_tick_fullscreen_meta(hwnd: u64) -> Option<FullscreenMeta> {
+    #[cfg(test)]
+    if let Some(meta) = INJECTED_FULLSCREEN_META.with(|map| map.borrow().get(&hwnd).copied()) {
+        return Some(meta);
+    }
+    super::read_fullscreen_meta(hwnd)
+}
+
+#[cfg(test)]
+thread_local! {
+    static INJECTED_FULLSCREEN_META: std::cell::RefCell<BTreeMap<u64, FullscreenMeta>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+#[cfg(test)]
+fn inject_fullscreen_meta(hwnd: u64, meta: FullscreenMeta) {
+    INJECTED_FULLSCREEN_META.with(|map| {
+        map.borrow_mut().insert(hwnd, meta);
+    });
+}
+
 /// Core-only observation catch-up for the superseded command leg: dispatch
 /// one observation, deliver through the staged production path, and
 /// acknowledge the exact carried receipts with no native planning or
 /// application. The diff applied watermark, trace proof, gesture stash,
 /// proven receipt maps, and hidden seeds all stay untouched: those belong to
-/// the latest full pass. Neither apply oracle counter moves. Returns true
-/// only when the ack applied current (the fence cleared); stale/ignored
-/// outcomes keep the fence and return false with no loop, no timer, no wait.
+/// latest full pass. Neither apply oracle counter moves. Returns the
+/// dispatched report (the caller ignores it); stale/ignored ack outcomes
+/// keep the fence with no loop, no timer, no wait.
 /// The admission preamble is identical to the full-leg dispatch preamble
 /// (mechanical binding only, fail-closed): it may bind newly proven members
 /// exactly as a full-leg tick would, so this leg is native-free only in the
@@ -1997,19 +2157,17 @@ fn run_observation_core_only(
     foreground_hwnd: u64,
     fulls: &[tiler_core::geometry::Rect],
     cursor: Option<(i32, i32)>,
-) -> bool {
+) -> Option<tiler_core::world_report::WorldReportV4> {
     let tick = state.tick;
     let log_path = state.log_path.clone();
     admit_observed(state, me, observed);
-    admit_retained_and_marks(state, me, observed, retained, areas);
+    admit_retained(state, me, retained, areas);
+    refresh_intent_snapshot(state);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
     let presentation_native_order = state.last_native_order.clone();
     let gesture = state.gesture_ingress(cursor);
     let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
-    // Commands never run on the game lane, so the pause flag stays clear
-    // here like the command dispatch below.
-    let presentation_paused = false;
     let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
     // Project-suppressed claim rows carry their own lightweight live reads
@@ -2025,26 +2183,32 @@ fn run_observation_core_only(
         ref mut member_rects,
         ref mut float_rects,
         ref hint_logged,
-        ref sticky,
-        ref floated,
-        ref restart_reject_hold,
+        ref intent_snapshot,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
-        ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
         ref mut pending_closed,
         ref scope,
         ref settings_live,
         ref output_tokens,
+        ref monitor_identities,
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
         ref active,
         ..
     } = *state;
+    // Canonical fullscreen ownership for this tick's bound lifetimes,
+    // exactly like the full observation tick: a window that first admits
+    // during this core-only catch-up carries its owner metadata and intent
+    // record into the report instead of losing restart intent. A failed read
+    // leaves its key absent (unknown, never inferred).
+    let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
+        .keys()
+        .filter_map(|key| read_tick_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
+        .collect();
     world.invalidate();
     let tick_ms = super::trace::log_mono_ms();
     let mut inputs = TileLoop::owner_inputs(
@@ -2054,20 +2218,16 @@ fn run_observation_core_only(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
         scope,
         settings_live,
         output_tokens,
+        monitor_identities,
         active_output.as_str(),
         applied_homing,
         applied_views,
@@ -2078,10 +2238,11 @@ fn run_observation_core_only(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.fullscreen_meta = Some(&fullscreen_meta);
+    inputs.intent_storage = Some(intent_snapshot);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -2091,7 +2252,7 @@ fn run_observation_core_only(
         tick_ms,
     ) {
         Ok(report) => report,
-        Err(_) => return false,
+        Err(_) => return None,
     };
     let outcome = world.deliver_production(&report);
     let (delivery, reply) = match outcome {
@@ -2102,7 +2263,7 @@ fn run_observation_core_only(
         }
         tiler_core::world_engine::WorldOutcome::Rejected { .. } => {
             world.note_rejected_or_lost(&report.request_id);
-            return false;
+            return None;
         }
     };
     // Honest row, never a native outcome: this leg planned/applied nothing.
@@ -2117,14 +2278,10 @@ fn run_observation_core_only(
             "native": "catchup-core-only-skipped",
         }),
     );
-    match ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing) {
-        // Incorporated and current: obligations acked and the fence cleared,
-        // with no native planning, no applied watermark, no trace proof, and
-        // no gesture clearing. The latest full pass owns all of those.
-        super::world_sequencer::AckOutcome::Applied(_) => true,
-        super::world_sequencer::AckOutcome::Stale(_)
-        | super::world_sequencer::AckOutcome::Ignored { .. } => false,
-    }
+    let _ = ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing);
+    // The report is returned for the offline catch-up regression; production
+    // callers ignore it. Ack outcome keeps owning the fence exactly as before.
+    Some(report)
 }
 
 /// Shared command dispatch core: admission preamble, catch-up fence check
@@ -2158,6 +2315,7 @@ fn run_world_command_impl(
     command: WorldCommand,
     cursor: Option<(i32, i32)>,
     mode: CommandApplyMode,
+    renderer_input: Option<RendererInput>,
 ) -> Option<WorldCommandOutcome> {
     let trace = state.trace;
     let tick = state.tick;
@@ -2169,7 +2327,8 @@ fn run_world_command_impl(
     // dispatch clock, so receipt-to-phase latency starts at actual receipt.
     let recv_mono_ms = super::trace::log_mono_ms();
     admit_observed(state, me, observed);
-    admit_retained_and_marks(state, me, observed, retained, areas);
+    admit_retained(state, me, retained, areas);
+    refresh_intent_snapshot(state);
     snapshot_frames(state, observed);
     super::rows::refresh_world_hints(state, observed, retained);
     // Superseded fence first: when observation-only catch-up is owed, service
@@ -2178,7 +2337,7 @@ fn run_world_command_impl(
     // turn armed. The full leg never runs this: its post-refusal path below
     // applies owed catch-up natively instead.
     if mode == CommandApplyMode::Superseded && state.world.catchup_required() {
-        run_observation_core_only(
+        let _ = run_observation_core_only(
             state,
             me,
             observed,
@@ -2201,11 +2360,10 @@ fn run_world_command_impl(
     // unreadable), so a hit never travels without its position.
     let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
     // Normalized presentation ingress rides this tick's capture (stage 5),
-    // like the observation path. Commands never run on the game lane, so
-    // the pause flag stays clear here.
+    // like the observation path. Focused-fullscreen presentation suspension
+    // is core-owned; the adapter never blanks the ingress.
     let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
-    let presentation_paused = false;
     // Project-suppressed claim rows carry their own lightweight live reads
     // (T4): built here, before the disjoint split, so capture stays pure
     // over the seam. A failed read leaves its key absent and that claim's
@@ -2221,15 +2379,11 @@ fn run_world_command_impl(
         ref member_tags,
         ref mut member_rects,
         ref mut float_rects,
+        ref intent_snapshot,
         ref hint_logged,
-        ref sticky,
-        ref floated,
-        ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
-        ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
         ref mut pending_closed,
@@ -2237,15 +2391,23 @@ fn run_world_command_impl(
         ref scope_hosts,
         ref settings_live,
         ref output_tokens,
+        ref monitor_identities,
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
         ref active,
         ref allowlist,
         workspace_proof,
-        ref float_topmost_prev,
         ..
     } = *state;
+    // Canonical fullscreen ownership for this command tick's bound
+    // lifetimes, built before both captures below (capture stays pure over
+    // the seam). A failed read leaves its key absent: unknown/app-owned
+    // fullscreen, never an inferred desire.
+    let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
+        .keys()
+        .filter_map(|key| super::read_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
+        .collect();
     world.invalidate();
     // One monotonic sample for this command tick (same contract as the
     // observation path above).
@@ -2258,20 +2420,16 @@ fn run_world_command_impl(
             member_rects,
             float_rects,
             hint_logged,
-            sticky,
-            floated,
-            restart_reject_hold,
             born_fullscreen,
             born_first_exit,
             fixed_auto_seen,
-            fixed_tile_overrides,
-            fixed_origin_overrides,
             hidden_claims,
             minimized_omitted,
             pending_closed,
             scope,
             settings_live,
             output_tokens,
+            monitor_identities,
             active_output.as_str(),
             applied_homing,
             applied_views,
@@ -2282,10 +2440,11 @@ fn run_world_command_impl(
             presentation_foreground.clone(),
             presentation_chord,
             presentation_move.clone(),
-            presentation_paused,
             presentation_native_order.clone(),
         );
         inputs.hidden_reads = Some(&hidden_reads);
+        inputs.fullscreen_meta = Some(&fullscreen_meta);
+        inputs.intent_storage = Some(intent_snapshot);
         match world.try_dispatch_command(
             &inputs,
             Some(observed),
@@ -2294,6 +2453,7 @@ fn run_world_command_impl(
             foreground_hwnd,
             tick_ms,
             command,
+            renderer_input,
         ) {
             Ok(report) => report,
             // Observation-only catch-up is pending or the owner is busy:
@@ -2353,7 +2513,6 @@ fn run_world_command_impl(
                         foreground_hwnd,
                         fulls,
                         cursor,
-                        false,
                     );
                 }
                 return None;
@@ -2394,7 +2553,7 @@ fn run_world_command_impl(
             // (core-only). Either way the rejected command stays dropped
             // (never queued, never replayed).
             if mode == CommandApplyMode::Superseded {
-                run_observation_core_only(
+                let _ = run_observation_core_only(
                     state,
                     me,
                     observed,
@@ -2416,7 +2575,6 @@ fn run_world_command_impl(
                     foreground_hwnd,
                     fulls,
                     cursor,
-                    false,
                 );
             }
             return None;
@@ -2472,20 +2630,16 @@ fn run_world_command_impl(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
         scope,
         settings_live,
         output_tokens,
+        monitor_identities,
         active_output.as_str(),
         applied_homing,
         applied_views,
@@ -2496,46 +2650,12 @@ fn run_world_command_impl(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.fullscreen_meta = Some(&fullscreen_meta);
+    inputs.intent_storage = Some(intent_snapshot);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
-    let mut inputs = TileLoop::owner_inputs(
-        member_tokens,
-        member_identity,
-        member_tags,
-        member_rects,
-        float_rects,
-        hint_logged,
-        sticky,
-        floated,
-        restart_reject_hold,
-        born_fullscreen,
-        born_first_exit,
-        fixed_auto_seen,
-        fixed_tile_overrides,
-        fixed_origin_overrides,
-        hidden_claims,
-        minimized_omitted,
-        pending_closed,
-        scope,
-        settings_live,
-        output_tokens,
-        active_output.as_str(),
-        applied_homing,
-        applied_views,
-        active,
-        cursor,
-        hit_hwnd,
-        gesture.clone(),
-        presentation_foreground.clone(),
-        presentation_chord,
-        presentation_move.clone(),
-        presentation_paused,
-        presentation_native_order.clone(),
-    );
-    inputs.hidden_reads = Some(&hidden_reads);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
     let proven_homing = applied_homing.clone();
@@ -2563,8 +2683,7 @@ fn run_world_command_impl(
         member_tags,
         member_identity,
         hidden_claims,
-        sticky,
-        float_topmost_prev,
+        intent_snapshot,
         scope,
         scope_hosts,
         allowlist.as_ref(),
@@ -2576,18 +2695,6 @@ fn run_world_command_impl(
     );
     native.set_diagnostics_trace(trace);
     world.sync_diff_gate();
-    // Fresh accepted selection arrivals only: the exact-desktop foreground
-    // exception binds this report's accepted explicit arrival effect (the
-    // grant carries the reply's own effect id plus target, minted from the
-    // exact report command and sequence). Any other delivery (duplicate,
-    // command-consumed) or command arms nothing; the observation path never
-    // reaches this line.
-    native.set_selection_arrival(super::world_diff::SelectionArrivalGrant::for_accepted(
-        report.command.as_ref(),
-        report.command_seq,
-        &reply,
-        delivery,
-    ));
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
@@ -2673,6 +2780,7 @@ fn run_world_command_impl(
             &view_attempts,
             result.as_ref(),
             &frame_attempts,
+            world.last_state_attempts(),
             fresh_route_value(
                 &captured.focused_global,
                 captured.cursor,
@@ -2686,6 +2794,7 @@ fn run_world_command_impl(
             &receipt_views,
             receipt_proof_mono_ms,
         );
+        attach_warp_witness(&mut row, world.report_witness());
         row["recv_mono_ms"] = serde_json::json!(recv_mono_ms);
         Some(row)
     } else {
@@ -2712,6 +2821,7 @@ fn run_world_command_impl(
         &view_attempts,
         result.as_ref(),
         &frame_attempts,
+        world.last_state_attempts(),
         fresh_route_value(
             &captured.focused_global,
             captured.cursor,
@@ -2724,6 +2834,7 @@ fn run_world_command_impl(
         &report,
         &receipt_views,
         receipt_proof_mono_ms,
+        world.report_witness(),
         hover_changed,
         receipt_changed,
         recv_mono_ms,
@@ -2738,29 +2849,33 @@ fn run_world_command_impl(
     // Hide-commit snapshot seeds, routed exactly like the observation path
     // above (see `run_observation_tick`).
     let hidden_seeds = native.take_hidden_seeds();
+    let reveals = native.take_reveals();
     drop(native);
+    super::visibility_diag::emit_reveal_records(
+        &log_path,
+        tick,
+        &format!("tick-{tick}"),
+        &reveals,
+    );
     super::world_native::apply_hidden_seeds(
         hidden_seeds,
         member_tokens,
         member_rects,
         float_rects,
         |key| {
-            let sticky = sticky.contains_key(key);
-            let durable =
-                fixed_tile_overrides.contains(key) || fixed_origin_overrides.contains(key);
-            let automatic = fixed_auto_seen.contains(key) && !sticky && !durable;
-            crate::native_guards::float_lane(
-                sticky,
-                automatic,
-                durable,
+            let storage = intent_snapshot.get(key);
+            crate::native_guards::hidden_snapshot_uses_float(
+                storage.is_some_and(|s| s.sticky_prior.is_some()),
+                fixed_auto_seen.contains(key),
                 born_first_exit.contains(key),
-                floated.contains(key),
-                restart_reject_hold.contains(key),
+                storage.and_then(|s| s.float),
                 born_fullscreen.contains(key),
-                true,
             )
         },
     );
+    // Durable marker storage is authoritative over the adapter's former
+    // mechanical mirrors (deleted): the next tick re-reads the canonical
+    // packed slot, so nothing can lead the native truth.
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
     }
@@ -2775,11 +2890,6 @@ fn run_world_command_impl(
     }
     for attempt in member_attempts {
         world.note_member_attempt(attempt);
-    }
-    if world.host_owned_workspace_domains() {
-        for attempt in view_attempts {
-            world.note_view_attempt(attempt);
-        }
     }
     let ack_outcome = ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing);
     match ack_outcome {
@@ -2855,6 +2965,45 @@ pub(super) fn run_world_command(
         command,
         cursor,
         CommandApplyMode::Apply,
+        None,
+    )
+}
+
+/// Route one explicit [`WorldCommand`] that carries renderer input: the
+/// revision actually drawn plus the exact core row the native hit selected.
+/// Same dispatch/deliver/apply/acknowledge tail as [`run_world_command`]; the
+/// optional input rides the report exactly as the adapter observed it, so the
+/// core alone decides identity/home or `stale-render-target` refusal. `None`
+/// is an ordinary command with no renderer row (tray/CLI/keyboard paths).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_world_command_with_renderer(
+    state: &mut TileLoop,
+    me: &crate::model::ProcessIdentity,
+    store: &crate::storage::LedgerStore,
+    dir: &std::path::Path,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    areas: &[MonitorArea],
+    foreground_hwnd: u64,
+    fulls: &[tiler_core::geometry::Rect],
+    command: WorldCommand,
+    cursor: Option<(i32, i32)>,
+    renderer_input: Option<RendererInput>,
+) -> Option<WorldCommandOutcome> {
+    run_world_command_impl(
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        retained,
+        areas,
+        foreground_hwnd,
+        fulls,
+        command,
+        cursor,
+        CommandApplyMode::Apply,
+        renderer_input,
     )
 }
 
@@ -2919,6 +3068,7 @@ pub(super) fn run_world_command_core_only(
         command,
         cursor,
         CommandApplyMode::Superseded,
+        None,
     )
 }
 
@@ -3023,7 +3173,6 @@ pub(super) fn dispatch_test_observation(
     let presentation_foreground: Option<super::world_capture::PresentationForeground> = None;
     let presentation_chord = false;
     let presentation_move = String::new();
-    let presentation_paused = false;
     // The stashed native order from the latest `observe` (empty when the
     // test seeds without one): capture maps it to opaque lifetimes, else
     // falls back to observed-then-retained order.
@@ -3042,24 +3191,21 @@ pub(super) fn dispatch_test_observation(
         ref member_rects,
         ref float_rects,
         ref hint_logged,
-        ref sticky,
-        ref floated,
-        ref restart_reject_hold,
         ref born_fullscreen,
         ref born_first_exit,
         ref fixed_auto_seen,
-        ref fixed_tile_overrides,
-        ref fixed_origin_overrides,
         ref mut hidden_claims,
         ref minimized_omitted,
         ref mut pending_closed,
         ref scope,
         ref settings_live,
         ref output_tokens,
+        ref monitor_identities,
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
         ref active,
+        ref intent_snapshot,
         ..
     } = *state;
     world.invalidate();
@@ -3072,20 +3218,16 @@ pub(super) fn dispatch_test_observation(
         member_rects,
         float_rects,
         hint_logged,
-        sticky,
-        floated,
-        restart_reject_hold,
         born_fullscreen,
         born_first_exit,
         fixed_auto_seen,
-        fixed_tile_overrides,
-        fixed_origin_overrides,
         hidden_claims,
         minimized_omitted,
         pending_closed,
         scope,
         settings_live,
         output_tokens,
+        monitor_identities,
         active_output.as_str(),
         applied_homing,
         applied_views,
@@ -3096,10 +3238,10 @@ pub(super) fn dispatch_test_observation(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.intent_storage = Some(intent_snapshot);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -3198,7 +3340,7 @@ mod apply_diag_tests {
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
-            cursor_warp: None,
+            warp_request: None,
             presentation: tiler_core::world_report::WorldPresentationV4 {
                 foreground: String::new(),
                 rev: 0,
@@ -3260,6 +3402,8 @@ mod apply_diag_tests {
             native: Vec::new(),
             held_native: Vec::new(),
             cursor: None,
+            pointer_activity: None,
+            warp_spent: None,
             cursor_hit: None,
             focused_global: String::new(),
             foreground_known: false,
@@ -3360,6 +3504,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             fresh_route_value(
                 "w1",
                 None,
@@ -3416,6 +3561,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             fresh_route_value(
                 "w1",
                 None,
@@ -3445,6 +3591,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             fresh_route_value(
                 "w1",
                 None,
@@ -3471,8 +3618,67 @@ mod apply_diag_tests {
     }
 
     #[test]
+    fn state_attempt_only_pass_logs_with_original_revision_and_stamp() {
+        use tiler_core::world_report::{FrameSetter, StateAttempt, StateProperty};
+        let reply = reply_shell();
+        let stats = super::super::world_diff::ApplyStats::default();
+        let state_attempts = vec![StateAttempt {
+            window: WindowId("w7".to_owned()),
+            property: StateProperty::Above,
+            target: true,
+            revision: 42,
+            disposition: FrameSetter::Accepted,
+            pre: Some(false),
+            post: Some(true),
+            attempt_ms: 77,
+        }];
+        // A pass whose only evidence is one raw state write must emit, not
+        // stay quiet on an observation tick.
+        assert!(should_log_apply(
+            "observation",
+            &stats,
+            &[],
+            &[],
+            &[],
+            &state_attempts,
+            &reply,
+        ));
+        let value = apply_diag_value(
+            9,
+            &reply,
+            "accepted",
+            "observation",
+            &stats,
+            &[],
+            &[],
+            None,
+            &[],
+            &state_attempts,
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            None,
+        );
+        let states = value["states"].as_array().expect("state rows");
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0]["window"], serde_json::json!("w7"));
+        assert_eq!(states[0]["property"], serde_json::json!("above"));
+        assert_eq!(states[0]["target"], serde_json::json!(true));
+        // The row carries the acted-on revision and the raw setter stamp,
+        // never the current pass clock or an inferred verdict.
+        assert_eq!(states[0]["rev"], serde_json::json!(42));
+        assert_eq!(states[0]["attempt_ms"], serde_json::json!(77));
+        assert_eq!(states[0]["setter"], serde_json::json!("accepted"));
+        assert_eq!(states[0]["pre"], serde_json::json!(false));
+        assert_eq!(states[0]["post"], serde_json::json!(true));
+        assert_eq!(value["states_omitted"], serde_json::json!(0));
+    }
+
+    #[test]
     fn diag_shape_uses_fixed_vocab_and_bounds_rows() {
-        use tiler_core::world_report::{FrameSetter, MemberAttempt, ViewAttempt};
+        use tiler_core::world_report::{FrameSetter, MemberAttempt};
         let reply = reply_shell();
         let stats = stats_shell();
         let setters = [
@@ -3501,7 +3707,7 @@ mod apply_diag_tests {
                 attempt_ms: n as u64,
             })
             .collect();
-        let views: Vec<ViewAttempt> = Vec::new();
+        let views = Vec::new();
         let value = apply_diag_value(
             11,
             &reply,
@@ -3511,6 +3717,7 @@ mod apply_diag_tests {
             &members,
             &views,
             None,
+            &[],
             &[],
             fresh_route_value(
                 "w1",
@@ -3639,7 +3846,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::{FrameAttempt, FrameSetter, MemberAttempt};
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<FrameAttempt> = Vec::new();
         let idle_reply = reply_shell();
         assert!(!should_log_apply(
@@ -3648,6 +3855,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Pure-held observation ticks stay quiet: steady-state holds with no
@@ -3662,6 +3870,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Commands always log, so a no-attempt Hold on a command still shows
@@ -3672,6 +3881,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         assert!(should_log_apply(
@@ -3691,6 +3901,7 @@ mod apply_diag_tests {
             }],
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         let writes = super::super::world_diff::ApplyStats {
@@ -3703,6 +3914,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         let stopped = super::super::world_diff::ApplyStats {
@@ -3716,6 +3928,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Any minted focus effect logs on observation ticks, dispatched or
@@ -3769,6 +3982,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         let held_no_setter = super::super::world_diff::ApplyStats {
@@ -3819,6 +4033,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Settlement-only observation ticks log: an observation-only
@@ -3840,6 +4055,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &settled_reply,
         ));
         // Frame-only observation ticks log: a fresh raw frame write with no
@@ -3870,6 +4086,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &frame_only,
+            &[],
             &idle_reply,
         ));
     }
@@ -3903,7 +4120,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::FrameAttempt;
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<FrameAttempt> = Vec::new();
         let idle = reply_shell();
         let moved = pager_reply_with(
@@ -3951,12 +4168,14 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             route.clone(),
             None,
             false,
             &report,
             &[],
             None,
+            (None, None),
             false,
             false,
             0,
@@ -3977,12 +4196,14 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             route,
             None,
             false,
             &report,
             &[],
             None,
+            (None, None),
             false,
             false,
             0,
@@ -4003,6 +4224,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             fresh_route_value(
                 "",
                 None,
@@ -4015,6 +4237,7 @@ mod apply_diag_tests {
             &report,
             &[],
             None,
+            (None, None),
             false,
             false,
             0,
@@ -4032,7 +4255,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::FrameAttempt;
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<FrameAttempt> = Vec::new();
         let frame = Rect {
             x: 0,
@@ -4072,6 +4295,7 @@ mod apply_diag_tests {
                     &empty_members,
                     &empty_views,
                     &empty_frames,
+                    &[],
                     reply,
                 ),
                 "unchanged accept must stay silent on the ordinary log"
@@ -4096,6 +4320,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             route(),
             None,
             false,
@@ -4113,6 +4338,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             route(),
             None,
             false,
@@ -4183,6 +4409,7 @@ mod apply_diag_tests {
             &[],
             None,
             &empty_frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4208,7 +4435,7 @@ mod apply_diag_tests {
         // observation tick emits its clearing row instead of staying quiet.
         use super::super::world_diff::InFlightEventDiag;
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
         let idle_reply = reply_shell();
         let mut landed = super::super::world_diff::ApplyStats::default();
@@ -4231,6 +4458,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Omitted-count-only evidence logs too: the fold itself is new.
@@ -4244,6 +4472,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
     }
@@ -4256,7 +4485,7 @@ mod apply_diag_tests {
         // activation-affecting parameter, never intended-mode labels.
         use crate::product_hide::sys::{NA_POS_HIDE_FLAGS, VIEW_POST_API_POS, VisibilityPostDiag};
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
         let idle_reply = reply_shell();
         let mut posted = super::super::world_diff::ApplyStats::default();
@@ -4276,6 +4505,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         let value = apply_diag_value(
@@ -4288,6 +4518,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4316,6 +4547,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &empty_frames,
+            &[],
             &idle_reply,
         ));
         // Over-cap source storage stays honest in world-apply: the capped
@@ -4344,6 +4576,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4373,7 +4606,7 @@ mod apply_diag_tests {
         // (shows issued, arrivals proven, focus confirmed, departures
         // hidden) with no new native query. Unavailable staged phases stay
         // honest zeros, never absent keys.
-        use tiler_core::world_report::{FrameSetter, MemberAttempt, ViewAttempt};
+        use tiler_core::world_report::{FrameSetter, MemberAttempt};
         let members = vec![MemberAttempt {
             operation_id: "op-3".to_owned(),
             window: WindowId("w3".to_owned()),
@@ -4387,23 +4620,14 @@ mod apply_diag_tests {
             }),
             attempt_ms: 31,
         }];
-        let views = vec![ViewAttempt {
+        let views = vec![LogicalViewWrite {
             operation_id: "op-7".to_owned(),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws2".to_owned(),
             disposition: FrameSetter::Threw,
-            pre: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws1".to_owned()),
-            }),
-            post: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws2".to_owned()),
-            }),
-            baseline: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws1".to_owned()),
-            }),
+            pre: Some("ws1".to_owned()),
+            post: Some("ws2".to_owned()),
+            baseline: Some("ws1".to_owned()),
             attempt_ms: 32,
         }];
         let mut stats = stats_shell();
@@ -4419,6 +4643,7 @@ mod apply_diag_tests {
             &members,
             &views,
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -4462,6 +4687,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -4497,6 +4723,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -4539,12 +4766,14 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
             &report_shell(vec![]),
             &[],
             None,
+            (None, None),
             false,
             false,
             4242,
@@ -4622,6 +4851,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
@@ -4774,6 +5004,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
             true,
@@ -4915,6 +5146,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
             true,
@@ -5017,6 +5249,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             Some("w0".to_owned()),
             false,
@@ -5099,6 +5332,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             Some("w0".to_owned()),
             true,
@@ -5139,7 +5373,7 @@ mod apply_diag_tests {
             ..Default::default()
         };
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let value = apply_diag_value(
             12,
             &reply,
@@ -5149,6 +5383,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -5183,6 +5418,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -5274,7 +5510,7 @@ mod apply_diag_tests {
         }];
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         // Both triggers fire through the REAL throttle: frame-only and
         // settled-only observation ticks each log.
         assert!(should_log_apply(
@@ -5283,6 +5519,7 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &frames,
+            &[],
             &reply_shell(),
         ));
         assert!(should_log_apply(
@@ -5290,6 +5527,7 @@ mod apply_diag_tests {
             &quiet,
             &empty_members,
             &empty_views,
+            &[],
             &[],
             &reply,
         ));
@@ -5303,6 +5541,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5354,13 +5593,14 @@ mod apply_diag_tests {
         use tiler_core::world_report::{FrameAttempt, FrameSetter, WindowDesire};
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let idle_reply = reply_shell();
         assert!(!should_log_apply(
             "observation",
             &quiet,
             &empty_members,
             &empty_views,
+            &[],
             &[],
             &idle_reply,
         ));
@@ -5419,6 +5659,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5458,8 +5699,8 @@ mod apply_diag_tests {
         // from the dispatched report screens with wire output ids, never a
         // separate native copy.
         use tiler_core::world_report::{
-            FrameSetter, HoldReason, MemberAttempt, OutputDesire, ScopeAuthority, TilingMode,
-            ViewAttempt, WindowDesire,
+            FrameSetter, HoldReason, MemberAttempt, OutputDesire, ScopeAuthority, StateProperty,
+            StateTarget, TilingMode, WindowDesire,
         };
         let slot = tiler_core::geometry::Rect {
             x: 0,
@@ -5504,7 +5745,13 @@ mod apply_diag_tests {
             command_seq: None,
             visibility: None,
             visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
-            state: Vec::new(),
+            state: vec![StateTarget {
+                property: StateProperty::Maximized,
+                value: false,
+                authority: ScopeAuthority::Controlled,
+                command_seq: Some(9),
+                automatic_clear: true,
+            }],
         });
         reply.outputs.push(OutputDesire {
             output: OutputId("o1".to_owned()),
@@ -5542,23 +5789,14 @@ mod apply_diag_tests {
             }),
             attempt_ms: 42,
         }];
-        let view_attempts = vec![ViewAttempt {
+        let view_attempts = vec![LogicalViewWrite {
             operation_id: "op-9".to_owned(),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws-b".to_owned(),
             disposition: FrameSetter::Accepted,
-            pre: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws-old".to_owned()),
-            }),
-            post: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws-b".to_owned()),
-            }),
-            baseline: Some(WorkspaceRef::Logical {
-                output: OutputId("o1".to_owned()),
-                workspace: WorkspaceId("ws-old".to_owned()),
-            }),
+            pre: Some("ws-old".to_owned()),
+            post: Some("ws-b".to_owned()),
+            baseline: Some("ws-old".to_owned()),
             attempt_ms: 42,
         }];
         let value = apply_diag_value(
@@ -5570,6 +5808,7 @@ mod apply_diag_tests {
             &member_attempts,
             &view_attempts,
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -5600,6 +5839,8 @@ mod apply_diag_tests {
         assert!(desired[0]["frame_hold"].is_null());
         assert_eq!(desired[0]["floating"], serde_json::json!(false));
         assert!(desired[0]["frame_op"].is_null());
+        assert_eq!(desired[0]["automatic_clear_pending"], serde_json::json!(false));
+        assert_eq!(desired[1]["automatic_clear_pending"], serde_json::json!(true));
         // Held row keeps its explicit hold reasons and stays pending with
         // no fabricated frame write.
         assert_eq!(desired[1]["window"], serde_json::json!("w-held"));
@@ -5732,6 +5973,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5795,6 +6037,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5834,6 +6077,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5850,6 +6094,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -5883,6 +6128,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -5934,6 +6180,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -5955,6 +6202,99 @@ mod apply_diag_tests {
     }
 
     #[test]
+    fn diag_arrival_brackets_keep_exact_samples_and_bound_only_paired_reports() {
+        use tiler_core::world_report::{
+            ArrivalBracket, ArrivalLocation, FocusDisposition, FocusFeedback, FocusNoCallReason,
+            VisibilityFact, VisibilitySample,
+        };
+        let before = VisibilitySample {
+            obs: 8,
+            lifetime_matched: Some(true),
+            visibility: VisibilityFact {
+                visible: Some(false),
+                suppression_owned: Some(true),
+            },
+            minimized: Some(false),
+            host_hidden: Some(false),
+        };
+        let after = VisibilitySample {
+            visibility: VisibilityFact {
+                visible: Some(true),
+                suppression_owned: Some(false),
+            },
+            ..before
+        };
+        let bracket = ArrivalBracket {
+            window: tiler_core::directional::WindowId("w3".to_owned()),
+            obs: 8,
+            before,
+            location: ArrivalLocation::Output {
+                out: Some(tiler_core::directional::OutputId("o2".to_owned())),
+            },
+            frame: Some(tiler_core::geometry::Rect {
+                x: 1200,
+                y: -8,
+                w: 600,
+                h: 500,
+            }),
+            after,
+        };
+        let mut report = report_shell(vec![]);
+        report.focus_feedback.push(FocusFeedback {
+            id: "focus-42".to_owned(),
+            target: bracket.window.clone(),
+            revision: 42,
+            disposition: FocusDisposition::NotCalled {
+                reason: FocusNoCallReason::NoReason,
+            },
+            pre: None,
+            post: None,
+            foreground_proven: false,
+            arrival: vec![bracket; MAX_APPLY_DIAG_ATTEMPTS + 1],
+            attempt_ms: 1,
+        });
+        let reply = reply_shell();
+        let project = |report: &_| {
+            apply_diag_value(
+                35,
+                &reply,
+                "accepted",
+                "observation",
+                &stats_shell(),
+                &[],
+                &[],
+                None,
+                &[],
+                &[],
+                serde_json::json!({}),
+                None,
+                false,
+                report,
+                &[],
+                None,
+            )
+        };
+        let paired = project(&report);
+        let rows = paired["arrival_brackets"].as_array().unwrap();
+        assert_eq!(rows.len(), MAX_APPLY_DIAG_ATTEMPTS);
+        assert_eq!(paired["arrival_brackets_omitted"], 1);
+        let row = &rows[0];
+        assert_eq!(row["kind"], "output");
+        assert_eq!(row["out"], "o2");
+        assert_eq!(row["window"], "w3");
+        assert_eq!(row["frame"]["x"], 1200);
+        assert_eq!(row["obs"], row["before"]["obs"]);
+        assert_eq!(row["obs"], row["after"]["obs"]);
+        assert_eq!(row["before"]["suppression_owned"], true);
+        assert_eq!(row["after"]["suppression_owned"], false);
+
+        report.request_id = "foreign".to_owned();
+        let mismatch = project(&report);
+        assert_eq!(mismatch["arrival_brackets"], serde_json::json!([]));
+        assert!(mismatch["arrival_brackets_omitted"].is_null());
+    }
+
+    #[test]
     fn diag_operation_settled_emits_without_attempts_and_desire_only_stays_quiet() {
         // Throttle gate: a terminal settlement event with zero raw attempts
         // still emits (the verdict is new evidence), while a desire-only row
@@ -5964,7 +6304,7 @@ mod apply_diag_tests {
         use tiler_core::world_report::{OperationEvent, OperationOutcome, OutputDesire};
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_vecs: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
+        let empty_views = Vec::new();
         let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
         // Desire-only (no attempts, no settlement) stays quiet even with
         // desired windows, outputs, and paired geometry present.
@@ -6018,6 +6358,7 @@ mod apply_diag_tests {
             &empty_vecs,
             &empty_views,
             &empty_frames,
+            &[],
             &desire_only,
         ));
         // Settlement with zero attempts emits through the real throttle.
@@ -6035,6 +6376,7 @@ mod apply_diag_tests {
             &empty_vecs,
             &empty_views,
             &empty_frames,
+            &[],
             &settled,
         ));
         let value = apply_diag_value(
@@ -6047,6 +6389,7 @@ mod apply_diag_tests {
             &empty_views,
             None,
             &empty_frames,
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6081,6 +6424,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6148,6 +6492,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6177,6 +6522,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6205,6 +6551,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6222,6 +6569,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6247,6 +6595,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6330,6 +6679,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6352,6 +6702,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6385,6 +6736,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6423,6 +6775,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6457,6 +6810,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6490,6 +6844,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6528,6 +6883,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6589,6 +6945,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
@@ -6609,12 +6966,14 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
             &report,
             &empty,
             Some(10),
+            (None, None),
             false,
             true,
             0,
@@ -6633,12 +6992,14 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
             &report,
             &empty,
             Some(11),
+            (None, None),
             false,
             false,
             0,
@@ -6657,12 +7018,14 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
             &report,
             &proven,
             Some(12),
+            (None, None),
             false,
             true,
             0,
@@ -6677,6 +7040,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             route(),
             None,
@@ -6698,12 +7062,14 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
             &report,
             &proven,
             Some(13),
+            (None, None),
             false,
             false,
             0,
@@ -6722,12 +7088,14 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             route(),
             None,
             false,
             &report,
             &empty,
             Some(14),
+            (None, None),
             false,
             true,
             0,
@@ -6763,6 +7131,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             fresh_route_value(
                 "",
                 None,
@@ -6775,6 +7144,7 @@ mod apply_diag_tests {
             &report,
             &[("o1".to_owned(), "ws2".to_owned())],
             Some(20),
+            (None, None),
             false,
             true,
             0,
@@ -6789,6 +7159,7 @@ mod apply_diag_tests {
             &[],
             &[],
             None,
+            &[],
             &[],
             serde_json::json!({}),
             None,
@@ -6814,6 +7185,7 @@ mod apply_diag_tests {
             &[],
             None,
             &[],
+            &[],
             serde_json::json!({}),
             None,
             false,
@@ -6826,5 +7198,361 @@ mod apply_diag_tests {
         paired["paired"] = serde_json::json!(true);
         assert_eq!(paired["receipt_proof_mono_ms"], serde_json::json!(4242));
         assert_eq!(paired["receipt_views"], proof["receipt_views"]);
+    }
+
+    #[test]
+    fn warp_request_and_staged_witness_publish_exact_values() {
+        let mut reply = reply_shell();
+        reply.warp_request = Some(tiler_core::world_report::WarpRequest {
+            id: "warp-trace-7".to_owned(),
+            target: WindowId("w-42".to_owned()),
+            revision: 7,
+            output: OutputId("o1".to_owned()),
+            workspace: WorkspaceId("w1".to_owned()),
+            point: (900, 300),
+            pointer_baseline: Some(41),
+        });
+        let mut value = apply_diag_value(
+            61,
+            &reply,
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            None,
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            None,
+        );
+        attach_warp_witness(&mut value, (Some(41), Some("warp-trace-7".to_owned())));
+        // The accepted reply's warp request rides verbatim: id, target,
+        // revision, output, workspace, point, and pointer baseline, never a
+        // re-derived or clamped copy.
+        assert_eq!(
+            value["warp_request"]["id"],
+            serde_json::json!("warp-trace-7")
+        );
+        assert_eq!(value["warp_request"]["target"], serde_json::json!("w-42"));
+        assert_eq!(value["warp_request"]["rev"], serde_json::json!(7));
+        assert_eq!(value["warp_request"]["out"], serde_json::json!("o1"));
+        assert_eq!(value["warp_request"]["ws"], serde_json::json!("w1"));
+        assert_eq!(
+            value["warp_request"]["point"],
+            serde_json::json!([900, 300])
+        );
+        assert_eq!(
+            value["warp_request"]["pointer_baseline"],
+            serde_json::json!(41)
+        );
+        // The staged witness rides as an integer generation and the exact
+        // spent id string; the capability is the effective declaration.
+        assert!(value["pointer_activity"].is_u64());
+        assert_eq!(value["pointer_activity"], serde_json::json!(41));
+        assert!(value["warp_spent"].is_string());
+        assert_eq!(value["warp_spent"], serde_json::json!("warp-trace-7"));
+        assert_eq!(
+            value["warp_capability"],
+            serde_json::json!(super::super::settings::WARP_SUPPORTED)
+        );
+        assert_eq!(value["warp_capability"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn absent_warp_request_and_witness_publish_explicit_nulls() {
+        let value = apply_diag_value(
+            62,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            None,
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            None,
+        );
+        // No accepted warp request: an explicit null object, never an
+        // empty-bodied stand-in.
+        assert!(value["warp_request"].is_null());
+        assert!(value["pointer_activity"].is_null());
+        assert!(value["warp_spent"].is_null());
+        // The capability is still an effective boolean declaration.
+        assert!(value["warp_capability"].is_boolean());
+        assert_eq!(
+            value["warp_capability"],
+            serde_json::json!(super::super::settings::WARP_SUPPORTED)
+        );
+        // Attaching an absent witness keeps both keys explicit nulls.
+        let mut attached = value.clone();
+        attach_warp_witness(&mut attached, (None, None));
+        assert!(attached["pointer_activity"].is_null());
+        assert!(attached["warp_spent"].is_null());
+    }
+
+    #[test]
+    fn geometry_rows_carry_scale_and_presence_only_identity() {
+        let rect = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let mut screen = screen_shell("o1", rect, rect, 0, 0, true, true);
+        screen.scale = 1.5;
+        screen.identity = tiler_core::world_report::OutputIdentity {
+            manufacturer: Some("Mfr-Secret-Text".to_owned()),
+            model: Some("Model-Secret-Text".to_owned()),
+            serial: Some("Serial-Secret-Text".to_owned()),
+            connector: None,
+        };
+        let value = apply_diag_value(
+            63,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            None,
+            &[],
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![screen]),
+            &[],
+            None,
+        );
+        let geometry = value["desired_geometry"]
+            .as_array()
+            .expect("desired geometry");
+        assert_eq!(geometry.len(), 1);
+        let scale = geometry[0]["scale"].as_f64().expect("scale is a number");
+        assert!(scale.is_finite() && scale > 0.0);
+        assert_eq!(geometry[0]["scale"], serde_json::json!(1.5));
+        // Identity is presence only: exactly the four boolean keys, no
+        // manufacturer/model/serial/connector text values.
+        let identity = geometry[0]["identity"]
+            .as_object()
+            .expect("identity is an object");
+        assert_eq!(identity.len(), 4);
+        assert_eq!(identity["manufacturer"], serde_json::json!(true));
+        assert_eq!(identity["model"], serde_json::json!(true));
+        assert_eq!(identity["serial"], serde_json::json!(true));
+        assert_eq!(identity["connector"], serde_json::json!(false));
+        for key in ["manufacturer", "model", "serial", "connector"] {
+            assert!(
+                identity[key].is_boolean(),
+                "identity {key} is a presence boolean"
+            );
+        }
+        let text = value.to_string();
+        assert!(!text.contains("Mfr-Secret-Text"));
+        assert!(!text.contains("Model-Secret-Text"));
+        assert!(!text.contains("Serial-Secret-Text"));
+    }
+}
+
+#[cfg(test)]
+mod core_only_catchup_tests {
+    use super::*;
+    use crate::model::ProcessIdentity;
+    use crate::native_guards::WindowKey;
+    use tiler_core::geometry::Rect;
+    use tiler_core::world_report::FullscreenOwner;
+
+    fn me() -> ProcessIdentity {
+        ProcessIdentity {
+            pid: 4242,
+            process_creation: "proc-4242".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        }
+    }
+
+    fn member_identity(pid: u32, creation: &str) -> ProcessIdentity {
+        ProcessIdentity {
+            pid,
+            process_creation: creation.to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        }
+    }
+
+    fn area() -> MonitorArea {
+        MonitorArea {
+            device: "DEV1".to_owned(),
+            work: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            },
+            full: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            dpi: 96,
+        }
+    }
+
+    fn observed_fullscreen(hwnd: u64, token: &str, pid: u32, creation: &str) -> ObservedWindow {
+        let visible = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let outer = Rect {
+            x: -8,
+            y: -8,
+            w: 1936,
+            h: 1096,
+        };
+        ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer,
+            visible,
+            insets: crate::tiling::FrameInsets::measure(outer, visible),
+            identity: crate::tiling_sys::ObservedTarget {
+                hwnd,
+                pid,
+                process_creation: creation.to_owned(),
+                exe_path: "C:\\Apps\\app.exe".to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                tag: "tag-catchup".to_owned(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                topmost: false,
+                captionless_fullscreen: true,
+                no_activate: false,
+                dialog: false,
+            },
+            member_tag: Some("tag-catchup".to_owned()),
+        }
+    }
+
+    #[test]
+    fn core_only_catchup_carries_fullscreen_meta_and_intent() {
+        // A window that first admits during the core-only catch-up must ride
+        // the same canonical fullscreen ownership and intent-storage reads
+        // as the full observation tick, not lose restart intent. The packed
+        // slot is fenced to an exact live (pid, creation, tag), so the fixture
+        // owns a real message-only window and writes that slot for its exact
+        // lifetime exactly as the restart fixtures do.
+        let window = crate::ffi::TestWindow::create_message_only(
+            "OmniTilerCoreOnlyCatchupTest",
+            "core-only-catchup",
+        )
+        .expect("message-only test window creates");
+        let hwnd = window.hwnd();
+        let real = crate::native::current_identity().expect("current identity reads");
+        let tag = crate::product_hide::sys::install_member_tag(hwnd, real.pid)
+            .expect("member tag installs on the owned window");
+        let key = WindowKey {
+            hwnd,
+            pid: real.pid,
+            creation: real.process_creation.clone(),
+        };
+        // Canonical packed-slot write for this exact fixture lifetime: the
+        // fresh lifetime fence reads this slot, never a manually seeded
+        // snapshot.
+        crate::product_hide::sys::write_intent_slot_for(
+            &key,
+            &tag,
+            crate::tiling_sys::IntentStorage {
+                float: Some(false),
+                sticky_prior: None,
+            },
+        )
+        .expect("packed intent slot writes for the exact lifetime");
+        let mut state = crate::tiling_sys::rmax03_adapter_tests::test_state();
+        state.ensure_device("DEV1");
+        state
+            .member_tokens
+            .insert(key.clone(), "w-catchup".to_owned());
+        state
+            .member_identity
+            .insert(key.clone(), member_identity(real.pid, &real.process_creation));
+        state.member_tags.insert(key.clone(), tag.clone());
+        inject_fullscreen_meta(
+            hwnd,
+            FullscreenMeta {
+                changed: 0,
+                was_maximized: false,
+                frame: None,
+            },
+        );
+        let observed = vec![observed_fullscreen(
+            hwnd,
+            "w-catchup",
+            real.pid,
+            &real.process_creation,
+        )];
+        let areas = vec![area()];
+        let fulls = vec![Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }];
+        let report = run_observation_core_only(
+            &mut state,
+            &me(),
+            &observed,
+            &[],
+            &areas,
+            hwnd,
+            &fulls,
+            None,
+        )
+        .expect("core-only catch-up dispatches its observation");
+        let fact = report
+            .windows
+            .iter()
+            .find(|fact| fact.window.0 == "w-catchup")
+            .expect("catch-up admission rides a fact row");
+        assert_eq!(
+            fact.fullscreen_owner,
+            Some(FullscreenOwner::Tiler),
+            "owned fullscreen metadata rides the catch-up capture"
+        );
+        assert_eq!(fact.fullscreen_exitable, Some(true));
+        let intent = report
+            .intent_records
+            .iter()
+            .find(|record| record.win.0 == "w-catchup")
+            .expect("intent record rides the catch-up capture");
+        assert!(
+            intent.data.contains("\"float\":false"),
+            "tile marker becomes the canonical intent record: {}",
+            intent.data
+        );
     }
 }

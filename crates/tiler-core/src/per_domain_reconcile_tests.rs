@@ -233,6 +233,7 @@ fn engine_pointer_resize_returns_resize_plan() {
     let ctx = LocalOperationContext {
         domain: &domain,
         outer_gap: OUTER_GAP,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &w1,
         observed: &observed,
         preconverged: false,
@@ -272,6 +273,7 @@ fn engine_focus_moves_through_nested_topology() {
     let ctx = LocalOperationContext {
         domain: &domain,
         outer_gap: OUTER_GAP,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &w1,
         observed: &observed,
         preconverged: false,
@@ -286,6 +288,7 @@ fn engine_focus_moves_through_nested_topology() {
     let mv_ctx = LocalOperationContext {
         domain: &domain,
         outer_gap: OUTER_GAP,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &w2,
         observed: &observed,
         preconverged: false,
@@ -375,6 +378,7 @@ fn engine_edge_focus_is_a_no_op_rejection() {
     let ctx = LocalOperationContext {
         domain: &domain,
         outer_gap: OUTER_GAP,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &w1,
         observed: &observed,
         preconverged: false,

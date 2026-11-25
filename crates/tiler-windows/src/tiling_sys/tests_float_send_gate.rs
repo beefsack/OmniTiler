@@ -16,7 +16,7 @@ fn mover_key() -> crate::native_guards::WindowKey {
 fn seed_float_session(state: &mut super::TileLoop) {
     let mover = mover_key();
     state.member_tokens.insert(mover.clone(), "wF".to_owned());
-    state.floated.insert(mover);
+    state.seed_float(mover);
 }
 
 #[test]
@@ -69,12 +69,13 @@ fn float_send_gate_admits_ordinary_and_single_overlays_only() {
         "D4-latched automatic admits"
     );
     state.fixed_auto_seen.remove(&mover);
-    state.fixed_tile_overrides.insert(mover.clone());
+    state.seed_tile(mover.clone());
     assert!(
         !float_send_admits(&state, &mover, output, workspace, "wF"),
         "tile-suppressed float refuses"
     );
-    state.fixed_tile_overrides.remove(&mover);
+    state.clear_tile(&mover);
+    state.seed_float(mover.clone());
     assert!(
         float_send_admits(&state, &mover, output, workspace, "wF"),
         "ordinary admits again after latch clear"
@@ -115,10 +116,10 @@ fn float_send_gate_admits_automatic_fixed_as_ordinary_member() {
     );
     state.overlay_now.insert("wF".to_owned(), (false, false));
     state.fixed_auto_seen.remove(&mover);
-    state.fixed_tile_overrides.insert(mover.clone());
+    state.seed_tile(mover.clone());
     assert!(
         !float_send_admits(&state, &mover, output, workspace, "wF"),
         "explicit tile override still refuses"
     );
-    state.fixed_tile_overrides.remove(&mover);
+    state.clear_tile(&mover);
 }

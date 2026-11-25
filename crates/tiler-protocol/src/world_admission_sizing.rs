@@ -25,6 +25,14 @@ pub const MAX_INTENT_DESIRED_ROW_BYTES: usize = 196;
 pub const MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES: usize = 512;
 pub const MAX_TARGET_LANES_PER_WINDOW: usize = 626;
 
+/// Widest wire bytes for the one required-nullable `warpRequest` lane: the
+/// `,"warpRequest":` key prefix (15 bytes) plus the widest closed request
+/// object `{id,target,rev,out,ws,point,pointerBaseline}`. The object carries
+/// 128-byte opaque `id`/`target`/`out`/`ws` values, 20-digit quoted `rev`
+/// and `pointerBaseline` decimals, and the widest carried `[x,y]` point
+/// integers, plus keys, quotes, separators and braces.
+pub const MAX_WARP_REQUEST_WIRE_BYTES: usize = 669;
+
 #[must_use]
 pub fn max_operation_settle_reserve(slot_count: usize) -> usize {
     if slot_count == 0 {
@@ -94,6 +102,12 @@ pub fn report_estimate_v4_with_residual(
         + focus_changes_len(report.focus_changes.as_ref())
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier)
+        + ",\"pointerActivity\":".len()
+        + report
+            .pointer_activity
+            .map_or(4, |activity| 2 + u64_len(activity))
+        + ",\"warpSpent\":".len()
+        + report.warp_spent.as_deref().map_or(4, json_string_len)
         + presentation_row_v4_estimate(&report.presentation)
         + residual.map_or(0, |r| r.estimate_bytes());
     for screen in &report.screens {
@@ -426,7 +440,7 @@ pub fn reply_upper_bound_v4(
         .saturating_add(2048)
         .saturating_add(512)
         .saturating_add(704)
-        .saturating_add(29)
+        .saturating_add(MAX_WARP_REQUEST_WIRE_BYTES)
         .saturating_add(report_windows.saturating_mul(300))
         .saturating_add(1024)
         .saturating_add(logical_workspaces.saturating_mul(320))

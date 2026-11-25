@@ -171,6 +171,8 @@ fn report_on(
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -2930,6 +2932,8 @@ fn q2_gesture_survives_subject_close_within_generation_and_clears_on_new_generat
     let gen2_bootstrap = engine.handle_report(
         &WorldReportV4 {
             core_generation: engine.core_generation().to_owned(),
+            pointer_activity: None,
+            warp_spent: None,
             ..report(
                 1,
                 1,
@@ -3513,6 +3517,8 @@ fn retained_drag_preview_clears_on_released_cancelled_subject_close_and_rehandsh
     let after_handshake = match engine.handle_report(
         &WorldReportV4 {
             core_generation: engine.core_generation().to_owned(),
+            pointer_activity: None,
+            warp_spent: None,
             ..report(
                 1,
                 1,

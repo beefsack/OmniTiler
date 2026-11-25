@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::contract::DragSide;
 use crate::directional::{Axis, Node, NodeId, WindowId};
 use crate::geometry::Rect;
-use crate::policy::{LayoutPolicy, PriorGroupEdge};
+use crate::policy::{LayoutPolicy, PriorGroupEdge, ScaledResize};
 use crate::session::{OutputDomain, RefusalKind};
 
 use super::group_alloc::GroupAllocator;
@@ -41,6 +41,9 @@ pub(super) struct SharedDragResolved {
 
 pub(super) struct DragResolveInput<'a> {
     pub(super) policy: &'a dyn LayoutPolicy,
+    /// Physical resize metrics of the target output: group-edge zones
+    /// classify with the scale of the domain the placement lands in.
+    pub(super) resize: ScaledResize,
     pub(super) alloc: &'a GroupAllocator,
     pub(super) tree: &'a Node,
     pub(super) domain: &'a OutputDomain,
@@ -117,7 +120,7 @@ pub(super) fn resolve_drag_shared(
                 .ok_or(RefusalKind::MalformedTopology)?;
             if let Some(edge) =
                 input
-                    .policy
+                    .resize
                     .classify_group_point(&layout.rect, &layout.id, x, y, input.prior)
             {
                 let rep =

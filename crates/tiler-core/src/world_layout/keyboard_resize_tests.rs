@@ -180,7 +180,16 @@ impl KeyboardResizeRig {
         let base = self.layout.accepted_revision(k);
         let outcome = self
             .layout
-            .keyboard_resize(k, window, direction, ResizeMode::Outwards, 0, window, &obs)
+            .keyboard_resize(
+                k,
+                window,
+                direction,
+                ResizeMode::Outwards,
+                0,
+                window,
+                &obs,
+                crate::policy::ScaledResize::unscaled(),
+            )
             .unwrap_or_else(|e| panic!("resize {direction:?}: {e:?}"));
         assert_eq!(outcome.base_revision, base);
         assert_eq!(outcome.revision, base + 1);
@@ -372,8 +381,16 @@ fn edge_refusals_are_unchanged() {
         Direction::Down,
     ] {
         assert_eq!(
-            r.layout
-                .keyboard_resize(&k, &w1, dir, ResizeMode::Outwards, 0, &w1, &obs,),
+            r.layout.keyboard_resize(
+                &k,
+                &w1,
+                dir,
+                ResizeMode::Outwards,
+                0,
+                &w1,
+                &obs,
+                crate::policy::ScaledResize::unscaled()
+            ),
             Err(LayoutFailure::Semantics(RefusalKind::Unchanged))
         );
         assert_eq!(r.layout.accepted_revision(&k), rev_before);
@@ -393,6 +410,7 @@ fn edge_refusals_are_unchanged() {
             0,
             &w2,
             &obs,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::Unchanged))
     );
@@ -432,10 +450,16 @@ fn normalization_and_clamp_to_exhaustion() {
         assert_eq!(w.0, "win-2");
         let obs = r.domain_observed(&k, vec![]);
         step_n += 1;
-        match r
-            .layout
-            .keyboard_resize(&k, &w, Direction::Left, ResizeMode::Outwards, 0, &w, &obs)
-        {
+        match r.layout.keyboard_resize(
+            &k,
+            &w,
+            Direction::Left,
+            ResizeMode::Outwards,
+            0,
+            &w,
+            &obs,
+            crate::policy::ScaledResize::unscaled(),
+        ) {
             Ok(outcome) => {
                 for share in outcome.operation.new_shares.iter() {
                     assert!(*share > 0);
@@ -465,7 +489,16 @@ fn focus_retained_and_outcome_carries_semantics() {
     let base = r.layout.accepted_revision(&k);
     let outcome = r
         .layout
-        .keyboard_resize(&k, &w2, Direction::Left, ResizeMode::Outwards, 0, &w2, &obs)
+        .keyboard_resize(
+            &k,
+            &w2,
+            Direction::Left,
+            ResizeMode::Outwards,
+            0,
+            &w2,
+            &obs,
+            crate::policy::ScaledResize::unscaled(),
+        )
         .expect("outcome");
     assert_eq!(outcome.focus_leaf, before_focus);
     assert_eq!(outcome.base_revision, base);
@@ -501,6 +534,7 @@ fn refusal_matrix_unknown_domain_window_and_focus_mismatch() {
             0,
             &w2,
             &obs,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain))
     );
@@ -514,6 +548,7 @@ fn refusal_matrix_unknown_domain_window_and_focus_mismatch() {
             0,
             &w2,
             &obs,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::UnknownWindow))
     );
@@ -527,6 +562,7 @@ fn refusal_matrix_unknown_domain_window_and_focus_mismatch() {
             0,
             &w2,
             &obs,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::FocusMismatch))
     );
@@ -560,6 +596,7 @@ fn deterministic_replay() {
             0,
             &wa,
             &obsa,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("a");
     let pb = b
@@ -572,6 +609,7 @@ fn deterministic_replay() {
             0,
             &wb,
             &obsb,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("b");
     assert_eq!(pa, pb);
@@ -616,16 +654,21 @@ fn bounded_property_matrix() {
                 }
                 let fw = r.focused_window(&k);
                 let obs = r.domain_observed(&k, vec![]);
-                let outcome =
-                    match r
-                        .layout
-                        .keyboard_resize(&k, &fw, dir, ResizeMode::Outwards, 0, &fw, &obs)
-                    {
-                        Ok(o) => o,
-                        Err(LayoutFailure::Semantics(RefusalKind::Unchanged)) => continue,
-                        Err(LayoutFailure::Semantics(RefusalKind::PairBelowMinimum)) => continue,
-                        Err(e) => panic!("matrix {w}x{h} gap {gap} {dir:?}: {e:?}"),
-                    };
+                let outcome = match r.layout.keyboard_resize(
+                    &k,
+                    &fw,
+                    dir,
+                    ResizeMode::Outwards,
+                    0,
+                    &fw,
+                    &obs,
+                    crate::policy::ScaledResize::unscaled(),
+                ) {
+                    Ok(o) => o,
+                    Err(LayoutFailure::Semantics(RefusalKind::Unchanged)) => continue,
+                    Err(LayoutFailure::Semantics(RefusalKind::PairBelowMinimum)) => continue,
+                    Err(e) => panic!("matrix {w}x{h} gap {gap} {dir:?}: {e:?}"),
+                };
                 assert!(!outcome.operation.new_shares.contains(&0));
                 let total: u64 = outcome.operation.new_shares.iter().sum();
                 assert!(total > 0);
@@ -733,8 +776,16 @@ fn flagged_observation_refuses_fail_closed() {
     }
     let rev_before = r.layout.accepted_revision(&k);
     assert_eq!(
-        r.layout
-            .keyboard_resize(&k, &w2, Direction::Left, ResizeMode::Outwards, 0, &w2, &obs,),
+        r.layout.keyboard_resize(
+            &k,
+            &w2,
+            Direction::Left,
+            ResizeMode::Outwards,
+            0,
+            &w2,
+            &obs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::PartialObservation))
     );
     assert_eq!(r.layout.accepted_revision(&k), rev_before);
@@ -763,6 +814,7 @@ fn flagged_observation_refuses_fail_closed() {
             0,
             &win("win-1"),
             &tkobs,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::NotTiled))
     );
@@ -789,6 +841,7 @@ fn partial_cross_domain_malformed_observations_refuse() {
             0,
             &w2,
             &partial,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::PartialObservation))
     );
@@ -804,6 +857,7 @@ fn partial_cross_domain_malformed_observations_refuse() {
             0,
             &w2,
             &cross,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::CrossDomainMismatch))
     );
@@ -819,6 +873,7 @@ fn partial_cross_domain_malformed_observations_refuse() {
             0,
             &w2,
             &malformed,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::MalformedInput))
     );
@@ -826,8 +881,16 @@ fn partial_cross_domain_malformed_observations_refuse() {
     let mut dup = r.domain_observed(&k, vec![]);
     dup.push(dup[0].clone());
     assert_eq!(
-        r.layout
-            .keyboard_resize(&k, &w2, Direction::Left, ResizeMode::Outwards, 0, &w2, &dup,),
+        r.layout.keyboard_resize(
+            &k,
+            &w2,
+            Direction::Left,
+            ResizeMode::Outwards,
+            0,
+            &w2,
+            &dup,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::MalformedInput))
     );
 
@@ -926,7 +989,16 @@ fn keyboard_inwards_shrinks_focused_outwards_grows() {
     let obs = r.domain_observed(&k, vec![]);
     let out_outcome = r
         .layout
-        .keyboard_resize(&k, &w2, Direction::Left, ResizeMode::Outwards, 0, &w2, &obs)
+        .keyboard_resize(
+            &k,
+            &w2,
+            Direction::Left,
+            ResizeMode::Outwards,
+            0,
+            &w2,
+            &obs,
+            crate::policy::ScaledResize::unscaled(),
+        )
         .expect("outwards plans");
     assert_eq!(out_outcome.operation.new_shares, vec![387, 411]);
     assert_eq!(out_outcome.operation.mode, ResizeMode::Outwards);
@@ -947,6 +1019,7 @@ fn keyboard_inwards_shrinks_focused_outwards_grows() {
                 0,
                 &tw,
                 &tobs,
+                crate::policy::ScaledResize::unscaled(),
             )
             .expect("inwards plans")
     };
@@ -973,8 +1046,16 @@ fn pair_threshold_uses_direct_sum_not_union_with_gap() {
     let w = s.focused_window(&k);
     let obs = s.domain_observed(&k, vec![]);
     assert_eq!(
-        s.layout
-            .keyboard_resize(&k, &w, Direction::Left, ResizeMode::Outwards, 0, &w, &obs,),
+        s.layout.keyboard_resize(
+            &k,
+            &w,
+            Direction::Left,
+            ResizeMode::Outwards,
+            0,
+            &w,
+            &obs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::PairBelowMinimum))
     );
 
@@ -994,6 +1075,7 @@ fn pair_threshold_uses_direct_sum_not_union_with_gap() {
                 0,
                 &w2,
                 &obs2,
+                crate::policy::ScaledResize::unscaled(),
             )
             .is_ok()
     );
@@ -1005,8 +1087,16 @@ fn pair_threshold_uses_direct_sum_not_union_with_gap() {
     let vw = v.focused_window(&vk);
     let vobs = v.domain_observed(&vk, vec![]);
     assert_eq!(
-        v.layout
-            .keyboard_resize(&vk, &vw, Direction::Up, ResizeMode::Outwards, 0, &vw, &vobs,),
+        v.layout.keyboard_resize(
+            &vk,
+            &vw,
+            Direction::Up,
+            ResizeMode::Outwards,
+            0,
+            &vw,
+            &vobs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::PairBelowMinimum))
     );
 
@@ -1026,6 +1116,7 @@ fn pair_threshold_uses_direct_sum_not_union_with_gap() {
                 0,
                 &vw2,
                 &vobs2,
+                crate::policy::ScaledResize::unscaled(),
             )
             .is_ok()
     );
@@ -1050,7 +1141,16 @@ fn keyboard_one_sided_clamp_and_inwards_shrink() {
     let obs = r.domain_observed(&k, vec![]);
     let in_outcome = r
         .layout
-        .keyboard_resize(&k, &w2, Direction::Left, ResizeMode::Inwards, 0, &w2, &obs)
+        .keyboard_resize(
+            &k,
+            &w2,
+            Direction::Left,
+            ResizeMode::Inwards,
+            0,
+            &w2,
+            &obs,
+            crate::policy::ScaledResize::unscaled(),
+        )
         .expect("keyboard inwards plans");
     assert_eq!(in_outcome.operation.mode, ResizeMode::Inwards);
 
@@ -1071,6 +1171,7 @@ fn keyboard_one_sided_clamp_and_inwards_shrink() {
             0,
             &tw,
             &tobs,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("outwards plans");
     let inw_focused_w = in_outcome
@@ -1103,8 +1204,16 @@ fn pair_minimum_refuses_distinct_kind() {
     let obs = r.domain_observed(&k, vec![]);
     let rev_before = r.layout.accepted_revision(&k);
     assert_eq!(
-        r.layout
-            .keyboard_resize(&k, &w, Direction::Left, ResizeMode::Outwards, 0, &w, &obs,),
+        r.layout.keyboard_resize(
+            &k,
+            &w,
+            Direction::Left,
+            ResizeMode::Outwards,
+            0,
+            &w,
+            &obs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::PairBelowMinimum))
     );
     assert_eq!(r.layout.accepted_revision(&k), rev_before);
@@ -1124,6 +1233,7 @@ fn pair_minimum_refuses_distinct_kind() {
             0,
             &ew,
             &eobs,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::Unchanged))
     );
@@ -1191,6 +1301,7 @@ fn sixty_five_share_keyboard_resize_succeeds_without_count_cap() {
             0,
             &focused_window,
             &observed,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("65-share keyboard resize succeeds without count cap");
     assert_eq!(outcome.base_revision, 1);

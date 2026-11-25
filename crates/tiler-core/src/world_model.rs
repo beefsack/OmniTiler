@@ -1081,7 +1081,8 @@ impl WorldTransaction<'_> {
                 // collapse them onto the survivor's own unit, and the
                 // SOURCE-narrowed settlement below holds the flight until
                 // native backing plus arrival prove it. Sticky facts never
-                // ride. Must run before `rekey_members`, which moves every
+                // ride (their all-desktop anchors stay put). Must run
+                // before `rekey_members`, which moves every non-sticky
                 // member home onto the destination and would make the
                 // origin-homing check below vacuous.
                 let mut stray_members: Vec<(WindowId, DomainKey, DomainKey)> = Vec::new();

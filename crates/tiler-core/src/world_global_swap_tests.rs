@@ -152,6 +152,8 @@ fn report(
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -1657,6 +1659,25 @@ fn composed_sticky_global_unique_swap_keeps_only_intent_sticky_windows() {
         ("out-b", view_a.as_str()),
         "composed sticky window stays physical: {sticky_row:?}",
     );
+    // Presentation is not enough: the single-owner membership home must
+    // honour the same split. The composed sticky lifetime keeps its
+    // all-desktop anchor while the plain lifetime rekeys with the swap.
+    assert_eq!(
+        engine.tx_ro(|tx| tx.core_homing(&sticky)),
+        Some(crate::session::DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: crate::directional::WorkspaceId(view_b.clone()),
+        }),
+        "composed sticky home never follows the swap",
+    );
+    assert_eq!(
+        engine.tx_ro(|tx| tx.core_homing(&plain)),
+        Some(crate::session::DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::directional::WorkspaceId(view_b.clone()),
+        }),
+        "composed non-sticky home rekeys with the swap",
+    );
 }
 
 #[test]
@@ -1700,8 +1721,8 @@ fn composed_sticky_hidden_lane_migration_excludes_sticky_and_carries_plain() {
             workspace: crate::directional::WorkspaceId(view_a.clone()),
         }),
     );
-    let settlements = match engine.handle_report(&migration, &[]) {
-        (WorldOutcome::Accepted(_), settlements) => settlements,
+    let (reply, settlements) = match engine.handle_report(&migration, &[]) {
+        (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),
         (other, _) => panic!("expected accepted migration, got {other:?}"),
     };
     let Some(CommandResult::Migration { members, .. }) = settlements
@@ -1721,5 +1742,49 @@ fn composed_sticky_hidden_lane_migration_excludes_sticky_and_carries_plain() {
     assert!(
         !members.contains(&sticky),
         "composed sticky hidden-lane lifetime stays physical: {members:?}",
+    );
+
+    // Single-owner membership homes: the composed sticky lifetime keeps
+    // its all-desktop anchor while the ordinary hidden-lane and tiled
+    // lifetimes rekey onto the destination under the same logical id.
+    assert_eq!(
+        engine.tx_ro(|tx| tx.core_homing(&sticky)),
+        Some(crate::session::DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: crate::directional::WorkspaceId(view_a.clone()),
+        }),
+        "composed sticky home never follows the migration",
+    );
+    assert_eq!(
+        engine.tx_ro(|tx| tx.core_homing(&plain)),
+        Some(crate::session::DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: crate::directional::WorkspaceId(view_a.clone()),
+        }),
+        "composed non-sticky hidden-lane home rekeys onto the destination",
+    );
+    assert_eq!(
+        engine.tx_ro(|tx| tx.core_homing(&WindowId("win-tiled".to_owned()))),
+        Some(crate::session::DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: crate::directional::WorkspaceId(view_a.clone()),
+        }),
+        "tiled home rekeys onto the destination",
+    );
+
+    // Published rows agree with the membership homes: the sticky lifetime
+    // still publishes on its anchor output, the plain hidden-lane lifetime
+    // publishes at the migration destination.
+    let sticky_row = window_row(&reply, "win-sticky");
+    assert_eq!(
+        (sticky_row.output.0.as_str(), sticky_row.workspace.as_str()),
+        ("out-a", view_a.as_str()),
+        "composed sticky row keeps its anchor output: {sticky_row:?}",
+    );
+    let plain_row = window_row(&reply, "win-plain");
+    assert_eq!(
+        (plain_row.output.0.as_str(), plain_row.workspace.as_str()),
+        ("out-b", view_a.as_str()),
+        "hidden-lane plain row follows the migration: {plain_row:?}",
     );
 }

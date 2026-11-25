@@ -58,7 +58,7 @@ function loadReply(): WorldReply {
             },
         ],
         transfers: [], focusRequest: null, dragPreview: null,
-        gestureSettled: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, operationSettled: [], nativeCreations: [], warpRequest: null,
         presentation: {
             foreground: "win-a", rev: "1",
             border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null },

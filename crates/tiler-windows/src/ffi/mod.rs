@@ -29,6 +29,8 @@
 //!   timer-driven message-loop step.
 //! - [`input`]: cursor position, async key state, tick count, key-pair
 //!   sends, foreground-rights prime.
+//! - [`raw_input`]: mouse Raw Input pointer-activity witness (device or
+//!   injected; the adapter own SetCursorPos excluded) (Q2), with the `WM_INPUT` consume path.
 //! - [`dpi`]: DPI awareness and system metrics.
 //! - [`process`]: process/token/query primitives backing `native.rs`.
 //! - [`shell`]: shell launch verbs.
@@ -47,6 +49,7 @@
 
 pub mod accent;
 pub mod cloak;
+pub mod display_identity;
 pub mod dpi;
 pub mod enumeration;
 pub mod fs;
@@ -60,6 +63,7 @@ pub mod pager;
 pub mod pager_trace;
 pub mod process;
 pub mod pump;
+pub mod raw_input;
 pub mod settings_controls;
 pub mod settings_dialog;
 pub mod settings_window;
@@ -75,7 +79,9 @@ pub use cloak::{
     EXPECTED_BUILD as CLOAK_EXPECTED_BUILD, check_experimental_gate, cloak_hwnd, cloak_mask_of,
     taskbar_add_tab, taskbar_delete_tab, uncloak_hwnd,
 };
+pub use display_identity::monitor_identities;
 pub use dpi::{set_process_pm_v2, system_metric, system_metric_for_dpi, thread_pm_v2_active};
+pub(crate) use dpi::with_pm_v2;
 pub use enumeration::{
     MonitorInfo, enumerate_child_windows, enumerate_monitors, enumerate_windows,
 };
@@ -120,6 +126,7 @@ pub use process::{
 };
 pub use pump::{MsgWaitOutcome, TimerMessage, drain_messages, msg_wait, msg_wait_raw};
 pub use pump::{kill_thread_timer, prime_thread_queue, set_thread_timer, wait_timer_message};
+pub use raw_input::pointer_activity;
 pub use settings_dialog::{DiscardEnd, PreviewEnd, ask_discard, ask_preview, show_info};
 pub use shell::open_url;
 pub use sync::{create_auto_reset_event, event_signaled, signal_event};
@@ -140,8 +147,8 @@ pub use window::{
     seed_minmax_info, set_foreground_window, set_prop, set_topmost, set_window_placement,
     set_window_pos, set_window_pos_after, set_window_pos_detailed, set_window_style,
     set_window_text, shell_window, show_window, show_window_async, show_window_prev_visible,
-    take_prop, try_class_name, window_at_point, window_exstyle, window_pid, window_placement,
-    window_rect, window_style, window_style_checked, window_thread_id,
+    take_prop, try_class_name, window_at_point, window_exstyle, window_exstyle_checked, window_pid,
+    window_placement, window_rect, window_style, window_style_checked, window_thread_id,
 };
 
 fn hwnd_of(hwnd: u64) -> windows_sys::Win32::Foundation::HWND {

@@ -365,7 +365,11 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "anchor-missing");
         return;
     };
-    let topmost = crate::ffi::window_exstyle(anchor) & WS_EX_TOPMOST != 0;
+    let Some(exstyle) = crate::ffi::window_exstyle_checked(anchor) else {
+        hide_underlay(state, "unreadable");
+        return;
+    };
+    let topmost = exstyle & WS_EX_TOPMOST != 0;
     let color = (
         state.underlay.style.alpha,
         state.underlay.style.color.0,

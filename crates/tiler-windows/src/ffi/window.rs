@@ -81,6 +81,23 @@ pub fn window_exstyle(hwnd: u64) -> u32 {
     unsafe { GetWindowLongW(hwnd_of(hwnd), GWL_EXSTYLE) as u32 }
 }
 
+/// Extended-style-word read with the `SetLastError` discrimination: `None`
+/// only when the word reads zero with a live error (unreadable window, fail
+/// closed, never guessed). A legitimate zero exstyle reads `Some(0)`, so a
+/// caller can never confuse "no `WS_EX_TOPMOST`" with "unknown band".
+pub fn window_exstyle_checked(hwnd: u64) -> Option<u32> {
+    unsafe {
+        SetLastError(0);
+    }
+    let exstyle = unsafe { GetWindowLongW(hwnd_of(hwnd), GWL_EXSTYLE) as u32 };
+    let err = unsafe { GetLastError() };
+    if exstyle == 0 && err != 0 {
+        None
+    } else {
+        Some(exstyle)
+    }
+}
+
 /// Style-word read with the `SetLastError` discrimination: `None` only when
 /// the word reads zero with a live error (fail closed, never guessed).
 pub fn window_style_checked(hwnd: u64) -> Option<u32> {
@@ -493,4 +510,76 @@ pub fn move_size_active(hwnd: u64) -> Option<bool> {
 pub fn set_window_text(hwnd: u64, text: &str) -> bool {
     let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
     unsafe { SetWindowTextW(hwnd_of(hwnd), wide.as_ptr()) != 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{window_exstyle, window_exstyle_checked};
+    use crate::ffi::TestWindow;
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_CHILD};
+
+    const EXSTYLE_CLASS: &str = "OmniTiler.FfiWindowExstyleTest";
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    /// An unknown handle is an unreadable style word, never a fabricated
+    /// "not topmost" zero.
+    #[test]
+    fn exstyle_checked_reports_unknown_handle_as_none() {
+        assert_eq!(window_exstyle_checked(0), None);
+    }
+
+    /// A live window with no extended style is a legitimate zero: the
+    /// checked read must return `Some(0)` (error-free) so callers can tell
+    /// "not topmost" from "unreadable", and must reject the same handle
+    /// once the window is gone.
+    ///
+    /// Current Windows builds force a system `WS_EX_WINDOWEDGE` onto the
+    /// message-only owner itself and ignore `SetWindowLongW` clearing it,
+    /// so the exact zero belongs to a `WS_CHILD` window of that owner.
+    #[test]
+    fn exstyle_checked_accepts_live_zero_style_window() {
+        let owner = TestWindow::create_message_only(EXSTYLE_CLASS, "ffi-window-exstyle")
+            .expect("test window");
+        let class_w = wide(EXSTYLE_CLASS);
+        let title_w = wide("ffi-window-exstyle-child");
+        let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let child = unsafe {
+            CreateWindowExW(
+                0,
+                class_w.as_ptr(),
+                title_w.as_ptr(),
+                WS_CHILD,
+                0,
+                0,
+                0,
+                0,
+                owner.hwnd() as usize as *mut core::ffi::c_void,
+                std::ptr::null_mut(),
+                hinst,
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(!child.is_null(), "zero-exstyle child window");
+        let child_hwnd = child as usize as u64;
+
+        assert_eq!(
+            window_exstyle(child_hwnd),
+            0,
+            "a live child window carries an exact zero exstyle word"
+        );
+        assert_eq!(window_exstyle_checked(child_hwnd), Some(0));
+
+        unsafe {
+            DestroyWindow(child);
+        }
+        assert_eq!(
+            window_exstyle_checked(child_hwnd),
+            None,
+            "a destroyed window is rejected, never guessed as a zero style"
+        );
+    }
 }

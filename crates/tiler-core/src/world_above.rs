@@ -74,6 +74,16 @@ impl WorldTransaction<'_> {
         self.staged_homing(&focused)
     }
 
+    /// Whether the adapter declares the `below` fact unavailable. Acquisition
+    /// then treats `None` as "not known to be in a below band" instead of
+    /// demanding a fabricated negative; a present value stays authoritative.
+    fn below_fact_unavailable(&self) -> bool {
+        self.connection.capabilities().is_some_and(|caps| {
+            caps.unavailable_facts
+                .contains(&crate::connection::FactName::Below)
+        })
+    }
+
     /// Single mutating above reconcile plus central decoration. Mints on
     /// actual policy transitions only (acquire, release, suspension,
     /// resume); observation-only replies never renew. Then publishes one
@@ -188,7 +198,19 @@ impl WorldTransaction<'_> {
             let Some(fact) = self.world.staged.facts.get(window) else {
                 continue;
             };
-            if fact.above != Some(false) || fact.below != Some(false) {
+            // `below` is an adapter-producible fact on some platforms only.
+            // When the adapter declares it unavailable, `None` means "not
+            // known to be in a below band", not "safe to raise blindly":
+            // acquisition still requires an explicit above=false, and a
+            // platform that does produce the fact must still prove
+            // below=false. A fabricated negative is never assumed.
+            let below_unavailable = self.below_fact_unavailable();
+            if fact.above != Some(false) || (fact.below != Some(false) && !below_unavailable) {
+                continue;
+            }
+            // An unavailable `below` fact cannot prove a below band, but a
+            // present true is still authoritative and refuses acquisition.
+            if fact.below == Some(true) {
                 continue;
             }
             if used >= MAX_RETAINED_STATE_BINDINGS {
@@ -252,7 +274,10 @@ impl WorldTransaction<'_> {
                 let Some(fact) = self.world.staged.facts.get(window) else {
                     continue;
                 };
-                if fact.above != Some(false) || fact.below != Some(false) {
+                if fact.above != Some(false)
+                    || (fact.below != Some(false) && !self.below_fact_unavailable())
+                    || fact.below == Some(true)
+                {
                     continue;
                 }
                 reacquire.push((window.clone(), home));
@@ -347,9 +372,15 @@ impl WorldTransaction<'_> {
             // Direction-aware stacking veto: true targets need readable
             // above false, below false is universal. Never a global
             // above-false gate: an owned false release from raw above true
-            // stays reachable.
+            // stays reachable. An adapter that declares `below` unavailable
+            // (Windows) has no below band to prove, so its `None` is not a
+            // veto; a present `below: true` always is.
+            let below_ok = self.world.staged.facts.get(&window).is_some_and(|fact| {
+                fact.below == Some(false)
+                    || (fact.below.is_none() && self.below_fact_unavailable())
+            });
             let stack_ok = self.world.staged.facts.get(&window).is_some_and(|fact| {
-                fact.below == Some(false) && (!binding.target.value || fact.above == Some(false))
+                below_ok && (!binding.target.value || fact.above == Some(false))
             });
             let controlled = !binding.spent
                 && !suspended_true
@@ -443,7 +474,9 @@ impl WorldTransaction<'_> {
                 {
                     return false;
                 }
-                if fact.above.is_none() || fact.below.is_none() {
+                if fact.above.is_none()
+                    || (fact.below.is_none() && !self.below_fact_unavailable())
+                {
                     return false;
                 }
             }
@@ -536,6 +569,54 @@ mod tests {
         assert_eq!(binding.target.revision, reply.state_revision);
         assert!(binding.above_meta.is_some());
         assert!(!binding.spent);
+    }
+
+    #[test]
+    fn acquire_accepts_unproduced_below_when_adapter_declares_it_unavailable() {
+        // Windows declares `below` unavailable (no persistent below band) and
+        // therefore reports `below: None`. The acquire gate must not demand a
+        // fabricated negative, but a present below=true still refuses.
+        let mut caps = caps_above();
+        caps.unavailable_facts = vec![crate::connection::FactName::Below];
+        let mut engine = WorldEngine::new_test_bound_with_capabilities("gen-1", "adapter-1", caps)
+            .expect("generation");
+        let mut plain = float_fact("win-a", "out-a", 100, 100);
+        plain.below = None;
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                1,
+                1,
+                vec![screen("out-a", 0)],
+                vec![plain],
+                vec![],
+                "win-a",
+                None,
+                None,
+            ),
+        );
+        let row = above_row(&reply, "win-a").expect("above target minted without a below fact");
+        assert!(row.value);
+
+        let mut below = float_fact("win-b", "out-a", 100, 100);
+        below.below = Some(true);
+        let reply = accepted(
+            &mut engine,
+            &report_full(
+                2,
+                1,
+                vec![screen("out-a", 0)],
+                vec![below],
+                vec![],
+                "win-b",
+                None,
+                None,
+            ),
+        );
+        assert!(
+            above_row(&reply, "win-b").is_none(),
+            "a present below=true still refuses acquisition"
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{Direction, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
+use crate::policy::ScaledResize;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 use crate::world_engine::{StagedDomain, StagedObservation, WorldEngine};
@@ -223,6 +224,8 @@ impl WorldEngine {
             closed: report.closed.clone(),
             native: report.native.clone(),
             cursor: report.cursor,
+            pointer_activity: report.pointer_activity,
+            warp_spent: report.warp_spent.clone(),
             cursor_hit: report.cursor_hit.clone(),
             focused_global: report.focused_global.clone(),
             action_foreground: report.action_foreground.clone(),
@@ -455,20 +458,37 @@ impl WorldTransaction<'_> {
                 .held_screens
                 .iter()
                 .any(|held| held.output.0 == output);
-            let (work_area, gap, outer_gap, complete, scale_overflow) = match screen {
+            let (work_area, gap, outer_gap, complete, scale_overflow, resize) = match screen {
                 Some(screen) => {
-                    // Per-output physical gaps: the logical settings scaled
-                    // once by this screen's scale. An overflowing scale holds
-                    // the scope as unreadable with a staged diagnostic (never
-                    // a clamped gap, never silent).
-                    match self.connection.scaled_gaps(screen.scale) {
-                        Some((gap, outer_gap)) => {
-                            (screen.work_area, gap, outer_gap, screen.complete, false)
-                        }
-                        None => (screen.work_area, 0, 0, screen.complete, true),
+                    // Per-output physical gaps and resize metrics: the logical
+                    // settings/constants scaled once by this screen's scale.
+                    // An overflowing scale holds the scope as unreadable with
+                    // a staged diagnostic (never a clamped gap, never silent,
+                    // never unscaled physics).
+                    let gaps = self.connection.scaled_gaps(screen.scale);
+                    let resize = ScaledResize::from_scale(screen.scale);
+                    match (gaps, resize) {
+                        (Some((gap, outer_gap)), Some(resize)) => (
+                            screen.work_area,
+                            gap,
+                            outer_gap,
+                            screen.complete,
+                            false,
+                            resize,
+                        ),
+                        _ => (
+                            screen.work_area,
+                            0,
+                            0,
+                            screen.complete,
+                            true,
+                            ScaledResize::zeroed(),
+                        ),
                     }
                 }
-                None => (None, 0, 0, false, false),
+                // No screen row: the domain is already unreadable and these
+                // metrics are never consumed by an operation.
+                None => (None, 0, 0, false, false, ScaledResize::unscaled()),
             };
             if scale_overflow {
                 // Restaging runs twice per report (pre/post settlement), so
@@ -585,6 +605,7 @@ impl WorldTransaction<'_> {
                     }),
                     gap,
                     outer_gap,
+                    resize,
                     windows,
                     minimized,
                     unreadable,

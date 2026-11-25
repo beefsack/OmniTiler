@@ -366,6 +366,7 @@ impl TileLoop {
                 SkipReason::Unreadable.as_str().to_owned(),
             ));
         }
+        self.note_observation_skips(skipped);
         track_fullscreen_holds(self, &out, retained);
         // Live native overlay snapshot per Engine token for the fixed-size
         // admission stamps: observed facts plus retained rows, refreshed on
@@ -389,5 +390,36 @@ impl TileLoop {
         self.overlay_now
             .retain(|token, _| live_tokens.contains(token));
         Some(out)
+    }
+
+    /// Emit one `world-observation-skips` trace row whenever the per-tick
+    /// skip reasons change, naming the token and the closed-vocabulary
+    /// reason for every skipped window (plus the aggregate unreadable
+    /// count). Held scopes repeat an unchanged set silently, so a diagnostic
+    /// stays readable; a cleared set re-arms logging. Never a policy input.
+    pub(super) fn note_observation_skips(&mut self, skipped: &[(String, String)]) {
+        let mut current = skipped.to_vec();
+        current.sort();
+        if current == self.last_observation_skips {
+            return;
+        }
+        let empty = current.is_empty();
+        self.last_observation_skips = current;
+        if empty || !self.trace {
+            return;
+        }
+        super::trace::log_json_at(
+            &self.log_path,
+            serde_json::json!({
+                "event": "world-observation-skips",
+                "skips": skipped
+                    .iter()
+                    .map(|(window, reason)| serde_json::json!({
+                        "window": window,
+                        "reason": reason,
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+        );
     }
 }

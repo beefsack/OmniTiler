@@ -58,7 +58,7 @@ fn request_json(
           \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
          \"windows\":[{facts}],\
           \"closed\":[],\"native\":[],\
-         \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+         \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"out\"],\
           \"focused\":\"\",\"foregroundKnown\":false,\"focusChanges\":null,\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}"
     )
@@ -1683,9 +1683,19 @@ fn reply_warp_cursor_matches_core_sizing() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    reply.cursor_warp = Some((810, 300));
+    reply.warp_request = Some(tiler_core::world_report::WarpRequest {
+        id: "warp-1".to_owned(),
+        target: tiler_core::directional::WindowId("win-a".to_owned()),
+        revision: 3,
+        output: tiler_core::directional::OutputId("out".to_owned()),
+        workspace: tiler_core::directional::WorkspaceId("ws".to_owned()),
+        point: (810, 300),
+        pointer_baseline: Some(2),
+    });
     let wire = reply_wire(&reply);
-    assert!(wire.contains("\"warpCursor\":[810,300]"));
+    assert!(wire.contains(
+        "\"warpRequest\":{\"id\":\"warp-1\",\"target\":\"win-a\",\"rev\":\"3\",\"out\":\"out\",\"ws\":\"ws\",\"point\":[810,300],\"pointerBaseline\":\"2\"}"
+    ));
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
 }
 
@@ -1792,7 +1802,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
         \"obs\":\"1\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\"scopes\":[],\
         \"workspaces\":[],\"outputs\":[],\"windows\":[],\"transfers\":[],\
         \"focusRequest\":null,\"dragPreview\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\
-        \"warpCursor\":null,\"presentation\":{\"foreground\":\"\",\"rev\":\"0\",\
+        \"warpRequest\":null,\"presentation\":{\"foreground\":\"\",\"rev\":\"0\",\
         \"border\":{\"visible\":false,\"reason\":\"\",\"subject\":null,\"outsets\":null,\
         \"width\":null,\"radius\":null,\"witness\":null},\
         \"underlay\":{\"status\":\"hidden\",\"reason\":\"no-group\",\"baseRev\":null},\"pager\":[]},\

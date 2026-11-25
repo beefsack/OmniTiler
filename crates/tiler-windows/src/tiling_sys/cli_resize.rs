@@ -22,10 +22,13 @@ pub(super) fn poll_resize_cli_request(
 ) {
     use tiler_core::directional::Direction;
     let path = dir.join(RESIZE_REQUEST_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-        Err(_) => return,
+    // Bounded read: an oversized or non-UTF-8 body is treated as an
+    // unparseable request below, so it is consumed once with a refusal
+    // instead of being loaded unbounded or left to wedge the queue.
+    let text = match read_control_request(&path) {
+        ControlRequestRead::Body(text) => text,
+        ControlRequestRead::Missing | ControlRequestRead::Unreadable => return,
+        ControlRequestRead::Rejected => String::new(),
     };
     let log_path = state.log_path.clone();
     // Best-effort labels for the pre-dispatch logs below: the actual parsed

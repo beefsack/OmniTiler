@@ -398,7 +398,9 @@ fn inspect_carrier(class: &str) -> Result<String> {
         else {
             continue;
         };
-        let exstyle = crate::ffi::window_exstyle(raw as usize as u64);
+        let Some(exstyle) = crate::ffi::window_exstyle_checked(raw as usize as u64) else {
+            continue;
+        };
         let (above_fg, adjacent_fg) = overlay_z_relation(raw as usize as u64);
         overlays.push(serde_json::json!({
             "hwnd": raw as u64,

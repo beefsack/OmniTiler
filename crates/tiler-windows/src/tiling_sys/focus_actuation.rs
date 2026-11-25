@@ -55,6 +55,7 @@ pub(super) fn overlay_expected(
             owned: false,
             captionless_fullscreen: false,
             no_activate: false,
+            topmost: false,
             dialog: false,
         }),
         // Synthetic fallback row: no fresh membership read was taken, so it
@@ -71,16 +72,6 @@ pub(super) fn same_axis_move_for(
 ) -> tiler_core::directional::SameAxisMove {
     live.map(|live| live.settings.core.same_axis_move_mode())
         .unwrap_or_default()
-}
-
-/// R-MAX-06 mode for the next first-seen maximized tiled admission: the
-/// last-good live setting, read per tick so a saved change applies to
-/// subsequent admissions only. Proof owners carry no live settings (`None`)
-/// and keep the default tile-on-launch clear. Previously admitted
-/// clients and Engine topology are untouched: the flag only gates the
-/// one-shot clear below, never existing slots.
-pub(super) fn born_maximized_keep_overlay_for(live: Option<&LiveSettings>) -> bool {
-    live.is_some_and(|live| live.settings.core.born_maximized_keep_overlay())
 }
 
 /// Drain one bounded batch of product keyboard intents against fresh complete

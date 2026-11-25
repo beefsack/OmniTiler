@@ -24,6 +24,20 @@ pub(super) fn output_for_rect(areas: &[MonitorArea], rect: &Rect) -> String {
         .unwrap_or_else(|| "display-?".to_owned())
 }
 
+/// A live frame must overlap at least one carried monitor before the
+/// direction-only resolver's first-screen fallback can be used.
+pub(super) fn frame_overlaps_output(areas: &[MonitorArea], frame: &Rect) -> bool {
+    areas.iter().any(|area| {
+        let left = i64::from(frame.x).max(i64::from(area.full.x));
+        let top = i64::from(frame.y).max(i64::from(area.full.y));
+        let right = (i64::from(frame.x) + i64::from(frame.w))
+            .min(i64::from(area.full.x) + i64::from(area.full.w));
+        let bottom = (i64::from(frame.y) + i64::from(frame.h))
+            .min(i64::from(area.full.y) + i64::from(area.full.h));
+        right > left && bottom > top
+    })
+}
+
 pub(super) fn output_for_point(areas: &[MonitorArea], x: i32, y: i32) -> Option<String> {
     use tiler_core::directional::OutputId;
     let screens: Vec<(OutputId, Rect)> = areas

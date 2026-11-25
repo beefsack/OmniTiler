@@ -19,14 +19,15 @@ use crate::world_gesture::GestureOutcome;
 use crate::world_members::MemberState;
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, EffectCause,
-    FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow, HeldScreenRow,
-    HeldWindowRow, HoldReason, IntentRecord, LastWritePath, MemberAttempt, NativeCreationAttempt,
-    NativeObservation, NativeOccupancy, NativeWorkspaceFact, OneShotEffect, OutputIdentity,
-    PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
-    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport, StateAttempt,
-    StateProperty, SwitchOutcome, TransferKind, TransferTarget, ViewAttempt, VisibilityAttempt,
-    VisibilityFact, VisibilityReason, VisibilitySample, WORLD_CONTRACT_VERSION_V4, WindowDesire,
-    WindowFact, WorkspaceRef, WorldCommand, WorldReplyV4, WorldReportV4,
+    FocusFeedback, FocusRequestCause, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow,
+    HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWritePath, MemberAttempt,
+    NativeCreationAttempt, NativeObservation, NativeOccupancy, NativeWorkspaceFact, OneShotEffect,
+    OutputIdentity, PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput,
+    RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport,
+    StateAttempt, StateProperty, SwitchOutcome, TransferKind, TransferTarget, ViewAttempt,
+    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
+    WORLD_CONTRACT_VERSION_V4, WarpRequest, WindowDesire, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReplyV4, WorldReportV4,
 };
 use crate::world_selection::{
     FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
@@ -707,6 +708,8 @@ fn rich_v4(seq: u64, lanes: RichLanes) -> WorldReportV4 {
                 win: WindowId("win-a".to_owned()),
             },
         }),
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -1425,6 +1428,8 @@ fn v4_capture_keeps_original_rows_through_capability_grading() {
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: vec![record("win-a", &float_true())],
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     };
     assert!(
         crate::world_report_v4_checks::validate_report_v4_reason(&report).is_none(),
@@ -1700,6 +1705,8 @@ fn report_v4_simple(
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -2239,6 +2246,7 @@ fn seed_readable_domain(engine: &mut WorldEngine, window: &str) {
         bounds: rect(0, 0, 800, 560),
         gap: 0,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         windows: Vec::new(),
         focused: WindowId(String::new()),
         minimized: Vec::new(),
@@ -3407,6 +3415,7 @@ fn seed_cursor_join(engine: &mut WorldEngine) {
             bounds: rect(0, 0, 800, 560),
             gap: 0,
             outer_gap: 0,
+            resize: crate::policy::ScaledResize::unscaled(),
             windows: carriers_a,
             focused: WindowId(String::new()),
             minimized: Vec::new(),
@@ -3420,6 +3429,7 @@ fn seed_cursor_join(engine: &mut WorldEngine) {
             bounds: rect(800, 0, 800, 560),
             gap: 0,
             outer_gap: 0,
+            resize: crate::policy::ScaledResize::unscaled(),
             windows: carriers_b,
             focused: WindowId(String::new()),
             minimized: Vec::new(),
@@ -3822,98 +3832,140 @@ fn warp_row(
     }
 }
 
+fn warp_rows(frame_b: Option<crate::geometry::Rect>) -> Vec<WindowDesire> {
+    vec![
+        warp_row("win-a", "out-a", "ws-1", Some(rect(0, 0, 40, 90))),
+        warp_row("win-b", "out-b", "ws-2", frame_b),
+    ]
+}
+
+/// Stage the warp family on the cursor rig, then stamp the report's
+/// hardware-origin pointer generation explicitly (the shared `stage_cursor`
+/// helper leaves it unknown).
+fn stage_warp_cursor(
+    engine: &mut WorldEngine,
+    seq: u64,
+    cursor: Option<(i32, i32)>,
+    complete: bool,
+    barrier: bool,
+    pointer: Option<u64>,
+) {
+    stage_cursor(
+        engine,
+        seq,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        "win-a",
+        cursor,
+        None,
+        complete,
+        barrier,
+    );
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).pointer_activity = pointer;
+}
+
+/// Seat the validated winning focus exactly as the run's winner drain would
+/// before the warp projection (staged homing is seeded by the cursor rig).
+fn seat_warp_focus(engine: &mut WorldEngine, target: &str, revision: u64) {
+    engine.tx(|tx| {
+        tx.note_focus_decision(
+            &WindowId(target.to_owned()),
+            FocusRequestCause::ExplicitCommand,
+            Some(11),
+            revision,
+        );
+    });
+}
+
+/// Seat `target` at `revision` and project the warp for that same issuing
+/// revision: the only path that may mint a fresh request.
+fn mint_warp(
+    engine: &mut WorldEngine,
+    target: &str,
+    revision: u64,
+    windows: &[WindowDesire],
+    held_scopes: &BTreeSet<DomainKey>,
+) -> Option<WarpRequest> {
+    seat_warp_focus(engine, target, revision);
+    engine.tx(|tx| tx.warp_for_publish(windows, held_scopes, revision))
+}
+
+fn set_spent(engine: &mut WorldEngine, spent: Option<&str>) {
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).warp_spent =
+        spent.map(str::to_owned);
+}
+
 #[test]
-fn warp_staged_clamp_and_last_effect_parity() {
-    let mut engine = cursor_engine();
-    let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)];
+fn warp_staged_clamp_and_winner_parity() {
     // Cursor on out-a; win-b's effective-frame centre (860, 570) falls
     // below out-b's staged work area, so the staged work area clamps it
     // to (860, 559). out-a's staged full rect proves the cursor output.
-    stage_cursor(
-        &mut engine,
-        1,
-        windows(),
-        "win-a",
-        Some((10, 10)),
-        None,
-        true,
-        false,
-    );
-    let rows = vec![
-        warp_row("win-a", "out-a", "ws-1", Some(rect(0, 0, 40, 90))),
-        warp_row("win-b", "out-b", "ws-2", Some(rect(810, 520, 100, 100))),
-    ];
-    let cross = vec![OneShotEffect::explicit_focus(
-        11,
-        WindowId("win-b".to_owned()),
-        3,
-    )];
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(7));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    let request = mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new())
+        .expect("cross-output warp mints");
+    assert_eq!(request.id, "warp-0");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.revision, 3);
+    assert_eq!(request.output.0, "out-b");
+    assert_eq!(request.workspace.0, "ws-2");
+    assert_eq!(request.point, (860, 559));
+    assert_eq!(request.pointer_baseline, Some(7));
+
+    // The VALIDATED winner decides. A same-output winner (win-a on the
+    // cursor output) never warps, even though the loser targeted another
+    // output.
+    let mut veto_engine = cursor_engine();
+    stage_warp_cursor(&mut veto_engine, 1, Some((10, 10)), true, false, Some(7));
+    seat_warp_focus(&mut veto_engine, "win-a", 3);
     assert_eq!(
-        engine.tx(|tx| tx.warp_for_publish(&cross, &rows, &BTreeSet::new())),
-        Some((860, 559)),
-        "cross-output centre clamps into staged work area"
-    );
-    // The LAST focus effect in order decides: an earlier cross-output
-    // effect followed by a same-output one warps nothing.
-    let vetoed = vec![
-        OneShotEffect::explicit_focus(11, WindowId("win-b".to_owned()), 3),
-        OneShotEffect::explicit_focus(11, WindowId("win-a".to_owned()), 4),
-    ];
-    assert_eq!(
-        engine.tx(|tx| tx.warp_for_publish(&vetoed, &rows, &BTreeSet::new())),
+        veto_engine.tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 3)),
         None,
-        "same-output last effect vetoes"
+        "same-output validated winner never warps"
     );
+}
+
+#[test]
+fn warp_staged_pauses_and_holds_withhold() {
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
     // Held destination scope withholds the point.
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(1));
     let mut held = BTreeSet::new();
     held.insert(DomainKey {
         output: OutputId("out-b".to_owned()),
         workspace: WorkspaceId("ws-2".to_owned()),
     });
     assert_eq!(
-        engine.tx(|tx| tx.warp_for_publish(&cross, &rows, &held)),
+        mint_warp(&mut engine, "win-b", 3, &rows, &held),
         None,
         "held destination withholds warp"
     );
-    // Incomplete inventory, gesture barrier, and a focused fullscreen
-    // game each pause the point on the current staged capture.
-    stage_cursor(
-        &mut engine,
-        2,
-        windows(),
-        "win-a",
-        Some((10, 10)),
-        None,
-        false,
-        false,
-    );
+    // Incomplete inventory pauses the request.
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), false, false, Some(1));
     assert_eq!(
-        engine.tx(|tx| tx.warp_for_publish(&cross, &rows, &BTreeSet::new())),
+        mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()),
         None,
         "incomplete inventory pauses warp"
     );
-    stage_cursor(
-        &mut engine,
-        3,
-        windows(),
-        "win-a",
-        Some((10, 10)),
-        None,
-        true,
-        true,
-    );
+    // A gesture barrier pauses the request.
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, true, Some(1));
     assert_eq!(
-        engine.tx(|tx| tx.warp_for_publish(&cross, &rows, &BTreeSet::new())),
+        mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()),
         None,
         "gesture barrier pauses warp"
     );
-    let mut game_windows = windows();
+    // A focused fullscreen game pauses the request.
+    let mut engine = cursor_engine();
+    let mut game_windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)];
     let mut game = fact("game", "out-a", 200);
     game.fullscreen = Some(true);
     game_windows.push(game);
     stage_cursor(
         &mut engine,
-        4,
+        1,
         game_windows,
         "game",
         Some((10, 10)),
@@ -3921,37 +3973,288 @@ fn warp_staged_clamp_and_last_effect_parity() {
         true,
         false,
     );
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).pointer_activity = Some(1);
     assert!(
         engine.cursor_game_paused(),
-        "warp report runs under the game pause"
+        "report runs under the game pause"
     );
     assert_eq!(
-        engine.tx(|tx| tx.warp_for_publish(&cross, &rows, &BTreeSet::new())),
+        mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()),
         None,
         "game pause withholds warp"
     );
     // Unknown and off-screen cursors warp nothing.
-    stage_cursor(&mut engine, 5, windows(), "win-a", None, None, true, false);
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, None, true, false, Some(1));
     assert_eq!(
-        engine.tx(|tx| tx.warp_for_publish(&cross, &rows, &BTreeSet::new())),
+        mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()),
         None,
         "cursorless report warps nothing"
     );
-    stage_cursor(
-        &mut engine,
-        6,
-        windows(),
-        "win-a",
-        Some((5000, 5000)),
-        None,
-        true,
-        false,
-    );
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((5000, 5000)), true, false, Some(1));
     assert_eq!(
-        engine.tx(|tx| tx.warp_for_publish(&cross, &rows, &BTreeSet::new())),
+        mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()),
         None,
         "off-screen cursor warps nothing"
     );
+}
+
+#[test]
+fn warp_retains_across_observation_and_moving_frame() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(2));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    let first = mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).expect("minted warp");
+    // Observation-only reply: no fresh focus decision, identical facts. A
+    // strictly newer issuing revision proves freshness never re-mints.
+    let retained = engine
+        .tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 4))
+        .expect("retained warp");
+    assert_eq!(retained, first, "observation-only reply retains identity");
+    // The target frame legitimately moves: the frozen point never
+    // recenters, and the id/revision stay identical.
+    let moved = warp_rows(Some(rect(820, 100, 60, 60)));
+    let after = engine
+        .tx(|tx| tx.warp_for_publish(&moved, &BTreeSet::new(), 4))
+        .expect("retained warp");
+    assert_eq!(after, first, "moving frame retains the frozen request");
+}
+
+#[test]
+fn warp_clears_on_target_departure() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(3));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    assert!(mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).is_some());
+    let gone = vec![warp_row("win-a", "out-a", "ws-1", Some(rect(0, 0, 40, 90)))];
+    assert_eq!(
+        engine.tx(|tx| tx.warp_for_publish(&gone, &BTreeSet::new(), 4)),
+        None,
+        "target row departure clears the request"
+    );
+}
+
+#[test]
+fn warp_clears_on_unreadable_frame_and_rehome() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(3));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    assert!(mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).is_some());
+    let frameless = warp_rows(None);
+    assert_eq!(
+        engine.tx(|tx| tx.warp_for_publish(&frameless, &BTreeSet::new(), 4)),
+        None,
+        "unreadable target frame clears the request"
+    );
+    // Fresh mint, then a rehomed row (different workspace) clears.
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(3));
+    assert!(mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).is_some());
+    let rehomed = vec![
+        warp_row("win-a", "out-a", "ws-1", Some(rect(0, 0, 40, 90))),
+        warp_row("win-b", "out-b", "ws-9", Some(rect(810, 520, 100, 100))),
+    ];
+    assert_eq!(
+        engine.tx(|tx| tx.warp_for_publish(&rehomed, &BTreeSet::new(), 4)),
+        None,
+        "target rehoming clears the request"
+    );
+}
+
+#[test]
+fn warp_clears_on_incomplete_inventory_after_mint() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(3));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    assert!(mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).is_some());
+    stage_warp_cursor(&mut engine, 2, Some((10, 10)), false, false, Some(3));
+    assert_eq!(
+        engine.tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 4)),
+        None,
+        "incomplete inventory clears the retained request"
+    );
+}
+
+#[test]
+fn warp_clears_when_cursor_reaches_pending_output() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(1));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    let first = mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).expect("minted warp");
+    // The cursor now reads on the pending destination output: never
+    // publish a same-output warp.
+    stage_warp_cursor(&mut engine, 2, Some((900, 10)), true, false, Some(1));
+    assert_eq!(
+        engine.tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 4)),
+        None,
+        "cursor on the pending output clears: {}",
+        first.id
+    );
+}
+
+#[test]
+fn warp_spend_retires_exact_id_only() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(1));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    let first = mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).expect("minted warp");
+    // A different spent id does nothing.
+    set_spent(&mut engine, Some("warp-999"));
+    let other = engine
+        .tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 4))
+        .expect("different spend retains");
+    assert_eq!(other, first);
+    // The exact spent id retires; the next reply carries none.
+    set_spent(&mut engine, Some(first.id.as_str()));
+    assert_eq!(
+        engine.tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 5)),
+        None,
+        "exact spend retires"
+    );
+    set_spent(&mut engine, None);
+    assert_eq!(
+        engine.tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 6)),
+        None,
+        "a retired id is never republished"
+    );
+}
+
+#[test]
+fn warp_never_fabricates_a_point() {
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    // Unreadable cursor.
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, None, true, false, Some(1));
+    assert_eq!(
+        mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()),
+        None
+    );
+    // Unreadable target frame.
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(1));
+    assert_eq!(
+        mint_warp(&mut engine, "win-b", 3, &warp_rows(None), &BTreeSet::new()),
+        None
+    );
+    // A centred point outside the carried bounds is never fabricated.
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(1));
+    let overbound = vec![
+        warp_row("win-a", "out-a", "ws-1", Some(rect(0, 0, 40, 90))),
+        warp_row("win-b", "out-c", "ws-3", Some(rect(32700, 0, 200, 100))),
+    ];
+    assert_eq!(
+        mint_warp(&mut engine, "win-b", 3, &overbound, &BTreeSet::new()),
+        None,
+        "overbound centre never fabricates a point"
+    );
+}
+
+#[test]
+fn warp_newer_focus_decision_other_lifetime_clears_and_remints() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(0));
+    let mut rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    rows.push(warp_row(
+        "win-c",
+        "out-b",
+        "ws-2",
+        Some(rect(810, 100, 60, 60)),
+    ));
+    // Test-only staged homing seed for the third lifetime: this projection
+    // test drives rows directly, but a valid focus decision needs a home.
+    engine.world.staged.homing.insert(
+        WindowId("win-c".to_owned()),
+        DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+        },
+    );
+    let first = mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).expect("minted warp");
+    assert_eq!(first.id, "warp-0");
+    // A newer validated focus decision targets another cross-output
+    // lifetime: the old request clears and this reply mints a fresh id
+    // (never reused).
+    let second =
+        mint_warp(&mut engine, "win-c", 4, &rows, &BTreeSet::new()).expect("reminted warp");
+    assert_eq!(second.id, "warp-1");
+    assert_eq!(second.target.0, "win-c");
+    assert_eq!(second.revision, 4);
+    assert_ne!(second.point, first.point);
+}
+
+#[test]
+fn warp_same_target_decision_keeps_identity() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(0));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    let first = mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).expect("minted warp");
+    // A newer decision for the same lifetime keeps the frozen tuple. A
+    // distinct command sequence forces a genuinely fresh seated decision.
+    engine.tx(|tx| {
+        tx.note_focus_decision(
+            &WindowId("win-b".to_owned()),
+            FocusRequestCause::ExplicitCommand,
+            Some(12),
+            4,
+        );
+    });
+    let again = engine
+        .tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 4))
+        .expect("retained warp");
+    assert_eq!(again, first);
+}
+
+#[test]
+fn warp_newer_pending_focus_other_lifetime_clears_without_effects() {
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(0));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    assert!(mint_warp(&mut engine, "win-b", 3, &rows, &BTreeSet::new()).is_some());
+    // Retention follows the validated focus request when this reply mints
+    // no new decision: a request for another lifetime supersedes the warp.
+    engine.world.focus.pending_focus = Some(crate::world_close_focus::PendingFocus {
+        id: "focus-9".to_owned(),
+        target: WindowId("win-c".to_owned()),
+        output: OutputId("out-b".to_owned()),
+        workspace: "ws-2".to_owned(),
+        issued_revision: 9,
+        cause: FocusRequestCause::ExplicitCommand,
+        cmd_seq: Some(9),
+        after_shown: None,
+        feedback: None,
+    });
+    assert_eq!(
+        engine.tx(|tx| tx.warp_for_publish(&rows, &BTreeSet::new(), 10)),
+        None,
+        "newer pending focus for another lifetime clears without effects"
+    );
+}
+
+#[test]
+fn warp_positive_close_pending_focus_mints_without_focus_effects() {
+    // A cross-output PositiveClose winner installs only into the retained
+    // focus slot (no Focus effect ever reaches the wire). It must still
+    // mint the warp from the validated decision alone.
+    let mut engine = cursor_engine();
+    stage_warp_cursor(&mut engine, 1, Some((10, 10)), true, false, Some(4));
+    let rows = warp_rows(Some(rect(810, 520, 100, 100)));
+    let request = engine
+        .tx(|tx| {
+            tx.note_focus_decision(
+                &WindowId("win-b".to_owned()),
+                FocusRequestCause::PositiveClose,
+                None,
+                3,
+            );
+            tx.warp_for_publish(&rows, &BTreeSet::new(), 3)
+        })
+        .expect("positive-close pending focus mints without effects");
+    assert_eq!(request.target.0, "win-b");
+    assert_eq!(request.output.0, "out-b");
+    assert_eq!(request.revision, 3);
+    assert_eq!(request.pointer_baseline, Some(4));
 }
 
 // 4b-2d: settlement consumes staged observation lanes on the v4 intake.
@@ -4013,6 +4316,7 @@ fn seed_join_4b2d(engine: &mut WorldEngine, window: &str, workspace: &str) {
         bounds: rect(0, 0, 800, 560),
         gap: 0,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         windows: Vec::new(),
         focused: WindowId(String::new()),
         minimized: Vec::new(),
@@ -11413,6 +11717,7 @@ fn seed_domain_5a(engine: &mut WorldEngine, output: &str, workspace: &str, reada
         bounds: rect(0, 0, 800, 560),
         gap: 0,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         windows: Vec::new(),
         focused: WindowId(String::new()),
         minimized: Vec::new(),

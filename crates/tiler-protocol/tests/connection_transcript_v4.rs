@@ -165,7 +165,7 @@ fn assert_bootstrap(decoded: &DecodedReplyV4, generation: &str, request: &str, o
     assert_eq!(reply.gesture_settled, None);
     assert!(reply.operation_settled.is_empty());
     assert!(reply.native_creations.is_empty());
-    assert_eq!(reply.cursor_warp, None);
+    assert_eq!(reply.warp_request, None);
     assert!(reply.intent_desired.is_empty());
     assert!(reply.switch_settled.is_empty());
     assert!(reply.diagnostics.is_empty());

@@ -250,6 +250,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [
@@ -310,7 +312,7 @@
         "assertions": [
           ".output.message.windows | any(.win == \"win-b\" and .member_auth == \"controlled\")",
           "all(.output.message.windows[] | select(.win == \"win-a\"); .member_auth != \"controlled\" and .frame_auth != \"controlled\")",
-          ".output.message.warpCursor == null"
+          ".output.message.warpRequest == null"
         ]
       },
       "rules": [
@@ -467,6 +469,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [
@@ -747,6 +751,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [
@@ -912,6 +918,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [

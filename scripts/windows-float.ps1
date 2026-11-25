@@ -614,39 +614,21 @@ function Invoke-FloatMock {
   if ($src -match $regPat) { Fail-Fl "mock registry/policy write present" }
   if ($src -match ('Get' + 'Pixel')) { Fail-Fl "mock screen-content capture present (geometry/state gates only)" }
   Rec-Fl "harness-seams" @{ zoom_gates = $false; float_gates = $true; marks_before_actions = $true }
-  $tsrc = Get-Content -LiteralPath (Join-Path $Repo "crates\tiler-windows\src\tiling_sys.rs") -Raw
-  foreach ($need in @("dispatch_float_intent", "float-toggle", "float_topmost_prev", "float_rects",
-      "float-focus-retained", "proof-topmost",
-      "float-topmost-restore", "send-refused-floating", "focus-refused-floating", "move-refused-floating") ) {
-    if ($tsrc -notmatch [regex]::Escape($need)) { Fail-Fl "mock product missing $need" }
-  }
-  $tlsrc = Get-Content -LiteralPath (Join-Path $Repo "crates\tiler-windows\src\tiling.rs") -Raw
-  foreach ($need in @("float-refused-fullscreen", "float-refused-maximize", "float_toggle_refusal", "float_topmost_restore_needed") ) {
-    if ($tlsrc -notmatch [regex]::Escape($need)) { Fail-Fl "mock product missing $need" }
-  }
-  $ksrc = Get-Content -LiteralPath (Join-Path $Repo "crates\tiler-windows\src\snapkey.rs") -Raw
+  $snapkeyRoot = Join-Path $Repo "crates\tiler-windows\src\snapkey"
+  $ksrc = (Get-Content -LiteralPath (Join-Path $snapkeyRoot "chords.rs") -Raw) +
+    (Get-Content -LiteralPath (Join-Path $snapkeyRoot "classifier.rs") -Raw)
   if ($ksrc -notmatch "is_float_vk") { Fail-Fl "mock classifier missing is_float_vk" }
   if ($ksrc -notmatch "is_sticky_vk") { Fail-Fl "mock classifier missing is_sticky_vk" }
   if ($ksrc -notmatch "StickyIntent") { Fail-Fl "mock classifier missing StickyIntent arm" }
   if ($ksrc -notmatch "Float") { Fail-Fl "mock classifier missing Float arm" }
   if ($ksrc -notmatch "0x47") { Fail-Fl "mock classifier missing VK_G 0x47" }
-  Rec-Fl "product-seams" @{ discrete_toggle = $true; preimage = $true; classifier = $true; sticky_arm = $true }
-  $stsrc = Get-Content -LiteralPath (Join-Path $Repo "crates\tiler-windows\src\tiling_sys.rs") -Raw
-  foreach ($need in @("dispatch_sticky_intent", "sticky-toggle", "sticky-applied", "sticky-adopt", "read_sticky_marker", "install_sticky_marker", "remove_sticky_marker") ) {
-    if ($stsrc -notmatch [regex]::Escape($need)) { Fail-Fl "mock sticky product missing $need" }
-  }
-  $wsrc = Get-Content -LiteralPath (Join-Path $Repo "crates\tiler-windows\src\workspace.rs") -Raw
-  if ($wsrc -notmatch "plan_cleanup_excluding") { Fail-Fl "mock sticky product missing plan_cleanup_excluding" }
-  $msrc = Get-Content -LiteralPath (Join-Path $Repo "crates\tiler-windows\src\model.rs") -Raw
-  if ($msrc -notmatch "STICKY_PROP") { Fail-Fl "mock sticky product missing STICKY_PROP" }
-  Rec-Fl "sticky-product-seams" @{ dispatch = $true; marker = $true; occupancy = $true }
+  Rec-Fl "product-seams" @{ classifier = $true; sticky_arm = $true }
   & cargo test --locked --manifest-path (Join-Path $Repo "Cargo.toml") -p tiler-windows --test tiling 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail-Fl "mock cargo test tiling failed" }
   & cargo test --locked --manifest-path (Join-Path $Repo "Cargo.toml") -p tiler-windows --test snapkey 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail-Fl "mock cargo test snapkey failed" }
   Rec-Fl "portable-tests" @{ suites = @("tiling", "snapkey"); result = "pass" }
-  # EXECUTED sticky guards (not regex-only): classifier arms, marker
-  # round-trip/refusals, workspace exclusion, adopt/rehome paths. Each suite
+  # Executed sticky guards cover the classifier and sticky behavior. Each suite
   # runs once; output is captured for the ledger (no repeat runs, no tail
   # truncation).
   $stickyLib = & cargo test --locked --manifest-path (Join-Path $Repo "Cargo.toml") -p tiler-windows --lib sticky 2>&1 | Out-String

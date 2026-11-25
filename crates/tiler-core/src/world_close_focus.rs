@@ -332,6 +332,17 @@ impl WorldTransaction<'_> {
         {
             return;
         }
+        // Q1: a newer focus decision targeting another lifetime cancels the
+        // retained warp; a decision for the same lifetime keeps it intact.
+        if self
+            .world
+            .focus
+            .pending_warp
+            .as_ref()
+            .is_some_and(|warp| warp.target != survivor)
+        {
+            self.world.focus.pending_warp = None;
+        }
         self.world.focus.pending_focus = Some(PendingFocus {
             id: format!("focus-{issuing_revision}"),
             target: survivor.clone(),
@@ -577,6 +588,13 @@ impl WorldTransaction<'_> {
                 reason,
             );
         }
+        // A settled non-arrival (supersession, target close/exclusion,
+        // unproven focus, or a terminal refusal) leaves no resulting focus
+        // that the frozen warp point describes: clear it. An equality
+        // arrival keeps it because the point still awaits adapter spend.
+        if decision != "equality" {
+            self.world.focus.pending_warp = None;
+        }
     }
 
     /// Supersede the pending row for a newer focus decision of any cause
@@ -609,6 +627,19 @@ impl WorldTransaction<'_> {
                 });
         if keep {
             return;
+        }
+        // Q1: any newer focus decision targeting another lifetime cancels
+        // the retained warp before the homing lookup, so a decision that
+        // cannot resolve still cancels. A same-lifetime decision (including
+        // a fresh hover re-mint) never disturbs the pending warp.
+        if self
+            .world
+            .focus
+            .pending_warp
+            .as_ref()
+            .is_some_and(|warp| warp.target != *target)
+        {
+            self.world.focus.pending_warp = None;
         }
         let home = self
             .world

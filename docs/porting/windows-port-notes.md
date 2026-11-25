@@ -15,13 +15,13 @@ not v4 acceptance evidence.
 
 ## V4 native coordinate normalization
 
-- Target, not delivered by this note: PMv2 physical-pixel reads are
-  native integers, never scaled again. Per-screen v4 `scale` is that
-  output's effective DPI / 96 (measured A=120, B=96). Core scales each
-  logical setting once, then rounds nearest, halves toward positive
-  infinity. See the [scale rule](world-contract.md#scale-and-rounding).
-  `GetDpiForWindow` proves only the queried window's DPI, so each
-  output needs its own PMv2 window, including empty outputs.
+- PMv2 reads use native physical pixels. Windows reports each output's
+  effective DPI / 96; core applies the scale once, then rounds nearest,
+  halves toward positive infinity. See the
+  [scale rule](world-contract.md#scale-and-rounding).
+- The owner thread maintains an invisible, nonactivating PMv2 observer
+  on each output, even without application windows. It resamples after
+  DPI, display or settings change notifications.
 
 ## Handshake (exact v4 declaration)
 
@@ -105,8 +105,10 @@ not v4 acceptance evidence.
 - `visibility`: executor retains spent lifetime/`visibility.rev`/
   target; fallback hides only on core `visibility.fallback:true`.
 - `state`: core booleans with `StateAttempt` pre/post; sticky emits no
-  native target/attempt/fact (W3). `warpCursor`: `SetCursorPos` wired
-  with gates; `warp:true` is support, not guaranteed success.
+  native target/attempt/fact (W3). `warpRequest`: core retains one
+  bounded request; `SetCursorPos`, raw-input pointer-activity witness,
+  and `warpSpent` reporting remain adapter work, with `warp:false` today
+  so a non-null request must never reach Windows.
 - No `SwitchView`/`Operation` wrappers or nested drag/pointer routes.
   `RendererInput` carries the exact drawn row; core judges staleness.
 
@@ -187,16 +189,15 @@ not v4 acceptance evidence.
 - Rule ([state](world-contract.md#window-state-policy)): neutral exit
   needs known exitability; unknown stays untouched; app-owned exits
   refused per baseline case. No `Alt+Enter` synthesis.
-- Source-reading: captionless-covering-monitor predicate, not a
-  presentation-mode oracle (`tiling_sys/observe.rs`); project entry saves owned
-  style/max/frame and restores mask/frame but verifies style, not
-  settled geometry (`tiling_sys/fullscreen.rs`). First-seen app fullscreen has no
-  preimage: keep refusal.
-- Measured (standalone): app-owned borderless roundtrip, all eight
-  channels matching; dedicated DXGI `SetFullscreenState` grant
-  (API grant only). App-roundtrip foreground restoration, first-seen
-  forced exit, game/exclusive and tiler-owned exitability unproved.
-  See [R14 results and limits](../changes/windows-v4-native-evidence.md#1-fullscreen-already-present-at-startup-r14).
+- Windows records an exact-lifetime adoption baseline for ordinary
+  windowed members. It is evidence independent of the project-owned
+  marker and the R12 write preimage. Project-owned exit requires
+  chrome, show state and settled outer geometry before retirement.
+- The fixture exercises normal decorated floating restore and confirms
+  app-owned refusal without a native write. App-owned, already
+  fullscreen at adoption, and exclusive cases remain refused. The
+  [real-app restoration matrix](../changes/windows-fullscreen-exit-baseline.md#per-case-live-check-matrix)
+  is user-owned.
 
 ## Opaque intent records and storage
 
@@ -204,27 +205,30 @@ not v4 acceptance evidence.
   unchanged in a lifetime-bound slot, atomically before dependent
   writes, with restart-verifiable binding
   ([rule](world-contract.md#opaque-intent-storage)).
-- Source-reading: current float/tile/sticky markers are inert scalars,
-  not the opaque record; admission rotates tags under fences
-  (`tiling/float.rs`, `tiling_sys/assignments.rs`, `tiling_sys/restart.rs`). Neither an external tag-keyed slot
-  nor atomic property chunks are implemented for v4. Never match by
-  title/PID or store a pointer into the exiting process.
+- Windows stores the two independent `IntentData` v1 choices in one packed
+  `OmniTiler.IntentSlot.v2` property. Each choice is `null`, `false`, or `true`;
+  all nine states round-trip, with both choices absent represented by no
+  property. Reads and writes prove the HWND's PID, process creation and
+  stored member tag; legacy per-choice properties are not read.
+- If `IntentData` expands beyond v1, replace the packed representation with
+  an adapter-owned atomic external slot keyed by the same exact lifetime.
+  Store and return the opaque string unchanged, bounded to 1024 UTF-8 bytes.
+  Never key by title or PID alone or store a pointer into the exiting process.
 
 ## Output identity matching
 
-- Nullable `manufacturer/model/serial/connector`; core derives
-  reconnect identity from the triple, connector only when unreadable
-  or duplicated; ambiguous reconnect holds; `connector:null` until
-  normalization is proved ([rule](world-contract.md#screenreport)).
-- Source-reading: `MonitorArea` has no physical metadata
-  (`tiling_sys/monitors.rs`); QDC target-name plus SetupAPI EDID device-key route
-  is API-feasible. Connector instance is adapter-local, may be zero.
-- Measured (standalone): distinct triples; text-serial retention;
-  empty-output scale-only cycle delivered per-output `WM_DPICHANGED`
-  with exact restore; reconnect, port move/return, sleep/resume,
-  reboot stable (reboot changed adapter LUIDs: not durable keys).
-  Identical-monitor fallback and connector normalization open. See
-  [physical series](../changes/windows-v4-native-evidence.md#physical-check-series-closing-summary).
+- The core prefers the manufacturer/model/serial triple and uses the
+  connector for unreadable or duplicated triples; ambiguity holds
+  ([rule](world-contract.md#screenreport)). Windows supplies a normalized
+  monitor device instance ID from QDC target discovery and SetupAPI,
+  not the volatile adapter LUID or runtime display index.
+- Offline cases cover identical serial-less monitors, normalization
+  across spelling changes and ambiguity. The fixture-only
+  `scripts/windows-output-dpi-proof.ps1 -Live` compares accepted output
+  rows at empty startup against independent PMv2 reads; it does not
+  change scale or disconnect a display. Physical scale changes,
+  identical-monitor reconnect and port moves remain user-owned. See
+  [prior standalone measurements](../changes/windows-v4-native-evidence.md#physical-check-series-closing-summary).
 
 ## Border and K5 witness
 
@@ -245,15 +249,33 @@ not v4 acceptance evidence.
   150 ms tolerance. No witness join or physical-drag acceptance. See
   [K5 results](../changes/windows-v4-native-evidence.md#4-border-tracking-and-winevent-coverage-k5).
 
-## Phase-4 port gates (no passes claimed)
+### Operator-run drag preview
 
-- Carry all eight scenario OPEN/TBD gates plus: K5 witness join and
-  eligibility coverage; opaque/chrome/topmost crash recovery with
-  next-start adoption; untagged-lifetime fencing and HWND-reuse
-  handling; state/style/eligibility event coverage; connector/
-  identical-monitor normalization; per-case app-fullscreen baseline
-  with settled restore proof; beyond-scale-only empty-output
-  coverage. `hostOwned:false` exempts native removal/creation gates;
+Build the Windows owner and live fixture, then run from the repository root:
+
+```powershell
+pwsh -NoProfile -File scripts/windows-phase2-drag-preview-proof.ps1 -Live
+```
+
+Follow the two prompts to drag the fixture window by its title bar over
+the other fixture. The harness joins the live gesture ID to the preview
+and renderer acknowledgement, checks that the preview stays hidden during
+owner suspension, and checks for a fresh gesture ID after resume.
+It does not synthesize input. The specific
+`presentation.suspended_output` reply-field gate is covered by
+`suspended_output_hides_preview_without_painting`; owner suspend/resume
+alone does not prove that reply-field path.
+
+## Phase-4 port gates
+
+- Keep the eight original scenario gates distinct from the native
+  legs proven in the [Phase 2 review](../changes/v4-phase4-windows-port.md#phase-2-windows-review-verification).
+  Fixture runs cover crash recovery, next-start adoption, empty-output
+  scale readback and exact decorated fullscreen restore. K5 causal
+  witness and eligibility-event coverage, actual HWND reuse, physical
+  identical-monitor reconnect, live scale changes and real-app fullscreen
+  exits remain separate gates.
+- `hostOwned:false` exempts native removal/creation gates;
   core `exist:false` is sole removal authority.
 - Conformance: exact v4 fixtures in `test-fixtures/world-wire/v4/`;
   codec/generator comparison and adapter acceptance must agree before
@@ -264,8 +286,6 @@ not v4 acceptance evidence.
 - Untagged foreground capture must not mint continuity from HWND/PID
   alone. Unknown/unbound lifetime stays empty or nullable as specified;
   do not synthesize negative foreground facts from admission filtering.
-- Empty-output scale measurements used a PMv2 observer on each output;
-  current windowless fallback does not establish equivalent coverage.
 - Elevated-denial measurements discarded DWM failure HRESULTs and did
   not prove independent restoration. Keep those [gaps](../changes/windows-v4-native-evidence.md#elevated-fixed-harness-matrix-measured-with-acceptance-limitations)
   open; per-window denial never adds an `unavailableFacts` entry.
@@ -276,13 +296,41 @@ not v4 acceptance evidence.
 ## Build, check and gate commands
 
 - Toolchain per [windows-dev-environment](../windows-dev-environment.md);
-  CLI/Rust via root `mise.toml`; user owns installs. Blocked:
-  `tiler-windows` build/tests/clippy (expected phase-1 type mismatches).
+  CLI/Rust via root `mise.toml`; user owns installs. Run
+  `cargo test -p tiler-windows --lib`, `cargo test -p tiler-windows --tests
+  --no-fail-fast`, `cargo test -p tiler-live-fixture` and
+  `cargo clippy -p tiler-windows -p tiler-live-fixture --all-targets --no-deps -- -D warnings`.
 - Live work under [live-windows-testing](../live-windows-testing.md),
   fixture-first, scoped fixture only. No production tiler,
   registry/policy, interception or crash probes in this note.
 - Core-only gates stay host-independent; settlement/recovery/paint
   evidence is separate from codec acceptance.
+
+## Windows Settings
+
+Settings is an ordinary resizable application window. Its native sizing
+tracks are not pinned; the tab and controls follow the resized client area.
+`scripts/windows-settings-resize-proof.ps1 -Live` checks distinct native
+tracks, outer and tab geometry after a programmatic resize, and unchanged
+settings bytes after closing the owned process.
+
+## Fixture controls
+
+- All Windows command-file receivers cap reads at 64 KiB. Typed request
+  bodies reject unknown fields, and all receivers reject oversized or
+  non-UTF-8 bodies without logging them. These checks do not change the
+  same-user endpoint or exact-owner model.
+- On Windows, fixture `send` and the native probe take the per-run scope
+  nonce from `TILER_LIVE_FIXTURE_NONCE`. Do not repeat it in payloads on
+  the command line.
+
+## Diagnostics
+
+Routine appends to an owner run log stop at 16 MiB. Oversized rows
+are replaced with a bounded omission marker; a final cap marker
+preserves line offsets without rotating the log. Sanitized panic rows
+have a separate lock-free append lane with a per-write headroom check.
+Detailed accepted-apply and native correlation rows remain trace-gated.
 
 ## Material rough edges (no behavior change selected)
 

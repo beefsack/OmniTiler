@@ -141,6 +141,8 @@ fn report_full(
             })
             .collect(),
         renderer_input,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 

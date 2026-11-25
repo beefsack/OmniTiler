@@ -199,6 +199,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [
@@ -636,6 +638,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [

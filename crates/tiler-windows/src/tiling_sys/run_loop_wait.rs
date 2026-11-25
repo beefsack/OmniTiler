@@ -502,6 +502,11 @@ pub(super) fn drain_hook_edges(
                     serde_json::json!({
                         "event": "move-kind",
                         "tick": state.tick,
+                        "window": state
+                            .gesture_preview_start
+                            .get(&hwnd)
+                            .map(|start| start.token.clone()),
+                        "gesture_id": state.gesture_seq.get(&hwnd).copied(),
                         "kind": match probe.kind {
                             MoveSizeKind::Move => "move",
                             MoveSizeKind::Resize => "resize",

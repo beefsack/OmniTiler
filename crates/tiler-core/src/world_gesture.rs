@@ -46,6 +46,7 @@ type GesturePairInputs = (
     OutputDomain,
     i32,
     i32,
+    crate::policy::ScaledResize,
     WindowId,
     Vec<EngineWindow>,
     Vec<WindowId>,
@@ -639,6 +640,7 @@ impl WorldTransaction<'_> {
         match self.world.layout.run_local_drag_preview(
             &inset,
             domain_report.outer_gap,
+            domain_report.resize,
             &retained.window,
             &domain_report.focused,
             &observed,
@@ -850,6 +852,7 @@ impl WorldTransaction<'_> {
                     .run_local_drag_drop(
                         &inset,
                         domain_report.outer_gap,
+                        domain_report.resize,
                         &retained.window,
                         &domain_report.focused,
                         &windows,
@@ -987,6 +990,7 @@ impl WorldTransaction<'_> {
         let ctx = LocalOperationContext {
             domain: &inset,
             outer_gap: domain_report.outer_gap,
+            resize: domain_report.resize,
             observed_focus: &domain_report.focused,
             observed: &windows,
             preconverged,
@@ -1248,6 +1252,7 @@ impl WorldTransaction<'_> {
             inset_target,
             source_report.outer_gap,
             domain_report.outer_gap,
+            domain_report.resize,
             domain_report.focused,
             combined,
             domain_report.closed,
@@ -1376,6 +1381,7 @@ impl WorldTransaction<'_> {
             inset_target,
             source_outer_gap,
             target_outer_gap,
+            target_resize,
             focused,
             combined,
             closed,
@@ -1395,6 +1401,7 @@ impl WorldTransaction<'_> {
         };
         match self.world.layout.run_pair_drag_preview(
             &ctx,
+            target_resize,
             &retained.window,
             x,
             y,
@@ -1458,6 +1465,7 @@ impl WorldTransaction<'_> {
             inset_target,
             source_outer_gap,
             target_outer_gap,
+            target_resize,
             focused,
             combined,
             closed,
@@ -1473,6 +1481,7 @@ impl WorldTransaction<'_> {
         };
         match self.world.layout.run_pair_drag_drop(
             &ctx,
+            target_resize,
             &retained.window,
             x,
             y,

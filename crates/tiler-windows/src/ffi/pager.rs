@@ -163,6 +163,8 @@ pub struct PagerFrame {
     pub active: usize,
     pub active_fill: (u8, u8, u8),
     pub focused_highlight: (u8, u8, u8),
+    /// Presentation revision this frame was painted from; click attribution copies it.
+    pub rev: Option<u64>,
     pub minis: Vec<Vec<MiniSlot>>,
 }
 
@@ -183,6 +185,8 @@ pub struct PagerClick {
     pub output: String,
     pub workspace: String,
     pub ordinal: u32,
+    /// The drawn revision copied from the painted frame.
+    pub render_rev: Option<u64>,
 }
 
 /// Receiver for rendered clicks. Runs on the creating (loop) thread inside
@@ -780,6 +784,7 @@ fn hit_test(frame: &PagerFrame, x: i32, y: i32) -> Option<PagerClick> {
         output: frame.output.clone(),
         workspace: workspace.clone(),
         ordinal: cell.ordinal,
+        render_rev: frame.rev,
     })
 }
 
@@ -1301,6 +1306,7 @@ mod tests {
             active_fill: (42, 130, 218),
             focused_highlight: (0xbd, 0x93, 0xf9),
             minis: vec![Vec::new(), Vec::new()],
+            rev: None,
         }
     }
 
@@ -1351,6 +1357,7 @@ mod tests {
                 output: "mon-a".to_owned(),
                 workspace: "ws-a".to_owned(),
                 ordinal: 1,
+                render_rev: None,
             }
         );
         let second = hit_test(&frame, 77, 5).expect("second cell");
@@ -1370,6 +1377,7 @@ mod tests {
             active_fill: (42, 130, 218),
             focused_highlight: (0xbd, 0x93, 0xf9),
             minis: Vec::new(),
+            rev: None,
         };
         assert!(hit_test(&empty, 0, 0).is_none());
     }
@@ -1405,6 +1413,7 @@ mod tests {
             active_fill: (42, 130, 218),
             focused_highlight: (0xbd, 0x93, 0xf9),
             minis: vec![Vec::new(), Vec::new()],
+            rev: None,
         };
         let first = hit_test(&frame, 5, 5).expect("first cell");
         assert_eq!(first.workspace, "ws-a");
@@ -1421,6 +1430,34 @@ mod tests {
         frame.ids.pop();
         assert!(hit_test(&frame, 77, 5).is_none());
         assert!(hit_test(&frame, 5, 5).is_some());
+    }
+
+    #[test]
+    fn hit_test_copies_the_painted_revision() {
+        let frame = PagerFrame {
+            ids: vec!["ws-a".to_owned()],
+            output: "mon-a".to_owned(),
+            cells: vec![PagerCellFrame {
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 72,
+                    h: 40,
+                },
+                ordinal: 1,
+            }],
+            active: 0,
+            active_fill: (42, 130, 218),
+            focused_highlight: (0xbd, 0x93, 0xf9),
+            minis: vec![Vec::new()],
+            rev: Some(7),
+        };
+        let click = hit_test(&frame, 5, 5).expect("first cell");
+        assert_eq!(click.render_rev, Some(7));
+        let mut unpainted = frame;
+        unpainted.rev = None;
+        let click = hit_test(&unpainted, 5, 5).expect("first cell");
+        assert_eq!(click.render_rev, None);
     }
 
     #[test]
@@ -1461,6 +1498,7 @@ mod tests {
                     },
                 }),
             }]],
+            rev: None,
         };
         let painted = frame.clone();
         let slot = painted.minis[0][0].icon.as_ref().expect("slot");

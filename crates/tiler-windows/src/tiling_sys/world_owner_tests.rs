@@ -48,6 +48,7 @@ fn plain_facts() -> crate::tiling::WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -106,6 +107,25 @@ fn staged_state() -> super::super::TileLoop {
         },
     );
     state
+}
+
+#[test]
+fn dispatch_reports_scripted_pointer_witness_and_warp_spend() {
+    let state = staged_state();
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
+    let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
+    let observed = vec![observed_window()];
+    let retained: Vec<RetainedRow> = Vec::new();
+    let areas = vec![area()];
+    // Offline seam: script both fields exactly; never touch real raw input
+    // or a real cursor setter.
+    world.script_report_witness(Some(7), Some("warp-2".to_owned()));
+    let report = world
+        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
+        .expect("dispatch");
+    assert_eq!(report.pointer_activity, Some(7));
+    assert_eq!(report.warp_spent.as_deref(), Some("warp-2"));
 }
 
 #[test]
@@ -227,6 +247,7 @@ fn select_command_retains_view_transfer_without_self_echo() {
                 output: tiler_core::directional::OutputId(out_token),
                 workspace: tiler_core::directional::WorkspaceId(target.clone()),
             },
+            None,
         )
         .expect("command dispatch");
     let reply = match world.deliver_production(&commanded) {
@@ -342,6 +363,8 @@ fn clamped_target_holds_scope_without_transfer() {
                 native: Vec::new(),
                 held_native: Vec::new(),
                 cursor: None,
+                pointer_activity: None,
+                warp_spent: None,
                 cursor_hit: None,
                 focused_global: String::new(),
                 foreground_known: false,
@@ -540,6 +563,8 @@ fn tiled_mover_adopts_once_and_floating_mover_half_snaps() {
                     native: Vec::new(),
                     held_native: Vec::new(),
                     cursor: None,
+                    pointer_activity: None,
+                    warp_spent: None,
                     cursor_hit: None,
                     focused_global: String::new(),
                     foreground_known: false,
@@ -673,4 +698,272 @@ fn trace_proof_advances_with_snapshot_and_ignores_replay() {
     // Explicit clear drops it.
     world.note_trace_proof(None);
     assert!(world.trace_proof().is_none());
+}
+
+/// Presentation foreground fact for the R20 witness tests: one genuinely
+/// observed lifetime plus the frame read in the same capture.
+fn foreground_fact(
+    token: &str,
+    frame: Option<Rect>,
+) -> super::super::world_capture::PresentationForeground {
+    super::super::world_capture::PresentationForeground {
+        token: token.to_owned(),
+        minimized: false,
+        maximized: false,
+        fullscreen: false,
+        host_hidden: false,
+        hidden_workspace: false,
+        frame,
+    }
+}
+
+fn dispatch_observation_with_foreground(
+    inputs: &super::super::world_capture::OwnerInputs<'_>,
+    observed: &[ObservedWindow],
+) -> (WorldOwner, tiler_core::world_report::WorldReportV4) {
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
+    let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
+    let retained: Vec<RetainedRow> = Vec::new();
+    let areas = vec![area()];
+    let report = world
+        .try_dispatch_observation(inputs, Some(observed), &retained, &areas, 0, 0)
+        .expect("dispatch");
+    (world, report)
+}
+
+#[test]
+fn assemble_witness_names_the_observed_foreground_frame() {
+    use tiler_core::directional::WindowId;
+    let state = staged_state();
+    let observed = vec![observed_window()];
+    let frame = Rect {
+        x: 0,
+        y: 0,
+        w: 200,
+        h: 200,
+    };
+    let mut inputs = state.inputs();
+    inputs.presentation_foreground = Some(foreground_fact("w1", Some(frame)));
+    let (mut world, report) = dispatch_observation_with_foreground(&inputs, &observed);
+    let reply = match world.deliver_production(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let ingress = match &report.presentation {
+        tiler_core::world_report::PresentationRowV4::Valid(ingress) => ingress,
+        other => panic!("expected a valid presentation ingress, got {other:?}"),
+    };
+    let witness = ingress
+        .witness
+        .as_ref()
+        .expect("joined foreground frame yields a witness");
+    assert_eq!(witness.win, WindowId("w1".to_owned()));
+    assert_eq!(witness.foreground, WindowId("w1".to_owned()));
+    assert_eq!(witness.frame, frame);
+    // The witness observation leg is this report's own capture watermark.
+    assert_eq!(witness.obs, reply.based_on_observation_seq);
+    assert_eq!(reply.presentation.foreground, "w1");
+}
+
+#[test]
+fn assemble_without_a_readable_foreground_frame_stays_unwitnessed() {
+    let state = staged_state();
+    let observed = vec![observed_window()];
+    let mut inputs = state.inputs();
+    inputs.presentation_foreground = Some(foreground_fact("w1", None));
+    let (mut world, report) = dispatch_observation_with_foreground(&inputs, &observed);
+    let reply = match world.deliver_production(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let ingress = match &report.presentation {
+        tiler_core::world_report::PresentationRowV4::Valid(ingress) => ingress,
+        other => panic!("expected a valid presentation ingress, got {other:?}"),
+    };
+    assert!(ingress.witness.is_none());
+    assert_eq!(reply.presentation.foreground, "w1");
+    assert!(ingress.foreground_out.is_none());
+}
+
+#[test]
+fn assemble_refuses_a_witness_when_fact_and_frame_disagree() {
+    use tiler_core::directional::OutputId;
+    let state = staged_state();
+    let observed = vec![observed_window()];
+    // Same output, different rectangle: the WindowFact and the presentation
+    // frame are not the same observation, so the border witness stays
+    // unknown even though the observed output itself still resolves.
+    let mut inputs = state.inputs();
+    inputs.presentation_foreground = Some(foreground_fact(
+        "w1",
+        Some(Rect {
+            x: 10,
+            y: 0,
+            w: 50,
+            h: 50,
+        }),
+    ));
+    let (mut world, report) = dispatch_observation_with_foreground(&inputs, &observed);
+    let reply = match world.deliver_production(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let ingress = match &report.presentation {
+        tiler_core::world_report::PresentationRowV4::Valid(ingress) => ingress,
+        other => panic!("expected a valid presentation ingress, got {other:?}"),
+    };
+    assert!(ingress.witness.is_none());
+    assert_eq!(reply.presentation.foreground, "w1");
+    assert_eq!(
+        ingress.foreground_out,
+        Some(OutputId(state.output_token("DEV1")))
+    );
+}
+
+/// Seed one applied observation and return the exact output wire token, the
+/// live current view, a valid sibling workspace, and the applied presentation
+/// revision that a pager cell would have been drawn from.
+fn seeded_select_ground(
+    world: &mut WorldOwner,
+    state: &super::super::TileLoop,
+    observed: &[ObservedWindow],
+) -> (String, String, String, u64) {
+    let retained: Vec<RetainedRow> = Vec::new();
+    let areas = vec![area()];
+    let report = world
+        .try_dispatch_observation(&state.inputs(), Some(observed), &retained, &areas, 0, 0)
+        .expect("dispatch");
+    let reply = match world.deliver_production(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let mut pending = state.pending_closed.clone();
+    let _ = world.ack(&reply, &mut pending);
+    // A second observation settles the full workspace projection (the
+    // bootstrap reply lists only the proven view); this mirrors the
+    // production select path's pre-command observation.
+    world.invalidate();
+    let second = world
+        .try_dispatch_observation(&state.inputs(), Some(observed), &retained, &areas, 0, 0)
+        .expect("dispatch");
+    let reply = match world.deliver_production(&second) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let mut pending = state.pending_closed.clone();
+    let _ = world.ack(&reply, &mut pending);
+    let out_token = state.output_token("DEV1");
+    let current = reply
+        .outputs
+        .iter()
+        .find(|o| o.output.0 == out_token)
+        .and_then(|o| o.logical_view.clone())
+        .expect("current view");
+    let target = reply
+        .workspaces
+        .iter()
+        .find(|row| row.output.0 == out_token && row.id != current)
+        .expect("second workspace")
+        .id
+        .clone();
+    (out_token, current, target, reply.presentation.rev)
+}
+
+fn workspace_renderer(rev: u64, out: &str, ws: &str) -> tiler_core::world_report::RendererInput {
+    use tiler_core::directional::{OutputId, WorkspaceId};
+    tiler_core::world_report::RendererInput {
+        rev,
+        target: tiler_core::world_report::RenderTarget::Workspace {
+            out: OutputId(out.to_owned()),
+            ws: WorkspaceId(ws.to_owned()),
+        },
+    }
+}
+
+#[test]
+fn command_report_carries_the_exact_renderer_input() {
+    use tiler_core::directional::{OutputId, WorkspaceId};
+    let state = staged_state();
+    let observed = vec![observed_window()];
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
+    let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
+    let (out_token, _current, target, rev) = seeded_select_ground(&mut world, &state, &observed);
+    let input = workspace_renderer(rev, &out_token, &target);
+    let retained: Vec<RetainedRow> = Vec::new();
+    let areas = vec![area()];
+    world.invalidate();
+    let report = world
+        .try_dispatch_command(
+            &state.inputs(),
+            Some(&observed),
+            &retained,
+            &areas,
+            0,
+            0,
+            WorldCommand::SelectWorkspace {
+                output: OutputId(out_token),
+                workspace: WorkspaceId(target.clone()),
+            },
+            Some(input.clone()),
+        )
+        .expect("command dispatch");
+    assert_eq!(report.renderer_input, Some(input));
+    assert_eq!(report.command_seq, Some(1));
+    let outcome = world.deliver_production(&report);
+    assert!(matches!(outcome, WorldOutcome::Accepted(_)));
+    assert_eq!(
+        world.last_command_result(),
+        None,
+        "accepted select has no refusal result"
+    );
+}
+
+#[test]
+fn stale_drawn_revision_refuses_without_applying() {
+    use tiler_core::directional::{OutputId, WorkspaceId};
+    use tiler_core::world_report::{CommandRejectKind, CommandResult};
+    let state = staged_state();
+    let observed = vec![observed_window()];
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
+    let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
+    let (out_token, current, target, _rev) = seeded_select_ground(&mut world, &state, &observed);
+    let input = workspace_renderer(u64::MAX, &out_token, &target);
+    let retained: Vec<RetainedRow> = Vec::new();
+    let areas = vec![area()];
+    world.invalidate();
+    let report = world
+        .try_dispatch_command(
+            &state.inputs(),
+            Some(&observed),
+            &retained,
+            &areas,
+            0,
+            0,
+            WorldCommand::SelectWorkspace {
+                output: OutputId(out_token.clone()),
+                workspace: WorkspaceId(target.clone()),
+            },
+            Some(input.clone()),
+        )
+        .expect("command dispatch");
+    assert_eq!(report.renderer_input, Some(input));
+    let outcome = world.deliver_production(&report);
+    assert!(
+        matches!(outcome, WorldOutcome::Accepted(_)),
+        "refused command still settles on a report: {outcome:?}"
+    );
+    assert_eq!(
+        world.last_command_result(),
+        Some(&CommandResult::Rejected {
+            kind: CommandRejectKind::StaleRenderTarget
+        })
+    );
+    assert_eq!(
+        world.engine().logical_view(&out_token).as_deref(),
+        Some(current.as_str()),
+        "a stale drawn revision must not apply the view"
+    );
 }

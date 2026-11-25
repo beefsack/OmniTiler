@@ -46,7 +46,7 @@ cargo run --locked -p tiler-live-fixture -- serve --dir "$RUN_DIR"
 # repo root.
 printf 'socket: '; read -r SOCK
 printf 'nonce: '; read -r NONCE
-run() { cargo run --locked -p tiler-live-fixture -- send --socket "$SOCK" --nonce "$NONCE" "$@"; }
+run() { TILER_LIVE_FIXTURE_NONCE="$NONCE" cargo run --locked -p tiler-live-fixture -- send --socket "$SOCK" "$@"; }
 run '{"v":1,"request_id":"spawn1","op":"spawn","windows":[{"id":"a","size_px":[640,480],"description":"smoke"},{"id":"b","resizable":false,"x11_window_type":"dialog"}]}'
 run '{"v":1,"request_id":"get1","op":"get","ids":["a","b"]}'
 run '{"v":1,"request_id":"geometry","op":"set","ids":["a"],"patch":{"size_px":[800,600],"min_size_px":[320,240],"max_size_px":[1200,900],"position_outer_px":[100,100],"description":"updated geometry and hints"}}'
@@ -85,7 +85,13 @@ mise exec -- cargo run --locked -p tiler-live-fixture -- serve
 # Terminal 2: paste the exact announcement from Terminal 1, then drive windows.
 $ann = (Read-Host 'Paste announcement JSON') | ConvertFrom-Json
 # Single-quote each JSON payload:
-function Send-Fixture([string]$Json) { mise exec -- cargo run --locked -p tiler-live-fixture -- send --socket $ann.socket --nonce $ann.nonce $Json }
+function Send-Fixture([string]$Json) {
+    $prior = $env:TILER_LIVE_FIXTURE_NONCE
+    try {
+        $env:TILER_LIVE_FIXTURE_NONCE = $ann.nonce
+        mise exec -- cargo run --locked -p tiler-live-fixture -- send --socket $ann.socket $Json
+    } finally { $env:TILER_LIVE_FIXTURE_NONCE = $prior }
+}
 Send-Fixture '{"v":1,"request_id":"spawn1","op":"spawn","windows":[{"id":"a","size_px":[640,480]}]}'
 Send-Fixture '{"v":1,"request_id":"get1","op":"get","ids":["a"]}'
 Send-Fixture '{"v":1,"request_id":"bye","op":"shutdown"}'
@@ -294,7 +300,7 @@ Expected backend differences (not failures):
 - Host chrome only: normal decorations, title and borders. No custom hooks.
 
 `send` also reads JSON lines from stdin when no payload arguments are given,
-and injects `--nonce` into requests that omit it.
+and injects the announced nonce into requests that omit it.
 
 Client waiting rules (`send --events N`, `send --follow`):
 
@@ -363,15 +369,19 @@ All other output goes to stderr and never carries the nonce.
 Exit status is `2` on CLI misuse, `1` on bind/entropy/event-loop failure,
 `0` after a clean `shutdown`.
 
-### `send --socket PATH --nonce NONCE [mode flags] [JSON...]`
+### `send --socket PATH [mode flags] [JSON...]`
 
 One client connection: forwards JSON lines from arguments (or stdin when no
 arguments are given) and prints reply/event lines.
+Set `TILER_LIVE_FIXTURE_NONCE` in the client's environment to the 64-hex-digit
+per-run secret from the announcement. Do not include the secret in JSON
+passed as an argument. The client injects it into payloads that omit `nonce`;
+explicit nonce fields are kept. Non-Windows legacy scripts may still pass
+`--nonce`; Windows does not accept that flag.
 
 | Flag | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `--socket` | path (required) | - | Unix socket path, or verbatim Windows pipe name from the announcement. |
-| `--nonce` | string (required) | - | Per-run secret from the announcement. Injected into payloads that omit `nonce`; payloads carrying their own `nonce` keep it. |
 | `--events N` | u64 | off | Complete after all replies plus N real events. `0` returns with the replies. |
 | `--follow` | switch | off | Indefinite subscription, no read deadline. Ends on Ctrl-C or server EOF. |
 | `--compact` | switch | off | Strip null-valued optional snapshot fields from printed JSON only. |

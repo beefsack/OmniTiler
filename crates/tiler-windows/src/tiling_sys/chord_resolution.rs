@@ -4,7 +4,6 @@ use super::*;
 pub(super) struct ChordObserved {
     pub(super) observed: Vec<ObservedWindow>,
     pub(super) retained: Vec<RetainedRow>,
-    pub(super) skipped: Vec<(String, String)>,
 }
 
 pub(super) fn observe_chord_intent(
@@ -18,11 +17,9 @@ pub(super) fn observe_chord_intent(
     let mut observed = state.observe(me, fulls, &mut skipped, &mut retained)?;
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    clear_maximize_at_admission(state, me, &retained);
     Some(ChordObserved {
         observed,
         retained,
-        skipped,
     })
 }
 
@@ -139,41 +136,8 @@ pub(super) fn settle_chord_reject(
     log_json_at(log_path, line);
 }
 
-/// Overlay refusal for one chord target, float or sticky vocabulary.
-pub(super) fn chord_overlay_refusal(
-    sticky_vocab: bool,
-    observed: &[ObservedWindow],
-    retained: &[RetainedRow],
-    member_key: &crate::native_guards::WindowKey,
-) -> Option<&'static str> {
-    let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
-    let zoomed = is_zoomed_now(member_key.hwnd);
-    if let Some(window) = by_hwnd.get(&member_key.hwnd) {
-        if sticky_vocab {
-            tiler_core::window_policy::sticky_toggle_refusal(
-                window.facts.captionless_fullscreen,
-                zoomed,
-            )
-        } else {
-            tiler_core::window_policy::float_toggle_refusal(
-                window.facts.captionless_fullscreen,
-                zoomed,
-            )
-        }
-    } else if let Some(row) = retained.iter().find(|r| r.key == *member_key) {
-        if sticky_vocab {
-            tiler_core::window_policy::sticky_toggle_refusal(row.fullscreen, zoomed)
-        } else {
-            tiler_core::window_policy::float_toggle_refusal(row.fullscreen, zoomed)
-        }
-    } else {
-        None
-    }
-}
-
-/// Overlay refusal for one orientation target, orientation vocabulary.
-/// Same live-state sourcing as the float/sticky overlay fence: the live
-/// observed fullscreen flag plus a fresh zoom read when visible, else the
+/// Overlay refusal for one orientation target, orientation vocabulary: the
+/// live observed fullscreen flag plus a fresh zoom read when visible, else the
 /// retained overlay flags plus a fresh zoom read.
 pub(super) fn orientation_overlay_refusal(
     observed: &[ObservedWindow],

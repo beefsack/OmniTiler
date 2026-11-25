@@ -528,9 +528,17 @@ unsafe extern "system" fn tray_wnd_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CREATESTRUCTW, DefWindowProcW, EndMenu, GWLP_USERDATA, SetWindowLongPtrW, WM_CREATE,
-        WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONUP, WM_RBUTTONUP, WM_SETTINGCHANGE,
-        WM_TIMER,
+        WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_INPUT, WM_LBUTTONUP, WM_RBUTTONUP,
+        WM_SETTINGCHANGE, WM_TIMER,
     };
+    if msg == WM_INPUT {
+        // Hardware-origin pointer witness: read the queued raw record and
+        // advance the generation only for a real mouse read. DefWindowProcW
+        // is the documented WM_INPUT cleanup path; return it immediately so
+        // no shared state is touched (in particular the global SLOTS mutex).
+        super::raw_input::handle_wm_input(lparam);
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
     if msg == WM_CREATE {
         let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
         unsafe {
@@ -717,6 +725,11 @@ impl TrayWindow {
             return Err(err("error: tray CreateWindow failed"));
         }
         register_window(hwnd, raw);
+        // Hardware-origin pointer witness (Q2): register mouse Raw Input
+        // against the owner window now that its HWND exists. Failure keeps
+        // tiling running with an unavailable witness (reports `None`), never
+        // a fabricated baseline.
+        super::raw_input::install(hwnd as usize as u64);
         Ok(Self {
             hwnd,
             stop,
@@ -831,6 +844,9 @@ impl Drop for TrayWindow {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             DestroyIcon, DestroyWindow, GWLP_USERDATA, SetWindowLongPtrW,
         };
+        // The raw-input witness is unavailable from teardown on: no later
+        // report may carry a generation for a dead sink.
+        super::raw_input::uninstall();
         unregister_window(self.hwnd);
         // Snapshot icons under a checked guard, then release before the
         // synchronous destroy (whose `WM_DESTROY` path fails closed on the

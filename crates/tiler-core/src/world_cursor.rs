@@ -12,9 +12,39 @@
 use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
-use crate::directional::WindowId;
+use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::session::DomainKey;
-use crate::world_report::{EffectCause, EffectKind, OneShotEffect};
+use crate::world_report::{EffectCause, EffectKind, OneShotEffect, WarpRequest, WindowDesire};
+
+/// Core-retained cursor-warp request: the frozen tuple of the one pending
+/// warp. Every field is immutable once minted, so a later publication
+/// re-emits the identical request while nothing changes; a retired or
+/// cleared id is never reused. Internal only: the wire shape is
+/// [`WarpRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingWarp {
+    pub(crate) id: String,
+    pub(crate) target: WindowId,
+    pub(crate) revision: u64,
+    pub(crate) output: OutputId,
+    pub(crate) workspace: WorkspaceId,
+    pub(crate) point: (i32, i32),
+    pub(crate) pointer_baseline: Option<u64>,
+}
+
+impl PendingWarp {
+    pub(crate) fn request(&self) -> WarpRequest {
+        WarpRequest {
+            id: self.id.clone(),
+            target: self.target.clone(),
+            revision: self.revision,
+            output: self.output.clone(),
+            workspace: self.workspace.clone(),
+            point: self.point,
+            pointer_baseline: self.pointer_baseline,
+        }
+    }
+}
 
 /// Whether the staged observation runs under a focused fullscreen game
 /// pause: the staged focused lifetime names a staged fact that is
@@ -271,57 +301,208 @@ impl WorldTransaction<'_> {
         })
     }
 
-    /// Desired cursor-warp point for this publish, if any (cross-output
-    /// only). Mints only when the setting is on, the inventory is complete,
-    /// the cursor reads with a known cursor output, no game/gesture pause
-    /// holds, and the last focus effect in order (the focus that actually
-    /// results, since the adapter applies effects in order) targets a
-    /// different output than the cursor output: the focused target's
-    /// effective-frame centre clamped into its work area. Same-output final
-    /// focus and missing target frames never warp. Unknown, failed, or held
-    /// focus resolves adapter-side: the point rides only alongside its
-    /// effect, and the adapter warps only when that exact target holds the
-    /// observed foreground.
+    /// Retained cursor-warp request for this publish, if any (cross-output
+    /// only). Independent of the focus row: a satisfied focus may clear
+    /// while the warp still awaits adapter spend or a final retry.
+    ///
+    /// One request at most. It mints only from the winning validated
+    /// `pending_focus` when that decision is fresh this report
+    /// (`issued_revision == issuing_revision`): the focused target's
+    /// effective-frame centre clamped into its work area. Focus effects
+    /// never mint, supersede, or choose the target, so a losing same-report
+    /// effect cannot veto or retarget the validated winner.
+    ///
+    /// Once minted it is retained byte-identically (same `id`, revision,
+    /// point) across observation-only replies, unresolved focus, applied
+    /// feedback, and a legitimately moving target frame (the frozen point
+    /// never recenters). It clears before publication on a paused/disabled
+    /// lane, newer or unknown pointer activity (Q2), a validated focus
+    /// decision for another lifetime (Q1), target departure or rehoming,
+    /// an unreadable frame, a held destination, or a cursor already on the
+    /// pending output. It retires exactly when the adapter reports the
+    /// matching id spent; a different spent id does nothing.
     pub(crate) fn warp_for_publish(
-        &self,
-        effects: &[OneShotEffect],
-        windows: &[crate::world_report::WindowDesire],
+        &mut self,
+        windows: &[WindowDesire],
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> Option<(i32, i32)> {
-        if !self.connection.cursor_warp_setting() {
-            return None;
+        issuing_revision: u64,
+    ) -> Option<WarpRequest> {
+        // Retire exactly on the adapter's spend acknowledgement for this
+        // exact id, before any retention or mint gate: a spent request is
+        // never published again.
+        let spent_now = self.world.focus.pending_warp.as_ref().is_some_and(|warp| {
+            self.world.staged.observation.warp_spent.as_deref() == Some(warp.id.as_str())
+        });
+        if spent_now {
+            self.world.focus.pending_warp = None;
         }
-        if !self.world.staged.observation.inventory_complete {
-            return None;
+        if self.world.focus.pending_warp.is_some() {
+            // Q2: genuine newer pointer activity (or an unreadable witness)
+            // cancels the pending warp before publication. Do not return:
+            // a fresh decision in this same report may still mint a new
+            // request at the new baseline.
+            let same_pointer = {
+                let activity = self.world.staged.observation.pointer_activity;
+                let baseline = self
+                    .world
+                    .focus
+                    .pending_warp
+                    .as_ref()
+                    .and_then(|warp| warp.pointer_baseline);
+                matches!((activity, baseline), (Some(a), Some(b)) if a == b)
+            };
+            if !same_pointer {
+                self.world.focus.pending_warp = None;
+            }
         }
-        if cursor_game_paused(self) {
-            return None;
+        if self.world.focus.pending_warp.is_some() {
+            // Q1: a validated focus decision for another lifetime
+            // supersedes the pending warp; a same-target decision keeps the
+            // frozen tuple for identity-preserving retention.
+            let superseded = self
+                .world
+                .focus
+                .pending_focus
+                .as_ref()
+                .is_some_and(|pending| {
+                    self.world
+                        .focus
+                        .pending_warp
+                        .as_ref()
+                        .is_some_and(|warp| warp.target != pending.target)
+                });
+            if superseded {
+                self.world.focus.pending_warp = None;
+            }
         }
-        if self.world.staged.gesture_barrier || self.world.gesture.retained.is_some() {
-            return None;
+        if self.world.focus.pending_warp.is_some() {
+            if self.pending_warp_retains(windows, held_scopes) {
+                return self
+                    .world
+                    .focus
+                    .pending_warp
+                    .as_ref()
+                    .map(PendingWarp::request);
+            }
+            self.world.focus.pending_warp = None;
         }
-        let cursor = self.world.staged.observation.cursor?;
-        let screens: Vec<(crate::directional::OutputId, crate::geometry::Rect)> = self
+        self.mint_warp(windows, held_scopes, issuing_revision)
+    }
+
+    /// Whether the shared warp lane gates currently allow a request at all:
+    /// setting plus host capability, complete inventory, and no game or
+    /// gesture pause.
+    fn cursor_warp_available(&self) -> bool {
+        self.connection.cursor_warp_setting()
+            && self.world.staged.observation.inventory_complete
+            && !cursor_game_paused(self)
+            && !self.world.staged.gesture_barrier
+            && self.world.gesture.retained.is_none()
+    }
+
+    /// Cursor output from the staged full-screen rectangles, if the cursor
+    /// point lands on one.
+    fn cursor_output_at(&self, cursor: (i32, i32)) -> Option<OutputId> {
+        let screens: Vec<(OutputId, crate::geometry::Rect)> = self
             .world
             .staged
             .screens
             .iter()
             .filter_map(|screen| screen.full_rect.map(|rect| (screen.output.clone(), rect)))
             .collect();
-        let cursor_output = crate::cursor_targeting::output_at_cursor(&screens, cursor)?;
-        // The last focus effect in order dictates the resulting focus, so
-        // it alone decides the warp: an earlier cross-output effect
-        // followed by a same-output one warps nothing.
-        let effect = effects
-            .iter()
-            .rfind(|effect| effect.kind == EffectKind::Focus)?;
-        let row = windows.iter().find(|row| row.lifetime == effect.target)?;
+        crate::cursor_targeting::output_at_cursor(&screens, cursor)
+    }
+
+    /// Whether the one retained warp may still publish unchanged. Reads the
+    /// freshly published rows and current staged facts only; never
+    /// recenters the frozen point when the target frame moves.
+    fn pending_warp_retains(
+        &self,
+        windows: &[WindowDesire],
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> bool {
+        if !self.cursor_warp_available() {
+            return false;
+        }
+        let Some(pending) = self.world.focus.pending_warp.as_ref() else {
+            return false;
+        };
+        let same_pointer = matches!(
+            (
+                self.world.staged.observation.pointer_activity,
+                pending.pointer_baseline
+            ),
+            (Some(a), Some(b)) if a == b
+        );
+        if !same_pointer {
+            return false;
+        }
+        // Target departure, rehoming, or an unreadable frame clears: the
+        // point would no longer describe a carried destination.
+        let Some(row) = windows.iter().find(|row| row.lifetime == pending.target) else {
+            return false;
+        };
+        if row.output != pending.output || row.workspace != pending.workspace.0 {
+            return false;
+        }
+        if row.effective_frame.is_none() {
+            return false;
+        }
+        if held_scopes.contains(&DomainKey {
+            output: pending.output.clone(),
+            workspace: pending.workspace.clone(),
+        }) {
+            return false;
+        }
+        // Never publish toward the output a readable cursor already sits
+        // on (an unreadable cursor retains instead).
+        if let Some(cursor) = self.world.staged.observation.cursor
+            && self.cursor_output_at(cursor).as_ref() == Some(&pending.output)
+        {
+            return false;
+        }
+        true
+    }
+
+    /// Mint one fresh warp request from the winning validated focus decision
+    /// when that decision is fresh this report. No request is ever
+    /// fabricated: every gate, the target row frame, the clamped point, and
+    /// the pointer baseline must be known.
+    fn mint_warp(
+        &mut self,
+        windows: &[WindowDesire],
+        held_scopes: &BTreeSet<DomainKey>,
+        issuing_revision: u64,
+    ) -> Option<WarpRequest> {
+        if !self.cursor_warp_available() {
+            return None;
+        }
+        let (cursor, pointer_baseline) = {
+            let observation = &self.world.staged.observation;
+            (observation.cursor?, observation.pointer_activity?)
+        };
+        let cursor_output = self.cursor_output_at(cursor)?;
+        // Only the validated winner speaks, and only while this report
+        // itself issued the decision: an older retained request never
+        // re-mints on an observation-only reply.
+        let (target, revision) = {
+            let focus = self
+                .world
+                .focus
+                .pending_focus
+                .as_ref()
+                .filter(|pending| pending.issued_revision == issuing_revision)?;
+            (focus.target.clone(), focus.issued_revision)
+        };
+        let row = windows.iter().find(|row| row.lifetime == target)?;
         if row.output == cursor_output {
             return None;
         }
+        let output = row.output.clone();
+        let workspace = WorkspaceId(row.workspace.clone());
         if held_scopes.contains(&DomainKey {
-            output: row.output.clone(),
-            workspace: crate::directional::WorkspaceId(row.workspace.clone()),
+            output: output.clone(),
+            workspace: workspace.clone(),
         }) {
             return None;
         }
@@ -335,15 +516,27 @@ impl WorldTransaction<'_> {
             .staged
             .screens
             .iter()
-            .find(|screen| screen.output == row.output)
+            .find(|screen| screen.output == output)
             .and_then(|screen| screen.work_area)
             .map(|area| clamp_point_into_area(centre, area))
             .unwrap_or(centre);
-        if crate::bounds::valid_carried_point(clamped.0, clamped.1) {
-            Some(clamped)
-        } else {
-            None
+        if !crate::bounds::valid_carried_point(clamped.0, clamped.1) {
+            return None;
         }
+        let seq = self.world.focus.warp_mint_seq;
+        self.world.focus.warp_mint_seq = seq.saturating_add(1);
+        let pending = PendingWarp {
+            id: format!("warp-{seq}"),
+            target,
+            revision,
+            output,
+            workspace,
+            point: clamped,
+            pointer_baseline: Some(pointer_baseline),
+        };
+        let request = pending.request();
+        self.world.focus.pending_warp = Some(pending);
+        Some(request)
     }
 }
 

@@ -34,7 +34,7 @@ function makeBaseReply(over: Record<string, unknown> = {}): Record<string, unkno
         gestureSettled: null,
         operationSettled: [],
         nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         presentation: DISABLED_PRESENTATION,
         intentDesired: [],
         switchSettled: [],

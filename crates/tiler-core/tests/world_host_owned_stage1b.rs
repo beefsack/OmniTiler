@@ -184,6 +184,8 @@ fn report(
 
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -1869,6 +1871,8 @@ fn creation_triple_mismatch_is_invalid() {
 
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     };
     assert_eq!(
         validate_report_v4_reason(&report),

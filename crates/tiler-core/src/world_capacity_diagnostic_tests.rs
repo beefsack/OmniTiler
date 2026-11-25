@@ -122,6 +122,8 @@ fn report(
         presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -1736,6 +1738,8 @@ fn float_lost_result_recovers_stale_never_replays() {
             )),
             float_rect: Some(target),
         })),
+        pointer_activity: None,
+        warp_spent: None,
         ..report(4, roomy, two_tiled(), "", None, None)
     };
     match engine.handle_report(&replay, &[]) {

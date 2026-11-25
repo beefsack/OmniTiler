@@ -200,7 +200,7 @@ function acceptedAutoReply(gen: string, source: string, nativeInvalid: string, r
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [], workspaces: [], outputs: [], windows: [], transfers: [], dragPreview: null,

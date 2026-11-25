@@ -21,6 +21,16 @@ use tiler_core::connection::{
 };
 use tiler_core::world_engine::WorldEngine;
 
+/// Whether the retained cursor-warp actuator is proven on this adapter.
+/// `true` on the clean-HEAD live receipt from fdead7d45e: the ignored probe
+/// `live_set_cursor_pos_does_not_advance_raw_input_generation` printed
+/// `SetCursorPos gen 0 -> 0 (unchanged); synthetic move inserted=1,
+/// gen 0 -> 1` and passed, so the adapter's own setter does not advance the
+/// raw-input witness while delivered mouse input does. The handshake and the
+/// apply-lane gate read this single value; the `cursorWarp` setting itself
+/// remains off by default.
+pub(super) const WARP_SUPPORTED: bool = true;
+
 /// Windows host capabilities: the exact port-notes values for this slice.
 ///
 /// - `host_owned: false`: Windows owns no native workspace domains.
@@ -32,24 +42,29 @@ use tiler_core::world_engine::WorldEngine;
 ///   claimed.
 /// - `window_suppression: true`: the product hide/restore lane exists.
 /// - `maximize: true`, `fullscreen: true`: native actuators exist for each.
-/// - `above: false`: no persistent stacking actuator exists yet; R14's
-///   `StateTarget`/R12 crash-safe preimage lane has not landed, so a
-///   truth-claiming window would have no honest topmost actuation or
-///   recovery. Flip to `true` when that task proves both.
-/// - `warp: false`: no retained cursor warp exists yet; C3 is deferred
-///   behind Tasks 1-4, so `cursorWarp=true` is reported as
-///   `unsupported-capability` instead of claiming an actuator. Flip to
-///   `true` when the retained-warp lane lands.
+/// - `above: true`: capture produces the topmost fact from the live
+///   `WS_EX_TOPMOST` read and the R14 `StateTarget` lane raises/releases the
+///   persistent band with R12 durable lifetime-bound preimages. The claim is
+///   true because the Task 9 record of
+///   `docs/changes/v4-phase4-windows-port.md` now holds the float/unfloat,
+///   two-crash/restart adoption, orphan cleanup, and R20 border-follow live
+///   proof.
+/// - `warp`: the retained exact-once cursor-warp lane, sourced from
+///   [`WARP_SUPPORTED`]. It is true after the adapter lane and the
+///   clean-HEAD live Raw Input non-increment receipt; the `cursorWarp`
+///   setting still defaults off, so no warp is requested until enabled.
 /// - `native_sticky: false`: no native sticky mechanism.
 /// - `tiled_float_transfer: false`: no professed cross-output float remap.
 /// - `unavailable_facts` is the precise not-yet-produced catalog set in
 ///   [`FactName`] order: `managed`, `acceptsInput`, `activationInhibited`,
-///   `transient`, `modal`, `resizable`, `above`, `below`, `owner`, `parent`,
-///   `role`, `appId`, `title`, `activationPolicy`, `layer`, `privileged`,
-///   and `class`. The remaining four lanes (`toolWindow`, `owned`,
+///   `transient`, `modal`, `resizable`, `below`, `owner`, `parent`, `role`,
+///   `appId`, `title`, `activationPolicy`, `layer`, `privileged`, and
+///   `class`. The remaining five lanes (`toolWindow`, `owned`, `above`,
 ///   `executable`, `processId`) are the exact capture-emitted producer set;
 ///   an available fact may still be `None` when a single read is honestly
 ///   unknown, so availability is a producer claim, never a value claim.
+///   Capture produces the `above` fact from the topmost style read; the
+///   typed handshake routes `above: true` to core after the Task 9 live proof.
 ///   `executable`/`processId` also stay available because [`own_identity`]
 ///   supplies both (the support-consistency gate). `privileged` is not
 ///   emitted (observe hardcodes `false` as a projected negative) and
@@ -66,8 +81,8 @@ pub(super) fn windows_capabilities() -> HostCapabilities {
         maximize: true,
         fullscreen: true,
         native_sticky: false,
-        above: false,
-        warp: false,
+        above: true,
+        warp: WARP_SUPPORTED,
         tiled_float_transfer: false,
         unavailable_facts: vec![
             FactName::Privileged,
@@ -77,7 +92,6 @@ pub(super) fn windows_capabilities() -> HostCapabilities {
             FactName::Transient,
             FactName::Modal,
             FactName::Resizable,
-            FactName::Above,
             FactName::Below,
             FactName::Owner,
             FactName::Parent,

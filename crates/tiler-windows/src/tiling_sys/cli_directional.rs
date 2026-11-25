@@ -24,10 +24,13 @@ pub(super) fn poll_directional_cli_request(
 ) {
     use tiler_core::directional::Direction;
     let path = dir.join(DIRECTIONAL_REQUEST_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-        Err(_) => return,
+    // Bounded read: an oversized or non-UTF-8 body is treated as an
+    // unparseable request below, so it is consumed once with a refusal
+    // instead of being loaded unbounded or left to wedge the queue.
+    let text = match read_control_request(&path) {
+        ControlRequestRead::Body(text) => text,
+        ControlRequestRead::Missing | ControlRequestRead::Unreadable => return,
+        ControlRequestRead::Rejected => String::new(),
     };
     let log_path = state.log_path.clone();
     // Best-effort labels for the pre-dispatch logs below: the actual parsed
@@ -139,8 +142,8 @@ pub(super) fn poll_directional_cli_request(
     // names the pre-reveal set right after a foreground return (the reveal
     // proves focus before the next observation publishes), so rebuild it
     // from a fresh observation first: `observe` plus `publish_managed`
-    // only. Admission (`ensure_workspace_assignments`,
-    // `clear_maximize_at_admission`) stays with the dispatch below, which
+    // only. Admission (`ensure_workspace_assignments`) stays with the
+    // dispatch below, which
     // runs the full sequence itself; rebuilding the map performs no native
     // writes and no membership or tag mutation; a refused poll may refresh
     // observation caches only. The dispatch still re-resolves

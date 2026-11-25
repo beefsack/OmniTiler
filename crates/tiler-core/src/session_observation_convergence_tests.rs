@@ -168,6 +168,7 @@ fn engine_focus_with_floating_skew_converges_before_op() {
     let ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &focus,
         observed: &obs,
         preconverged,
@@ -219,6 +220,7 @@ fn engine_move_with_floating_skew_converges_before_op() {
     let ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &focus,
         observed: &obs,
         preconverged,
@@ -275,6 +277,7 @@ fn engine_resize_with_floating_skew_converges_before_op() {
     let ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &focus,
         observed: &obs,
         preconverged,
@@ -409,6 +412,7 @@ fn engine_focus_with_exact_match_keeps_revision_semantics() {
     let ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &focus,
         observed: &obs,
         preconverged: false,
@@ -479,6 +483,7 @@ fn engine_converge_error_returns_typed_rejection_without_reset() {
     let ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &focus,
         observed: &obs_err,
         preconverged: false,
@@ -498,6 +503,7 @@ fn engine_converge_error_returns_typed_rejection_without_reset() {
     let exact_ctx = LocalOperationContext {
         domain: &domain_state,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &focus,
         observed: &exact_obs,
         preconverged: false,

@@ -604,7 +604,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],

@@ -3,6 +3,7 @@ use super::*;
 
 use super::owner_work::OwnerWorkGuard;
 use super::pager_host::poll_pager_select;
+use tiler_core::world_report::OutputIdentity;
 
 // Active-tick phases for the tile loop: monitor/taskbar refresh, CLI wakes,
 // the idle gate, suspend/resume, gesture settle and dispatch, plus the
@@ -247,6 +248,27 @@ pub(super) fn clear_blocked_gesture(state: &mut TileLoop) {
     offer_input_control(state, InboxItem::ClearEsc);
 }
 
+/// Pure topology comparison for the monitor check. Device order, rectangles,
+/// per-monitor DPI, and physical identities all carry topology: an
+/// identity-only or DPI-only change still needs the wake so the next world
+/// report carries fresh screens/identities for the core to reproject against.
+fn monitor_topology_changed(
+    areas: &[MonitorArea],
+    fresh: &[MonitorArea],
+    previous_identities: &HashMap<String, OutputIdentity>,
+    fresh_identities: &HashMap<String, OutputIdentity>,
+) -> bool {
+    if areas.len() != fresh.len() || previous_identities != fresh_identities {
+        return true;
+    }
+    areas.iter().zip(fresh).any(|(a, b)| {
+        a.device != b.device
+            || a.work != b.work
+            || a.full != b.full
+            || a.dpi != b.dpi
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_active_tick(
     state: &mut TileLoop,
@@ -285,17 +307,19 @@ pub(super) fn run_active_tick(
     // instead of a fixed 2s poll.
     if monitor_check {
         let fresh = all_monitors()?;
-        let devices: Vec<String> = areas.iter().map(|a| a.device.clone()).collect();
-        let fresh_devices: Vec<String> = fresh.iter().map(|a| a.device.clone()).collect();
-        let geometry_changed = fresh.len() != *monitor_count
-            || fresh_devices != devices
-            || fresh.iter().any(|a| {
-                areas
-                    .iter()
-                    .find(|b| b.device == a.device)
-                    .is_none_or(|b| b.work != a.work || b.full != a.full)
-            });
-        if geometry_changed {
+        // Take the previous identities before refreshing: a query that
+        // changes only identities must still be detected as a topology
+        // change. A failed query is unknown for every output rather than a
+        // retained guess.
+        let previous_identities = std::mem::take(&mut state.monitor_identities);
+        state.monitor_identities = crate::ffi::monitor_identities().unwrap_or_default();
+        let topology_changed = monitor_topology_changed(
+            areas,
+            &fresh,
+            &previous_identities,
+            &state.monitor_identities,
+        );
+        if topology_changed {
             let before: Vec<[i32; 4]> = areas
                 .iter()
                 .map(|a| [a.work.x, a.work.y, a.work.w, a.work.h])
@@ -307,10 +331,10 @@ pub(super) fn run_active_tick(
             *areas = fresh;
             *monitor = areas[0].clone();
             *monitor_count = areas.len();
-            // Arrival/removal plus bounds changes are core-owned topology:
-            // the mechanical device-to-wire sync runs, and the next world
-            // report carries the fresh screens for the core to reproject
-            // against. No adapter session mutation.
+            // Arrival/removal, bounds, DPI, and identity changes are
+            // core-owned topology: the mechanical device-to-wire sync runs,
+            // and the next world report carries the fresh screens/identities
+            // for the core to reproject against. No adapter session mutation.
             sync_monitor_outputs(state, areas);
             log_json_at(
                 log_path,
@@ -969,4 +993,102 @@ pub(super) fn run_active_tick(
         }
     }
     Ok(TickFlow::Done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tiler_core::geometry::Rect;
+
+    fn area(device: &str, x: i32, dpi: u32) -> MonitorArea {
+        MonitorArea {
+            device: device.to_owned(),
+            work: Rect {
+                x,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            full: Rect {
+                x,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            dpi,
+        }
+    }
+
+    fn identity(manufacturer: &str) -> OutputIdentity {
+        OutputIdentity {
+            manufacturer: Some(manufacturer.to_owned()),
+            ..OutputIdentity::unknown()
+        }
+    }
+
+    fn identities(device: &str, manufacturer: &str) -> HashMap<String, OutputIdentity> {
+        HashMap::from([(device.to_owned(), identity(manufacturer))])
+    }
+
+    #[test]
+    fn monitor_topology_identical_is_no_change() {
+        let areas = vec![area("\\\\.\\DISPLAY1", 0, 96)];
+        let fresh = vec![area("\\\\.\\DISPLAY1", 0, 96)];
+        let previous = identities("\\\\.\\DISPLAY1", "ACME");
+        let current = identities("\\\\.\\DISPLAY1", "ACME");
+
+        assert!(!monitor_topology_changed(&areas, &fresh, &previous, &current));
+    }
+
+    #[test]
+    fn monitor_topology_dpi_only_change() {
+        let areas = vec![area("\\\\.\\DISPLAY1", 0, 96)];
+        let fresh = vec![area("\\\\.\\DISPLAY1", 0, 144)];
+        let identities = identities("\\\\.\\DISPLAY1", "ACME");
+
+        assert!(monitor_topology_changed(
+            &areas,
+            &fresh,
+            &identities,
+            &identities,
+        ));
+    }
+
+    #[test]
+    fn monitor_topology_identity_only_change() {
+        let areas = vec![area("\\\\.\\DISPLAY1", 0, 96)];
+        let fresh = vec![area("\\\\.\\DISPLAY1", 0, 96)];
+        let previous = identities("\\\\.\\DISPLAY1", "ACME");
+        let current = identities("\\\\.\\DISPLAY1", "OTHER");
+
+        assert!(monitor_topology_changed(&areas, &fresh, &previous, &current));
+    }
+
+    #[test]
+    fn monitor_topology_removed_monitor() {
+        let areas = vec![
+            area("\\\\.\\DISPLAY1", 0, 96),
+            area("\\\\.\\DISPLAY2", 800, 96),
+        ];
+        let fresh = vec![area("\\\\.\\DISPLAY1", 0, 96)];
+        let previous = identities("\\\\.\\DISPLAY2", "ACME");
+        let current = HashMap::new();
+
+        assert!(monitor_topology_changed(&areas, &fresh, &previous, &current));
+    }
+
+    #[test]
+    fn monitor_topology_work_area_change() {
+        let areas = vec![area("\\\\.\\DISPLAY1", 0, 96)];
+        let mut fresh = vec![area("\\\\.\\DISPLAY1", 0, 96)];
+        fresh[0].work.h = 520;
+        let identities = identities("\\\\.\\DISPLAY1", "ACME");
+
+        assert!(monitor_topology_changed(
+            &areas,
+            &fresh,
+            &identities,
+            &identities,
+        ));
+    }
 }

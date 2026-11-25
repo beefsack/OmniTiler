@@ -58,6 +58,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 - 2026-11-19: User decision: amended v4 governs supported routes; one [prepared transition](decisions/engine.md#portable-engine-and-host-seams) owns adoption, [ordered dispositions](decisions/commands.md#ordered-core-commands-and-latest-world-application) are independent of native apply, and [bounded identities, carried geometry, and distinct validation/overflow outcomes](decisions/engine.md#world-transport-authority-and-boundedness) apply across supported consumers. Frozen contracts are history; native acceptance remains separate ([authority](decisions/contract.md#contract-authority-and-v4-migration)).
 - 2026-11-20: User decision: [unrepresentable underlay](decisions/engine.md#shared-presentation-and-cursor-authority), [migration refill parent](decisions/workspaces.md#workspace-migration-d5-source-refill), [migration membership authority](decisions/workspaces.md#workspace-migration-d7-floats-and-sticky-windows), and [admission phase and FIFO recovery](decisions/commands.md#ordered-core-commands-and-latest-world-application) ([engine](decisions/engine.md#world-transport-authority-and-boundedness)).
 - 2026-11-21: User decision: separate logical rings on a host-owned shared native roster with independently writable per-output selectors use ordinal slots and pager-only tail padding, with explicit core authority for any occupant relocation; independent native rosters and linked `shared` workspaces retain their existing behavior ([workspace lifecycle](decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing); [native authority](decisions/contract.md#native-only-retirement-intent)).
+- 2026-11-26: [Windows v4 port direction](decisions/windows.md#accepted-v4-port-direction) — accept T1–T7: checked suppressed-window capture over shared ordering changes, fresh pre-proven transfer receipts, fail-closed views, typed connection calls, and proved `above`/`warp` capabilities with retained-warp cancellation.
 
 ## Tentative decisions
 
@@ -71,7 +72,6 @@ Each current decision lives exactly once in its topic file under `docs/decisions
   - **TD5 (MX8 distribution):** reject Mac App Store (sandbox incompatible with AX/event-tap/Tier 2); use Developer ID signing + Apple notarization for DMG and Homebrew Cask; 0.1 update channel is Homebrew Cask + GitHub Releases DMG only (no in-app updater in 0.1).
   - **TD6 (macOS 15 floor):** fix the R2 dual-surface bugs offline and retain the macOS 15 support floor with the recorded unverified risk (optional Apple Silicon macOS 15 VM validation at RC).
   - **TD7 (D4 store slot):** confirm `~/Library/Application Support/OmniTiler/intent-v1-<uid>-<asid>.json` (`0700` dir, `0600` file, `O_NOFOLLOW`, atomic replace).
-- Windows v4 port direction (T1–T7: revert `9a98994d` core hidden-target hack and fix `SW_HIDE` live capture, keep `AlreadyAtTarget`, fail-closed `row_on_current_view`, truthful incremental `above`/`warp` capabilities, direct typed connection calls, and C3 warp deferral) remains tentative for later review ([Windows](decisions/windows.md#tentative-v4-port-direction)).
 
 ## Topics
 

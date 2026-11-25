@@ -159,6 +159,8 @@ fn report(
 
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -770,7 +772,7 @@ fn shared_first_incomplete_reports_empty_then_complete_mints_and_latches() {
     );
     assert!(first.drag_preview.is_none());
     assert!(first.gesture_settled.is_none());
-    assert!(first.cursor_warp.is_none());
+    assert!(first.warp_request.is_none());
     // No engine readiness, revision, rings, or retained mint.
     assert!(!engine.is_ready());
     assert_eq!(engine.state_revision(), rev0);

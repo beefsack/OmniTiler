@@ -205,7 +205,7 @@ function acceptCapture(
         workspaces: [], outputs: [],
         windows: [windowRow(frame)],
         transfers: [], focusRequest: null, dragPreview: null,
-        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpRequest: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",

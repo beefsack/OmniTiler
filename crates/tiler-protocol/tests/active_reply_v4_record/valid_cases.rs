@@ -141,7 +141,7 @@ pub fn base_bootstrap() -> DecodedReplyV4 {
             gesture_settled: None,
             operation_settled: vec![],
             native_creations: vec![],
-            cursor_warp: None,
+            warp_request: None,
             presentation: WorldPresentationV4 {
                 foreground: String::new(),
                 rev: 1,
@@ -213,7 +213,7 @@ pub fn base_observe() -> DecodedReplyV4 {
             gesture_settled: None,
             operation_settled: vec![],
             native_creations: vec![],
-            cursor_warp: None,
+            warp_request: None,
             presentation: WorldPresentationV4 {
                 foreground: "win-a".to_owned(),
                 rev: 1,
@@ -1164,7 +1164,15 @@ pub fn contextual_reject_cases() -> Vec<(&'static str, DecodedReplyV4)> {
         (
             "invalid-warp-unsupported",
             obs_with(|d| {
-                d.reply.cursor_warp = Some((20, 30));
+                d.reply.warp_request = Some(tiler_core::world_report::WarpRequest {
+                    id: "warp-1".to_owned(),
+                    target: tiler_core::directional::WindowId("win-a".to_owned()),
+                    revision: 1,
+                    output: tiler_core::directional::OutputId("out-a".to_owned()),
+                    workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
+                    point: (20, 30),
+                    pointer_baseline: Some(1),
+                });
             }),
         ),
         (

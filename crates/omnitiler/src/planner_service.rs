@@ -2880,7 +2880,7 @@ mod tests {
           \"windows\":[],\"closed\":[],\"native\":[],\
           \"focused\":\"\",\"foregroundKnown\":false,\
           \"complete\":true,\"gesture\":false,\"cursor\":null,\
-          \"actionForeground\":null,\"actionCached\":null,\
+          \"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
           \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\
@@ -3302,7 +3302,7 @@ mod tests {
             \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":\"Synthetic\",\"model\":\"Panel\",\"serial\":\"s-1\",\"connector\":\"DP-1\"}}}}],\
             \"windows\":[{},{}],\"closed\":[],\"native\":[],\"focused\":\"{focused}\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":null,\
-            \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\
+            \"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\
             \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
             \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}",

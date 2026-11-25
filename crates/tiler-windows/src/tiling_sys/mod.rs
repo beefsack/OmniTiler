@@ -33,18 +33,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use self::action_context::{ActionCtx, ActionLine, ActionTimings, SelectEffect, SendEffect};
-#[cfg(test)]
-use self::admission::admission_clear_planned;
 use self::admission::{
-    clear_maximize_at_admission, engine_is_float, fixed_origin_provenance, fixed_predicate_for,
-    overlay_refusal_for,
+    engine_is_float, fixed_predicate_for, overlay_refusal_for,
 };
 #[cfg(test)]
 use self::assignments::MAX_HIDE_DIAG_PER_SELECT;
 use self::assignments::{ensure_workspace_assignments, workspace_close_cleanup};
 use self::chord_resolution::{
-    ChordObserved, ChordTarget, chord_overlay_refusal, observe_chord_intent,
-    orientation_overlay_refusal, resolve_chord_target, settle_chord_reject,
+    ChordObserved, ChordTarget, observe_chord_intent, orientation_overlay_refusal,
+    resolve_chord_target, settle_chord_reject,
 };
 use self::cli_directional::poll_directional_cli_request;
 use self::cli_migrate_workspace::poll_migrate_workspace_cli_request;
@@ -66,26 +63,18 @@ use self::dispatch::{
 use self::drag_preview::refresh_drag_preview;
 use self::first_run::{FirstRunPending, resolve_first_run};
 pub use self::first_run::{FirstRunResolution, resolve_first_run_outcome};
-use self::float_toggle::{
-    NativeUnfloatClear, UnfloatClearEffects, apply_float_from_tiled, apply_unfloat_to_tiled,
-    clear_float_mark, clear_sticky_mark, restore_raised_band, unfloat_maximize_clear,
-};
 use self::focus::{hide_border, note_focus_advance, publish_managed, refresh_active_border};
 pub(crate) use self::focus_actuation::owner_snap_dropped;
-use self::focus_actuation::{
-    born_maximized_keep_overlay_for, overlay_expected, same_axis_move_for,
-};
+use self::focus_actuation::{overlay_expected, same_axis_move_for};
 #[cfg(test)]
 use self::fullscreen::{
     FULLSCREEN_STYLE_BITS, OwnedExitEffects, decode_frame_value, encode_frame_value,
     exit_fullscreen_owned_with,
 };
 use self::fullscreen::{
-    FullscreenMeta, clear_fullscreen_meta, effective_stale_meta_via_effects, enter_fullscreen,
-    exit_fullscreen_owned, holdable_key, live_style_for_retire, read_fullscreen_meta,
-    track_fullscreen_holds,
+    FullscreenMeta, holdable_key, read_fullscreen_meta, track_fullscreen_holds,
 };
-use self::geometry::{ApplySummary, audit_json};
+use self::geometry::ApplySummary;
 use self::gesture_tick::gesture_tick;
 use self::group_underlay::{
     chord_held_now, classify_move_size_start, hide_preview, hide_underlay, live_outer_rect,
@@ -146,8 +135,7 @@ use self::pending_seams::{
 use self::preview::{PreviewBound, PreviewStartBinding};
 pub use self::probes::live_overlay_flags;
 use self::probes::{
-    WriteTarget, is_zoomed_now, pid_current, restore_wake_probe, restore_zoom_placement,
-    revalidate_target, toggle_zoom_async,
+    is_zoomed_now, pid_current, restore_wake_probe, revalidate_target,
 };
 pub use self::proof_commands::{
     cmd_hide_proof, cmd_shortcut_proof, cmd_tile_proof, cmd_workspace_proof,
@@ -164,14 +152,9 @@ use self::render_bridge::{
     owned_overlay_hwnd, poll_render_acks, post_border_frame, post_preview_frame,
     post_underlay_frame, render_carrier_visible,
 };
-use self::restart::{admit_born_fullscreen, admit_slotless_maximized, adopt_restart_markers};
+use self::restart::{admit_born_fullscreen, admit_slotless_maximized};
 use self::retained::{HiddenRecord, PendingClosed, RetainedRow};
-use self::rows::{
-    drop_member_state, hold_band_target, hold_marker_target, hydrate_tile_override_marker,
-    install_float_mark_held, install_sticky_mark_held, install_tile_override_mark_held,
-    marker_tag_pid_fresh, prune_float_state, remove_tile_override_mark_best_effort,
-    retain_float_focus_validated,
-};
+use self::rows::{drop_member_state, prune_float_state};
 use self::run_loop::run_tile_loop;
 use self::run_loop_intake::{Intake, pump_intake};
 use self::run_loop_tick::{TickFlow, run_active_tick};
@@ -200,10 +183,7 @@ use self::visibility_diag::{
 };
 #[cfg(test)]
 use self::visibility_diag::{note_hide_diag, note_reveal_diag, omission_summary, reveal_log_line};
-use self::workspace_mode::read_topmost_now;
-use self::workspace_mode::set_topmost_band;
 use self::workspace_mode::toggle_workspace_tiling;
-use self::workspace_mode::workspace_mode_known;
 use self::workspace_mode::workspace_mode_tiled;
 use self::workspace_navigation::workspace_tick;
 use self::workspace_send_tick::{
@@ -247,16 +227,16 @@ use crate::snapkey::{
 };
 use crate::storage::LedgerStore;
 use crate::tiling::{
-    AllowEntry, CaptureOptions, ChildrenOptions, DIRECTIONAL_REQUEST_FILE, DirectionalOptions,
-    FrameInsets, HideProofOptions, INNER_GAP, InspectOptions, MIGRATE_WORKSPACE_REQUEST_FILE,
-    MigrateWorkspaceOptions, OUTER_GAP, OWNER_ID, ObservedTarget, ObservedTargetRef,
-    RESIZE_REQUEST_FILE, ResizeOptions, SEND_OUTPUT_REQUEST_FILE, ScopeHostChild,
+    AllowEntry, CaptureOptions, ChildrenOptions, ControlRequestRead, DIRECTIONAL_REQUEST_FILE,
+    DirectionalOptions, FrameInsets, HideProofOptions, INNER_GAP, InspectOptions,
+    MIGRATE_WORKSPACE_REQUEST_FILE, MigrateWorkspaceOptions, OUTER_GAP, OWNER_ID, ObservedTarget,
+    ObservedTargetRef, RESIZE_REQUEST_FILE, ResizeOptions, SEND_OUTPUT_REQUEST_FILE, ScopeHostChild,
     SendOutputOptions, SkipReason, StatelessVerdict, TileOptions, TileProofOptions, TokenMap,
     WindowFacts, WorkspaceAction, WorkspaceOptions, allow_match, allowlist_digest, classify,
-    classify_focus, fullscreen_toggle_decision, hosted_child_allows, inspect_stateless_verdict,
-    is_borderless_fullscreen, parse_allowlist, parse_directional_request,
-    parse_migrate_workspace_request, parse_resize_request, parse_send_output_request,
-    parse_workspace_request, scope_allows, scope_exe_basename, tiling_domain_bounds_with,
+    hosted_child_allows, inspect_stateless_verdict, is_borderless_fullscreen,
+    parse_allowlist, parse_directional_request, parse_migrate_workspace_request,
+    parse_resize_request, parse_send_output_request, parse_workspace_request,
+    read_control_request, scope_allows, scope_exe_basename, tiling_domain_bounds_with,
 };
 use tiler_core::gesture::preview_prior_desc;
 type DynError = Box<dyn std::error::Error>;
@@ -333,7 +313,15 @@ struct TileLoop {
     /// name the mode that is ending without re-reading the foreground.
     suspended_limited: bool,
     log_path: std::path::PathBuf,
+    /// Adapter-owned ledger directory holding the durable R12 preimage slots
+    /// and the R14 adoption baselines. Mechanical storage only: never a
+    /// policy or native-write input.
+    preimage_dir: std::path::PathBuf,
     audit_path: Option<std::path::PathBuf>,
+    /// Last per-tick observation skip set, used only to emit one
+    /// `world-observation-skips` trace row when the reasons change (never a
+    /// policy input). Held scopes otherwise repeat the same skip silently.
+    last_observation_skips: Vec<(String, String)>,
     /// Product keyboard policy for this run (takeover switch + Win+L opt-in).
     /// Live settings edits update this in place; the hook gate republishes
     /// every pump and the classifier applies policy plus the rebound table
@@ -398,6 +386,11 @@ struct TileLoop {
     /// `oN` ids). Synced from live monitor areas; native-wire ids only,
     /// never rings/views/tiling/history policy.
     output_tokens: HashMap<String, String>,
+    /// Adapter-read physical identity per live GDI device name, refreshed on
+    /// every monitor check including identity-only changes. A device with no
+    /// entry is explicit unknown; a failed identity query clears the map
+    /// rather than retaining a stale guess.
+    monitor_identities: HashMap<String, tiler_core::world_report::OutputIdentity>,
     /// Adapter-retained last applied logical homing per Engine token (from
     /// the last applied reply rows). Receipts prove this commitment with
     /// fresh evidence; the core remains the sole homing authority.
@@ -516,27 +509,6 @@ struct TileLoop {
     /// `verify_proof_owned` before every write. Normal `tile` allows
     /// ordinary-app hides; `shortcut-proof` and `tile-proof` never hide.
     workspace_proof: bool,
-    /// One-shot maximize-clear attempts at admission (KDE
-    /// `maximizeAdmissionAttempts` parity): the first non-fullscreen
-    /// admission of a maximized window without a retained tiled slot restores
-    /// the native maximize exactly once with no automatic retry. Keyed by
-    /// HWND plus process creation so a recycled HWND re-arms for the fresh
-    /// window while the same window never retries.
-    maximize_admission_attempted: HashSet<String>,
-    /// R-MAX-06 keep-overlay latch: exact fresh lifetimes bound at tiled-first
-    /// slotless admission under the live overlay value. Keyed by full member
-    /// identity, never HWND alone; pruned with membership. Pre-existing and
-    /// born-fullscreen lifetimes never enter; floating-first (R-MAX-03) binds
-    /// `retile_keep_overlay` below instead, so the born tile default keeps
-    /// clearing tiled-first admissions while retile always overlays.
-    born_keep_overlay: BTreeSet<crate::native_guards::WindowKey>,
-    /// R-MAX-03 retile latch: exact fresh lifetimes bound at floating-first
-    /// slotless admission. A floating-to-tiled workspace admission keeps the
-    /// native maximize over the reserved tile slot with no one-shot clear,
-    /// independent of `core.born_maximized` (only born R-MAX-06 reads that
-    /// setting). Keyed by full member identity, never HWND alone; pruned
-    /// with membership like `born_keep_overlay`.
-    retile_keep_overlay: BTreeSet<crate::native_guards::WindowKey>,
     /// Born-fullscreen hold (KDE initial-fullscreen-hold parity): first-seen
     /// fullscreen windows without a retained tile slot, tracked slotless as a
     /// planner-only exception until their first exit. Keyed by full member
@@ -751,62 +723,16 @@ struct TileLoop {
     /// slow poll. Steady hold/release stays quiet; only the transition
     /// wakes, and the normal suspend/fullscreen path below still gates it.
     underlay_chord_last: bool,
-    /// Prior `WS_EX_TOPMOST` per intentional-float member key, read at float
-    /// time. Session-local only. Unfloat and graceful stop restore only bands
-    /// the project raised, with no frame change.
-    float_topmost_prev: std::collections::BTreeMap<crate::native_guards::WindowKey, bool>,
     /// Live float frame per Engine token. Distinct from `member_rects`, which
-    /// keeps the last tiled allocation frozen at float time.
+    /// keeps the last tiled allocation frozen at float time. A frame cache
+    /// only, never intent authority.
     float_rects: HashMap<String, Rect>,
-    /// Intentional per-window float lifetimes (exact `(hwnd, pid, creation)`
-    /// identity, never HWND alone). The Engine exception is dropped by every
-    /// domain release, so this carries the exception across floating
-    /// release/retiling and boundary sends: row assembly rides these tokens
-    /// floating even when the session carries no exception, and the next
-    /// Engine observation re-adopts it. Cleared on verified unfloat, window
-    /// close, and stop; pruned with membership. Sticky, born-fullscreen, and
-    /// native overlays keep their own lanes and never enter here.
-    floated: BTreeSet<crate::native_guards::WindowKey>,
-    /// Sticky-float members by stable member key to their pre-sticky float
-    /// state (`true` when the window was already a normal float before
-    /// sticky-on). Single runtime map, never redundant sets. Sticky rides the
-    /// Engine as a slotless float plus this map plus a window-lifetime native
-    /// marker; the marker (not this map) survives owner restarts.
-    sticky: std::collections::BTreeMap<crate::native_guards::WindowKey, bool>,
-    /// Observation-scoped write barrier for restart-hydration float
-    /// candidates: exact marker/lifetime-validated staged ordinary/sticky
-    /// floats whose hydration commit was rejected (or never assembled) this
-    /// observation. Rebuilt by every admission preamble (cleared, then
-    /// repopulated only for the current observation's rejected staged sets),
-    /// keyed by full window lifetime identity, pruned with membership. Row
-    /// assembly rides held keys floating and the write gate excludes them,
-    /// so rejected candidates take no tiled writes before the next
-    /// observation revalidates. Never an adapter float lane: durable
-    /// markers are untouched, and success/invalid markers leave no entry.
-    restart_reject_hold: BTreeSet<crate::native_guards::WindowKey>,
-    /// Explicit fixed-window tile overrides by stable member key (R-SPC-04
-    /// D3/D6/D7): settled user tile wins for the same live client. The
-    /// Engine records the win transactionally at unfloat; this set plus the
-    /// on-window `OmniTiler.TileOverride.v1` marker carry it across domain
-    /// releases (workspace enable re-adopts via the stamped suppress signal)
-    /// and owner restarts. Cleared on re-float, sticky-off-to-float, verified
-    /// close, and membership prune; pruned with membership otherwise.
-    ///
-    /// The runtime set holds EVERY settled explicit win (generic non-fixed
-    /// unfloats included): core needs the suppress signal for all of them.
-    /// Only the fixed-origin subset below is durable (marker-backed).
-    fixed_tile_overrides: BTreeSet<crate::native_guards::WindowKey>,
-    /// Durable fixed-origin tile overrides by stable member key (R-SPC-04
-    /// D7): the subset of [`TileLoop::fixed_tile_overrides`] whose prior
-    /// provenance was known automatic fixed at win time (Engine automatic
-    /// mark, D4 latch, hydrated fixed override, committed core override, or
-    /// a live tile-override marker). Only this set installs the on-window
-    /// marker and only it skips the admission clear, reserves the maximized
-    /// slot, and refuses automatic origin. Generic non-fixed wins stay in
-    /// the runtime set only and keep the existing clear/overlay rules. Hint
-    /// loss and predicate changes never erase entries; refloat, verified
-    /// close, and membership prune clear them with the runtime set.
-    fixed_origin_overrides: BTreeSet<crate::native_guards::WindowKey>,
+    /// Per-tick durable intent snapshot: the canonical packed marker storage
+    /// (`sticky_prior`/`float`/`tile`) read from each bound member's window
+    /// once per world tick. Refreshed only by the tick helper; it is the
+    /// single adapter-readable intent lane and never a policy mirror.
+    intent_snapshot:
+        std::collections::BTreeMap<crate::native_guards::WindowKey, self::world_diff::IntentStorage>,
     /// Adapter-asserted automatic fixed-float origins by stable member key
     /// (R-SPC-04 D4): first-seen maximized windows whose fresh tracks are
     /// fixed under the live predicate. They admit slotless and ride floating
@@ -884,6 +810,29 @@ pub(crate) fn plan_snapshot_offer(
     SnapshotOffer::Fresh
 }
 
+/// R12 durable preimage recovery entry: one scan of the adapter-owned slots
+/// (persistent-above topmost plus fullscreen chrome). `current_session` is the
+/// restoring process's creation; only rows written by a different tiler
+/// session whose exact live lifetime self-verifies from the row itself are
+/// considered, so the current session's own preimages are never touched.
+/// Returns how many rows were restored.
+pub(crate) fn recover_durable_preimages(dir: &Path, current_session: &str) -> usize {
+    // Adoption baselines are evidence, never restoration authority: the same
+    // recovery pass prunes their gone lifetimes but never restores from them.
+    let _ = adoption_baseline::prune_dead(dir);
+    above_preimage::restore_verified_leftovers(dir, current_session)
+        + fullscreen_preimage::restore_verified_leftovers(dir, current_session)
+}
+
+/// Graceful owner teardown: restore only preimages the current session owns.
+/// Unreadable or unrestored rows remain available to independent recovery.
+pub(crate) fn restore_current_preimages(dir: &Path, current_session: &str) -> (usize, bool) {
+    let (above, above_pending) = above_preimage::restore_verified_current(dir, current_session);
+    let (fullscreen, fullscreen_pending) =
+        fullscreen_preimage::restore_verified_current(dir, current_session);
+    (above + fullscreen, above_pending || fullscreen_pending)
+}
+
 /// Armed prompt-restore wake: the restored member by full identity plus the
 /// Engine token, so a recycled HWND can never count as completion proof.
 struct RestoreWake {
@@ -905,6 +854,7 @@ mod scope_sends;
 mod scope_hotplug;
 
 mod monitors;
+pub(crate) mod output_identity;
 mod shell;
 mod tray_select;
 
@@ -942,6 +892,21 @@ mod probes;
 
 mod fullscreen;
 
+// R12 durable topmost preimages for the persistent-above lane: one
+// lifetime-bound adapter-owned atomic slot outliving the tiler, written
+// before a raise and restored only on an exact-lifetime match.
+mod above_preimage;
+
+// R12 durable fullscreen-chrome preimages: one lifetime-bound
+// adapter-owned atomic slot outliving the tiler, written before stripping
+// chrome and restored only on a self-verified exact-lifetime match.
+mod fullscreen_preimage;
+
+// R14 adapter-local adoption-time native baseline for app-owned fullscreen:
+// evidence only, separate from the project marker and the R12 slot, never a
+// window write and never an exit authority.
+mod adoption_baseline;
+
 mod admission;
 
 mod capacity_floats;
@@ -963,6 +928,7 @@ mod world_sequencer;
 // replies. Offline facade plus production NativeOps share the same
 // authority/freshness/proof rules.
 mod world_diff;
+pub(crate) use self::world_diff::IntentStorage;
 // Production native actuator over the diff: the real NativeOps
 // plus truthful applied-receipt capture, wired through the tick.
 mod world_native;
@@ -1023,8 +989,6 @@ mod keyboard_overlays;
 mod keyboard_resize;
 
 mod chord_resolution;
-
-mod float_toggle;
 
 mod dispatch;
 
@@ -1108,6 +1072,13 @@ mod same_axis_move_tests;
 #[path = "tests_owned_exit.rs"]
 mod owned_exit_tests;
 
+/// R14 adoption baseline regressions (offline): exact-lifetime row shape,
+/// first-capture-wins storage, separation from the R12 chrome preimage slot,
+/// capture refusals, dead-lifetime pruning, and the bounded presence trace.
+#[cfg(test)]
+#[path = "tests_adoption_baseline.rs"]
+mod adoption_baseline_tests;
+
 #[cfg(test)]
 #[path = "tests_float_send_gate.rs"]
 mod float_send_gate_tests;
@@ -1146,6 +1117,10 @@ mod directional_cli_tests;
 #[cfg(test)]
 #[path = "tests_send_output_cli.rs"]
 mod send_output_cli_tests;
+
+#[cfg(test)]
+#[path = "tests_control_bounds.rs"]
+mod control_bounds_tests;
 
 #[cfg(test)]
 #[path = "tests_migrate_workspace_cli.rs"]

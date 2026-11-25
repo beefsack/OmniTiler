@@ -431,7 +431,7 @@ describe("v4 inner report shape", () => {
             "screens", "windows", "closed", "native", "focused",
             "foregroundKnown",
             "focusChanges",
-            "complete", "gesture", "cursor", "actionForeground",
+            "complete", "gesture", "cursor", "pointerActivity", "warpSpent", "actionForeground",
             "actionCached", "actionOutputs", "presentation",
             "intentRecords", "propertyAttempts", "focusFeedback",
             "rendererInput", "nativeGesture", "cursorWindow", "cursorHit",

@@ -180,6 +180,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -513,7 +515,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpCursor": null,
+          "warpRequest": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "3",
@@ -639,6 +641,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -944,7 +948,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpCursor": null,
+          "warpRequest": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "6",
@@ -1128,6 +1132,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -1422,7 +1428,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpCursor": null,
+          "warpRequest": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "9",
@@ -1548,6 +1554,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -1842,7 +1850,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpCursor": null,
+          "warpRequest": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "10",
@@ -1968,6 +1976,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -2300,7 +2310,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpCursor": null,
+          "warpRequest": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "11",
@@ -2448,6 +2458,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -2781,7 +2793,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpCursor": null,
+          "warpRequest": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "12",

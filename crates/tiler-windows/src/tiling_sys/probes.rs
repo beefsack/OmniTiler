@@ -1,16 +1,11 @@
 #![forbid(unsafe_code)]
+use super::world_diff::StateWrite;
 use super::*;
 
 /// Revalidate one write target immediately before `SetWindowPos`: fresh
 /// eligibility, scope, fresh full identity compared against the cached
 /// expectation and the frozen allowlist, with the process held open across
-/// the write. Returns the fresh observation plus the held process (liveness
-/// guard).
-pub(super) struct WriteTarget {
-    pub(super) window: ObservedWindow,
-    pub(super) held: HeldProcess,
-}
-
+/// the write (the guard drops when this returns).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn revalidate_target(
     expected: &ObservedWindow,
@@ -23,7 +18,7 @@ pub(super) fn revalidate_target(
     member_tag: Option<&str>,
     scope_hosts: &[ScopeHostChild],
     allow_maximized: bool,
-) -> std::result::Result<WriteTarget, &'static str> {
+) -> std::result::Result<(), &'static str> {
     let hwnd = expected.hwnd as isize as HWND;
     let pid = crate::ffi::window_pid(expected.hwnd);
     if pid == 0 || pid != expected.identity.pid {
@@ -95,10 +90,7 @@ pub(super) fn revalidate_target(
     if fresh.token != expected.token {
         return Err("identity-changed");
     }
-    Ok(WriteTarget {
-        window: fresh,
-        held,
-    })
+    Ok(())
 }
 
 /// Recheck the HWND's current pid after the write (recycled-HWND guard).
@@ -167,62 +159,67 @@ pub(super) fn restore_wake_probe(
 /// `SW_SHOWNOACTIVATE` (restores in place, active window stays active) plus
 /// `WPF_ASYNCWINDOWPLACEMENT` (the request posts to the owner thread, so the
 /// loop never blocks on a hung window). Single bounded call pair, no wait, no
-/// retry. Returns dispatch vs observed completion honestly: `restored` only
-/// when the window no longer reads maximized, `dispatched` when the setter
-/// accepted but the async completion is still pending (converges next tick),
-/// `threw` when nothing was dispatched.
-pub(super) fn restore_zoom_placement(hwnd_u64: u64) -> &'static str {
+/// retry.
+///
+/// Typed outcome: [`StateWrite::NotAttempted`] when no actuator ran (dead
+/// window, already restored, or an unreadable placement), [`StateWrite::Called(false)`]
+/// when the placement setter explicitly refused, [`StateWrite::Threw`] when
+/// the async restore is still pending or the live shape disagrees with the
+/// placement, and [`StateWrite::Called(true)`] only when the window no longer
+/// reads maximized.
+pub(super) fn restore_zoom_placement(hwnd_u64: u64) -> StateWrite {
     // Immediate pre-placement revalidation: a window that closed (or already
     // restored) between the tick observation and this write takes no write.
     if !crate::ffi::is_window(hwnd_u64) {
-        return "threw";
+        return StateWrite::NotAttempted;
     }
     if !is_zoomed_now(hwnd_u64) {
-        return "restored";
+        return StateWrite::NotAttempted;
     }
     let Some(mut placement) = crate::ffi::window_placement(hwnd_u64) else {
-        return "threw";
+        return StateWrite::NotAttempted;
     };
     if placement.showCmd != SW_SHOWMAXIMIZED as u32 {
-        return if is_zoomed_now(hwnd_u64) {
-            "dispatched"
-        } else {
-            "restored"
-        };
+        // The live window still reads maximized while its placement does not
+        // describe that state: nothing was written and the shape is
+        // ambiguous, never reported as a restore.
+        return StateWrite::Threw;
     }
     placement.showCmd = SW_SHOWNOACTIVATE as u32;
     placement.flags |= WPF_ASYNCWINDOWPLACEMENT;
     if !crate::ffi::set_window_placement(hwnd_u64, &placement) {
-        return "threw";
+        return StateWrite::Called(false);
     }
     if is_zoomed_now(hwnd_u64) {
-        "dispatched"
+        StateWrite::Threw
     } else {
-        "restored"
+        StateWrite::Called(true)
     }
 }
 
 /// Toggle one verified managed window's native maximize state. Maximize uses
 /// the official async route (`ShowWindowAsync`, never blocks on a hung
-/// target); restore uses the nonactivating placement path above. Returns the
-/// readback-settled outcome for the bounded lifecycle log: `dispatched`
-/// whenever the setter accepted but native completion is still pending
-/// (converges next tick; the waiter proves `IsZoomed` separately).
-pub(super) fn toggle_zoom_async(hwnd_u64: u64, wanted: bool) -> &'static str {
-    if wanted {
-        if !crate::ffi::show_window_async(hwnd_u64, SW_MAXIMIZE) {
-            return "threw";
-        }
-    } else {
-        match restore_zoom_placement(hwnd_u64) {
-            "restored" => return "restored",
-            "dispatched" => return "dispatched",
-            _ => return "threw",
-        }
+/// target); restore uses the nonactivating placement path above.
+///
+/// The typed outcome is the readback-settled truth for the bounded lifecycle
+/// log: [`StateWrite::NotAttempted`] when no actuator ran, [`StateWrite::Threw`]
+/// while an accepted async request is still pending (converges next tick; the
+/// waiter proves `IsZoomed` separately), [`StateWrite::Called(false)`] only for
+/// an explicit placement refusal, and [`StateWrite::Called(true)`] once the
+/// live zoom read shows the wanted state. `ShowWindowAsync` reports the
+/// previous visibility rather than acceptance, so its return value is never
+/// treated as a refusal.
+pub(super) fn toggle_zoom_async(hwnd_u64: u64, wanted: bool) -> StateWrite {
+    if !wanted {
+        return restore_zoom_placement(hwnd_u64);
     }
-    if is_zoomed_now(hwnd_u64) == wanted {
-        if wanted { "maximized" } else { "restored" }
+    if !crate::ffi::is_window(hwnd_u64) {
+        return StateWrite::NotAttempted;
+    }
+    let _ = crate::ffi::show_window_async(hwnd_u64, SW_MAXIMIZE);
+    if is_zoomed_now(hwnd_u64) {
+        StateWrite::Called(true)
     } else {
-        "dispatched"
+        StateWrite::Threw
     }
 }

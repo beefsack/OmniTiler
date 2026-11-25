@@ -133,10 +133,19 @@ pub(crate) const GAMING_TIMER_MS: u32 = 1000;
 
 pub(crate) const ESCAPE_VK: usize = 0x1B;
 
+/// One created child window and the 96-DPI design rect it was created
+/// with. `WM_SIZE` maps these rects onto the live client area.
+#[derive(Clone, Copy)]
+pub(crate) struct LayoutEntry {
+    pub(crate) hwnd: HWND,
+    pub(crate) rect: (i32, i32, i32, i32),
+}
+
 /// Draft plus saved state for one open settings window.
 pub(crate) struct App {
     pub(crate) font: HFONT,
     pub(crate) controls: Vec<(u32, HWND)>,
+    pub(crate) layout: Vec<LayoutEntry>,
     pub(crate) dir: PathBuf,
     pub(crate) base: Settings,
     pub(crate) base_present: bool,
@@ -403,18 +412,72 @@ fn on_command(app: &mut App, id: u32, notify: u32) -> bool {
     }
 }
 
-pub(crate) fn fixed_minmax_tracks(outer_w: i32, outer_h: i32) -> Option<(i32, i32)> {
-    if (1..=tiler_core::bounds::GEOMETRY_BOUND).contains(&outer_w)
-        && (1..=tiler_core::bounds::GEOMETRY_BOUND).contains(&outer_h)
-    {
-        Some((outer_w, outer_h))
-    } else {
-        None
+/// Map one 96-DPI design rect onto a live `client_w` x `client_h` client
+/// area. Each edge scales independently (rounded), so adjacent rects keep
+/// their shared edges, and the result stays inside the client with a
+/// positive extent. Identity at the design client.
+#[must_use]
+pub(crate) fn relayout_rect(
+    rect: (i32, i32, i32, i32),
+    client_w: i32,
+    client_h: i32,
+) -> (i32, i32, i32, i32) {
+    let (x, y, w, h) = rect;
+    let (left, width) = scaled_span(x, x + w, client_w, tabs::CLIENT_W);
+    let (top, height) = scaled_span(y, y + h, client_h, tabs::CLIENT_H);
+    (left, top, width, height)
+}
+
+/// One rounded axis coordinate for `value` on a design extent.
+fn scaled_edge(value: i32, client: i32, design: i32) -> i32 {
+    if client <= 0 {
+        return 0;
+    }
+    let scaled =
+        (i64::from(value) * i64::from(client) + i64::from(design) / 2) / i64::from(design);
+    scaled.clamp(0, i64::from(client)) as i32
+}
+
+/// `(start, extent)` of one axis span: `start`/`end` are design edges,
+/// `design` the design client extent. For any client of at least one pixel
+/// the extent stays positive and `start + extent <= client`.
+fn scaled_span(start: i32, end: i32, client: i32, design: i32) -> (i32, i32) {
+    if client <= 1 {
+        return (0, client.max(1));
+    }
+    let left = scaled_edge(start, client, design).min(client - 1);
+    let right = scaled_edge(end, client, design).max(left + 1);
+    (left, right - left)
+}
+
+/// Re-place every child for the live client area. `entries` is a snapshot
+/// taken under the checked borrow; no guard is live here, so a reentrant
+/// message sees normal state. A reentrant size recomputes from the same
+/// design rects, never from a half-applied layout.
+pub(crate) fn relayout_for(entries: &[LayoutEntry], client_w: i32, client_h: i32) {
+    if client_w <= 0 || client_h <= 0 {
+        return;
+    }
+    for entry in entries {
+        let (x, y, w, h) = relayout_rect(entry.rect, client_w, client_h);
+        crate::ffi::settings_controls::place_child(entry.hwnd, x, y, w, h);
     }
 }
 
-pub(crate) fn fixed_tracks_ready(user_data: isize, lparam: isize) -> bool {
-    user_data != 0 && lparam != 0
+/// Normal resizable application frame: caption, system menu, sizing border,
+/// minimize/maximize boxes, and child clipping. No fixed min/max track
+/// override exists in the window procedure; the layout tracks the client on
+/// `WM_SIZE`.
+#[must_use]
+pub(crate) const fn window_style() -> u32 {
+    windows_sys::Win32::UI::WindowsAndMessaging::WS_OVERLAPPEDWINDOW
+        | windows_sys::Win32::UI::WindowsAndMessaging::WS_CLIPCHILDREN
+}
+
+/// No extended dialog frame: an ordinary resizable application window.
+#[must_use]
+pub(crate) const fn window_ex_style() -> u32 {
+    0
 }
 
 /// Open the modal settings window and run its message loop. Returns when the
@@ -424,8 +487,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON,
         ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, LBS_NOINTEGRALHEIGHT,
-        LBS_NOTIFY, WS_BORDER, WS_CAPTION, WS_CLIPCHILDREN, WS_EX_DLGMODALFRAME, WS_GROUP,
-        WS_HSCROLL, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+        LBS_NOTIFY, WS_BORDER, WS_GROUP, WS_HSCROLL, WS_TABSTOP, WS_VSCROLL,
     };
     crate::tiling_sys::ensure_pm_v2()?;
     let sid = crate::native::current_identity()
@@ -456,6 +518,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
     let app = Box::new(std::cell::RefCell::new(App {
         font,
         controls: Vec::new(),
+        layout: Vec::new(),
         dir,
         base: base.clone(),
         base_present: present,
@@ -471,14 +534,14 @@ pub fn cmd_settings() -> Result<String, DynError> {
         statics: Vec::new(),
         window: std::ptr::null_mut(),
     }));
-    let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    let style = window_style();
     let client_w = ctl::px(tabs::CLIENT_W, dpi);
     let client_h = ctl::px(tabs::CLIENT_H, dpi);
     let window = crate::ffi::settings_window::SettingsWindow::create(
         SETTINGS_WINDOW_CLASS,
         SETTINGS_WINDOW_TITLE,
         style,
-        WS_EX_DLGMODALFRAME,
+        window_ex_style(),
         tabs::ORIGIN_X,
         tabs::ORIGIN_Y,
         client_w,
@@ -558,6 +621,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
         label
     };
     let mut owned: Vec<(u32, HWND)> = Vec::new();
+    let mut layout: Vec<LayoutEntry> = Vec::new();
     let mut grouped: Vec<(usize, HWND)> = Vec::new();
     let mut labelled: Vec<(usize, HWND)> = Vec::new();
     let font_copy = window
@@ -578,7 +642,11 @@ pub fn cmd_settings() -> Result<String, DynError> {
                         h,
                         style: tab,
                     };
-                    create_ctl(hwnd, hinst, &spec, dpi, font_copy, &mut owned).map(|_| ())?;
+                    let handle = create_ctl(hwnd, hinst, &spec, dpi, font_copy, &mut owned)?;
+                    layout.push(LayoutEntry {
+                        hwnd: handle,
+                        rect: (x, y, w, h),
+                    });
                 }
                 tabs::CreateStep::Group(group_index) => {
                     let (key, x, y, w, h) = tabs::GROUPS[group_index];
@@ -595,7 +663,11 @@ pub fn cmd_settings() -> Result<String, DynError> {
                     let mut sink = Vec::new();
                     match create_ctl(hwnd, hinst, &spec, dpi, font_copy, &mut sink) {
                         Ok(handle) => {
-                            grouped.push((tabs::group_tab(key).expect("group tab"), handle))
+                            layout.push(LayoutEntry {
+                                hwnd: handle,
+                                rect: (x, y, w, h),
+                            });
+                            grouped.push((tabs::group_tab(key).expect("group tab"), handle));
                         }
                         Err(error) => return Err(error),
                     }
@@ -615,7 +687,13 @@ pub fn cmd_settings() -> Result<String, DynError> {
                     };
                     let mut sink = Vec::new();
                     match create_ctl(hwnd, hinst, &spec, dpi, font_copy, &mut sink) {
-                        Ok(handle) => labelled.push((page, handle)),
+                        Ok(handle) => {
+                            layout.push(LayoutEntry {
+                                hwnd: handle,
+                                rect: (x, y, w, h),
+                            });
+                            labelled.push((page, handle));
+                        }
                         Err(error) => return Err(error),
                     }
                 }
@@ -640,6 +718,10 @@ pub fn cmd_settings() -> Result<String, DynError> {
                         style: style_for(id, class),
                     };
                     let handle = create_ctl(hwnd, hinst, &spec, dpi, font_copy, &mut owned)?;
+                    layout.push(LayoutEntry {
+                        hwnd: handle,
+                        rect: (x, y, w, h),
+                    });
                     if spec.class == "EDIT"
                         && let Some(limit) = edit_limit(spec.id)
                     {
@@ -654,6 +736,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
     window
         .with_app_mut(|app| {
             app.controls = owned;
+            app.layout = layout;
             app.groups = grouped;
             app.statics = labelled;
             app.window = hwnd;

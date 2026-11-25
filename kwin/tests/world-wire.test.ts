@@ -180,7 +180,7 @@ function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: stri
             state: [],
         }],
         transfers: [], focusRequest: null, dragPreview: null,
-        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
+        gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpRequest: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         source: envelope["source"], nativeInvalid: envelope["nativeInvalid"], clock: "7",
@@ -628,9 +628,9 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const parsedOrdinary = parseWorldReply(JSON.stringify(withOrdinaryState));
         assert.ok(parsedOrdinary !== null && !isWorldRejection(parsedOrdinary) && !isCoreWorldReply(parsedOrdinary) && !isWorldQueueReply(parsedOrdinary), "ordinary maximized=false state target passes presentation lane");
         // One-shot lanes refuse: result, transfers, effects, settlement.
-        for (const lane of ["result", "transfers", "effects", "gestureSettled", "operationSettled", "warpCursor", "intentDesired", "switchSettled", "diagnostics"] as const) {
+        for (const lane of ["result", "transfers", "effects", "gestureSettled", "operationSettled", "warpRequest", "intentDesired", "switchSettled", "diagnostics"] as const) {
             const withLane = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
-            withLane[lane] = lane === "result" || lane === "gestureSettled" || lane === "warpCursor" ? null : [];
+            withLane[lane] = lane === "result" || lane === "gestureSettled" || lane === "warpRequest" ? null : [];
             assert.equal(parseWorldReply(JSON.stringify(withLane)), null, `${lane} refuses on the presentation lane`);
         }
         // Transport bindings and readiness flags belong to other lanes.

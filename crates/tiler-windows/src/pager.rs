@@ -53,7 +53,6 @@ use std::collections::HashMap;
 use tiler_core::geometry::Rect;
 
 use crate::active_border::{DEFAULT_COLOR_RGB, SystemAccent, accent_available};
-use crate::tray_pager::SelectScope;
 
 const fn right(rect: Rect) -> i32 {
     rect.x.saturating_add(rect.w)
@@ -390,6 +389,11 @@ pub struct OutputPager {
     pub ids: Vec<String>,
     pub cells: Vec<PagerCell>,
     pub active_index: usize,
+    /// Presentation revision the painted frame was laid out from (the exact
+    /// applied reply's `presentation.rev`); `None` when no reply has been drawn
+    /// yet. Click attribution carries this revision so the core can refuse a
+    /// stale draw without any local freshness policy.
+    pub drawn_rev: Option<u64>,
     /// Taskbar DPI the frame was laid out for (font + geometry).
     pub dpi: u32,
     /// Independent highlight colour the focused miniatures paint
@@ -598,6 +602,8 @@ pub struct PagerContentMiniature {
 /// pager-highlight style plus the shared accent snapshot); it rides the
 /// frame so a highlight-colour change repaints even when every cell is
 /// identical.
+/// `drawn_rev` is the exact applied presentation revision this frame was
+/// laid out from; it rides along for click attribution only, never repaint.
 /// Presentation only; the core remains the sole authority.
 pub fn build_output_pager_from_content(
     content: &[PagerContentWorkspace],
@@ -606,6 +612,7 @@ pub fn build_output_pager_from_content(
     monitor_full: Rect,
     taskbar: &TaskbarFacts,
     focused_highlight: (u8, u8, u8),
+    drawn_rev: Option<u64>,
 ) -> Result<OutputPager, PagerRefusal> {
     let ids: Vec<String> = content.iter().map(|row| row.id.clone()).collect();
     let strip = strip_for_taskbar(monitor_full, taskbar, ids.len())?;
@@ -647,6 +654,7 @@ pub fn build_output_pager_from_content(
         active_index,
         dpi: taskbar.dpi,
         focused_highlight,
+        drawn_rev,
     })
 }
 
@@ -746,19 +754,6 @@ pub const fn pager_suppression(gate: PagerGate) -> Option<&'static str> {
 #[must_use]
 pub const fn pager_covering(blocked: bool, managed_overlay: bool) -> bool {
     blocked || managed_overlay
-}
-
-/// Verify one drained pager click over plain keys: true only when the
-/// rendered output is still known and the rendered workspace is still live
-/// on it.
-#[must_use]
-pub fn verify_output_scoped_select_keys(
-    rendered: &SelectScope,
-    outputs: &[String],
-    ring: &[String],
-) -> bool {
-    outputs.iter().any(|key| key == &rendered.output)
-        && ring.iter().any(|id| id == &rendered.workspace)
 }
 
 /// Live settings accessor for the default-on opt-out.
@@ -996,6 +991,7 @@ mod tests {
             new_full,
             &bar,
             focused_highlight(),
+            None,
         )
         .expect("frames fresh");
         assert_eq!(frame.dpi, 144);
@@ -1017,6 +1013,7 @@ mod tests {
                 full(),
                 &bar,
                 focused_highlight(),
+                None,
             )
             .expect_err("autohide never frames"),
             PagerRefusal::TaskbarAutohide
@@ -1149,6 +1146,7 @@ mod tests {
                 secondary_full(),
                 bar,
                 focused_highlight(),
+                None,
             )
         };
         let pager = frame_for(&secondary_bar_right_anchored()).expect("secondary frames");
@@ -1843,30 +1841,6 @@ mod tests {
     }
 
     #[test]
-    fn output_scoped_select_needs_no_focus() {
-        let ring = ring_ids();
-        let outputs = vec!["mon-a".to_owned(), "mon-b".to_owned()];
-        let second = ring[1].clone();
-        // Live on its own output verifies without that output focused.
-        assert!(verify_output_scoped_select_keys(
-            &SelectScope::new("mon-b", &second, 2),
-            &outputs,
-            &ring
-        ));
-        // Unknown workspace or output refuses with no ordinal fallback.
-        assert!(!verify_output_scoped_select_keys(
-            &SelectScope::new("mon-b", "ws-gone", 2),
-            &outputs,
-            &ring
-        ));
-        assert!(!verify_output_scoped_select_keys(
-            &SelectScope::new("mon-gone", &second, 2),
-            &outputs,
-            &ring
-        ));
-    }
-
-    #[test]
     fn snapshot_hash_is_stable_and_change_gated() {
         let frame_for = |active: &str| {
             build_output_pager_from_content(
@@ -1876,6 +1850,7 @@ mod tests {
                 full(),
                 &bottom_bar(),
                 focused_highlight(),
+                None,
             )
             .expect("fits")
         };
@@ -1912,6 +1887,7 @@ mod tests {
                 full(),
                 &bar,
                 focused_highlight(),
+                None,
             )
             .expect("fits")
         };
@@ -1980,6 +1956,7 @@ mod tests {
             full(),
             &bottom_bar(),
             focused_highlight(),
+            None,
         )
         .expect("fits");
         // All 24 members render miniatures: ordinary crowding only adds
@@ -2023,6 +2000,7 @@ mod tests {
                 full(),
                 &bottom_bar(),
                 focused_highlight(),
+                None,
             )
             .expect("fits")
         };
@@ -2110,6 +2088,7 @@ mod tests {
             full(),
             &bottom_bar(),
             focused_highlight(),
+            None,
         )
         .expect("fits");
         assert_eq!(
@@ -2160,6 +2139,7 @@ mod tests {
             full(),
             &bottom_bar(),
             focused_highlight(),
+            None,
         )
         .expect("fits");
         assert_eq!(pager.cells[0].mini_keys, vec![plain, tiled, overlay]);
@@ -2192,6 +2172,7 @@ mod tests {
             full(),
             &bottom_bar(),
             focused_highlight(),
+            None,
         )
         .expect("fits");
         assert_eq!(pager.ids, vec!["ws-a".to_owned(), "ws-b".to_owned()]);
@@ -2277,6 +2258,7 @@ mod tests {
                 full(),
                 &bottom_bar(),
                 highlight,
+                None,
             )
             .expect("fits")
         };
@@ -2313,6 +2295,7 @@ mod tests {
                 full(),
                 &bottom_bar(),
                 focused_highlight(),
+                None,
             )
             .expect("fits")
         };

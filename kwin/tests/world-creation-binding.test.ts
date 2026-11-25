@@ -167,7 +167,7 @@ const ACC = (gen: string, source: string, nativeInvalid: string, rev: string, ex
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [], workspaces: [], outputs: [], windows: [],

@@ -356,6 +356,7 @@ pub(super) fn foreground_pager_elevated_detailed(me: &ProcessIdentity) -> Elevat
 /// Actual-foreground hidden member selects its workspace. Only a real
 /// foreground change to an exactly verified hidden member switches; the
 /// `Wake` event alone never does. Returns the settled select effect or `None`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn poll_foreground_workspace(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -364,6 +365,7 @@ pub(super) fn poll_foreground_workspace(
     fulls: &[Rect],
     areas: &[MonitorArea],
     observed: &mut [ObservedWindow],
+    retained: &[RetainedRow],
 ) -> Option<SelectEffect> {
     let foreground = crate::ffi::foreground_window();
     if foreground == 0 || foreground == state.last_foreground {
@@ -411,8 +413,7 @@ pub(super) fn poll_foreground_workspace(
         start,
     };
     let effect = workspace_do_select(
-        state, me, store, dir, fulls, areas, observed, &output, &workspace, &ctx, None, false,
-        false,
+        state, me, store, dir, fulls, areas, observed, retained, &output, &workspace, None, &ctx,
     );
     log_workspace_action(
         state,
@@ -562,11 +563,12 @@ pub(super) fn workspace_maintenance(
         foreground,
         fulls,
         super::observation::sample_cursor(),
-        false,
     );
     // Foreground-driven select only on an actual foreground change to an
     // exactly verified hidden member; event-only wakes never switch.
-    if poll_foreground_workspace(state, me, store, dir, fulls, areas, &mut observed).is_some() {
+    if poll_foreground_workspace(state, me, store, dir, fulls, areas, &mut observed, &retained)
+        .is_some()
+    {
         return;
     }
     rehide_pass(state, me, store);

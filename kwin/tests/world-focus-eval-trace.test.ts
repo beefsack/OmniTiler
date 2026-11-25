@@ -72,7 +72,7 @@ function replyText(opts: {
         source: opts.req ?? "req-1", nativeInvalid: "1", clock: "1",
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         operationSettled: [], nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],

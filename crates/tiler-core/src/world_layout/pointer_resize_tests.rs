@@ -188,7 +188,15 @@ impl PointerResizeRig {
         let base = self.layout.accepted_revision(k);
         let outcome = self
             .layout
-            .pointer_resize(k, subject, direction, boundary, &active, &obs)
+            .pointer_resize(
+                k,
+                subject,
+                direction,
+                boundary,
+                &active,
+                &obs,
+                crate::policy::ScaledResize::unscaled(),
+            )
             .unwrap_or_else(|e| panic!("pointer {direction:?}@{boundary}: {e:?}"));
         assert_eq!(outcome.base_revision, base);
         assert_eq!(outcome.revision, base + 1);
@@ -220,6 +228,7 @@ impl PointerResizeRig {
                 boundary_v,
                 &active,
                 &obs,
+                crate::policy::ScaledResize::unscaled(),
             )
             .unwrap_or_else(|e| {
                 panic!("corner {direction_h:?}@{boundary_h} {direction_v:?}@{boundary_v}: {e:?}")
@@ -409,15 +418,29 @@ fn clamp_plans_at_minimum_and_outside_domain_is_malformed() {
     let tobs = t.domain_observed(&tk, vec![]);
     let rev_before = t.layout.accepted_revision(&tk);
     assert_eq!(
-        t.layout
-            .pointer_resize(&tk, &tw, Direction::Left, 900, &tw, &tobs),
+        t.layout.pointer_resize(
+            &tk,
+            &tw,
+            Direction::Left,
+            900,
+            &tw,
+            &tobs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::MalformedInput))
     );
     assert_eq!(t.layout.accepted_revision(&tk), rev_before);
     // Far outside the work area is also malformed (no project bound).
     assert_eq!(
-        t.layout
-            .pointer_resize(&tk, &tw, Direction::Left, 20000, &tw, &tobs),
+        t.layout.pointer_resize(
+            &tk,
+            &tw,
+            Direction::Left,
+            20000,
+            &tw,
+            &tobs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::MalformedInput))
     );
     assert_eq!(t.layout.accepted_revision(&tk), rev_before);
@@ -435,8 +458,15 @@ fn minimum_exhausted_and_single_leaf_refuse_unchanged() {
     let obs = r.domain_observed(&k, vec![]);
     let rev_before = r.layout.accepted_revision(&k);
     assert_eq!(
-        r.layout
-            .pointer_resize(&k, &w2, Direction::Left, 20, &w2, &obs),
+        r.layout.pointer_resize(
+            &k,
+            &w2,
+            Direction::Left,
+            20,
+            &w2,
+            &obs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::Unchanged))
     );
     assert_eq!(r.layout.accepted_revision(&k), rev_before);
@@ -449,8 +479,15 @@ fn minimum_exhausted_and_single_leaf_refuse_unchanged() {
     let tobs = t.domain_observed(&tk, vec![]);
     let trev_before = t.layout.accepted_revision(&tk);
     assert_eq!(
-        t.layout
-            .pointer_resize(&tk, &tw, Direction::Left, 50, &tw, &tobs),
+        t.layout.pointer_resize(
+            &tk,
+            &tw,
+            Direction::Left,
+            50,
+            &tw,
+            &tobs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::Unchanged))
     );
     assert_eq!(t.layout.accepted_revision(&tk), trev_before);
@@ -501,11 +538,27 @@ fn repeated_outcomes_are_deterministic() {
     let obsb = b.domain_observed(&kb, vec![]);
     let pa = a
         .layout
-        .pointer_resize(&ka, &wa, Direction::Left, 390, &wa, &obsa)
+        .pointer_resize(
+            &ka,
+            &wa,
+            Direction::Left,
+            390,
+            &wa,
+            &obsa,
+            crate::policy::ScaledResize::unscaled(),
+        )
         .expect("a");
     let pb = b
         .layout
-        .pointer_resize(&kb, &wb, Direction::Left, 390, &wb, &obsb)
+        .pointer_resize(
+            &kb,
+            &wb,
+            Direction::Left,
+            390,
+            &wb,
+            &obsb,
+            crate::policy::ScaledResize::unscaled(),
+        )
         .expect("b");
     assert_eq!(pa, pb);
     assert_eq!(a.layout.tree(&ka), b.layout.tree(&kb));
@@ -517,7 +570,15 @@ fn repeated_outcomes_are_deterministic() {
     let obsc = c.domain_observed(&kc, vec![]);
     let pc = c
         .layout
-        .pointer_resize(&kc, &wc, Direction::Left, 390, &wc, &obsc)
+        .pointer_resize(
+            &kc,
+            &wc,
+            Direction::Left,
+            390,
+            &wc,
+            &obsc,
+            crate::policy::ScaledResize::unscaled(),
+        )
         .expect("c");
     assert_eq!(pa.operation.new_shares, pc.operation.new_shares);
 }
@@ -533,21 +594,42 @@ fn unknown_domain_window_and_inactive_edge_refusals() {
     let rev_before = r.layout.accepted_revision(&k);
 
     assert_eq!(
-        r.layout
-            .pointer_resize(&key("out-9", "ws-1"), &w2, Direction::Left, 391, &w2, &obs,),
+        r.layout.pointer_resize(
+            &key("out-9", "ws-1"),
+            &w2,
+            Direction::Left,
+            391,
+            &w2,
+            &obs,
+            crate::policy::ScaledResize::unscaled(),
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain))
     );
     assert_eq!(
-        r.layout
-            .pointer_resize(&k, &win("win-9"), Direction::Left, 391, &w2, &obs),
+        r.layout.pointer_resize(
+            &k,
+            &win("win-9"),
+            Direction::Left,
+            391,
+            &w2,
+            &obs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::UnknownWindow))
     );
     // Pointer-only decoupling: an inactive tiled window does not refuse as
     // focus-mismatch. win-1 is the left leaf while win-2 is active; Left has
     // no neighbor for the leftmost leaf, so it refuses as unchanged.
     assert_eq!(
-        r.layout
-            .pointer_resize(&k, &win("win-1"), Direction::Left, 391, &w2, &obs),
+        r.layout.pointer_resize(
+            &k,
+            &win("win-1"),
+            Direction::Left,
+            391,
+            &w2,
+            &obs,
+            crate::policy::ScaledResize::unscaled()
+        ),
         Err(LayoutFailure::Semantics(RefusalKind::Unchanged))
     );
     assert_eq!(r.layout.accepted_revision(&k), rev_before);
@@ -622,7 +704,15 @@ fn pointer_two_sided_correction_preserved() {
     let obs = r.domain_observed(&k, vec![]);
     let outcome = r
         .layout
-        .pointer_resize(&k, &w, Direction::Left, 390, &w, &obs)
+        .pointer_resize(
+            &k,
+            &w,
+            Direction::Left,
+            390,
+            &w,
+            &obs,
+            crate::policy::ScaledResize::unscaled(),
+        )
         .expect("pointer plans");
     assert!(!outcome.operation.new_shares.contains(&0));
     assert_ne!(outcome.operation.new_shares, outcome.operation.old_shares);
@@ -683,6 +773,7 @@ fn corner_refuses_unchanged_when_either_axis_is_a_noop() {
         310,
         &w,
         &obs,
+        crate::policy::ScaledResize::unscaled(),
     );
     assert_eq!(
         refused,
@@ -701,6 +792,7 @@ fn corner_refuses_unchanged_when_either_axis_is_a_noop() {
         300,
         &w,
         &obs,
+        crate::policy::ScaledResize::unscaled(),
     );
     assert_eq!(
         refused,
@@ -724,6 +816,7 @@ fn corner_refuses_same_axis_pair_as_malformed() {
         700,
         &w,
         &obs,
+        crate::policy::ScaledResize::unscaled(),
     );
     assert_eq!(
         refused,
@@ -824,6 +917,7 @@ fn drag23_inactive_corner_resize_preserves_focus() {
             0,
             &active,
             &obs,
+            crate::policy::ScaledResize::unscaled(),
         ),
         Err(LayoutFailure::Semantics(RefusalKind::FocusMismatch))
     );
@@ -857,7 +951,15 @@ fn pointer_resize_inactive_target_with_overlay_active_plans() {
         let base = r.layout.accepted_revision(&k);
         let outcome = r
             .layout
-            .pointer_resize(&k, &win("win-1"), Direction::Right, 410, &active, &obs)
+            .pointer_resize(
+                &k,
+                &win("win-1"),
+                Direction::Right,
+                410,
+                &active,
+                &obs,
+                crate::policy::ScaledResize::unscaled(),
+            )
             .unwrap_or_else(|e| panic!("inactive drag with {flag} active: {e:?}"));
         assert_eq!(outcome.operation.new_shares, vec![409, 389]);
         let left = outcome
@@ -881,8 +983,15 @@ fn pointer_resize_inactive_target_with_overlay_active_plans() {
             }
         }
         assert_eq!(
-            r.layout
-                .pointer_resize(&k, &win("win-1"), Direction::Right, 410, &active, &flagged,),
+            r.layout.pointer_resize(
+                &k,
+                &win("win-1"),
+                Direction::Right,
+                410,
+                &active,
+                &flagged,
+                crate::policy::ScaledResize::unscaled(),
+            ),
             Err(LayoutFailure::Semantics(RefusalKind::PartialObservation))
         );
         // Keyboard resize of the inactive window still refuses focus binding.
@@ -896,6 +1005,7 @@ fn pointer_resize_inactive_target_with_overlay_active_plans() {
                 0,
                 &active,
                 &clean,
+                crate::policy::ScaledResize::unscaled(),
             ),
             Err(LayoutFailure::Semantics(RefusalKind::FocusMismatch))
         );
@@ -928,6 +1038,7 @@ fn pointer_corner_inactive_target_with_overlay_active_plans() {
             290,
             &active,
             &obs,
+            crate::policy::ScaledResize::unscaled(),
         )
         .expect("inactive corner drag with overlay active");
     let geom = |window: &str| {

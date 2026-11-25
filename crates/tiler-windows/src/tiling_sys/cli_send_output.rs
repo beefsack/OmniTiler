@@ -25,10 +25,13 @@ pub(super) fn poll_send_output_cli_request(
 ) {
     use tiler_core::directional::Direction;
     let path = dir.join(SEND_OUTPUT_REQUEST_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-        Err(_) => return,
+    // Bounded read: an oversized or non-UTF-8 body is treated as an
+    // unparseable request below, so it is consumed once with a refusal
+    // instead of being loaded unbounded or left to wedge the queue.
+    let text = match read_control_request(&path) {
+        ControlRequestRead::Body(text) => text,
+        ControlRequestRead::Missing | ControlRequestRead::Unreadable => return,
+        ControlRequestRead::Rejected => String::new(),
     };
     let log_path = state.log_path.clone();
     // Best-effort labels for the pre-dispatch logs below: the actual parsed
@@ -166,7 +169,6 @@ pub(super) fn poll_send_output_cli_request(
     };
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    clear_maximize_at_admission(state, me, &retained);
     workspace_close_cleanup(state);
     let mut queued = cli_line(tick, "dispatched");
     queued["origin"] = serde_json::Value::from(origin.token.clone());

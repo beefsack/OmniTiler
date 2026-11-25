@@ -184,7 +184,7 @@ impl NativePresent {
         if hwnd_u64 == 0 {
             return None;
         }
-        let band = crate::ffi::window_exstyle(hwnd_u64) & WS_EX_TOPMOST != 0;
+        let band = crate::ffi::window_exstyle_checked(hwnd_u64)? & WS_EX_TOPMOST != 0;
         Some(band)
     }
 

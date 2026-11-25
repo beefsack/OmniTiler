@@ -286,7 +286,7 @@ function makeHarness(scopeClass?: string | readonly string[], opts: { floatInten
             gestureSettledAssoc: opts.gestureSettledAssoc ?? null,
             operationSettled: opts.operationSettled ?? [],
             nativeCreations: opts.nativeCreations ?? [],
-            warpCursor: null,
+            warpRequest: null,
             intentDesired: opts.intentDesired ?? [],
             switchSettled: [],
             diagnostics: [],

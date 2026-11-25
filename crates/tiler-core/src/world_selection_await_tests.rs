@@ -215,6 +215,8 @@ fn report(
         presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -9095,6 +9097,8 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             }],
             held_native: Vec::new(),
             cursor: None,
+            pointer_activity: None,
+            warp_spent: None,
             cursor_hit: None,
             focused_global: focused.to_owned(),
             foreground_known: !focused.is_empty(),

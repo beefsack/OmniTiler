@@ -63,6 +63,7 @@ fn facts() -> crate::tiling::WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -219,7 +220,6 @@ fn seeded_disagreement(
         101,
         &fulls(),
         cursor,
-        false,
     )
     .expect("seed converges");
     assert!(reply.ready);
@@ -306,7 +306,7 @@ fn sequencer_envelopes_cursor_targeting_fields() {
     inputs.cursor = Some((900, 100));
     let captured = capture_world(&inputs, Some(&observed), &[], &areas(), 101);
     let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let report = seq.assemble(&captured, 7, None, None, 0);
+    let report = seq.assemble(&captured, 7, None, None, 0, None);
     // v4 carries switch targeting and cursor policy as handshake settings,
     // never report fields: the capture projects them for the settings
     // sync, and the assembled report carries only the sampled cursor.
@@ -567,19 +567,19 @@ fn gaming_lane_reports_no_cursor() {
         101,
         &fulls(),
         None,
-        true,
     )
     .expect("limited tick converges");
     assert_eq!(state.world.engine().last_cursor(), None);
-    // The paused game lane publishes an empty presentation ingress (v4 has
-    // no pause lane): the border has no target and the underlay hides,
-    // never a projection under the game. Pager retention is core-owned
-    // workspace paint state; v4 keeps its last live frames until departure,
-    // so this lane proves the suppressed ingress, not pager erasure.
+    // Removing the adapter pause lane leaves the truthful foreground ingress
+    // in place: the core projects the border for the observed focused member
+    // (`win-a`) even though this lane sampled no cursor. The old `NoTarget`
+    // verdict was the adapter's blanked ingress, never the core's truth.
+    assert!(reply.presentation.border.visible);
     assert_eq!(
-        reply.presentation.border.reason,
-        Some(tiler_core::world_report::BorderHideReasonV4::NoTarget)
+        reply.presentation.border.subject,
+        Some(tiler_core::directional::WindowId("win-a".to_owned()))
     );
+    assert!(reply.presentation.border.reason.is_none());
     assert!(matches!(
         reply.presentation.underlay,
         tiler_core::world_presentation::PresentationUnderlay::Hidden { .. }

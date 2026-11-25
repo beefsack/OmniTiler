@@ -339,11 +339,51 @@ pub(super) fn flush_rehide_diag(state: &mut TileLoop) -> Option<serde_json::Valu
     }))
 }
 
+/// One genuine hidden-claim reveal actuated by the native owner tick: the
+/// opaque member token, the identity-fenced outcome, the categorical failure
+/// detail, the operation phase, and the monotonic stamp of the actuation.
+/// Recorded by [`LiveNative::commit_reveal_with`](super::world_native) only
+/// when a committed hide claim existed, so `workspace-reveal` rows mark a
+/// real hide→show transition and never a bare setter call.
+pub(super) struct RevealRecord {
+    pub(super) token: Option<String>,
+    pub(super) outcome: &'static str,
+    pub(super) detail: Option<&'static str>,
+    pub(super) phase: Option<&'static str>,
+    pub(super) mono_ms: u64,
+}
+
+/// Emit one production `workspace-reveal` row per recorded genuine reveal.
+/// `correlation` is the owner tick's monotonic correlation (`tick-<n>`);
+/// `elapsed_ms` is the actuation-to-log offset, never a fabricated action
+/// duration.
+pub(super) fn emit_reveal_records(
+    log_path: &Path,
+    tick: u64,
+    correlation: &str,
+    records: &[RevealRecord],
+) {
+    let now = log_mono_ms();
+    for record in records {
+        log_json_at(
+            log_path,
+            reveal_log_line(
+                tick,
+                correlation,
+                record.token.as_deref(),
+                record.outcome,
+                record.detail,
+                record.phase,
+                now.saturating_sub(record.mono_ms),
+            ),
+        );
+    }
+}
+
 /// Production `workspace-reveal` payload: opaque token (null when unknown),
 /// categorical outcome/detail, tick, action correlation, monotonic elapsed
 /// time from the action start, and the operation phase (`None` for the
 /// ordinary reveal leg, `Some("rollback")` for narrow-recovery reveals).
-#[cfg(test)]
 pub(super) fn reveal_log_line(
     tick: u64,
     correlation: &str,
@@ -758,10 +798,10 @@ pub(super) fn flush_visibility(state: &mut TileLoop) -> Option<serde_json::Value
 /// live Engine exception bit for its workspace domain. Pure read.
 fn exc_mask_for(state: &TileLoop, key: &crate::native_guards::WindowKey, token: &str) -> u8 {
     let mut mask = 0u8;
-    if state.floated.contains(key) {
+    if state.floating_of(key) {
         mask |= LANE_FLOAT;
     }
-    if state.sticky.contains_key(key) {
+    if state.sticky_of(key) {
         mask |= LANE_STICKY;
     }
     if state.born_fullscreen.contains(key) {

@@ -40,9 +40,8 @@
 //!   `primary_output` derives from the `areas.first()` device, never from
 //!   managed output order (which may be reordered relative to the native
 //!   list).
-//! - Owner intent lanes (`floated`, `sticky`, `restart_reject_hold`,
-//!   `fixed_auto_seen`, `fixed_tile_overrides`, `fixed_origin_overrides`,
-//!   `born_fullscreen`, `born_first_exit`), lifetime tags (`member_tags`),
+//! - Snapshot lanes (`fixed_auto_seen`, `born_fullscreen`,
+//!   `born_first_exit`), lifetime tags (`member_tags`),
 //!   stored identities (`member_identity`), snapshots (`member_rects` /
 //!   `float_rects`), recorded constraints (`hint_logged`) and the durable
 //!   hide claims (`hidden_claims`) are consumed read-only. The intent
@@ -64,16 +63,16 @@
 //!   native facts and Windows has neither (`sticky: None`,
 //!   `NativeWorkspaceFact::Omitted`), so no native rows exist. The neutral
 //!   facts the recorded observation proves ride: `tool_window`
-//!   (`WS_EX_TOOLWINDOW`), `owned` (`GW_OWNER`), `executable` (the
-//!   bound/observed process image), `process_id` (the lifetime key's pid)
-//!   and `window_type: Dialog` for the proven generic dialog class. Every
-//!   other neutral fact stays `None`: `privileged` because the observation
-//!   never reads integrity, `class`/`title`/`role`/`app_id` because the
-//!   class and title reads are not carried into the observation this pure
-//!   capture consumes, and the remaining lanes because Windows has no
-//!   producer. Never a fabricated `false`. `hints` is the recorded
-//!   constraint (`hint_logged`) or `None`, never an empty-hint stand-in.
-//!   Two fresh-read lanes supply these facts: the ordinary visible
+//!   (`WS_EX_TOOLWINDOW`), `owned` (`GW_OWNER`), `above` (`WS_EX_TOPMOST`),
+//!   `executable` (the bound/observed process image), `process_id` (the
+//!   lifetime key's pid) and `window_type: Dialog` for the proven generic
+//!   dialog class. Every other neutral fact stays `None`: `privileged`
+//!   because the observation never reads integrity, `class`/`title`/`role`/
+//!   `app_id` because the class and title reads are not carried into the
+//!   observation this pure capture consumes, and the remaining lanes because
+//!   Windows has no producer. Never a fabricated `false`. `hints` is the
+//!   recorded constraint (`hint_logged`) or `None`, never an empty-hint
+//!   stand-in. Two fresh-read lanes supply these facts: the ordinary visible
 //!   observation (`WindowFacts`) and the lightweight per-claim read for a
 //!   project-suppressed member with no live observed row ([`HiddenClaimRead`]).
 //!   `host_hidden` is the fresh native cloak read (never project
@@ -158,11 +157,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_report::{
-    AuthorityScope, HeldScreenRow, NativeWorkspaceFact, OutputIdentity, PresentationIngressV4,
-    PresentationPagerFrameV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
-    VisibilityFact, WindowFact,
+    AuthorityScope, FullscreenOwner, HeldScreenRow, IntentRecord, MAX_IDENTITY_TEXT_BYTES,
+    NativeWorkspaceFact, OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4,
+    RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport, VisibilityFact, WindowFact,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW;
+use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_TOOLWINDOW, WS_EX_TOPMOST};
 
 /// Normalized foreground facts for one tick's uniform presentation ingress
 /// (stage 5): the genuinely observed foreground lifetime (proof-verified
@@ -202,14 +201,9 @@ pub(super) struct OwnerInputs<'a> {
     pub member_rects: &'a HashMap<String, Rect>,
     pub float_rects: &'a HashMap<String, Rect>,
     pub hint_logged: &'a HashMap<String, WindowSizeHints>,
-    pub sticky: &'a BTreeMap<WindowKey, bool>,
-    pub floated: &'a BTreeSet<WindowKey>,
-    pub restart_reject_hold: &'a BTreeSet<WindowKey>,
     pub born_fullscreen: &'a BTreeSet<WindowKey>,
     pub born_first_exit: &'a BTreeSet<WindowKey>,
     pub fixed_auto_seen: &'a BTreeSet<WindowKey>,
-    pub fixed_tile_overrides: &'a BTreeSet<WindowKey>,
-    pub fixed_origin_overrides: &'a BTreeSet<WindowKey>,
     pub hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
     /// Fresh lightweight live reads for project-suppressed claim lifetimes
     /// with no live observed row (T4), keyed by the exact lifetime. Built by
@@ -218,6 +212,18 @@ pub(super) struct OwnerInputs<'a> {
     /// their own reads. A claim with no entry holds as unreadable rather
     /// than inventing suppression or host hiding.
     pub hidden_reads: Option<&'a BTreeMap<WindowKey, HiddenClaimRead>>,
+    /// Owned fullscreen metadata for this tick's bound lifetimes, keyed by
+    /// the exact lifetime (built by the tick from the marker read before
+    /// capture, or `None` for offline fixtures). A fullscreen fact whose key
+    /// has no entry is app-owned: absence of metadata never proves the
+    /// project owns the entry, so it is never exitable here.
+    pub(super) fullscreen_meta: Option<&'a BTreeMap<WindowKey, super::fullscreen::FullscreenMeta>>,
+    /// Canonical marker-storage observations for this tick's bound
+    /// lifetimes, keyed by the exact lifetime (built by the tick before
+    /// capture, or `None` for offline fixtures). A key with no entry
+    /// publishes no intent record: an unprovided read is unknown, never an
+    /// inferred desire.
+    pub(super) intent_storage: Option<&'a BTreeMap<WindowKey, super::world_diff::IntentStorage>>,
     pub minimized_omitted: &'a HashSet<WindowKey>,
     pub pending_closed: &'a BTreeMap<String, PendingClosed>,
     pub scope: &'a [String],
@@ -244,6 +250,9 @@ pub(super) struct OwnerInputs<'a> {
     /// Mechanical device-to-wire-output map (native device keys to opaque
     /// `oN` ids). Native-wire ids only, never rings/views/tiling/history.
     pub output_tokens: &'a HashMap<String, String>,
+    /// Adapter-read physical identity per live GDI device name (same keys as
+    /// `areas[].device`). Absent entry is explicit unknown.
+    pub monitor_identities: &'a HashMap<String, OutputIdentity>,
     /// Adapter-retained cached output context as a neutral device fact
     /// (empty when none): the report maps it to wire for the core-owned
     /// migration/control action legs. Never an adapter output decision.
@@ -266,14 +275,26 @@ pub(super) struct OwnerInputs<'a> {
     /// Classified focused Move subject token (`""` when none): the move arm
     /// of the underlay trigger.
     pub presentation_move: String,
-    /// Focused-fullscreen-game lane: the core skips presentation work
-    /// (hidden shapes, empty pager) instead of projecting under the game.
-    pub presentation_paused: bool,
     /// Native top-to-bottom stacking snapshot from the latest observation
     /// (first is topmost). Capture maps it to opaque lifetimes for the
     /// pager order; unknown keys drop, and an empty snapshot falls back to
     /// observed-then-retained order.
     pub presentation_native_order: Vec<crate::native_guards::WindowKey>,
+}
+
+#[cfg(test)]
+impl<'a> OwnerInputs<'a> {
+    /// Offline fixture seam: ride the canonical intent-record lane exactly
+    /// as a production tick's durable marker read does. `inputs()` leaves
+    /// the lane absent (no inferred desire); tests modeling durable
+    /// sticky/float markers attach one map for the whole fixture.
+    pub(super) fn with_intent_storage(
+        mut self,
+        storage: &'a BTreeMap<WindowKey, super::world_diff::IntentStorage>,
+    ) -> Self {
+        self.intent_storage = Some(storage);
+        self
+    }
 }
 
 impl TileLoop {
@@ -289,20 +310,16 @@ impl TileLoop {
         member_rects: &'a HashMap<String, Rect>,
         float_rects: &'a HashMap<String, Rect>,
         hint_logged: &'a HashMap<String, WindowSizeHints>,
-        sticky: &'a BTreeMap<WindowKey, bool>,
-        floated: &'a BTreeSet<WindowKey>,
-        restart_reject_hold: &'a BTreeSet<WindowKey>,
         born_fullscreen: &'a BTreeSet<WindowKey>,
         born_first_exit: &'a BTreeSet<WindowKey>,
         fixed_auto_seen: &'a BTreeSet<WindowKey>,
-        fixed_tile_overrides: &'a BTreeSet<WindowKey>,
-        fixed_origin_overrides: &'a BTreeSet<WindowKey>,
         hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
         minimized_omitted: &'a HashSet<WindowKey>,
         pending_closed: &'a BTreeMap<String, PendingClosed>,
         scope: &'a [String],
         settings_live: &'a Option<LiveSettings>,
         output_tokens: &'a HashMap<String, String>,
+        monitor_identities: &'a HashMap<String, OutputIdentity>,
         active_output: &'a str,
         applied_homing: &'a HashMap<String, (String, String)>,
         applied_views: &'a HashMap<String, String>,
@@ -313,7 +330,6 @@ impl TileLoop {
         presentation_foreground: Option<PresentationForeground>,
         presentation_chord: bool,
         presentation_move: String,
-        presentation_paused: bool,
         presentation_native_order: Vec<crate::native_guards::WindowKey>,
     ) -> OwnerInputs<'a> {
         OwnerInputs {
@@ -323,21 +339,19 @@ impl TileLoop {
             member_rects,
             float_rects,
             hint_logged,
-            sticky,
-            floated,
-            restart_reject_hold,
             born_fullscreen,
             born_first_exit,
             fixed_auto_seen,
-            fixed_tile_overrides,
-            fixed_origin_overrides,
             hidden_claims,
             hidden_reads: None,
+            fullscreen_meta: None,
+            intent_storage: None,
             minimized_omitted,
             pending_closed,
             scope,
             settings_live,
             output_tokens,
+            monitor_identities,
             active_output,
             applied_homing,
             applied_views,
@@ -348,7 +362,6 @@ impl TileLoop {
             presentation_foreground,
             presentation_chord,
             presentation_move,
-            presentation_paused,
             presentation_native_order,
         }
     }
@@ -366,21 +379,19 @@ impl TileLoop {
             member_rects: &self.member_rects,
             float_rects: &self.float_rects,
             hint_logged: &self.hint_logged,
-            sticky: &self.sticky,
-            floated: &self.floated,
-            restart_reject_hold: &self.restart_reject_hold,
             born_fullscreen: &self.born_fullscreen,
             born_first_exit: &self.born_first_exit,
             fixed_auto_seen: &self.fixed_auto_seen,
-            fixed_tile_overrides: &self.fixed_tile_overrides,
-            fixed_origin_overrides: &self.fixed_origin_overrides,
             hidden_claims: &self.hidden_claims,
             hidden_reads: None,
+            fullscreen_meta: None,
+            intent_storage: Some(&self.intent_snapshot),
             minimized_omitted: &self.minimized_omitted,
             pending_closed: &self.pending_closed,
             scope: &self.scope,
             settings_live: &self.settings_live,
             output_tokens: &self.output_tokens,
+            monitor_identities: &self.monitor_identities,
             active_output: self.active_output.as_str(),
             applied_homing: &self.applied_homing,
             applied_views: &self.applied_views,
@@ -391,7 +402,6 @@ impl TileLoop {
             presentation_foreground: None,
             presentation_chord: false,
             presentation_move: String::new(),
-            presentation_paused: false,
             presentation_native_order: Vec::new(),
         }
     }
@@ -507,7 +517,7 @@ impl TileLoop {
                 pid: window.identity.pid,
                 creation: window.identity.process_creation.clone(),
             };
-            let hidden_workspace = self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+            let hidden_workspace = self.hidden_claims.contains_key(&key)
                 && self.member_home(&key).is_some_and(|loc| loc.hidden);
             Some(PresentationForeground {
                 token: window.token.clone(),
@@ -530,7 +540,7 @@ impl TileLoop {
                         creation: window.identity.process_creation.clone(),
                     };
                     let hidden_workspace =
-                        self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+                        self.hidden_claims.contains_key(&key)
                             && self.member_home(&key).is_some_and(|loc| loc.hidden);
                     Some(PresentationForeground {
                         token: window.token.clone(),
@@ -549,7 +559,7 @@ impl TileLoop {
                         creation: known.identity.process_creation.clone(),
                     };
                     let hidden_workspace =
-                        self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+                        self.hidden_claims.contains_key(&key)
                             && self.member_home(&key).is_some_and(|loc| loc.hidden);
                     Some(PresentationForeground {
                         token: known.token.clone(),
@@ -583,7 +593,7 @@ impl TileLoop {
                 pid: window.identity.pid,
                 creation: window.identity.process_creation.clone(),
             };
-            let hidden_workspace = self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+            let hidden_workspace = self.hidden_claims.contains_key(&key)
                 && self.member_home(&key).is_some_and(|loc| loc.hidden);
             foreground = Some(PresentationForeground {
                 token: window.token.clone(),
@@ -629,6 +639,11 @@ pub(super) struct CapturedWorld {
     /// held narrowly (`unreadable`) instead of carrying a fabricated scale.
     pub(super) held_screens: Vec<HeldScreenRow>,
     pub(super) windows: Vec<WindowFact>,
+    /// Canonical intent records for observed exact member lifetimes: one row
+    /// per bound token with a WindowFact this capture, sourced only from the
+    /// tick's canonical marker reads (`data` is the encoded core record,
+    /// never an inferred desire). Empty when no read proves a marker.
+    pub(super) intent_records: Vec<IntentRecord>,
     pub(super) closed: Vec<WindowId>,
     /// Cursor-first switch target for subsequent selections (report ingress
     /// only; never an adapter output decision). Backfills the default when
@@ -697,6 +712,15 @@ pub(super) struct CapturedWorld {
     /// device mapped to wire. `None` when the host designates none or the
     /// primary device has no live wire id (unknown, never a replacement).
     pub(super) primary_output: Option<OutputId>,
+    /// Foreground output resolved from the same capture: the observed foreground
+    /// frame's exact native rectangle mapped through `output_for_rect` over the
+    /// carried monitor areas and then through the mechanical `output_tokens` map
+    /// (`None` when the foreground is unknown/empty, the frame is absent, the
+    /// rectangle maps to no carried area, the device has no live wire id, or the
+    /// resolved output disagrees with the foreground WindowFact's output). The
+    /// sequencer publishes it as `PresentationIngressV4.foreground_out`; a
+    /// disagreement fail-closes to `None` (the core then falls back to the fact).
+    pub(super) foreground_output: Option<OutputId>,
     /// Uniform presentation ingress (stage 5): normalized foreground,
     /// movement, chord, stacking order and live pager frames. The sequencer
     /// envelopes it as `PresentationRowV4::Valid`; the core publishes the
@@ -715,54 +739,25 @@ pub(super) struct CapturedWorld {
     pub(super) held_members: Vec<String>,
 }
 
-/// Adapter-local snapshot slot selection for one hidden row: sticky wins
-/// unconditionally; the D4 automatic-fixed latch floats unless an explicit
-/// tile win dominates; marker-derived adapter float intent (floats,
-/// restart-holds, born holds) floats unless a first-exit mark already
-/// returned the member to the tiled lane. It only picks the retained float
-/// vs tile frame source for a hidden snapshot; v4 publishes no float
-/// intent, so this is never a report fact. No legacy Engine exception
-/// lane: the core owns float exceptions outright.
-fn capture_floating(
-    state: &OwnerInputs<'_>,
-    key: &crate::native_guards::WindowKey,
-    hidden: bool,
-) -> bool {
-    let sticky = state.sticky.contains_key(key);
-    let (fixed_auto, fixed_suppress) = capture_fixed(state, key);
-    crate::native_guards::float_lane(
-        sticky,
-        fixed_auto,
-        fixed_suppress,
+/// Pick the hidden snapshot cache using the exact member's canonical
+/// intent, the fixed-size observation, and the born-fullscreen hold.
+fn capture_floating(state: &OwnerInputs<'_>, key: &WindowKey) -> bool {
+    let storage = state.intent_storage.and_then(|map| map.get(key));
+    crate::native_guards::hidden_snapshot_uses_float(
+        storage.is_some_and(|s| s.sticky_prior.is_some()),
+        state.fixed_auto_seen.contains(key),
         state.born_first_exit.contains(key),
-        state.floated.contains(key),
-        state.restart_reject_hold.contains(key),
+        storage.and_then(|s| s.float),
         state.born_fullscreen.contains(key),
-        hidden,
     )
-}
-
-/// The three fixed-size lanes, preserved distinctly for the snapshot-slot
-/// decision: the explicit tile-win lanes (`fixed_tile_overrides` runtime
-/// plus `fixed_origin_overrides` durable) dominate as `fixed_suppress`; the
-/// D4 automatic latch (`fixed_auto_seen`) reports only when neither sticky
-/// intent nor a durable win reframes it (production stamp parity: sticky
-/// dominates automatic origin and durable wins never acquire it). No lane
-/// is published in v4.
-fn capture_fixed(state: &OwnerInputs<'_>, key: &crate::native_guards::WindowKey) -> (bool, bool) {
-    let durable =
-        state.fixed_tile_overrides.contains(key) || state.fixed_origin_overrides.contains(key);
-    let sticky = state.sticky.contains_key(key);
-    let automatic = state.fixed_auto_seen.contains(key) && !sticky && !durable;
-    (automatic, durable)
 }
 
 /// One project-suppressed (`SW_HIDE`) claim lifetime's lightweight live read
 /// (T4). Such a member is absent from the ordinary visible observation, so
 /// capture cannot reuse `WindowFacts`; these are the only native inputs that
 /// classify it truthfully: the shown state (`visibility.visible`), the DWM
-/// cloak (`host_hidden`, not project suppression), the tool-window style
-/// bit, native ownership, and the generic dialog kind.
+/// cloak (`host_hidden`, not project suppression), the tool-window and
+/// topmost style bits, native ownership, and the generic dialog kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HiddenClaimRead {
     /// Fresh `IsWindowVisible` read. Project-suppressed windows normally read
@@ -774,6 +769,8 @@ pub(super) struct HiddenClaimRead {
     pub owned: bool,
     /// `WS_EX_TOOLWINDOW` set.
     pub tool_window: bool,
+    /// `WS_EX_TOPMOST` set.
+    pub topmost: bool,
     /// Unowned generic Win32 dialog class (`#32770`), mirroring the observed
     /// `facts.dialog` kind gate. The class text itself stays unpublished:
     /// `class` is declared unavailable on this route.
@@ -791,7 +788,7 @@ pub(super) fn read_hidden_claim(hwnd: u64) -> Option<HiddenClaimRead> {
     let visible = crate::ffi::is_visible(hwnd);
     let cloaked = crate::ffi::cloaked(hwnd)?;
     crate::ffi::window_style_checked(hwnd)?;
-    let exstyle = crate::ffi::window_exstyle(hwnd);
+    let exstyle = crate::ffi::window_exstyle_checked(hwnd)?;
     let owned = crate::ffi::owner_of(hwnd) != 0;
     let class = crate::ffi::try_class_name(hwnd)?;
     Some(HiddenClaimRead {
@@ -799,6 +796,7 @@ pub(super) fn read_hidden_claim(hwnd: u64) -> Option<HiddenClaimRead> {
         cloaked,
         owned,
         tool_window: exstyle & WS_EX_TOOLWINDOW != 0,
+        topmost: exstyle & WS_EX_TOPMOST != 0,
         dialog: !owned && class == crate::tiling::GENERIC_DIALOG_CLASS,
     })
 }
@@ -853,13 +851,19 @@ struct FactSeed<'a> {
     flags: Option<&'a WindowFacts>,
     /// Lightweight live read for a project-suppressed claim with no live
     /// observed row: the only source of shown state, cloak, `owned`,
-    /// `tool_window`, and the generic dialog kind for that lane. Mutually
-    /// exclusive with `flags` by construction; `None` keeps the flags lane.
+    /// `tool_window`, `above`, and the generic dialog kind for that lane.
+    /// Mutually exclusive with `flags` by construction; `None` keeps the
+    /// flags lane.
     live: Option<&'a HiddenClaimRead>,
     /// Explicit host-hidden override for rows with no fresh native read
     /// (hidden-workspace claims); `None` keeps the flags-derived value.
     host_hidden: Option<bool>,
     fullscreen: Option<bool>,
+    /// Owned fullscreen metadata for this exact lifetime from the tick's
+    /// marker read (`None` for unreadable/minimized lanes and for any
+    /// lifetime without owned metadata). A fullscreen row with no metadata
+    /// is app-owned: never exitable, never a fabricated project preimage.
+    fullscreen_meta: Option<&'a super::fullscreen::FullscreenMeta>,
     maximized: Option<bool>,
     minimized: Option<bool>,
 }
@@ -889,9 +893,19 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         live,
         host_hidden,
         fullscreen,
+        fullscreen_meta,
         maximized,
         minimized,
     } = seed;
+    // Fullscreen ownership is proven only by the tick's owned metadata for
+    // this exact lifetime; a live fullscreen row without it is app-owned and
+    // never exitable through the project. Unreadable/non-fullscreen rows
+    // publish neither field (unknown, never a fabricated app default).
+    let (fullscreen_owner, fullscreen_exitable) = match fullscreen {
+        Some(true) if fullscreen_meta.is_some() => (Some(FullscreenOwner::Tiler), Some(true)),
+        Some(true) => (Some(FullscreenOwner::App), Some(false)),
+        _ => (None, None),
+    };
     WindowFact {
         window: WindowId(token.to_owned()),
         output,
@@ -911,9 +925,9 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         managed: None,
         accepts_input: None,
         activation_inhibited: None,
-        // `WS_EX_TOOLWINDOW` and `GW_OWNER` come from the same fresh read as
-        // the frame (or the claim lane's lightweight live read); a held row
-        // carries neither.
+        // `WS_EX_TOOLWINDOW`, `GW_OWNER` and `WS_EX_TOPMOST` come from the
+        // same fresh read as the frame (or the claim lane's lightweight
+        // live read); a held row carries no such fact.
         tool_window: flags
             .map(|facts| facts.tool_window)
             .or_else(|| live.map(|read| read.tool_window)),
@@ -923,7 +937,9 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         transient: None,
         modal: None,
         resizable: None,
-        above: None,
+        above: flags
+            .map(|facts| facts.topmost)
+            .or_else(|| live.map(|read| read.topmost)),
         below: None,
         owner: None,
         parent: None,
@@ -948,8 +964,8 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
             }),
         activation_policy: None,
         layer: None,
-        fullscreen_owner: None,
-        fullscreen_exitable: None,
+        fullscreen_owner,
+        fullscreen_exitable,
         // Availability is the adapter's capability to suppress this window,
         // not proof that a claim already exists: ordinary readable rows are
         // suppressible on demand, hidden rows proved it, and unreadable rows
@@ -995,31 +1011,50 @@ pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
     }
 }
 
+/// Resolve one live frame rectangle to its exact carried-output wire token.
+/// Uses the core rectangle rule over the carried monitor areas and the
+/// mechanical device->wire map only: a rectangle that names no carried area,
+/// or a device with no live wire id, is `None` (never the `display-?`
+/// fallback used by the direction-only resolver).
+fn foreground_output_for_rect(
+    areas: &[MonitorArea],
+    rect: &Rect,
+    output_tokens: &HashMap<String, String>,
+) -> Option<OutputId> {
+    // `output_for_rect` breaks an all-zero overlap tie by returning the
+    // first entry, so prove the frame actually lands on a carried area
+    // before delegating: an off-inventory rectangle (a transient or
+    // moved-away frame) reports no output rather than the first screen.
+    if !super::directional_resolution::frame_overlaps_output(areas, rect) {
+        return None;
+    }
+    let entries: Vec<tiler_core::output_selection::OutputEntry> = areas
+        .iter()
+        .map(|area| tiler_core::output_selection::OutputEntry {
+            id: OutputId(area.device.clone()),
+            rect: area.full,
+        })
+        .collect();
+    let device = tiler_core::output_selection::output_for_rect(&entries, rect)?;
+    output_tokens.get(&device.0).cloned().map(OutputId)
+}
+
 /// Uniform presentation ingress (stage 5): normalized foreground facts
 /// plus movement/chord facts from the seam, with the native top-to-bottom
 /// stacking snapshot derived from the same observed/retained products as
 /// the pager order (observed eligible members in enumeration order, then
 /// retained rows with fresh frames). Hidden members absent from both keep
 /// their retained stacking slot core-side. Unknown lifetimes never admit
-/// members. v4 carries exactly `{win, live}` pager rows: only fresh native
-/// frames ride, never the adapter's retained float/tile slots, and no
-/// adapter border/underlay style is an ingress key (the core derives it
-/// from its settings and per-output scale). The frame witness join is not
-/// implemented on Windows, so `witness` stays unknown (`None`), and no
-/// foreground-output sample exists here, so `foreground_out` is unknown
-/// (`None`) rather than a guess.
+/// members. Pager rows carry only live native frames, never retained
+/// slots or adapter styling. Capture resolves the foreground output from
+/// that frame and the carried areas; the sequencer joins it and, when it
+/// agrees with the matching fact, emits the current-observation witness.
 fn presentation_ingress(
     state: &OwnerInputs<'_>,
     observed: Option<&[ObservedWindow]>,
     retained: &[RetainedRow],
     foreground_hwnd: u64,
 ) -> PresentationIngressV4 {
-    // v4 has no pause lane: the game lane suppresses presentation by
-    // publishing an empty ingress, never by asking the core to project and
-    // then dropping the reply.
-    if state.presentation_paused {
-        return PresentationIngressV4::default();
-    }
     // Stable token per enumerated key: observed and retained rows carry
     // theirs; hidden members absent from the enumeration keep theirs in
     // `member_tokens`.
@@ -1098,7 +1133,8 @@ fn presentation_ingress(
     // The tick's own observed row is the same foreground truth when the
     // caller supplied one without a separate presentation read (offline
     // sequencer commands and any direct capture). Production ticks still
-    // carry the richer presentation facts, including ineligible windows.
+    // carry richer presentation facts, including ineligible windows. The
+    // managed foreground wire fields apply their own membership fence.
     let observed_foreground = if state.presentation_foreground.is_none() {
         observed
             .and_then(|rows| rows.iter().find(|row| row.hwnd == foreground_hwnd))
@@ -1195,6 +1231,28 @@ pub(super) fn resolve_cursor_hit(
     None
 }
 
+/// Adapter-side bound on one output identity row. Every text field must fit
+/// the core's identity grammar (`MAX_IDENTITY_TEXT_BYTES` UTF-8 bytes); an
+/// overbound row is handed to the core as fully unknown rather than
+/// truncated. The core holds a screen whose identity text breaks the
+/// grammar, so the adapter must never hand it an invalid row (and a
+/// truncated string would name a different panel).
+fn bounded_identity(identity: OutputIdentity) -> OutputIdentity {
+    let fits = |text: &Option<String>| {
+        text.as_deref()
+            .is_none_or(|value| value.len() <= MAX_IDENTITY_TEXT_BYTES)
+    };
+    if fits(&identity.manufacturer)
+        && fits(&identity.model)
+        && fits(&identity.serial)
+        && fits(&identity.connector)
+    {
+        identity
+    } else {
+        OutputIdentity::unknown()
+    }
+}
+
 /// Capture one complete world observation from the real owner plus real
 /// per-tick products. Read-only over `state`; `observed` is the current
 /// tick's enumeration output (`None` when enumeration itself failed, exactly
@@ -1254,6 +1312,7 @@ pub(super) fn capture_world(
                 live: None,
                 host_hidden: None,
                 fullscreen: None,
+                fullscreen_meta: None,
                 maximized: None,
                 minimized: None,
             }));
@@ -1275,6 +1334,7 @@ pub(super) fn capture_world(
                 live: None,
                 host_hidden: None,
                 fullscreen: None,
+                fullscreen_meta: None,
                 maximized: None,
                 minimized: Some(true),
             }));
@@ -1316,12 +1376,21 @@ pub(super) fn capture_world(
             full_rect: Some(area.full),
             work_area: Some(area.work),
             complete: !enum_failed,
-            // Effective per-monitor DPI measured at the enumeration seam:
-            // adapter units per logical pixel.
+            // Effective per-monitor DPI measured by that output's own PMv2
+            // observer: adapter units per logical pixel.
             scale: f64::from(area.dpi) / 96.0,
-            // No physical-identity producer (QDC/SetupAPI EDID) on this
-            // route yet: explicit unknown, never fabricated strings.
-            identity: OutputIdentity::unknown(),
+            // Adapter-read physical identity for this exact device; a device
+            // the map does not know is explicit unknown, never fabricated.
+            // An overbound row is unknown too: the core holds screens whose
+            // identity text breaks its grammar, so the adapter fails closed
+            // instead of handing over an invalid or truncated row.
+            identity: bounded_identity(
+                state
+                    .monitor_identities
+                    .get(&area.device)
+                    .cloned()
+                    .unwrap_or_else(OutputIdentity::unknown),
+            ),
         });
     }
     // Every device the adapter knows a live wire id for, whether or not its
@@ -1500,7 +1569,7 @@ pub(super) fn capture_world(
                 // so the visible-row eligibility gate must not turn it
                 // unreadable. Keeping the row readable preserves its
                 // logical homing (and its workspace's scope) while away.
-                let floating = capture_floating(state, &key, true);
+                let floating = capture_floating(state, &key);
                 let snapshot = crate::native_guards::hidden_snapshot_rect(
                     floating,
                     state.float_rects.get(&token).copied(),
@@ -1533,6 +1602,7 @@ pub(super) fn capture_world(
                     live: None,
                     host_hidden: None,
                     fullscreen: Some(fullscreen),
+                    fullscreen_meta: state.fullscreen_meta.and_then(|map| map.get(&key)),
                     maximized: Some(maximized),
                     minimized: Some(false),
                 }));
@@ -1562,6 +1632,7 @@ pub(super) fn capture_world(
                 live: None,
                 host_hidden: None,
                 fullscreen: Some(window.facts.captionless_fullscreen),
+                fullscreen_meta: state.fullscreen_meta.and_then(|map| map.get(&key)),
                 maximized: Some(window.facts.maximized),
                 minimized: Some(false),
             }));
@@ -1610,10 +1681,7 @@ pub(super) fn capture_world(
                     facts,
                     live_token,
                     key,
-                    state
-                        .member_rects
-                        .get(live_token)
-                        .and_then(|rect| affinity_of(rect)),
+                    state.member_rects.get(live_token).and_then(affinity_of),
                     executable,
                     state.hint_logged.get(live_token).copied(),
                     owned
@@ -1644,13 +1712,12 @@ pub(super) fn capture_world(
                 );
                 continue;
             }
-            let overlay = row.maximized || row.fullscreen;
-            let kept = state.member_rects.get(live_token).copied();
-            let rect = match (overlay, row.rect, kept) {
-                (true, _, Some(slot)) => Some(slot),
-                (_, Some(fresh), _) => Some(fresh),
-                _ => None,
-            };
+            // Prefer the live frame this tick observed; the retained tile
+            // slot is placement memory and only stands in when the row has
+            // no live frame. Neither present keeps the unreadable hold.
+            let rect = row
+                .rect
+                .or_else(|| state.member_rects.get(live_token).copied());
             let Some(rect) = rect else {
                 unreadable_fact!(
                     facts,
@@ -1663,30 +1730,22 @@ pub(super) fn capture_world(
                 );
                 continue;
             };
-            let floating = capture_floating(state, key, false);
-            let hints = crate::tiling::retained_overlay_hint(
-                state.hint_logged.get(live_token).copied(),
-                true,
-                overlay,
-                floating,
-                state.born_fullscreen.contains(key),
-                true,
-            );
-            // No fresh native read this tick: the recorded flags lane stays
-            // unknown rather than publishing a stale visibility/cloak
-            // snapshot as current.
+            // The freshly validated native read rides this row's flags lane:
+            // the overlay row is readable and its cloak/ownership/style
+            // facts are current, not stale.
             facts.push(window_fact(FactSeed {
                 token: live_token.as_str(),
                 key,
                 executable,
                 suppression_owned: owned,
-                hints: Some(hints),
+                hints: None,
                 output: affinity_of(&rect),
                 rect: Some(rect),
-                flags: None,
+                flags: Some(&row_facts),
                 live: None,
                 host_hidden: None,
                 fullscreen: Some(row.fullscreen),
+                fullscreen_meta: state.fullscreen_meta.and_then(|map| map.get(key)),
                 maximized: Some(row.maximized),
                 minimized: Some(false),
             }));
@@ -1733,10 +1792,7 @@ pub(super) fn capture_world(
                     facts,
                     live_token,
                     key,
-                    state
-                        .member_rects
-                        .get(live_token)
-                        .and_then(|rect| affinity_of(rect)),
+                    state.member_rects.get(live_token).and_then(affinity_of),
                     executable,
                     state.hint_logged.get(live_token).copied(),
                     true
@@ -1760,7 +1816,7 @@ pub(super) fn capture_world(
                 );
                 continue;
             };
-            let floating = capture_floating(state, key, true);
+            let floating = capture_floating(state, key);
             let snapshot = crate::native_guards::hidden_snapshot_rect(
                 floating,
                 state.float_rects.get(live_token).copied(),
@@ -1790,11 +1846,9 @@ pub(super) fn capture_world(
                 .unwrap_or((false, false));
             let maximized = record.claim.show.maximized || retained_overlay.1;
             let fullscreen = state.born_fullscreen.contains(key) || retained_overlay.0;
-            let hints = state
-                .hint_logged
-                .get(live_token)
-                .copied()
-                .unwrap_or_else(WindowSizeHints::none);
+            // Recorded constraint or explicit unknown: absence stays `None`,
+            // never a fabricated empty hints stand-in.
+            let hints = state.hint_logged.get(live_token).copied();
             // No live observed row this tick: the claim lane's lightweight
             // live read carries the native shown state, cloak, ownership,
             // tool-window bit, and dialog kind, while the preimage-proven
@@ -1804,13 +1858,14 @@ pub(super) fn capture_world(
                 key,
                 executable,
                 suppression_owned: true,
-                hints: Some(hints),
+                hints,
                 output: affinity_of(&rect),
                 rect: Some(rect),
                 flags: None,
                 live: Some(read),
                 host_hidden: None,
                 fullscreen: Some(fullscreen),
+                fullscreen_meta: state.fullscreen_meta.and_then(|map| map.get(key)),
                 maximized: Some(maximized),
                 minimized: Some(false),
             }));
@@ -1834,10 +1889,7 @@ pub(super) fn capture_world(
                 facts,
                 live_token,
                 key,
-                state
-                    .member_rects
-                    .get(live_token)
-                    .and_then(|rect| affinity_of(rect)),
+                state.member_rects.get(live_token).and_then(affinity_of),
                 bound_executable(state, key),
                 state.hint_logged.get(live_token).copied(),
                 state.hidden_claims.contains_key(key)
@@ -1935,6 +1987,30 @@ pub(super) fn capture_world(
     // Facts are the whole window lane: v4 has no adapter receipt or
     // workspace projection to attach.
     let windows = facts;
+    // Canonical intent rows for observed exact member lifetimes: the key
+    // must still be bound and its WindowFact must exist in this capture.
+    // Unreadable storage has no map entry, so it never fabricates a record.
+    // Deduped by token (first bound lifetime wins).
+    let mut intent_records: Vec<IntentRecord> = Vec::new();
+    let mut intent_seen: HashSet<&str> = HashSet::new();
+    for (key, token) in state.member_tokens {
+        if !windows.iter().any(|fact| fact.window.0 == *token) {
+            continue;
+        }
+        let Some(storage) = state.intent_storage.and_then(|map| map.get(key)) else {
+            continue;
+        };
+        let Some(data) = storage.to_data() else {
+            continue;
+        };
+        if !intent_seen.insert(token.as_str()) {
+            continue;
+        }
+        intent_records.push(IntentRecord {
+            win: WindowId(token.clone()),
+            data: tiler_core::intent_data::encode_intent_data(&data),
+        });
+    }
     // Neutral migration/control action context (core-owned policy):
     // the live foreground frame grounded to a live device and mapped to
     // wire, the adapter-retained cache mapped to wire, and the ordered
@@ -1949,9 +2025,7 @@ pub(super) fn capture_world(
     } else {
         crate::ffi::window_rect(foreground_hwnd)
             .and_then(rect_from_win)
-            .map(|rect| super::directional_resolution::output_for_rect(areas, &rect))
-            .and_then(|device| state.output_tokens.get(&device).cloned())
-            .map(OutputId)
+            .and_then(|rect| foreground_output_for_rect(areas, &rect, state.output_tokens))
     };
     let action_cached = if state.active_output.is_empty() {
         None
@@ -1971,19 +2045,45 @@ pub(super) fn capture_world(
         .map(OutputId)
         .collect();
     let presentation = presentation_ingress(state, Some(observed), retained, foreground_hwnd);
+    let foreground_fact = (!presentation.foreground.is_empty())
+        .then(|| windows.iter().find(|fact| fact.window.0 == presentation.foreground))
+        .flatten();
+    // The observed foreground frame's exact output, joined to the
+    // foreground WindowFact: a resolved frame that disagrees with the fact
+    // proves nothing (the frame and the fact are not the same observation),
+    // so it fails closed and the core falls back to the fact alone.
+    let foreground_output = if presentation.foreground.is_empty() {
+        None
+    } else {
+        let fact_output = foreground_fact.and_then(|fact| fact.output.as_ref());
+        let raw = presentation
+            .foreground_frame
+            .and_then(|rect| foreground_output_for_rect(areas, &rect, state.output_tokens));
+        match (raw, fact_output) {
+            (Some(raw), Some(fact)) if &raw != fact => None,
+            (raw, _) => raw,
+        }
+    };
+    // Presentation also samples nonmembers (e.g. a foreground game); do
+    // not report one as bound focus even if its token and frame are known.
+    let foreground_bound = foreground_hwnd != 0
+        && foreground_fact.is_some()
+        && !held_members.contains(&presentation.foreground)
+        && state.member_tokens.iter().any(|(key, token)| {
+            key.hwnd == foreground_hwnd && token == &presentation.foreground
+        });
     CapturedWorld {
         screens,
         held_screens,
         windows,
+        intent_records,
         closed,
-        // One foreground sample drives both fields: the presentation
-        // ingress already resolved the tick's observed row when no richer
-        // presentation facts were supplied.
-        focused_global: presentation.foreground.clone(),
-        // The caller's foreground read is the proof: `0` positively saw no
-        // foreground window (known, empty id); a nonzero handle is known
-        // only when this tick resolves it to a verified lifetime.
-        foreground_known: foreground_hwnd == 0 || !presentation.foreground.is_empty(),
+        focused_global: if foreground_bound {
+            presentation.foreground.clone()
+        } else {
+            String::new()
+        },
+        foreground_known: foreground_hwnd == 0 || foreground_bound,
         // Snapshot-only capture: no event-coverage interval exists here.
         focus_changes: None,
         cursor: state.cursor,
@@ -2031,6 +2131,724 @@ pub(super) fn capture_world(
             .settings_live
             .as_ref()
             .is_some_and(|live| live.settings.core.cursor_warp),
+        foreground_output,
         presentation,
+    }
+}
+
+#[cfg(test)]
+mod foreground_output_tests {
+    use super::super::rmax03_adapter_tests::test_state;
+    use super::super::{MonitorArea, ObservedWindow};
+    use super::capture_world;
+    use tiler_core::directional::OutputId;
+    use tiler_core::geometry::Rect;
+
+    fn area(device: &str, x: i32) -> MonitorArea {
+        MonitorArea {
+            device: device.to_owned(),
+            work: Rect {
+                x,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            full: Rect {
+                x,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            dpi: 96,
+        }
+    }
+
+    fn areas() -> Vec<MonitorArea> {
+        vec![area("DEV-A", 0), area("DEV-B", 800)]
+    }
+
+    fn facts() -> crate::tiling::WindowFacts {
+        crate::tiling::WindowFacts {
+            visible: true,
+            minimized: false,
+            maximized: false,
+            cloaked: false,
+            elevated: false,
+            shell: false,
+            tool_window: false,
+            owned: false,
+            captionless_fullscreen: false,
+            no_activate: false,
+            topmost: false,
+            dialog: false,
+        }
+    }
+
+    fn observed_window(hwnd: u64, token: &str, pid: u32, creation: &str, x: i32) -> ObservedWindow {
+        let visible = Rect {
+            x,
+            y: 0,
+            w: 40,
+            h: 90,
+        };
+        let outer = Rect {
+            x: x - 8,
+            y: -8,
+            w: 56,
+            h: 106,
+        };
+        ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer,
+            visible,
+            insets: crate::tiling::FrameInsets::measure(outer, visible),
+            identity: super::super::ObservedTarget {
+                hwnd,
+                pid,
+                process_creation: creation.to_owned(),
+                exe_path: "C:\\Apps\\app.exe".to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                tag: format!("tag-{token}"),
+            },
+            facts: facts(),
+            member_tag: Some(format!("tag-{token}")),
+        }
+    }
+
+    fn foreground(token: &str, frame: Option<Rect>) -> super::PresentationForeground {
+        super::PresentationForeground {
+            token: token.to_owned(),
+            minimized: false,
+            maximized: false,
+            fullscreen: false,
+            host_hidden: false,
+            hidden_workspace: false,
+            frame,
+        }
+    }
+
+    #[test]
+    fn resolved_foreground_frame_names_the_wire_output() {
+        let mut state = test_state();
+        state.ensure_device("DEV-A");
+        state.ensure_device("DEV-B");
+        let areas = areas();
+        let observed = vec![observed_window(101, "win-fg", 201, "proc-fg", 900)];
+        let mut inputs = state.inputs();
+        inputs.presentation_foreground = Some(foreground(
+            "win-fg",
+            Some(Rect {
+                x: 900,
+                y: 0,
+                w: 40,
+                h: 90,
+            }),
+        ));
+        let captured = capture_world(&inputs, Some(&observed), &[], &areas, 101);
+        let expected = OutputId(state.wire_of("DEV-B").expect("DEV-B carries a wire id"));
+        assert_eq!(captured.foreground_output, Some(expected));
+    }
+
+    #[test]
+    fn unresolvable_foreground_rect_stays_unknown() {
+        let mut state = test_state();
+        state.ensure_device("DEV-A");
+        state.ensure_device("DEV-B");
+        let areas = areas();
+        let observed = vec![observed_window(101, "win-fg", 201, "proc-fg", 0)];
+        let mut inputs = state.inputs();
+        // Outside every carried area: the frame proves no output. The
+        // foreground WindowFact still rides its own affinity separately.
+        inputs.presentation_foreground = Some(foreground(
+            "win-fg",
+            Some(Rect {
+                x: 5000,
+                y: 0,
+                w: 40,
+                h: 90,
+            }),
+        ));
+        let captured = capture_world(&inputs, Some(&observed), &[], &areas, 101);
+        assert!(captured.foreground_output.is_none());
+    }
+
+    #[test]
+    fn fact_and_raw_disagreement_fails_closed() {
+        let mut state = test_state();
+        state.ensure_device("DEV-A");
+        state.ensure_device("DEV-B");
+        let areas = areas();
+        // The observed row (and so its WindowFact) sits on DEV-B while the
+        // presentation frame names DEV-A: neither proves the same output.
+        let observed = vec![observed_window(101, "win-fg", 201, "proc-fg", 900)];
+        let mut inputs = state.inputs();
+        inputs.presentation_foreground = Some(foreground(
+            "win-fg",
+            Some(Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 90,
+            }),
+        ));
+        let captured = capture_world(&inputs, Some(&observed), &[], &areas, 101);
+        assert!(captured.foreground_output.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Adapter identity side-map capture: a screen carries exactly the
+    /// adapter-read identity for its own device, and an absent key is
+    /// explicit unknown.
+    mod identity_capture_tests {
+        use super::super::super::MonitorArea;
+        use super::super::super::rmax03_adapter_tests::test_state;
+        use super::super::capture_world;
+        use tiler_core::geometry::Rect;
+        use tiler_core::world_report::{MAX_IDENTITY_TEXT_BYTES, OutputIdentity};
+
+        fn area(device: &str, x: i32) -> MonitorArea {
+            MonitorArea {
+                device: device.to_owned(),
+                work: Rect {
+                    x,
+                    y: 0,
+                    w: 800,
+                    h: 560,
+                },
+                full: Rect {
+                    x,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                dpi: 96,
+            }
+        }
+
+        fn areas() -> Vec<MonitorArea> {
+            vec![area("DEV-A", 0), area("DEV-B", 800)]
+        }
+
+        fn identity(
+            manufacturer: &str,
+            model: &str,
+            serial: &str,
+            connector: &str,
+        ) -> OutputIdentity {
+            OutputIdentity {
+                manufacturer: Some(manufacturer.to_owned()),
+                model: Some(model.to_owned()),
+                serial: Some(serial.to_owned()),
+                connector: Some(connector.to_owned()),
+            }
+        }
+
+        /// Identity carried on the screen row for one live device (the
+        /// capture keys screens by wire output id, so the wire id must be
+        /// read before the seam borrows the state).
+        fn screen_identity(state: &super::super::super::TileLoop, device: &str) -> OutputIdentity {
+            let wire = state.wire_of(device).expect("device carries a wire id");
+            let captured = capture_world(&state.inputs(), Some(&[]), &[], &areas(), 0);
+            let screen = captured
+                .screens
+                .iter()
+                .find(|screen| screen.output.0 == wire)
+                .expect("device rides a screen row");
+            screen.identity.clone()
+        }
+
+        #[test]
+        fn identity_rides_the_device_side_map() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+            let expected = identity("Acme", "Panel-9000", "SN-123", "DP-1");
+            state
+                .monitor_identities
+                .insert("DEV-A".to_owned(), expected.clone());
+
+            assert_eq!(screen_identity(&state, "DEV-A"), expected);
+            assert_eq!(screen_identity(&state, "DEV-B"), OutputIdentity::unknown());
+        }
+
+        #[test]
+        fn identity_missing_from_the_map_is_unknown() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+
+            assert_eq!(screen_identity(&state, "DEV-A"), OutputIdentity::unknown());
+            assert_eq!(screen_identity(&state, "DEV-B"), OutputIdentity::unknown());
+        }
+
+        #[test]
+        fn identity_overbound_text_fails_closed() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+            let overbound = "m".repeat(MAX_IDENTITY_TEXT_BYTES + 1);
+            state.monitor_identities.insert(
+                "DEV-A".to_owned(),
+                identity("Acme", &overbound, "SN-123", "DP-1"),
+            );
+
+            // The adapter never hands the core a row its identity grammar
+            // must hold, and never truncates one into a different panel.
+            assert_eq!(screen_identity(&state, "DEV-A"), OutputIdentity::unknown());
+        }
+
+        #[test]
+        fn identity_text_boundary_is_exactly_256_bytes() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+            let at_bound = "m".repeat(MAX_IDENTITY_TEXT_BYTES);
+            state.monitor_identities.insert(
+                "DEV-A".to_owned(),
+                identity("Acme", &at_bound, "SN-123", "DP-1"),
+            );
+            let carried = screen_identity(&state, "DEV-A");
+            assert_eq!(carried.model.as_deref(), Some(at_bound.as_str()));
+
+            // Any one field over the bound turns the whole row unknown.
+            let overbound = "m".repeat(MAX_IDENTITY_TEXT_BYTES + 1);
+            state.monitor_identities.insert(
+                "DEV-A".to_owned(),
+                identity("Acme", "Panel-9000", "SN-123", &overbound),
+            );
+            assert_eq!(screen_identity(&state, "DEV-A"), OutputIdentity::unknown());
+        }
+
+        #[test]
+        fn identity_entry_for_absent_device_is_ignored() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+            state.monitor_identities.insert(
+                "DEV-GONE".to_owned(),
+                identity("Acme", "Panel-9000", "SN-123", "DP-1"),
+            );
+
+            assert_eq!(screen_identity(&state, "DEV-A"), OutputIdentity::unknown());
+            assert_eq!(screen_identity(&state, "DEV-B"), OutputIdentity::unknown());
+        }
+    }
+
+    /// Retained-row truth and presentation ingress regressions: overlays ride
+    /// their fresh frame and flags, hidden claims keep absent hints absent,
+    /// and a fullscreen foreground never blanks other windows' presentation.
+    mod retained_and_presentation_tests {
+        use super::super::super::rmax03_adapter_tests::test_state;
+        use super::super::super::{
+            HiddenRecord, MonitorArea, ObservedTarget, ObservedWindow, RetainedRow,
+        };
+        use super::super::{HiddenClaimRead, PresentationForeground, capture_world};
+        use crate::model::{ProcessIdentity, WindowIdentity};
+        use crate::native_guards::WindowKey;
+        use tiler_core::geometry::Rect;
+        use tiler_core::size_hints::WindowSizeHints;
+        use tiler_core::world_report::WindowType;
+
+        fn area(device: &str) -> MonitorArea {
+            MonitorArea {
+                device: device.to_owned(),
+                work: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1040,
+                },
+                full: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+                dpi: 96,
+            }
+        }
+
+        fn process(pid: u32, creation: &str) -> ProcessIdentity {
+            ProcessIdentity {
+                pid,
+                process_creation: creation.to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                exe_path: "C:\\Apps\\app.exe".to_owned(),
+            }
+        }
+
+        fn key(hwnd: u64, pid: u32, creation: &str) -> WindowKey {
+            WindowKey {
+                hwnd,
+                pid,
+                creation: creation.to_owned(),
+            }
+        }
+
+        fn facts(overlay: bool) -> crate::tiling::WindowFacts {
+            crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: overlay,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                topmost: false,
+                dialog: false,
+            }
+        }
+
+        fn observed(hwnd: u64, token: &str, pid: u32, creation: &str) -> ObservedWindow {
+            let visible = Rect {
+                x: 10,
+                y: 10,
+                w: 300,
+                h: 200,
+            };
+            let outer = Rect {
+                x: 2,
+                y: 2,
+                w: 316,
+                h: 216,
+            };
+            ObservedWindow {
+                hwnd,
+                token: token.to_owned(),
+                outer,
+                visible,
+                insets: crate::tiling::FrameInsets::measure(outer, visible),
+                identity: ObservedTarget {
+                    hwnd,
+                    pid,
+                    process_creation: creation.to_owned(),
+                    exe_path: "C:\\Apps\\app.exe".to_owned(),
+                    user_sid: "S-1-5-21-1000".to_owned(),
+                    session_id: 1,
+                    tag: "0123456789abcdef".to_owned(),
+                },
+                facts: facts(false),
+                member_tag: Some("0123456789abcdef".to_owned()),
+            }
+        }
+
+        #[test]
+        fn retained_overlay_rides_live_frame_and_flags() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            let key = key(501, 601, "proc-501");
+            state.member_tokens.insert(key.clone(), "w-overlay".to_owned());
+            // Stale adapter tile slot: the live retained frame must win.
+            state.member_rects.insert(
+                "w-overlay".to_owned(),
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 100,
+                },
+            );
+            let live = Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            };
+            let retained = vec![RetainedRow {
+                key,
+                token: "w-overlay".to_owned(),
+                rect: Some(live),
+                maximized: true,
+                fullscreen: false,
+                facts: Some(facts(true)),
+            }];
+            let captured = capture_world(&state.inputs(), Some(&[]), &retained, &[area("DEV-A")], 0);
+            let fact = captured
+                .windows
+                .iter()
+                .find(|fact| fact.window.0 == "w-overlay")
+                .expect("retained overlay rides a fact row");
+            assert_eq!(fact.rect, Some(live), "live frame wins over the tile slot");
+            assert_eq!(fact.tool_window, Some(false), "flags lane is published");
+            assert_eq!(fact.owned, Some(false), "flags lane is published");
+            assert_eq!(fact.window_type, Some(WindowType::Normal));
+            assert_eq!(fact.host_hidden, Some(false), "flags-derived cloak");
+            assert_eq!(fact.hints, None, "overlay does not prove sizing hints");
+        }
+
+        #[test]
+        fn hidden_claim_without_hint_stays_unknown() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            let key = key(701, 801, "proc-701");
+            state.member_tokens.insert(key.clone(), "w-hidden".to_owned());
+            state.member_tags.insert(key.clone(), "0123456789abcdef".to_owned());
+            state.member_rects.insert(
+                "w-hidden".to_owned(),
+                Rect {
+                    x: 20,
+                    y: 20,
+                    w: 400,
+                    h: 300,
+                },
+            );
+            state.hidden_claims.insert(
+                key.clone(),
+                HiddenRecord {
+                    claim: WindowIdentity {
+                        hwnd: key.hwnd,
+                        process: process(key.pid, &key.creation),
+                        tag: "0123456789abcdef".to_owned(),
+                        kind: crate::model::WindowClaimKind::Helper,
+                        show: crate::model::WindowShowState::default(),
+                    },
+                    iconic: false,
+                },
+            );
+            let mut inputs = state.inputs();
+            let reads = std::collections::BTreeMap::from([(
+                key.clone(),
+                HiddenClaimRead {
+                    visible: false,
+                    cloaked: false,
+                    owned: false,
+                    tool_window: false,
+                    topmost: false,
+                    dialog: false,
+                },
+            )]);
+            inputs.hidden_reads = Some(&reads);
+            let captured = capture_world(&inputs, Some(&[]), &[], &[area("DEV-A")], 0);
+            let fact = captured
+                .windows
+                .iter()
+                .find(|fact| fact.window.0 == "w-hidden")
+                .expect("hidden claim rides a fact row");
+            assert!(fact.hints.is_none(), "absent hint entry stays unknown");
+        }
+
+        #[test]
+        fn hidden_claim_with_recorded_hint_carries_it() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            let key = key(702, 802, "proc-702");
+            state.member_tokens.insert(key.clone(), "w-hidden2".to_owned());
+            state.member_tags.insert(key.clone(), "0123456789abcdef".to_owned());
+            state.member_rects.insert(
+                "w-hidden2".to_owned(),
+                Rect {
+                    x: 20,
+                    y: 20,
+                    w: 400,
+                    h: 300,
+                },
+            );
+            let hints = WindowSizeHints {
+                min_w: Some(320),
+                min_h: Some(240),
+                max_w: None,
+                max_h: None,
+            };
+            state.hint_logged.insert("w-hidden2".to_owned(), hints);
+            state.hidden_claims.insert(
+                key.clone(),
+                HiddenRecord {
+                    claim: WindowIdentity {
+                        hwnd: key.hwnd,
+                        process: process(key.pid, &key.creation),
+                        tag: "0123456789abcdef".to_owned(),
+                        kind: crate::model::WindowClaimKind::Helper,
+                        show: crate::model::WindowShowState::default(),
+                    },
+                    iconic: false,
+                },
+            );
+            let mut inputs = state.inputs();
+            let reads = std::collections::BTreeMap::from([(
+                key.clone(),
+                HiddenClaimRead {
+                    visible: false,
+                    cloaked: false,
+                    owned: false,
+                    tool_window: false,
+                    topmost: false,
+                    dialog: false,
+                },
+            )]);
+            inputs.hidden_reads = Some(&reads);
+            let captured = capture_world(&inputs, Some(&[]), &[], &[area("DEV-A")], 0);
+            let fact = captured
+                .windows
+                .iter()
+                .find(|fact| fact.window.0 == "w-hidden2")
+                .expect("hidden claim rides a fact row");
+            assert_eq!(fact.hints, Some(hints), "recorded hint still rides");
+        }
+
+        #[test]
+        fn above_fact_comes_from_live_topmost_reads() {
+            // The observed lane publishes its fresh `WindowFacts` bit, never
+            // a default `None` while that read exists.
+            for topmost in [false, true] {
+                let mut state = test_state();
+                state.ensure_device("DEV-A");
+                let mut row = observed(103, "w-flag-top", 203, "proc-flag");
+                row.facts.topmost = topmost;
+                let captured = capture_world(
+                    &state.inputs(),
+                    Some(&[row]),
+                    &[],
+                    &[area("DEV-A")],
+                    0,
+                );
+                let fact = captured
+                    .windows
+                    .iter()
+                    .find(|fact| fact.window.0 == "w-flag-top")
+                    .expect("observed row rides a fact row");
+                assert_eq!(fact.above, Some(topmost), "observed topmost bit rides");
+            }
+
+            // The hidden-claim lane publishes the same bit from its
+            // lightweight live read when no observed row exists.
+            for topmost in [false, true] {
+                let mut state = test_state();
+                state.ensure_device("DEV-A");
+                let claim_key = key(704, 804, "proc-704");
+                state
+                    .member_tokens
+                    .insert(claim_key.clone(), "w-claim-top".to_owned());
+                state
+                    .member_tags
+                    .insert(claim_key.clone(), "0123456789abcdef".to_owned());
+                state.member_rects.insert(
+                    "w-claim-top".to_owned(),
+                    Rect {
+                        x: 20,
+                        y: 20,
+                        w: 400,
+                        h: 300,
+                    },
+                );
+                state.hidden_claims.insert(
+                    claim_key.clone(),
+                    HiddenRecord {
+                        claim: WindowIdentity {
+                            hwnd: claim_key.hwnd,
+                            process: process(claim_key.pid, &claim_key.creation),
+                            tag: "0123456789abcdef".to_owned(),
+                            kind: crate::model::WindowClaimKind::Helper,
+                            show: crate::model::WindowShowState::default(),
+                        },
+                        iconic: false,
+                    },
+                );
+                let mut inputs = state.inputs();
+                let reads = std::collections::BTreeMap::from([(
+                    claim_key.clone(),
+                    HiddenClaimRead {
+                        visible: false,
+                        cloaked: false,
+                        owned: false,
+                        tool_window: false,
+                        topmost,
+                        dialog: false,
+                    },
+                )]);
+                inputs.hidden_reads = Some(&reads);
+                let captured = capture_world(&inputs, Some(&[]), &[], &[area("DEV-A")], 0);
+                let fact = captured
+                    .windows
+                    .iter()
+                    .find(|fact| fact.window.0 == "w-claim-top")
+                    .expect("hidden claim rides a fact row");
+                assert_eq!(fact.above, Some(topmost), "hidden topmost bit rides");
+            }
+        }
+
+        #[test]
+        fn focused_global_requires_a_bound_readable_lifetime() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            let areas = [area("DEV-A")];
+            let mut row = observed(101, "win-a", 201, "proc-a");
+            let captured = capture_world(
+                &state.inputs(), Some(std::slice::from_ref(&row)), &[], &areas, 101,
+            );
+            assert_eq!(captured.presentation.foreground, "win-a");
+            assert!(captured.focused_global.is_empty());
+            assert!(!captured.foreground_known, "an unbound candidate is not managed focus");
+
+            state.member_tokens.insert(key(101, 201, "proc-a"), "win-a".to_owned());
+            let captured = capture_world(
+                &state.inputs(), Some(std::slice::from_ref(&row)), &[], &areas, 101,
+            );
+            assert_eq!(captured.focused_global, "win-a");
+            assert!(captured.foreground_known);
+
+            row.identity.exe_path = "C:\\Apps\\foreign.exe".to_owned();
+            row.identity.pid = 202;
+            row.identity.process_creation = "proc-b".to_owned();
+            row.token = "win-b".to_owned();
+            let captured = capture_world(&state.inputs(), Some(&[row]), &[], &areas, 101);
+            assert!(captured.focused_global.is_empty());
+            assert!(!captured.foreground_known, "a recycled live HWND is not the bound lifetime");
+
+            let captured = capture_world(&state.inputs(), Some(&[]), &[], &areas, 0);
+            assert!(captured.focused_global.is_empty());
+            assert!(captured.foreground_known, "zero positively proves no foreground client");
+        }
+
+        #[test]
+        fn fullscreen_foreground_does_not_blank_other_outputs() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            let observed = vec![
+                observed(101, "win-a", 201, "proc-a"),
+                observed(102, "win-b", 202, "proc-b"),
+            ];
+            let mut inputs = state.inputs();
+            inputs.presentation_foreground = Some(PresentationForeground {
+                token: "win-a".to_owned(),
+                minimized: false,
+                maximized: false,
+                fullscreen: true,
+                host_hidden: false,
+                hidden_workspace: false,
+                frame: Some(Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                }),
+            });
+            let captured = capture_world(&inputs, Some(&observed), &[], &[area("DEV-A")], 101);
+            // Suspension is core-owned: capture still publishes the truthful
+            // ingress for every other window instead of default-empty rows.
+            let order: Vec<&str> = captured
+                .presentation
+                .pager_order
+                .iter()
+                .map(|row| row.0.as_str())
+                .collect();
+            assert_eq!(order, vec!["win-a", "win-b"]);
+            assert_eq!(captured.presentation.pager_frames.len(), 2);
+            assert_eq!(
+                captured.presentation.pager_frames[0].live,
+                Some(observed[0].visible)
+            );
+            assert_eq!(
+                captured.presentation.pager_frames[1].live,
+                Some(observed[1].visible)
+            );
+        }
     }
 }

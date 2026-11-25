@@ -123,23 +123,16 @@ pub mod sys {
         Box::new(std::io::Error::other(msg.into()))
     }
 
+    /// First write creates the per-run file (refusing a preexisting one);
+    /// later writes share the bounded run-log sink. A bounded `Capped`
+    /// outcome is not an IO failure and never degrades the run.
     fn write_log_at(path: &Path, line: &str, first: bool) -> Result<()> {
-        use std::io::Write;
-        let mut file = if first {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
+        let result = if first {
+            crate::log_sink::create_line(path, line)
         } else {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-        }
-        .map_err(|e| err(format!("error: log write: {e}")))?;
-        writeln!(file, "{line}").map_err(|e| err(format!("error: log write: {e}")))?;
-        file.flush()
-            .map_err(|e| err(format!("error: log write: {e}")))
+            crate::log_sink::append_line(path, line).map(|_| ())
+        };
+        result.map_err(|e| err(format!("error: log write: {e}")))
     }
 
     /// Per-run unique log path persisted via the owner creation. Historical
@@ -242,10 +235,16 @@ pub mod sys {
     }
 
     fn read_stop(dir: &Path) -> Result<Option<String>> {
-        match std::fs::read_to_string(dir.join(STOP_REQUEST_FILE)) {
-            Ok(t) => Ok(Some(t)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(err(format!("error: stop read: {e}"))),
+        match crate::tiling::read_control_request(&dir.join(STOP_REQUEST_FILE)) {
+            crate::tiling::ControlRequestRead::Body(text) => Ok(Some(text)),
+            crate::tiling::ControlRequestRead::Missing => Ok(None),
+            // An oversized or non-UTF-8 body can never match the exact-owner
+            // token; report an empty marker so the caller's mismatch/cleanup
+            // rules apply unchanged and the file is never loaded unbounded.
+            crate::tiling::ControlRequestRead::Rejected => Ok(Some(String::new())),
+            crate::tiling::ControlRequestRead::Unreadable => {
+                Err(err("error: stop read: unreadable"))
+            }
         }
     }
 
@@ -270,12 +269,23 @@ pub mod sys {
         let _ = std::fs::remove_file(dir.join(super::WORKSPACE_REQUEST_FILE));
     }
 
+    /// Read one control request marker within the bounded ingress cap.
+    /// Missing, oversized/non-UTF-8, and unreadable files yield `None`; the
+    /// owner loop's consume-once path handles present-but-invalid bodies, so
+    /// cleanup never loads an unbounded or foreign body to "decide" it.
+    fn bounded_request_body(path: &Path) -> Option<String> {
+        match crate::tiling::read_control_request(path) {
+            crate::tiling::ControlRequestRead::Body(text) => Some(text),
+            _ => None,
+        }
+    }
+
     /// Remove the owner's own workspace request marker (exact creation match
     /// only). Malformed or foreign bodies are left for the owner loop's
     /// consume-once refusal, never deleted blindly here.
     fn cleanup_own_workspace_request(dir: &Path, own_creation: &str) {
         let path = dir.join(super::WORKSPACE_REQUEST_FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = bounded_request_body(&path) else {
             return;
         };
         if let Ok(request) = crate::tiling::parse_workspace_request(text.trim())
@@ -298,7 +308,7 @@ pub mod sys {
     /// loop's consume-once refusal, never deleted blindly here.
     fn cleanup_own_directional_request(dir: &Path, own_creation: &str) {
         let path = dir.join(crate::tiling::DIRECTIONAL_REQUEST_FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = bounded_request_body(&path) else {
             return;
         };
         if let Ok(request) = crate::tiling::parse_directional_request(text.trim())
@@ -313,7 +323,7 @@ pub mod sys {
     /// owner loop's consume-once refusal, never deleted blindly here.
     fn cleanup_own_migrate_workspace_request(dir: &Path, own_creation: &str) {
         let path = dir.join(crate::tiling::MIGRATE_WORKSPACE_REQUEST_FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = bounded_request_body(&path) else {
             return;
         };
         if let Ok(request) = crate::tiling::parse_migrate_workspace_request(text.trim())
@@ -344,7 +354,7 @@ pub mod sys {
     /// loop's consume-once refusal, never deleted blindly here.
     fn cleanup_own_send_output_request(dir: &Path, own_creation: &str) {
         let path = dir.join(crate::tiling::SEND_OUTPUT_REQUEST_FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = bounded_request_body(&path) else {
             return;
         };
         if let Ok(request) = crate::tiling::parse_send_output_request(text.trim())
@@ -942,13 +952,22 @@ pub mod sys {
         if snap_want {
             snap_drive_restore(dir, me, &store, "teardown");
         }
-        // The watcher stops only after the reveal: killing it first would
-        // leave a crash window with committed hides and no recovery. When
-        // the reveal keeps residue the watcher stays running so owner exit
-        // still triggers recovery.
+        // Restore before stopping the watcher. Leave it available when an
+        // exact durable preimage or hide claim could not be recovered.
         let mut keep_recovery = false;
         if product {
-            keep_recovery = teardown_product_claims(dir, me, &store);
+            let (restored, pending) =
+                crate::tiling_sys::restore_current_preimages(dir, &me.process_creation);
+            if restored > 0 || pending {
+                let line = serde_json::json!({
+                    "event": "durable-preimage-restore",
+                    "phase": "teardown",
+                    "outcome": if pending { "pending" } else { "restored" },
+                    "count": restored,
+                });
+                let _ = write_log_at(&log_file, &line.to_string(), false);
+            }
+            keep_recovery = teardown_product_claims(dir, me, &store) || pending;
         }
         if let Some(mut child) = watcher
             && !keep_recovery
@@ -1152,6 +1171,7 @@ pub mod sys {
             cleanup_own_directional_request(&dir, &me.process_creation);
             cleanup_own_send_output_request(&dir, &me.process_creation);
             cleanup_own_migrate_workspace_request(&dir, &me.process_creation);
+            let _ = crate::tiling_sys::recover_durable_preimages(&dir, &me.process_creation);
             // No committed owner means no live icon: prune a crash ghost, if
             // any, through the stable project GUID (tolerant, unclaimed).
             let _ = crate::tray_sys::remove_stale_icon();
@@ -1169,6 +1189,11 @@ pub mod sys {
         if !owner_dead(&record.owner)? {
             return Err(err("refuse: owner still active"));
         }
+        // R12 durable preimages: the dead owner's rows are foreign to the
+        // restoring process, so the restoring session is the exclusion scope;
+        // a live current session's own preimages are never touched. Runs after
+        // the dead-owner proof and before revealing windows.
+        let _ = crate::tiling_sys::recover_durable_preimages(&dir, &me.process_creation);
         // The owner is dead, so no live project icon exists: prune the crash
         // ghost through the stable GUID before revealing windows (tolerant,
         // unclaimed; same-user trust like every recovery step here).

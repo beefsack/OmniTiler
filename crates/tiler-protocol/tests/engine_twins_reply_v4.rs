@@ -155,7 +155,15 @@ fn v4_reply_twins_cover_extreme_transfers_and_border() {
             foreground: tiler_core::directional::WindowId(wide_id),
         }),
     };
-    decoded.reply.cursor_warp = Some((16384, -16384));
+    decoded.reply.warp_request = Some(tiler_core::world_report::WarpRequest {
+        id: "warp-1".to_owned(),
+        target: tiler_core::directional::WindowId("w-warp".to_owned()),
+        revision: 1,
+        output: tiler_core::directional::OutputId("out-a".to_owned()),
+        workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
+        point: (16384, -16384),
+        pointer_baseline: None,
+    });
     let wire = encode_reply_v4(&decoded).expect("extreme reply encodes");
     assert_eq!(
         count_reply_v4_bytes(&decoded.reply),

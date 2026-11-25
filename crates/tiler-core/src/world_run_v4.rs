@@ -990,13 +990,42 @@ impl WorldTransaction<'_> {
                 });
             }
         }
-        self.world.workspace.members.retain(|_, state| {
+        // Composed-sticky membership homes are all-desktop anchors: a
+        // swap/migration can move the logic workspace id off the anchor
+        // output while the physical window stays put, so the recorded home
+        // is legitimately off-ring. Keep such anchors while their anchor
+        // output is still live; a sticky home on a vanished output with no
+        // displacement record still drops (core homing would lose it
+        // anyway). Sticky truth comes from the staged derived lane, never
+        // the raw native fact: composed hosts report a null fact while
+        // core's retained intent still proves the lifetime.
+        let sticky: BTreeSet<WindowId> = self
+            .world
+            .workspace
+            .members
+            .keys()
+            .filter(|window| {
+                self.world
+                    .staged
+                    .derived
+                    .get(*window)
+                    .is_some_and(|derived| derived.sticky)
+            })
+            .cloned()
+            .collect();
+        self.world.workspace.members.retain(|window, state| {
             ringed.contains(&state.home)
                 || self
                     .world
                     .workspace
                     .displaced
                     .contains_key(&state.home.output.0)
+                || (sticky.contains(window)
+                    && self
+                        .world
+                        .workspace
+                        .mapping
+                        .contains_key(&state.home.output.0))
         });
         self.latch_floating_admissions();
         // Finalized membership and floating admissions can drop windows or

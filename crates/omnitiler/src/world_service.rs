@@ -1494,7 +1494,7 @@ mod tests {
               \"windows\":[{win_a},{win_b},{win_c},{win_d}],\
               \"closed\":[],\"native\":[],\
               \"focused\":\"{focused}\",\"foregroundKnown\":{foreground_known},\"complete\":true,\"gesture\":{gesture_lane},\
-              \"cursor\":{cursor},\"actionForeground\":null,\"actionCached\":null,\
+              \"cursor\":{cursor},\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[],\
               \"presentation\":{{\"foreground\":\"{focused}\",\"minimized\":false,\"maximized\":false,\
               \"fullscreen\":{fullscreen},\"hostHidden\":false,\"hiddenWorkspace\":false,\
@@ -1805,7 +1805,7 @@ mod tests {
                 \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
                 \"windows\":[{win_1},{win_2}],\"closed\":[],\"native\":[],\"focused\":\"win-1\",\
                 \"foregroundKnown\":true,\"complete\":true,\"gesture\":{gesture},\"cursor\":{cursor},\
-                \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+                \"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
                 \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
                 \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
                 \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
@@ -2174,7 +2174,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -2225,7 +2225,15 @@ mod tests {
             .expect("lock")
             .broker
             .set_reply_fault_for_test(|reply| {
-                reply.cursor_warp = Some((32769, 0));
+                reply.warp_request = Some(tiler_core::world_report::WarpRequest {
+                    id: "warp-overbound".to_owned(),
+                    target: tiler_core::directional::WindowId("win-a".to_owned()),
+                    revision: reply.state_revision,
+                    output: tiler_core::directional::OutputId("out-a".to_owned()),
+                    workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
+                    point: (32769, 0),
+                    pointer_baseline: Some(1),
+                });
             });
         let cap2 = make_cap("src-2", 2, &plain_inner);
         let err = service
@@ -2321,7 +2329,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
         let cap1 = format!(
             "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
         );
@@ -2395,7 +2403,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
         let cap1 = format!(
             "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
         );
@@ -2469,7 +2477,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
 
         // Queue a failing command (focus unknown window) -> settles as Failed("focus-unknown").
         service

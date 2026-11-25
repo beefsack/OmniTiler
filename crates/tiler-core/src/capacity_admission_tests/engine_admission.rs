@@ -362,6 +362,7 @@ fn capacity_float_matches_ordinary_float_with_no_auto_retile() {
     let ctx = LocalOperationContext {
         domain: &d,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &WindowId("a".to_owned()),
         observed: &stale_eng,
         preconverged: true,
@@ -390,6 +391,7 @@ fn capacity_float_matches_ordinary_float_with_no_auto_retile() {
     let ctx = LocalOperationContext {
         domain: &grown,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &WindowId("b".to_owned()),
         observed: &eng_echo,
         preconverged: true,
@@ -534,6 +536,7 @@ fn engine_capacity_float_persists_under_normalized_echo_until_toggle() {
     let ctx = LocalOperationContext {
         domain: &grown,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &WindowId("b".to_owned()),
         observed: &toggle_windows,
         preconverged: false,

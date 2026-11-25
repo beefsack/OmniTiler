@@ -5,7 +5,7 @@
 
 use crate::boundary::CoreCommand;
 use crate::connection::{ApplicationIdentity, HandshakeRequest, HostCapabilities, RawSettingValue};
-use crate::directional::{OutputId, WindowId};
+use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, encode_intent_data};
@@ -21,8 +21,9 @@ use crate::world_report::{
     CommandRejectKind, CommandResult, FocusRequest, FocusRequestCause, HeldAttemptRow,
     HeldWindowRow, IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
     MAX_FOCUS_VIEWS, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WindowFact,
-    WorldCommand, WorldReportV4, validate_after_shown_reason, validate_focus_request_reason,
+    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WarpRequest,
+    WindowFact, WorldCommand, WorldReportV4, validate_after_shown_reason,
+    validate_focus_request_reason,
 };
 use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
@@ -158,6 +159,8 @@ fn report_full(
             })
             .collect(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -3156,7 +3159,15 @@ fn unit_p_intrinsic_reply_validation_enforces_semantics_and_host_capabilities() 
     );
 
     let mut warp_reply = valid_reply.clone();
-    warp_reply.cursor_warp = Some((10, 20));
+    warp_reply.warp_request = Some(WarpRequest {
+        id: "warp-0".to_owned(),
+        target: WindowId("win-b".to_owned()),
+        revision: 1,
+        output: OutputId("out-b".to_owned()),
+        workspace: WorkspaceId("ws-2".to_owned()),
+        point: (10, 20),
+        pointer_baseline: Some(0),
+    });
     assert_eq!(
         validate_reply_v4(&warp_reply, engine.capabilities())
             .expect_err("warp capability false")
@@ -3186,6 +3197,97 @@ fn unit_p_intrinsic_reply_validation_enforces_semantics_and_host_capabilities() 
     let boot_reply = accepted_reply(1, admit(&mut pre_ready, &bootstrap));
     assert!(!boot_reply.ready);
     assert!(validate_reply_v4(&boot_reply, pre_ready.capabilities()).is_ok());
+}
+
+#[test]
+fn warp_request_validation_bounds_and_capability() {
+    use crate::world_reply_validation::validate_reply_v4;
+
+    let mut template = self::engine();
+    let r1 = observe(1, facts_pair(), "win-a");
+    let valid_reply = accepted_reply(1, admit(&mut template, &r1));
+
+    let request = || WarpRequest {
+        id: "warp-0".to_owned(),
+        target: WindowId("win-b".to_owned()),
+        revision: 1,
+        output: OutputId("out-b".to_owned()),
+        workspace: WorkspaceId("ws-2".to_owned()),
+        point: (10, 20),
+        pointer_baseline: Some(0),
+    };
+    let with_request = |warp: WarpRequest| {
+        let mut reply = valid_reply.clone();
+        reply.warp_request = Some(warp);
+        reply
+    };
+    assert!(validate_reply_v4(&with_request(request()), None).is_ok());
+
+    let overlong_id = "w".repeat(crate::bounds::MAX_OPAQUE_ID_LEN + 1);
+    let mut cases: Vec<(&str, WarpRequest)> = vec![
+        (
+            "point",
+            WarpRequest {
+                point: (32769, 0),
+                ..request()
+            },
+        ),
+        (
+            "empty-id",
+            WarpRequest {
+                id: String::new(),
+                ..request()
+            },
+        ),
+        (
+            "overlong-id",
+            WarpRequest {
+                id: overlong_id,
+                ..request()
+            },
+        ),
+        (
+            "target",
+            WarpRequest {
+                target: WindowId(String::new()),
+                ..request()
+            },
+        ),
+        (
+            "output",
+            WarpRequest {
+                output: OutputId("bad output".to_owned()),
+                ..request()
+            },
+        ),
+        (
+            "workspace",
+            WarpRequest {
+                workspace: WorkspaceId(String::new()),
+                ..request()
+            },
+        ),
+    ];
+    for (label, warp) in cases.drain(..) {
+        let error = validate_reply_v4(&with_request(warp), None)
+            .expect_err("malformed warp request must refuse");
+        assert_eq!(error.kind, "unknown-value", "case {label}");
+    }
+
+    // `warp:false` rejects even a well-formed request; `warp:true` accepts.
+    let host_off = HostCapabilities {
+        warp: false,
+        ..HostCapabilities::default()
+    };
+    let error = validate_reply_v4(&with_request(request()), Some(&host_off))
+        .expect_err("capability false refuses");
+    assert_eq!(error.kind, KIND_SNAPSHOT);
+    assert_eq!(error.message, "warp-capability-false");
+    let host_on = HostCapabilities {
+        warp: true,
+        ..HostCapabilities::default()
+    };
+    assert!(validate_reply_v4(&with_request(request()), Some(&host_on)).is_ok());
 }
 
 #[test]
@@ -3251,7 +3353,15 @@ fn unit_p_c5_size_and_wake_fences_beat_invalid_candidate() {
     let r1 = observe(1, facts_pair(), "win-a");
     let valid_reply = accepted_reply(1, admit(&mut engine, &r1));
     let mut invalid_reply = valid_reply;
-    invalid_reply.cursor_warp = Some((32769, 0));
+    invalid_reply.warp_request = Some(WarpRequest {
+        id: "warp-0".to_owned(),
+        target: WindowId("win-b".to_owned()),
+        revision: 1,
+        output: OutputId("out-b".to_owned()),
+        workspace: WorkspaceId("ws-2".to_owned()),
+        point: (32769, 0),
+        pointer_baseline: Some(0),
+    });
 
     let r2 = observe(2, facts_pair(), "win-a");
     let digest = report_digest_v4(&r2);
@@ -4263,5 +4373,174 @@ fn retained_membership_cap_uncertainty_controls_and_command_created_entry() {
             .workspace
             .members
             .contains_key(&WindowId("win-sticky".to_owned()))
+    );
+}
+
+#[test]
+fn numbered_send_moves_minimized_member_without_engine_carrier() {
+    // R12 live regression: an iconified window keeps its membership home but
+    // loses its Engine carrier (it lives only in the domain minimized slot),
+    // so the focused-window send must settle as a membership-only transfer
+    // instead of refusing with `send-window-unknown`.
+    let mut engine = engine();
+    let tiled_windows = || vec![fact("w0", "out-a", 0), fact("wKeep", "out-a", 100)];
+    accepted_reply(1, admit(&mut engine, &observe(1, tiled_windows(), "w0")));
+    let source_home = engine
+        .world
+        .workspace
+        .members
+        .get(&WindowId("w0".to_owned()))
+        .expect("tiled membership")
+        .home
+        .clone();
+    let iconic = || {
+        let mut fact = fact("w0", "out-a", 0);
+        fact.minimized = Some(true);
+        fact.rect = None;
+        fact
+    };
+    let minimized_windows = || vec![iconic(), fact("wKeep", "out-a", 100)];
+    let mut minimized_ingress = ingress("w0");
+    minimized_ingress.foreground_minimized = Some(true);
+    minimized_ingress.foreground_frame = None;
+    accepted_reply(
+        2,
+        admit(
+            &mut engine,
+            &report(
+                2,
+                minimized_windows(),
+                "w0",
+                PresentationRowV4::Valid(minimized_ingress.clone()),
+                None,
+                None,
+                Vec::new(),
+            ),
+        ),
+    );
+    assert!(
+        engine
+            .world
+            .workspace
+            .members
+            .get(&WindowId("w0".to_owned()))
+            .expect("iconic membership")
+            .minimized,
+        "minimization keeps the member but clears the Engine carrier"
+    );
+    assert!(
+        engine
+            .world
+            .staged
+            .domains
+            .iter()
+            .all(|domain| domain.windows.iter().all(|w| w.window.0 != "w0")),
+        "no Engine carrier exists for the iconified member"
+    );
+    assert!(
+        engine
+            .world
+            .layout
+            .has_minimized_slot(&source_home, &WindowId("w0".to_owned())),
+        "minimize retains the source restore slot"
+    );
+    let (outcome, settlements) = admit_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            minimized_windows(),
+            "w0",
+            PresentationRowV4::Valid(minimized_ingress),
+            Some(2),
+            Some(WorldCommand::SendNumbered {
+                window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
+                index: 2,
+                follow: true,
+            }),
+            Vec::new(),
+        ),
+    );
+    let reply = accepted_reply(3, outcome);
+    assert_eq!(settlements.len(), 1);
+    assert!(
+        settlements[0].result.is_none(),
+        "membership-only send executes without a typed rejection, got {:?}",
+        settlements
+    );
+    let target_home = engine
+        .world
+        .workspace
+        .members
+        .get(&WindowId("w0".to_owned()))
+        .expect("iconic membership survives the send")
+        .home
+        .clone();
+    let row = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w0")
+        .expect("iconic member publishes one row");
+    assert_eq!(
+        row.workspace, target_home.workspace.0,
+        "the published row follows the committed home"
+    );
+    assert!(
+        !engine
+            .world
+            .layout
+            .has_minimized_slot(&source_home, &WindowId("w0".to_owned())),
+        "the source restore slot is forgotten on the membership move"
+    );
+    assert_ne!(target_home.workspace, source_home.workspace);
+    assert_eq!(target_home.output, source_home.output);
+    let transfer = engine
+        .world
+        .settlement
+        .retained
+        .iter()
+        .find(|r| matches!(&r.target.kind, crate::world_report::TransferKind::Window(w) if w.0 == "w0"))
+        .expect("membership-only transfer retained");
+    assert_eq!(transfer.target.target_workspace, target_home.workspace.0);
+    assert!(
+        engine.world.staged.domains.iter().any(|domain| {
+            domain.key == target_home
+                && domain.minimized.iter().any(|w| w.0 == "w0")
+        }),
+        "the iconified mover stages minimized in its new domain"
+    );
+    // Unknown lifetimes still refuse with the cataloged kind: the new branch
+    // widens exactly to known iconic members.
+    let mut minimized_b = fact("wKeep", "out-a", 100);
+    minimized_b.minimized = Some(true);
+    minimized_b.rect = None;
+    let (unknown_outcome, unknown_settlements) = admit_with_settlements(
+        &mut engine,
+        &report(
+            4,
+            vec![iconic(), minimized_b],
+            "w0",
+            PresentationRowV4::Valid(ingress("w0")),
+            Some(3),
+            Some(WorldCommand::SendNumbered {
+                window: crate::directional::WindowSubject::Window(WindowId(
+                    "w-ghost".to_owned(),
+                )),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
+                index: 1,
+                follow: false,
+            }),
+            Vec::new(),
+        ),
+    );
+    let _unknown_reply = accepted_reply(4, unknown_outcome);
+    assert_eq!(
+        unknown_settlements
+            .first()
+            .and_then(|s| s.result.clone()),
+        Some(CommandResult::Rejected {
+            kind: CommandRejectKind::SendWindowUnknown
+        }),
+        "unknown windows keep the send-window-unknown refusal"
     );
 }

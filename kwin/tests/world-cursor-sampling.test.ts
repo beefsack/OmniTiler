@@ -2,7 +2,7 @@
 // cursorPos and calls windowAt on every event/command/gesture capture only.
 // Pure pointer motion triggers no capture and no enabled behavior (no
 // cursorPosChanged subscription, no polling timer), and the moved position
-// rides the next relevant capture. A nonnull warpCursor reply is unexpected:
+// rides the next relevant capture. A nonnull warpRequest reply is unexpected:
 // the adapter logs and ignores it, performs no write, and the next capture
 // still carries no warp capability lane.
 //
@@ -51,7 +51,7 @@ function acceptedReply(source: string, nativeInvalid: string, rev: string, extra
         ready: true, consumed: false,
         source, nativeInvalid, clock: "1",
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
@@ -310,7 +310,12 @@ describe("world entry cursor sampling and warp defense", () => {
         h.fire("windowActivated");
         h.runTimers();
         assert.equal(h.pendingDescribes().length, 1);
-        h.answerDescribes({ warpCursor: [50, 60] });
+        h.answerDescribes({
+            warpRequest: {
+                id: "warp-1", target: "win-a", rev: "2", out: "out", ws: "ws1",
+                point: [50, 60], pointerBaseline: null,
+            },
+        });
         h.runTimers();
         const warpLines = h.logs.filter((line) => line.indexOf("warp-desired ignored") !== -1);
         assert.equal(warpLines.length, 1, "exactly one bounded warp-ignored line");

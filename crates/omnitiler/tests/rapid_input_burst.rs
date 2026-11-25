@@ -80,7 +80,7 @@ fn inner_report_closed_focused(windows: &[String], closed: &[String], focused: &
           \"windows\":[{}],\"closed\":[{}],\"native\":[],\
           \"focused\":\"{focused}\",\"foregroundKnown\":{},\
           \"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
           \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
@@ -111,7 +111,7 @@ fn inner_report_host_native(windows: &[String], focused: &str) -> String {
           \"current\":\"n-0\",\"occupancy\":[{{\"native\":\"n-0\",\"count\":1}}]}}],\
           \"focused\":\"{focused}\",\"foregroundKnown\":{},\
           \"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
           \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\

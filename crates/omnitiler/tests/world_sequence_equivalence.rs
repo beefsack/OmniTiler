@@ -369,7 +369,7 @@ fn inner_report_json(focused: &str) -> String {
           \"windows\":[{}],\"closed\":[],\"native\":[],\
           \"focused\":\"{focused}\",\"foregroundKnown\":{},\
           \"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
           \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\
@@ -497,6 +497,8 @@ fn typed_report(generation: &str, seq: u64, focused: &str) -> WorldReportV4 {
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 

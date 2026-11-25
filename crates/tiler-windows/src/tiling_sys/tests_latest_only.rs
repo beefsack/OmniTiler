@@ -65,6 +65,7 @@ fn facts() -> crate::tiling::WindowFacts {
         owned: false,
         captionless_fullscreen: false,
         no_activate: false,
+        topmost: false,
         dialog: false,
     }
 }
@@ -240,7 +241,6 @@ fn queued_selects_order_every_command_but_apply_only_latest() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     // Alternating departures/arrivals: every select changes the view, so
@@ -364,7 +364,6 @@ fn observation_tick_increments_observation_oracle() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     reset_all_apply_counts();
@@ -380,7 +379,6 @@ fn observation_tick_increments_observation_oracle() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     clear_pending_seams();
     assert!(ticked.is_some(), "observation tick must converge");
@@ -414,7 +412,6 @@ fn repeated_same_view_burst_orders_all_applies_latest_only() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     reset_all_apply_counts();
@@ -487,7 +484,6 @@ fn select_send_barrier_flushes_pending_select_first() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     reset_all_apply_counts();
@@ -544,7 +540,6 @@ fn flush_recheck_drops_pending_select_when_suspended() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     reset_all_apply_counts();
@@ -606,7 +601,6 @@ fn flush_recheck_drops_pending_select_when_elevated() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     reset_all_apply_counts();
@@ -672,7 +666,6 @@ fn forced_catchup_burst_orders_all_without_native_applies() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     reset_all_apply_counts();
@@ -764,7 +757,6 @@ fn admission_preamble_burst_stays_native_free() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     reset_all_apply_counts();
@@ -870,7 +862,6 @@ fn seed_converged(
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
 }
@@ -1129,7 +1120,6 @@ fn send_barrier_applies_pending_select_then_linked_move() {
         0,
         &fulls(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
     reset_all_apply_counts();
@@ -1241,7 +1231,6 @@ fn seed_converged_two_output(
         0,
         &areas.iter().map(|row| row.full).collect::<Vec<_>>(),
         Some((100, 100)),
-        false,
     );
     assert!(seeded.is_some(), "seed observation must converge");
 }

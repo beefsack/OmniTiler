@@ -373,6 +373,8 @@ fn report(
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -891,6 +893,8 @@ fn report_with_screens(
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -2007,6 +2011,8 @@ fn directional_fences_carry_distinct_fixed_reasons() {
             direction: crate::directional::Direction::Right,
         }),
         inventory_complete: true,
+        pointer_activity: None,
+        warp_spent: None,
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
     match engine.handle_report(&east, &[]) {
@@ -2321,6 +2327,8 @@ fn offset_two_output_migration_applies() {
             request_seq: 1,
             observation_seq: 1,
             request_id: "req-1".to_owned(),
+            pointer_activity: None,
+            warp_spent: None,
             ..report(1, 1, vec![], "", None, None, vec![], vec![])
         },
     );
@@ -2346,6 +2354,8 @@ fn offset_two_output_migration_applies() {
             command: Some(WorldCommand::MigrateDirectional {
                 direction: crate::directional::Direction::Right,
             }),
+            pointer_activity: None,
+            warp_spent: None,
             ..report(2, 2, vec![], "", None, None, vec![], vec![])
         },
     );
@@ -2885,6 +2895,8 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
             command: Some(WorldCommand::MigrateDirectional {
                 direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
             }),
+            pointer_activity: None,
+            warp_spent: None,
             ..report(
                 seq,
                 seq,
@@ -3010,6 +3022,8 @@ fn migrate_directional_resolves_action_context_without_adapter_preselect() {
         command: Some(WorldCommand::MigrateDirectional {
             direction: crate::directional::Direction::Right,
         }),
+        pointer_activity: None,
+        warp_spent: None,
         ..report(2, 2, vec![], "", None, None, vec![], vec![])
     };
     match engine.handle_report(&empty, &[]) {
@@ -3045,6 +3059,8 @@ fn migrate_directional_freezes_source_view_pre_observation() {
         command: Some(WorldCommand::MigrateDirectional {
             direction: crate::directional::Direction::Right,
         }),
+        pointer_activity: None,
+        warp_spent: None,
         ..report(1, 1, vec![], "", None, None, vec![], vec![])
     };
     match fresh.handle_report(&unbootstrapped, &[]) {
@@ -3086,6 +3102,8 @@ fn migrate_directional_freezes_source_view_pre_observation() {
             command: Some(WorldCommand::MigrateDirectional {
                 direction: crate::directional::Direction::Right,
             }),
+            pointer_activity: None,
+            warp_spent: None,
             ..report(
                 2,
                 2,
@@ -3145,6 +3163,8 @@ fn migrate_directional_ignores_same_report_view_creation() {
         command: Some(WorldCommand::MigrateDirectional {
             direction: crate::directional::Direction::Left,
         }),
+        pointer_activity: None,
+        warp_spent: None,
         ..report(
             2,
             2,
@@ -3205,6 +3225,8 @@ fn migrate_directional_ignores_same_report_view_creation() {
             command: Some(WorldCommand::MigrateDirectional {
                 direction: crate::directional::Direction::Left,
             }),
+            pointer_activity: None,
+            warp_spent: None,
             ..report(
                 4,
                 4,

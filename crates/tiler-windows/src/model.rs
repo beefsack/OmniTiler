@@ -17,23 +17,6 @@ pub const PRODUCT_CLAIM_PROP: &str = "OmniTilerProductClaim";
 /// the three domains never mistake each other's tags.
 pub const MEMBER_TAG_PROP: &str = "OmniTilerMember";
 
-/// Sticky-float marker (1 = pre-sticky tiled, 2 = pre-sticky float). Dies
-/// with the window; removed only by sticky-off, kept across adoption so
-/// later restarts still see it. The legacy `OmniTilerSticky` name is
-/// retired and never read.
-pub const STICKY_PROP: &str = "OmniTiler.Sticky.v1";
-
-/// Intentional-float marker (value 1). Written after native success;
-/// cleared on settled unfloat. Missing means no intent; unreadable or
-/// mismatch is diagnosed with no intent. Classification only, never write
-/// or recovery authority. Sticky wins when both markers read valid.
-pub const FLOAT_INTENT_PROP: &str = "OmniTiler.FloatIntent.v1";
-
-/// Reserved fixed-window tile-override marker (value 1) for item 13 (D7).
-/// Item 8 reserves the constant, codec, and native ops only: no admission
-/// path reads it here and it never floats a window.
-pub const TILE_OVERRIDE_PROP: &str = "OmniTiler.TileOverride.v1";
-
 /// Ownership domain of one hidden-window claim. Helper claims use the owned
 /// test-window lifetime property and helper-only gates; product claims use the
 /// product nonce property on ordinary windows. Serde default is helper so

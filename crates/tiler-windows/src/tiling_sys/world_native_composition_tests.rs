@@ -931,7 +931,7 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         recovered.members.iter().any(
             |a| a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(target.as_str())
         ) && recovered.views.iter().any(
-            |a| a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(target.as_str())
+            |a| a.operation_id == op && a.post.as_deref() == Some(target.as_str())
         ),
         "member and view both prove the target: {:?} {:?}",
         recovered.members,
@@ -1051,7 +1051,7 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
     assert_eq!(member.pre, member.post);
     assert!(
         tick.views.iter().any(
-            |a| a.operation_id == op && ref_workspace(a.post.as_ref()) != Some(target.as_str())
+            |a| a.operation_id == op && a.post.as_deref() != Some(target.as_str())
         ),
         "unproven follow view: {:?}",
         tick.views
@@ -1249,7 +1249,8 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         });
         S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
     }
-    env.state.sticky.insert(anchor.clone(), false);
+    crate::product_hide::sys::fake::register_marks(anchor.hwnd);
+    env.state.seed_sticky(anchor.clone(), false);
     let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
     let areas = one_area();
     let fulls = env.fulls.clone();
@@ -1512,7 +1513,8 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         });
         S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
     }
-    env.state.sticky.insert(anchor.clone(), false);
+    crate::product_hide::sys::fake::register_marks(anchor.hwnd);
+    env.state.seed_sticky(anchor.clone(), false);
     let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
     let areas = one_area();
     let fulls = env.fulls.clone();
@@ -1587,7 +1589,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
     // Select back to source: n1 hidden, n2 back.
     let observed = live_visible_observed();
     let back_index = index_of(&owner, &current);
-    live_tick(
+    let back = live_tick(
         &mut env,
         &mut owner,
         &observed,
@@ -1603,7 +1605,10 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
     );
     assert!(
         !S_VISIBLE.with(|m| m.borrow().contains(&n1.hwnd)),
-        "n1 hidden"
+        "n1 hidden: focus={:?} members={:?} views={:?}",
+        back.reply.focus_request,
+        back.members,
+        back.views
     );
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&n2.hwnd)), "n2 back");
     let observed = live_visible_observed();
@@ -1921,7 +1926,7 @@ fn cycle_prims() -> NativePrimitives {
         warp_cursor: |_, _| true,
         dpi: s_dpi,
         process_identity: fake_backed_identity,
-        read_topmost: |_| false,
+        read_topmost: |_| Some(false),
         admit: real.admit,
         hide_claim: real.hide_claim,
         reveal_claim: real.reveal_claim,
@@ -1964,7 +1969,6 @@ fn second_hide_after_reveal_readmits_through_real_claims() {
         FakeWindow {
             pid: key.pid,
             process: identity_of(&key),
-            integrity_rid: 0x2000,
             nonce: None,
             member_tag: Some("member-tag-1".to_owned()),
             visible: true,
@@ -2745,6 +2749,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -2755,6 +2760,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -2810,7 +2816,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
     assert!(members.is_empty());
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, "op-view-2x2");
-    assert_eq!(ref_workspace(views[0].post.as_ref()), Some(ws2.as_str()));
+    assert_eq!(views[0].post.as_deref(), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 1, "{stats:?}");
     drop(native);
     // Partial completion: the second reveal refuses, so nothing proves.
@@ -2871,6 +2877,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -2881,6 +2888,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
                 cloaked: false,
                 owned: false,
                 tool_window: false,
+                topmost: false,
                 dialog: false,
             },
         ),
@@ -2939,7 +2947,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
     // that names the target.
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, "op-view-2x2-partial");
-    assert_ne!(ref_workspace(views[0].post.as_ref()), Some(ws2.as_str()));
+    assert_ne!(views[0].post.as_deref(), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 0, "{stats:?}");
 }
 
@@ -3200,6 +3208,7 @@ fn world_minimized_omission_never_closes_hidden_keeps_fullscreen() {
             cloaked: false,
             owned: false,
             tool_window: false,
+            topmost: false,
             dialog: false,
         },
     )]);
@@ -3278,8 +3287,8 @@ fn world_marker_intent_restores_quiet_without_receipts() {
             .float_rects
             .insert(token.to_owned(), rect(10, 10, 400, 300));
     }
-    state.floated.insert(float_key.clone());
-    state.sticky.insert(sticky_key.clone(), false);
+    state.seed_float(float_key.clone());
+    state.seed_sticky(sticky_key.clone(), false);
     let observed = vec![
         observed_for(&float_key, "w-float", rect(10, 10, 400, 300), plain_facts()),
         observed_for(

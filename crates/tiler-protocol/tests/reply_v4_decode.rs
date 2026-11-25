@@ -13,8 +13,9 @@
 //! Offline only: no adapters, no live work, no engine.
 
 use tiler_core::connection::HostCapabilities;
+use tiler_protocol::world_admission_sizing::reply_upper_bound_v4;
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, decode_reply_v4, decode_reply_v4_for_host, encode_reply_v4,
+    DecodedReplyV4, decode_reply_v4, decode_reply_v4_for_host, decode_report_v4, encode_reply_v4,
 };
 use tiler_protocol::world_reply_write::{
     BrokerGestureAssoc, BrokerReplyBind, count_reply_v4, write_bound_reply_v4,
@@ -173,7 +174,7 @@ fn v4_reply_valid_shapes_spot_check() {
         observe.reply.drag_preview.is_none(),
         "observe no drag preview"
     );
-    assert!(observe.reply.cursor_warp.is_none(), "observe no warp");
+    assert!(observe.reply.warp_request.is_none(), "observe no warp");
     assert!(
         observe.reply.presentation.suspended_output.is_none(),
         "observe no suspension"
@@ -620,7 +621,6 @@ fn v4_reply_decoder_rejects_strict_envelope_violations() {
 
 #[test]
 fn v4_reply_envelope_ids_match_report_validators() {
-    use tiler_protocol::world_protocol::decode_report_v4;
     let reply = fixture_text("messages/reply-bootstrap.json");
     let report = fixture_text("messages/report-empty.json");
     let long_adapter = "a".repeat(129);
@@ -977,25 +977,153 @@ fn v4_reply_writer_round_trips_all_valid_wire() {
     assert_eq!(count, 73, "every valid-wire reply round-trips");
 }
 
+fn warp_request(
+    point: (i32, i32),
+    pointer_baseline: Option<u64>,
+) -> tiler_core::world_report::WarpRequest {
+    tiler_core::world_report::WarpRequest {
+        id: "warp-9".to_owned(),
+        target: tiler_core::directional::WindowId("win-a".to_owned()),
+        revision: 9,
+        output: tiler_core::directional::OutputId("out-a".to_owned()),
+        workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
+        point,
+        pointer_baseline,
+    }
+}
+
 #[test]
-fn v4_reply_writer_warp_constructed() {
+fn v4_reply_writer_warp_request_constructed() {
     let text = fixture_text("messages/reply-observe.json");
     let base = decode_reply_v4(&text).expect("observe decodes");
-    assert!(base.reply.cursor_warp.is_none());
-    for point in [(20, 30), (-16384, 16384)] {
+    assert!(base.reply.warp_request.is_none());
+    for (point, baseline) in [((20, 30), Some(4)), ((-16384, 16384), None)] {
+        let request = warp_request(point, baseline);
         let mut constructed = base.clone();
-        constructed.reply.cursor_warp = Some(point);
+        constructed.reply.warp_request = Some(request.clone());
+        let baseline_text = match baseline {
+            None => "null".to_owned(),
+            Some(value) => format!("\"{value}\""),
+        };
         let expected = text.replacen(
-            "\"warpCursor\":null",
-            &format!("\"warpCursor\":[{},{}]", point.0, point.1),
+            "\"warpRequest\":null",
+            &format!(
+                "\"warpRequest\":{{\"id\":\"warp-9\",\"target\":\"win-a\",\"rev\":\"9\",\"out\":\"out-a\",\"ws\":\"ws-a\",\"point\":[{},{}],\"pointerBaseline\":{baseline_text}}}",
+                point.0, point.1
+            ),
             1,
         );
         assert_ne!(expected, text);
         let encoded = encode_reply_v4(&constructed).expect("warp encodes");
-        assert_eq!(encoded, expected, "warp point {point:?} spells exactly");
+        assert_eq!(encoded, expected, "warp request {point:?} spells exactly");
+        assert_eq!(
+            count_reply_v4(&constructed.reply).expect("warp counts"),
+            encoded.len(),
+            "warp object count is exact"
+        );
         let back = decode_reply_v4(&encoded).expect("warp re-decodes");
         assert_eq!(back, constructed, "warp re-decode equals");
     }
+}
+
+#[test]
+fn reply_upper_bound_covers_maximal_warp_request() {
+    let text = fixture_text("messages/reply-observe.json");
+    let mut constructed = decode_reply_v4(&text).expect("observe decodes");
+    // Widest admissible request: 128-byte opaque ids/target/out/ws, a
+    // 20-digit revision and pointer baseline, and the widest carried point.
+    let opaque = "i".repeat(128);
+    let mut request = warp_request((-32768, -32768), Some(u64::MAX));
+    request.id = opaque.clone();
+    request.target = tiler_core::directional::WindowId(opaque.clone());
+    request.revision = u64::MAX;
+    request.output = tiler_core::directional::OutputId(opaque.clone());
+    request.workspace = tiler_core::directional::WorkspaceId(opaque);
+    constructed.reply.warp_request = Some(request);
+    let wire = encode_reply_v4(&constructed).expect("maximal warp request encodes");
+    assert_eq!(
+        count_reply_v4(&constructed.reply).expect("protocol count succeeds"),
+        wire.len(),
+        "exact count matches maximal warp bytes"
+    );
+    let report = decode_report_v4(&fixture_text("messages/report-optionals-omitted.json"))
+        .expect("report decodes")
+        .report;
+    let bound = reply_upper_bound_v4(&report, 0, 0, 0, 0, 0);
+    assert!(
+        bound >= wire.len(),
+        "upper bound {bound} covers maximal warp reply {}",
+        wire.len()
+    );
+}
+
+#[test]
+fn v4_reply_warp_request_rejects_malformed() {
+    let text = fixture_text("messages/reply-observe.json");
+    let base: serde_json::Value = serde_json::from_str(&text).expect("observe json");
+    let good = serde_json::json!({
+        "id": "warp-9",
+        "target": "win-a",
+        "rev": "9",
+        "out": "out-a",
+        "ws": "ws-a",
+        "point": [20, 30],
+        "pointerBaseline": "4",
+    });
+    let cases = [
+        (
+            "unknown-key",
+            serde_json::json!({ "id": "warp-9", "target": "win-a", "rev": "9", "out": "out-a", "ws": "ws-a", "point": [20, 30], "pointerBaseline": "4", "extra": 1 }),
+        ),
+        (
+            "empty-id",
+            serde_json::json!({ "id": "", "target": "win-a", "rev": "9", "out": "out-a", "ws": "ws-a", "point": [20, 30], "pointerBaseline": "4" }),
+        ),
+        (
+            "overlong-id",
+            serde_json::json!({ "id": "i".repeat(129), "target": "win-a", "rev": "9", "out": "out-a", "ws": "ws-a", "point": [20, 30], "pointerBaseline": "4" }),
+        ),
+        (
+            "overbound-point",
+            serde_json::json!({ "id": "warp-9", "target": "win-a", "rev": "9", "out": "out-a", "ws": "ws-a", "point": [32769, 0], "pointerBaseline": "4" }),
+        ),
+        (
+            "null-point",
+            serde_json::json!({ "id": "warp-9", "target": "win-a", "rev": "9", "out": "out-a", "ws": "ws-a", "point": null, "pointerBaseline": "4" }),
+        ),
+        (
+            "bad-target",
+            serde_json::json!({ "id": "warp-9", "target": "", "rev": "9", "out": "out-a", "ws": "ws-a", "point": [20, 30], "pointerBaseline": "4" }),
+        ),
+        (
+            "bad-output",
+            serde_json::json!({ "id": "warp-9", "target": "win-a", "rev": "9", "out": "", "ws": "ws-a", "point": [20, 30], "pointerBaseline": "4" }),
+        ),
+        (
+            "number-rev",
+            serde_json::json!({ "id": "warp-9", "target": "win-a", "rev": 9, "out": "out-a", "ws": "ws-a", "point": [20, 30], "pointerBaseline": "4" }),
+        ),
+    ];
+    for (case, value) in cases {
+        let mut wire = base.clone();
+        wire["warpRequest"] = value;
+        let error = decode_reply_v4(&wire.to_string()).expect_err(case);
+        assert!(
+            error.kind == "unknown-value"
+                || error.kind == "unknown-field"
+                || error.kind == "malformed-json"
+                || error.kind == "malformed",
+            "{case} kind {}",
+            error.kind
+        );
+    }
+    let mut wire = base;
+    wire["warpRequest"] = good;
+    let decoded = decode_reply_v4(&wire.to_string()).expect("good request decodes");
+    assert_eq!(
+        decoded.reply.warp_request,
+        Some(warp_request((20, 30), Some(4)))
+    );
 }
 
 #[test]
@@ -1130,7 +1258,7 @@ fn v4_reply_writer_refuses_unspellable() {
             data: None,
         });
     let mut warp_overbound = writer_base();
-    warp_overbound.reply.cursor_warp = Some((32769, 0));
+    warp_overbound.reply.warp_request = Some(warp_request((32769, 0), Some(1)));
     let mut bad_rect = writer_base();
     bad_rect.reply.windows[0].allocation = Some(tiler_core::geometry::Rect {
         x: 0,
@@ -1613,7 +1741,7 @@ fn v4_reply_drag_preview_strict_validation_and_bounds() {
             gesture_settled: None,
             operation_settled: vec![],
             native_creations: vec![],
-            cursor_warp: None,
+            warp_request: None,
             presentation: WorldPresentationV4 {
                 foreground: String::new(),
                 rev: 2,

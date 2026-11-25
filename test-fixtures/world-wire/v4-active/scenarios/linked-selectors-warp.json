@@ -261,6 +261,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [
@@ -320,7 +322,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.ready == true and .output.message.warpCursor == null"
+          ".output.message.ready == true and .output.message.warpRequest == null"
         ]
       },
       "rules": [
@@ -492,6 +494,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [
@@ -551,7 +555,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.warpCursor == null",
+          ".output.message.warpRequest == null",
           "([.output.message.outputs[] | select(.out == \"out-a\" or .out == \"out-b\") | .view] | length == 2 and .[0] == .[1])",
           ".output.actions == []"
         ]
@@ -725,6 +729,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [
@@ -784,7 +790,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.warpCursor == null"
+          ".output.message.warpRequest == null"
         ]
       },
       "rules": [
@@ -1059,6 +1065,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [
@@ -1290,6 +1298,8 @@
             20,
             30
           ],
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionCached": "out-a",
           "actionOutputs": [

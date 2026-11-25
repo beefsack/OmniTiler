@@ -123,7 +123,9 @@ impl Drop for PanicDiagGuard {
 }
 
 /// Best-effort panic line append: lock-free, never panics, never logs the
-/// path. Runs before the preserved previous hook.
+/// path. Runs before the preserved previous hook. Uses the bounded
+/// emergency lane, which reserves headroom above the routine run-log cap so
+/// a crash at the limit still leaves one sanitized row.
 fn append_panic_line(log_path: &Path, info: &std::panic::PanicHookInfo<'_>) {
     let role = classify_thread_role(std::thread::current().name());
     let payload_type = classify_payload_type(info.payload());
@@ -136,12 +138,13 @@ fn append_panic_line(log_path: &Path, info: &std::panic::PanicHookInfo<'_>) {
         None => ("unknown".to_owned(), None, None),
     };
     let event = panic_event(role, &file, line, column, payload_type);
-    append_json_line(log_path, &event);
+    let _ = crate::log_sink::append_emergency_json(log_path, &event);
 }
 
-/// Serialize before writing so concurrent panic callbacks cannot interleave
-/// `Display` fragments from `writeln!`. IO remains lock-free and best-effort;
-/// `write_all` may still need multiple writes if the sink accepts only part.
+/// Serialize before writing so one callback is one complete buffer. Test
+/// support for the historical one-write contract; production panic rows go
+/// through the bounded emergency lane.
+#[cfg(test)]
 fn write_json_line(writer: &mut impl std::io::Write, value: &serde_json::Value) {
     let mut line = match serde_json::to_string(value) {
         Ok(line) => line,
@@ -151,16 +154,10 @@ fn write_json_line(writer: &mut impl std::io::Write, value: &serde_json::Value) 
     let _ = writer.write_all(line.as_bytes());
 }
 
-/// Lock-free best-effort JSON line append (create/append, single row).
-/// Ignores all errors.
+/// Test support: append through the production bounded emergency lane.
+#[cfg(test)]
 fn append_json_line(path: &Path, value: &serde_json::Value) {
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        write_json_line(&mut file, value);
-    }
+    let _ = crate::log_sink::append_emergency_json(path, value);
 }
 
 #[cfg(test)]
