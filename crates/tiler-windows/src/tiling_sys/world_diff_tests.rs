@@ -7282,6 +7282,65 @@ fn staged_switch_hides_when_arrival_is_already_foreground() {
     assert_eq!(hide.post.unwrap().visibility.visible, Some(false));
 }
 
+#[test]
+fn staged_foreground_departure_resolves_both_scope_shapes() {
+    for collapsed in [false, true] {
+        let (rig, fresh, mut native, mut staged) = staged_shapes();
+        if collapsed {
+            staged.reply.scopes = vec![ScopeStatus {
+                scope: AuthorityScope::Output(OutputId(rig.out.clone())),
+                authority: Auth::Controlled,
+            }];
+        } else {
+            staged.reply.scopes[0].authority = Auth::Untouched;
+        }
+        let arrival = native.windows.get_mut("w2").expect("arrival");
+        arrival.hidden = false;
+        arrival.facts.as_mut().expect("arrival facts").visible = true;
+        native.foreground = Some("w2".to_owned());
+
+        let mut diff = diff_at(7);
+        let (stats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+        assert!(views.is_empty(), "{collapsed}: combined view write: {views:?}");
+        assert_eq!(stats.staged_hides, 1, "{collapsed}: {stats:?}");
+        let feedback = diff.take_focus_feedback();
+        assert_eq!(feedback.len(), 1);
+        assert_eq!(
+            feedback[0].disposition,
+            FocusDisposition::NotCalled { reason: FocusNoCallReason::NoReason },
+        );
+        assert!(feedback[0].foreground_proven);
+        assert_eq!(native.hide_calls, ["w1"]);
+    }
+}
+
+#[test]
+fn floating_visibility_yields_under_both_scope_shapes() {
+    for collapsed in [false, true] {
+        let (rig, fresh, mut native, mut staged) = staged_shapes();
+        if collapsed {
+            staged.reply.scopes = vec![ScopeStatus {
+                scope: AuthorityScope::Output(OutputId(rig.out.clone())),
+                authority: Auth::Untouched,
+            }];
+        } else {
+            staged.reply.scopes[1].authority = Auth::Untouched;
+        }
+        staged.reply.focus_request = None;
+        let arrival = &mut staged.reply.windows[1];
+        arrival.floating = true;
+        arrival.frame_authority = Auth::Untouched;
+        arrival.allocation = None;
+        arrival.effective_frame = None;
+        staged.reply.outputs.push(output_row(&rig.out, &staged.ws2, None));
+
+        let (stats, _, views) = staged_apply(&mut diff_at(7), &staged.reply, &fresh, &mut native);
+        assert!(views.is_empty(), "{collapsed}: combined view write: {views:?}");
+        assert_eq!(stats.staged_reveals, 1, "{collapsed}: {stats:?}");
+        assert_eq!(native.reveal_calls, ["w2"]);
+    }
+}
+
 /// Without the frozen after-shown scope the combined single-shot path
 /// runs: the view still switches only under its own full proof, and the
 /// visibility lane performs no staged reveal/hide.

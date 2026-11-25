@@ -2083,32 +2083,30 @@ impl ApplyStats {
     }
 }
 
-/// Scope authority for one `(output, workspace)` domain, matching the core
-/// envelope: [`ScopeStatus::scope`](tiler_core::world_report::ScopeStatus)
-/// is a typed authority scope, and omission inside a held or untouched
-/// scope authorizes no write or retirement.
-fn scope_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
-    let output = OutputId(output.to_owned());
-    reply.scopes.iter().any(|status| {
-        status.authority == ScopeAuthority::Controlled
-            && status.scope.covers_workspace(&output, workspace)
-    })
+/// Core compresses uniform workspace authority into one output row. A
+/// specific workspace row always wins; without either match there is no
+/// authority for the domain.
+fn workspace_authority(reply: &WorldReplyV4, output: &str, workspace: &str) -> Option<ScopeAuthority> {
+    let mut output_authority = None;
+    for status in &reply.scopes {
+        match &status.scope {
+            AuthorityScope::Workspace {
+                output: scope_output,
+                workspace: scope_workspace,
+            } if scope_output.0 == output && scope_workspace.0 == workspace => {
+                return Some(status.authority);
+            }
+            AuthorityScope::Output(scope_output) if scope_output.0 == output => {
+                output_authority = Some(status.authority);
+            }
+            _ => {}
+        }
+    }
+    output_authority
 }
 
-/// Exact workspace row authority: a broad output scope never overrides a
-/// more specific workspace row, and an absent row has no exact authority.
-fn exact_workspace_authority(
-    reply: &WorldReplyV4,
-    output: &str,
-    workspace: &str,
-) -> Option<ScopeAuthority> {
-    reply.scopes.iter().find_map(|status| match &status.scope {
-        AuthorityScope::Workspace {
-            output: scope_output,
-            workspace: scope_workspace,
-        } if scope_output.0 == output && scope_workspace.0 == workspace => Some(status.authority),
-        _ => None,
-    })
+fn scope_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
+    workspace_authority(reply, output, workspace) == Some(ScopeAuthority::Controlled)
 }
 
 /// Whether one view transfer leaves member visibility to the per-window
@@ -2125,7 +2123,7 @@ fn view_transfer_yields_to_per_window_lane(
     reply: &WorldReplyV4,
     transfer: &TransferTargetV4,
 ) -> bool {
-    let yields = match exact_workspace_authority(
+    let yields = match workspace_authority(
         reply,
         &transfer.target_output.0,
         &transfer.target_workspace,
@@ -2183,13 +2181,7 @@ fn scope_actuatable(
     output: &str,
     workspace: &str,
 ) -> bool {
-    let scope_output = OutputId(output.to_owned());
-    let Some(authority) = reply
-        .scopes
-        .iter()
-        .find(|status| status.scope.covers_workspace(&scope_output, workspace))
-        .map(|status| status.authority)
-    else {
+    let Some(authority) = workspace_authority(reply, output, workspace) else {
         return false;
     };
     match authority {
