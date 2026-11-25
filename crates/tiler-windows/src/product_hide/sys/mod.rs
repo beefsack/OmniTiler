@@ -326,6 +326,19 @@ pub fn install_tag_attempts() -> u64 {
     INSTALL_TAG_ATTEMPTS.with(|slot| slot.get())
 }
 
+/// Bind visible membership to a window-lifetime tag without rotating a live
+/// tag. A surviving tag is the same window object's identity (properties die
+/// with the window), so a restarted owner adopts it and the durable `.v2`
+/// intent slot plus R12 preimages stay bound to the exact lifetime they were
+/// written for. Only a window with no valid tag receives a fresh stamp, so
+/// same-process HWND reuse still fails closed. Read-only when adopting.
+pub fn ensure_member_tag(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
+    if let Some(tag) = read_member_tag(hwnd_u64) {
+        return Ok(tag);
+    }
+    install_member_tag(hwnd_u64, owner_pid)
+}
+
 /// Stamp a fresh random window-lifetime tag for visible membership, then
 /// read it back. Only call when admitting a window with no trusted stored
 /// tag (first sight or same-process reuse repair), after the caller bound

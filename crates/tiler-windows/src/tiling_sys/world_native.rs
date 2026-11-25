@@ -78,6 +78,7 @@ pub(super) type RevealClaimFn = fn(
     Option<&mut VisibilityPostTrace>,
 ) -> Result<Revealed, String>;
 use super::{AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, ScopeHostChild, TokenMap};
+use super::visibility_diag::RevealRecord;
 use crate::model::{ProcessIdentity, WindowIdentity};
 use crate::native::HeldProcess;
 use crate::native_guards::WindowKey;
@@ -534,6 +535,10 @@ pub(super) struct LiveNative<'a> {
     pub proven_views: HashMap<String, String>,
     pub member_tags: &'a BTreeMap<WindowKey, String>,
     pub member_identity: &'a BTreeMap<WindowKey, ProcessIdentity>,
+    /// Opaque member token per lifetime: the same map the caller passes to
+    /// `assemble` (stored for reveal-diagnostic token naming; not a second
+    /// key owner).
+    pub member_tokens: &'a BTreeMap<WindowKey, String>,
     pub hidden_claims: &'a mut BTreeMap<WindowKey, HiddenRecord>,
     /// Hide-commit snapshot seeds drained by the owner tick after apply:
     /// exact-lifetime freshly proven physical frames read before the hide
@@ -542,6 +547,11 @@ pub(super) struct LiveNative<'a> {
     /// the next hidden report stages the proven frame instead of the
     /// pre-write slot.
     pub hidden_seeds: Vec<(WindowKey, Rect)>,
+    /// Genuine hidden-claim reveals actuated this pass, in call order. The
+    /// owner tick drains them into production `workspace-reveal` rows so a
+    /// real hide→show transition is observable; an absent claim records
+    /// nothing (no setter, no row). Never a behavior input.
+    reveals: Vec<RevealRecord>,
     /// Same-pass nonactivating departure hidden by this actuator instance:
     /// the entry foreground when the nonactivating view switch started,
     /// kept only when its hide committed and it still read invisible. The
@@ -640,6 +650,7 @@ impl<'a> LiveNative<'a> {
             proven_views,
             member_tags,
             member_identity,
+            member_tokens,
             hidden_claims,
             na_hidden_departure: None,
             focus_veto_detail: None,
@@ -660,6 +671,7 @@ impl<'a> LiveNative<'a> {
             desired_frames,
             areas,
             hidden_seeds: Vec::new(),
+            reveals: Vec::new(),
         }
     }
 
@@ -1360,6 +1372,11 @@ impl<'a> LiveNative<'a> {
     }
 
     /// Mode-parameterized reveal; `true` takes the nonactivating lane.
+    /// Every call with a committed hide claim is recorded as one genuine
+    /// hide→show attempt; the resulting row carries the honest categorical
+    /// outcome (`revealed`/`retired`/`refused`/`uncertain`), never the raw
+    /// product error text. A call with no claim is a no-op and records
+    /// nothing.
     fn commit_reveal_with(
         &mut self,
         key: &WindowKey,
@@ -1371,6 +1388,39 @@ impl<'a> LiveNative<'a> {
             // Nothing hidden: no native effect.
             return Ok(());
         };
+        let result = self.reveal_claim(key, expected, nonactivating, &record);
+        let (outcome, detail) = match result {
+            Ok(true) => ("revealed", None),
+            Ok(false) => ("retired", Some("absent")),
+            Err(AdmitOutcome::IdentityChanged) => ("refused", Some("identity-stale")),
+            Err(AdmitOutcome::Refused) => ("refused", Some("reveal-refused")),
+            Err(AdmitOutcome::Uncertain) => ("uncertain", Some("reveal-uncertain")),
+            Err(AdmitOutcome::OriginVanished) => ("retired", Some("origin-vanished")),
+        };
+        self.reveals.push(RevealRecord {
+            token: self.member_tokens.get(key).cloned(),
+            outcome,
+            detail,
+            phase: None,
+            mono_ms: super::trace::log_mono_ms(),
+        });
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Identity-fenced reveal actuation for one committed claim. `Ok(true)`
+    /// means the product reveal posted (or proved already visible); `Ok(false)`
+    /// retires a verifiably absent claim; errors keep the claim for the
+    /// caller's hold.
+    fn reveal_claim(
+        &mut self,
+        key: &WindowKey,
+        expected: &ProcessIdentity,
+        nonactivating: bool,
+        record: &HiddenRecord,
+    ) -> Result<bool, AdmitOutcome> {
         if !self.identity_ok(key, expected) {
             return Err(AdmitOutcome::IdentityChanged);
         }
@@ -1401,12 +1451,12 @@ impl<'a> LiveNative<'a> {
         match outcome {
             Ok(_) => {
                 self.hidden_claims.remove(key);
-                Ok(())
+                Ok(true)
             }
             Err(message) => {
                 if message.starts_with("absent:") {
                     self.hidden_claims.remove(key);
-                    Ok(())
+                    Ok(false)
                 } else if message.starts_with("uncertain:") {
                     Err(AdmitOutcome::Uncertain)
                 } else {
@@ -1581,6 +1631,12 @@ impl<'a> LiveNative<'a> {
     /// freshly proven frames, oldest first.
     pub(super) fn take_hidden_seeds(&mut self) -> Vec<(WindowKey, Rect)> {
         std::mem::take(&mut self.hidden_seeds)
+    }
+
+    /// Drain the genuine hidden-claim reveals actuated this pass (oldest
+    /// first) so the owner tick can emit production `workspace-reveal` rows.
+    pub(super) fn take_reveals(&mut self) -> Vec<RevealRecord> {
+        std::mem::take(&mut self.reveals)
     }
 
     /// Trace-only refusal detail for one `Ok(false)` pre-primitive focus

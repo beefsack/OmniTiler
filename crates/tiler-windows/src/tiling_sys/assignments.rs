@@ -105,7 +105,7 @@ pub(super) fn ensure_workspace_assignments(
             ) {
                 continue;
             }
-            let fresh_tag = match crate::product_hide::sys::install_member_tag(window.hwnd, me.pid)
+            let member_tag = match crate::product_hide::sys::ensure_member_tag(window.hwnd, me.pid)
             {
                 Ok(tag) => tag,
                 Err(_) => continue,
@@ -116,7 +116,7 @@ pub(super) fn ensure_workspace_assignments(
                 .is_ok()
                 && pid_current(window.hwnd, identity.pid)
                 && crate::product_hide::sys::read_member_tag(window.hwnd).as_deref()
-                    == Some(fresh_tag.as_str());
+                    == Some(member_tag.as_str());
             if !post_ok {
                 continue;
             }
@@ -134,7 +134,7 @@ pub(super) fn ensure_workspace_assignments(
                 .member_rects
                 .insert(fresh_token.clone(), window.visible);
             state.member_identity.insert(key.clone(), identity);
-            state.member_tags.insert(key.clone(), fresh_tag);
+            state.member_tags.insert(key.clone(), member_tag);
             // Trace-only token<->HWND join for native correlation (see the
             // world-tick admission path): stable token plus the full member
             // identity, no titles or app content. Fresh admissions only.

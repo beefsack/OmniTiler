@@ -3107,6 +3107,61 @@ fn hide_without_live_frame_keeps_stale_fallback_without_seed() {
 }
 
 #[test]
+fn genuine_reveal_records_one_production_row_and_noop_records_none() {
+    // A committed hide claim that is revealed is a real hide→show
+    // transition: one `workspace-reveal` record per actuation, with the
+    // refused attempt visible and the successful retry named `revealed`.
+    // A reveal call with no claim (the first switch to the already-shown
+    // view) records nothing, so absence of a row stays honest.
+    let mut rig = hide_seed_rig(120_105);
+    let ws1 = "ws1".to_owned();
+    let mut native = assemble_with_views(
+        &mut rig.env,
+        scripted(),
+        Some((rig.out.clone(), rig.ws2.clone())),
+    );
+    native.switch_view(&rig.out, &rig.ws2).expect("hide");
+    assert!(
+        native.hidden_claims.contains_key(&rig.leaving),
+        "leaving member hides"
+    );
+    assert!(
+        native.take_reveals().is_empty(),
+        "a hide is never a reveal row"
+    );
+    // Refused reveal: the claim stays and the attempt is recorded.
+    S_REVEAL.with(|m| {
+        m.borrow_mut()
+            .insert(rig.leaving.hwnd, Err("refused: scripted".to_owned()))
+    });
+    assert!(
+        !native.switch_view(&rig.out, &ws1).expect("refusal settles"),
+        "refused reveal reports no arrival"
+    );
+    assert!(native.hidden_claims.contains_key(&rig.leaving));
+    let refused = native.take_reveals();
+    assert_eq!(refused.len(), 1, "one row per attempted reveal");
+    assert_eq!(refused[0].token.as_deref(), Some("w1"));
+    assert_eq!(refused[0].outcome, "refused");
+    assert_eq!(refused[0].detail, Some("reveal-refused"));
+    // Proven retry: exactly one more row, named revealed, claim retired.
+    S_REVEAL.with(|m| {
+        m.borrow_mut()
+            .insert(rig.leaving.hwnd, Ok(Revealed::Shown))
+    });
+    native.switch_view(&rig.out, &ws1).expect("reveal");
+    assert!(!native.hidden_claims.contains_key(&rig.leaving));
+    let revealed = native.take_reveals();
+    assert_eq!(revealed.len(), 1);
+    assert_eq!(revealed[0].token.as_deref(), Some("w1"));
+    assert_eq!(revealed[0].outcome, "revealed");
+    assert_eq!(revealed[0].detail, None);
+    // No claim left: the same view call posts nothing and records nothing.
+    native.switch_view(&rig.out, &ws1).expect("no-op view");
+    assert!(native.take_reveals().is_empty());
+}
+
+#[test]
 fn hide_identity_drift_refuses_without_seed() {
     // Recycled HWND: the live process no longer names the member lifetime.
     // The hide refuses and records nothing.

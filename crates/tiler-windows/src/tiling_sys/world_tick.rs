@@ -1480,14 +1480,14 @@ fn admit_observed(
                 continue;
             }
         }
-        let fresh_tag = match crate::product_hide::sys::install_member_tag(key.hwnd, me.pid) {
+        let member_tag = match crate::product_hide::sys::ensure_member_tag(key.hwnd, me.pid) {
             Ok(tag) => tag,
             Err(_) => continue,
         };
         let post_ok = crate::product_hide::sys::hold_target_verified(live.pid, &live).is_ok()
             && crate::ffi::window_pid(key.hwnd) == key.pid
             && crate::product_hide::sys::read_member_tag(key.hwnd).as_deref()
-                == Some(fresh_tag.as_str());
+                == Some(member_tag.as_str());
         if !post_ok {
             continue;
         }
@@ -1495,7 +1495,7 @@ fn admit_observed(
             .member_tokens
             .insert(key.clone(), window.token.clone());
         state.member_identity.insert(key.clone(), live);
-        state.member_tags.insert(key.clone(), fresh_tag);
+        state.member_tags.insert(key.clone(), member_tag);
         // Trace-only token<->HWND join for native correlation: the stable
         // token plus the full member identity (HWND/PID/creation). No
         // titles, exe paths, or raw input. Fresh admissions only.
@@ -2035,7 +2035,14 @@ pub(super) fn run_observation_tick(
     // same lane row assembly uses, so the next hidden report stages the
     // proven frame instead of the pre-write slot.
     let hidden_seeds = native.take_hidden_seeds();
+    let reveals = native.take_reveals();
     drop(native);
+    super::visibility_diag::emit_reveal_records(
+        &log_path,
+        tick,
+        &format!("tick-{tick}"),
+        &reveals,
+    );
     super::world_native::apply_hidden_seeds(
         hidden_seeds,
         member_tokens,
@@ -2890,7 +2897,14 @@ fn run_world_command_impl(
     // Hide-commit snapshot seeds, routed exactly like the observation path
     // above (see `run_observation_tick`).
     let hidden_seeds = native.take_hidden_seeds();
+    let reveals = native.take_reveals();
     drop(native);
+    super::visibility_diag::emit_reveal_records(
+        &log_path,
+        tick,
+        &format!("tick-{tick}"),
+        &reveals,
+    );
     super::world_native::apply_hidden_seeds(
         hidden_seeds,
         member_tokens,

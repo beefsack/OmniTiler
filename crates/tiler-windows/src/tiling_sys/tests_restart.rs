@@ -1453,3 +1453,45 @@ fn invalid_marker_and_replaced_lifetime_never_hold() {
     }
     super::clear_test_hints();
 }
+
+#[test]
+fn restart_admission_adopts_surviving_tag_and_keeps_durable_intent() {
+    // R12 crash/restart regression: a fresh owner must adopt the window's
+    // surviving member tag instead of stamping a new one. Rotating it would
+    // re-bind the `.v2` intent slot hash away from the live lifetime, so
+    // restart marker adoption would log `marker-unreadable` and lose float/
+    // sticky/tile intent while the durable above/fullscreen preimage could
+    // never verify its lifetime again.
+    use crate::native_guards::MarkerSlot;
+    let win = AdoptWindow::create();
+    let pid = std::process::id();
+    let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
+        .expect("member tag installs on the owned window");
+    crate::product_hide::sys::install_float_intent_marker(win.hwnd)
+        .expect("float marker installs on the owned window");
+    crate::product_hide::sys::reset_install_tag_attempts();
+    let adopted = crate::product_hide::sys::ensure_member_tag(win.hwnd, pid)
+        .expect("surviving tag adopts");
+    assert_eq!(adopted, tag, "restart admission keeps the live tag");
+    assert_eq!(
+        crate::product_hide::sys::install_tag_attempts(),
+        0,
+        "adoption performs no tag write"
+    );
+    assert_eq!(
+        crate::product_hide::sys::peek_float_intent_raw(win.hwnd),
+        MarkerSlot::Value(crate::tiling::float_intent_marker_value()),
+        "durable float intent still decodes against the adopted tag"
+    );
+    // A window with no tag still gets a fresh stamp (same-process reuse).
+    let fresh = AdoptWindow::create();
+    crate::product_hide::sys::reset_install_tag_attempts();
+    let stamped = crate::product_hide::sys::ensure_member_tag(fresh.hwnd, pid)
+        .expect("fresh tag installs");
+    assert_eq!(crate::product_hide::sys::install_tag_attempts(), 1);
+    assert_ne!(stamped, tag);
+    assert_eq!(
+        crate::product_hide::sys::read_member_tag(fresh.hwnd).as_deref(),
+        Some(stamped.as_str())
+    );
+}

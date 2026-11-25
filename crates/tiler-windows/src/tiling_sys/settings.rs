@@ -80,7 +80,7 @@ pub(super) fn windows_capabilities() -> HostCapabilities {
         maximize: true,
         fullscreen: true,
         native_sticky: false,
-        above: false,
+        above: true,
         warp: WARP_SUPPORTED,
         tiled_float_transfer: false,
         unavailable_facts: vec![

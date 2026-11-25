@@ -110,14 +110,14 @@ pub(super) fn admit_born_fullscreen(
         if state.member_home(&row.key).is_some() || state.member_tokens.contains_key(&row.key) {
             continue;
         }
-        let fresh_tag = match crate::product_hide::sys::install_member_tag(row.key.hwnd, me.pid) {
+        let member_tag = match crate::product_hide::sys::ensure_member_tag(row.key.hwnd, me.pid) {
             Ok(tag) => tag,
             Err(_) => continue,
         };
         let post_ok = crate::product_hide::sys::hold_target_verified(live.pid, &live).is_ok()
             && pid_current(row.key.hwnd, live.pid)
             && crate::product_hide::sys::read_member_tag(row.key.hwnd).as_deref()
-                == Some(fresh_tag.as_str());
+                == Some(member_tag.as_str());
         if !post_ok {
             continue;
         }
@@ -128,7 +128,7 @@ pub(super) fn admit_born_fullscreen(
         // token/identity/tag triple, never a workspace.
         state.member_tokens.insert(row.key.clone(), token.clone());
         state.member_identity.insert(row.key.clone(), live);
-        state.member_tags.insert(row.key.clone(), fresh_tag);
+        state.member_tags.insert(row.key.clone(), member_tag);
         // Hidden-snapshot seed only (never a tile slot): a born hold that
         // is later hidden needs an existing snapshot for row assembly,
         // while visible rows always use the fresh row rect. `known_slot`
@@ -205,14 +205,14 @@ pub(super) fn admit_slotless_maximized(
         if state.member_home(&row.key).is_some() || state.member_tokens.contains_key(&row.key) {
             continue;
         }
-        let fresh_tag = match crate::product_hide::sys::install_member_tag(row.key.hwnd, me.pid) {
+        let member_tag = match crate::product_hide::sys::ensure_member_tag(row.key.hwnd, me.pid) {
             Ok(tag) => tag,
             Err(_) => continue,
         };
         let post_ok = crate::product_hide::sys::hold_target_verified(live.pid, &live).is_ok()
             && pid_current(row.key.hwnd, live.pid)
             && crate::product_hide::sys::read_member_tag(row.key.hwnd).as_deref()
-                == Some(fresh_tag.as_str());
+                == Some(member_tag.as_str());
         if !post_ok {
             continue;
         }
@@ -226,7 +226,7 @@ pub(super) fn admit_slotless_maximized(
         {
             state.member_tokens.insert(row.key.clone(), token.clone());
             state.member_identity.insert(row.key.clone(), live);
-            state.member_tags.insert(row.key.clone(), fresh_tag);
+            state.member_tags.insert(row.key.clone(), member_tag);
             // R-SPC-04 D7: a surviving tile-override marker re-adopts the
             // explicit tile win HERE, before any birth probe, automatic
             // origin, clear, slot, or write effect. The helper re-verifies
