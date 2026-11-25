@@ -242,10 +242,16 @@ pub mod sys {
     }
 
     fn read_stop(dir: &Path) -> Result<Option<String>> {
-        match std::fs::read_to_string(dir.join(STOP_REQUEST_FILE)) {
-            Ok(t) => Ok(Some(t)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(err(format!("error: stop read: {e}"))),
+        match crate::tiling::read_control_request(&dir.join(STOP_REQUEST_FILE)) {
+            crate::tiling::ControlRequestRead::Body(text) => Ok(Some(text)),
+            crate::tiling::ControlRequestRead::Missing => Ok(None),
+            // An oversized or non-UTF-8 body can never match the exact-owner
+            // token; report an empty marker so the caller's mismatch/cleanup
+            // rules apply unchanged and the file is never loaded unbounded.
+            crate::tiling::ControlRequestRead::Rejected => Ok(Some(String::new())),
+            crate::tiling::ControlRequestRead::Unreadable => {
+                Err(err("error: stop read: unreadable"))
+            }
         }
     }
 
@@ -270,12 +276,23 @@ pub mod sys {
         let _ = std::fs::remove_file(dir.join(super::WORKSPACE_REQUEST_FILE));
     }
 
+    /// Read one control request marker within the bounded ingress cap.
+    /// Missing, oversized/non-UTF-8, and unreadable files yield `None`; the
+    /// owner loop's consume-once path handles present-but-invalid bodies, so
+    /// cleanup never loads an unbounded or foreign body to "decide" it.
+    fn bounded_request_body(path: &Path) -> Option<String> {
+        match crate::tiling::read_control_request(path) {
+            crate::tiling::ControlRequestRead::Body(text) => Some(text),
+            _ => None,
+        }
+    }
+
     /// Remove the owner's own workspace request marker (exact creation match
     /// only). Malformed or foreign bodies are left for the owner loop's
     /// consume-once refusal, never deleted blindly here.
     fn cleanup_own_workspace_request(dir: &Path, own_creation: &str) {
         let path = dir.join(super::WORKSPACE_REQUEST_FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = bounded_request_body(&path) else {
             return;
         };
         if let Ok(request) = crate::tiling::parse_workspace_request(text.trim())
@@ -298,7 +315,7 @@ pub mod sys {
     /// loop's consume-once refusal, never deleted blindly here.
     fn cleanup_own_directional_request(dir: &Path, own_creation: &str) {
         let path = dir.join(crate::tiling::DIRECTIONAL_REQUEST_FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = bounded_request_body(&path) else {
             return;
         };
         if let Ok(request) = crate::tiling::parse_directional_request(text.trim())
@@ -313,7 +330,7 @@ pub mod sys {
     /// owner loop's consume-once refusal, never deleted blindly here.
     fn cleanup_own_migrate_workspace_request(dir: &Path, own_creation: &str) {
         let path = dir.join(crate::tiling::MIGRATE_WORKSPACE_REQUEST_FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = bounded_request_body(&path) else {
             return;
         };
         if let Ok(request) = crate::tiling::parse_migrate_workspace_request(text.trim())
@@ -344,7 +361,7 @@ pub mod sys {
     /// loop's consume-once refusal, never deleted blindly here.
     fn cleanup_own_send_output_request(dir: &Path, own_creation: &str) {
         let path = dir.join(crate::tiling::SEND_OUTPUT_REQUEST_FILE);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = bounded_request_body(&path) else {
             return;
         };
         if let Ok(request) = crate::tiling::parse_send_output_request(text.trim())

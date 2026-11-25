@@ -404,10 +404,13 @@ pub(super) fn poll_workspace_cli_request(
     areas: &[MonitorArea],
 ) {
     let path = dir.join(WORKSPACE_REQUEST_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-        Err(_) => return,
+    // Bounded read: an oversized or non-UTF-8 body is treated as an
+    // unparseable request below, so it is consumed once with a refusal
+    // instead of being loaded unbounded or left to wedge the queue.
+    let text = match read_control_request(&path) {
+        ControlRequestRead::Body(text) => text,
+        ControlRequestRead::Missing | ControlRequestRead::Unreadable => return,
+        ControlRequestRead::Rejected => String::new(),
     };
     // Honest op label for the pre-parse refusal: the parsed op when the body
     // is well-formed JSON carrying a known action, else `select`.

@@ -533,11 +533,12 @@ pub(super) fn run_tile_loop(
         let menu_stop_creation = me.process_creation.clone();
         let menu_stop_poll: Option<Arc<dyn Fn() -> bool + Send + Sync>> =
             Some(Arc::new(move || {
-                match std::fs::read_to_string(
-                    menu_stop_dir.join(crate::lifecycle::STOP_REQUEST_FILE),
-                ) {
-                    Ok(text) => crate::lifecycle::stop_request_matches(&text, &menu_stop_creation),
-                    Err(_) => false,
+                match read_control_request(&menu_stop_dir.join(crate::lifecycle::STOP_REQUEST_FILE))
+                {
+                    ControlRequestRead::Body(text) => {
+                        crate::lifecycle::stop_request_matches(&text, &menu_stop_creation)
+                    }
+                    _ => false,
                 }
             }));
         match crate::tray_sys::TrayOwner::create(

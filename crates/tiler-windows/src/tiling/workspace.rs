@@ -1,6 +1,63 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+/// Maximum accepted size of one external control request body. Request
+/// bodies are small identity/verb JSON objects; the same 64 KiB bound as the
+/// settings file keeps every command-file read bounded before allocation.
+pub const CONTROL_REQUEST_MAX_BYTES: u64 = 65_536;
+
+/// One bounded read of an external control request file. The owner's
+/// consume-once pollers must distinguish an absent file (nothing to do) from
+/// a present-but-invalid body (consume once with a refusal, never retry).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlRequestRead {
+    /// File absent; there is no request pending.
+    Missing,
+    /// Complete UTF-8 body within [`CONTROL_REQUEST_MAX_BYTES`].
+    Body(String),
+    /// File present but oversized or not UTF-8. Callers that own the queue
+    /// consume it once and refuse; the bytes are never parsed.
+    Rejected,
+    /// File present but not readable (I/O error other than absence). The
+    /// caller leaves it in place, matching the existing read-error behavior.
+    Unreadable,
+}
+
+/// Read at most [`CONTROL_REQUEST_MAX_BYTES`] bytes from a control request
+/// file. The metadata probe refuses an oversized file before reading, and the
+/// `take` re-check bounds the allocation even if the file grows between the
+/// probe and the read. No body bytes are ever logged; callers log only their
+/// bounded verb/outcome vocabulary.
+#[must_use]
+pub fn read_control_request(path: &std::path::Path) -> ControlRequestRead {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ControlRequestRead::Missing,
+        Err(_) => return ControlRequestRead::Unreadable,
+    };
+    if metadata.len() > CONTROL_REQUEST_MAX_BYTES {
+        return ControlRequestRead::Rejected;
+    }
+    let mut bytes = Vec::new();
+    let read = (|| -> std::io::Result<()> {
+        use std::io::Read;
+        let file = std::fs::File::open(path)?;
+        file.take(CONTROL_REQUEST_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        Ok(())
+    })();
+    if read.is_err() {
+        return ControlRequestRead::Unreadable;
+    }
+    if bytes.len() as u64 > CONTROL_REQUEST_MAX_BYTES {
+        return ControlRequestRead::Rejected;
+    }
+    match String::from_utf8(bytes) {
+        Ok(body) => ControlRequestRead::Body(body),
+        Err(_) => ControlRequestRead::Rejected,
+    }
+}
+
 /// CLI options for the read-only `children` command: explicit top-level
 /// targets whose child windows are reported with verified process identity.
 /// Never reads titles.
@@ -336,6 +393,7 @@ pub fn verify_workspace_argv_consistency(
 pub const WORKSPACE_REQUEST_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceRequest {
     pub v: u32,
     pub creation: String,
@@ -357,11 +415,11 @@ pub fn render_workspace_request(request: &WorkspaceRequest) -> String {
 }
 
 /// Parse and bound one workspace request body. Refuses malformed JSON,
-/// version drift, empty identity, out-of-range index, missing/misplaced
-/// direction (required exactly for the three relative actions, refused
-/// elsewhere), unknown actions, and invalid correlation tokens. Owner
-/// equality (exact creation/pid/exe/sid/session) stays with the caller, which
-/// holds the live owner identity.
+/// unknown fields, version drift, empty identity, out-of-range index,
+/// missing/misplaced direction (required exactly for the three relative
+/// actions, refused elsewhere), unknown actions, and invalid correlation
+/// tokens. Owner equality (exact creation/pid/exe/sid/session) stays with
+/// the caller, which holds the live owner identity.
 pub fn parse_workspace_request(json: &str) -> Result<WorkspaceRequest, String> {
     let request: WorkspaceRequest =
         serde_json::from_str(json).map_err(|_| "refuse: malformed workspace request".to_owned())?;
@@ -545,6 +603,7 @@ pub fn verify_resize_argv_consistency(
 /// token the owner echoes in its dispatch log. No titles, no geometry, no
 /// HWNDs, no secrets.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResizeRequest {
     pub v: u32,
     pub creation: String,
@@ -563,10 +622,11 @@ pub fn render_resize_request(request: &ResizeRequest) -> String {
     serde_json::to_string(request).unwrap_or_default()
 }
 
-/// Parse and bound one resize request body. Refuses malformed JSON, version
-/// drift, empty identity, unknown direction/mode tokens, and invalid
-/// correlation tokens. Owner equality (exact creation/pid/exe/sid/session)
-/// stays with the caller, which holds the live owner identity.
+/// Parse and bound one resize request body. Refuses malformed JSON, unknown
+/// fields, version drift, empty identity, unknown direction/mode tokens, and
+/// invalid correlation tokens. Owner equality (exact
+/// creation/pid/exe/sid/session) stays with the caller, which holds the live
+/// owner identity.
 pub fn parse_resize_request(json: &str) -> Result<ResizeRequest, String> {
     let request: ResizeRequest =
         serde_json::from_str(json).map_err(|_| "refuse: malformed resize request".to_owned())?;
@@ -690,6 +750,7 @@ pub fn verify_directional_argv_consistency(
 /// token; `correlation` is a client-generated opaque transport token.
 /// No titles, no geometry, no HWNDs, no secrets.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DirectionalRequest {
     pub v: u32,
     pub creation: String,
@@ -709,9 +770,10 @@ pub fn render_directional_request(request: &DirectionalRequest) -> String {
 }
 
 /// Parse and bound one directional request body. Refuses malformed JSON,
-/// version drift, empty identity, unknown direction tokens, and invalid
-/// correlation tokens. Owner equality (exact creation/pid/exe/sid/session)
-/// stays with the caller, which holds the live owner identity.
+/// unknown fields, version drift, empty identity, unknown direction tokens,
+/// and invalid correlation tokens. Owner equality (exact
+/// creation/pid/exe/sid/session) stays with the caller, which holds the live
+/// owner identity.
 pub fn parse_directional_request(json: &str) -> Result<DirectionalRequest, String> {
     let request: DirectionalRequest = serde_json::from_str(json)
         .map_err(|_| "refuse: malformed directional request".to_owned())?;
@@ -809,6 +871,7 @@ pub fn verify_send_output_argv_consistency(
 /// token; `correlation` is a client-generated opaque transport token.
 /// No titles, no geometry, no HWNDs, no secrets.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SendOutputRequest {
     pub v: u32,
     pub creation: String,
@@ -828,9 +891,10 @@ pub fn render_send_output_request(request: &SendOutputRequest) -> String {
 }
 
 /// Parse and bound one output-send request body. Refuses malformed JSON,
-/// version drift, empty identity, unknown direction tokens, and invalid
-/// correlation tokens. Owner equality (exact creation/pid/exe/sid/session)
-/// stays with the caller, which holds the live owner identity.
+/// unknown fields, version drift, empty identity, unknown direction tokens,
+/// and invalid correlation tokens. Owner equality (exact
+/// creation/pid/exe/sid/session) stays with the caller, which holds the live
+/// owner identity.
 pub fn parse_send_output_request(json: &str) -> Result<SendOutputRequest, String> {
     let request: SendOutputRequest = serde_json::from_str(json)
         .map_err(|_| "refuse: malformed send-output request".to_owned())?;
@@ -918,6 +982,7 @@ pub fn verify_migrate_workspace_argv_consistency(
 /// client-generated opaque transport token. No titles, no geometry, no HWNDs,
 /// no secrets.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MigrateWorkspaceRequest {
     pub v: u32,
     pub creation: String,
@@ -936,9 +1001,10 @@ pub fn render_migrate_workspace_request(request: &MigrateWorkspaceRequest) -> St
 }
 
 /// Parse and bound one workspace-migration request body. Refuses malformed
-/// JSON, version drift, empty identity, unknown direction tokens, and invalid
-/// correlation tokens. Owner equality (exact creation/pid/exe/sid/session)
-/// stays with the caller, which holds the live owner identity.
+/// JSON, unknown fields, version drift, empty identity, unknown direction
+/// tokens, and invalid correlation tokens. Owner equality (exact
+/// creation/pid/exe/sid/session) stays with the caller, which holds the live
+/// owner identity.
 pub fn parse_migrate_workspace_request(json: &str) -> Result<MigrateWorkspaceRequest, String> {
     let request: MigrateWorkspaceRequest = serde_json::from_str(json)
         .map_err(|_| "refuse: malformed migrate-workspace request".to_owned())?;
