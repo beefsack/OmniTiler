@@ -1407,3 +1407,23 @@ fn pointer_activity_and_warp_spent_round_trip_and_reject_bad_spellings() {
         decode_request(&value.to_string()).expect_err(case);
     }
 }
+
+#[test]
+fn pointer_activity_and_warp_spent_are_required_nullable() {
+    // Both witness fields are required nullable: absence refuses on both
+    // decode APIs, while explicit null stays the unknown spelling.
+    for key in ["pointerActivity", "warpSpent"] {
+        let mut missing = base_value();
+        missing["cursor"] = serde_json::json!([100, 200]);
+        missing.as_object_mut().expect("object").remove(key);
+        let (kind, _) = assert_same_rejection(&missing.to_string());
+        assert_eq!(kind, "malformed", "{key} is required");
+    }
+    let mut nulled = base_value();
+    nulled["cursor"] = serde_json::json!([100, 200]);
+    nulled["pointerActivity"] = serde_json::Value::Null;
+    nulled["warpSpent"] = serde_json::Value::Null;
+    let decoded = decode_request(&nulled.to_string()).expect("required nullable accepts null");
+    assert_eq!(decoded.pointer_activity, None);
+    assert_eq!(decoded.warp_spent, None);
+}

@@ -108,7 +108,7 @@ fn inner_report_with_attempts(
           \"windows\":[{}],\"closed\":[],\"native\":[{native_json}],\
           \"focused\":\"\",\"foregroundKnown\":false,\
           \"complete\":{complete},\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
           \"intentRecords\":[],\"propertyAttempts\":[{property_attempts}],\"focusFeedback\":[],\"focusChanges\":null,\
@@ -4589,7 +4589,7 @@ fn two_output_all_mode_inner(window: &str) -> String {
           \"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
           \"focused\":\"\",\"foregroundKnown\":false,\
           \"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
           \"presentation\":{},\
           \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
@@ -5111,7 +5111,7 @@ fn checked_broker_publishes_x16392_and_recaptures_closed_half_open_bounds() {
               \"complete\":true,\"scale\":1,\"identity\":{{\"manufacturer\":null,\"model\":null,\
               \"serial\":null,\"connector\":null}}}}],\
               \"windows\":[{}],\"closed\":[],\"native\":[{native}],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-              \"complete\":true,\"gesture\":false,\"cursor\":[16400,20],\"actionForeground\":\"DP-1\",\
+              \"complete\":true,\"gesture\":false,\"cursor\":[16400,20],\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":\"DP-1\",\
               \"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{},\
               \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null}}",
             window_json("win-a", win_rect, Some(UUID_A)),
@@ -5219,7 +5219,7 @@ fn typed_and_checked_broker_match_unreadable_output_hold_beside_healthy_neighbor
           {{\"out\":\"DP-2\",\"full\":[800,0,800,600],\"work\":[800,0,800,600],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}\
           ],\"windows\":[{},{}],\"closed\":[],\"native\":[{native_1},{native_2}],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-          \"complete\":true,\"gesture\":false,\"cursor\":[100,100],\"actionForeground\":\"DP-1\",\
+          \"complete\":true,\"gesture\":false,\"cursor\":[100,100],\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":\"DP-1\",\
           \"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\",\"DP-2\"],\"presentation\":{},\
           \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null}}",
         window_json("win-a", "[0,0,400,300]", Some(UUID_A)),
@@ -5398,7 +5398,7 @@ fn projected_tiled_windows_order_matches_bytewise_lifetime_across_12_leaves_over
               \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
               \"windows\":[{}],\"closed\":[],\"native\":[{native_1}],\"focused\":\"{id}\",\
               \"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":[100,100],\
-              \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\
+              \"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\
               \"presentation\":{},\"intentRecords\":[],\"propertyAttempts\":[],\
               \"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null}}",
             windows_json.join(","),
@@ -5538,7 +5538,7 @@ fn global_unique_swap_minimized_incoming_and_outgoing_over_checked_broker() {
               \"current\":\"{UUID_B}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
               \"focused\":\"{focused}\",\"foregroundKnown\":true,\
               \"complete\":true,\"gesture\":false,\
-              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
               \"presentation\":{},\
               \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
@@ -5738,7 +5738,7 @@ fn global_unique_swap_float_carries_member_auth_without_frame_write_over_checked
               \"current\":\"{UUID_B}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
               \"focused\":\"{focused}\",\"foregroundKnown\":true,\
               \"complete\":true,\"gesture\":false,\
-              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
               \"presentation\":{},\
               \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
@@ -6007,7 +6007,7 @@ fn edge_output_unrepresentable_underlay_hides_without_blocking_ready_or_neighbor
               \"windows\":[{windows}],\"closed\":[],\"native\":[],\
               \"focused\":\"win-a\",\"foregroundKnown\":true,\
               \"complete\":true,\"gesture\":false,\
-              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[\"DP-1\",\"HDMI-1\"],\
               \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\
                 \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\
@@ -6117,7 +6117,7 @@ fn migration_refill_parent_carries_through_issuing_and_retained_checked_broker()
               \"current\":\"{UUID_C}\",\"occupancy\":[{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
               \"focused\":\"win-a1\",\"foregroundKnown\":true,\
               \"complete\":true,\"gesture\":false,\
-              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
               \"presentation\":{},\
               \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\

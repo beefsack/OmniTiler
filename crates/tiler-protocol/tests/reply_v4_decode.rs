@@ -13,8 +13,9 @@
 //! Offline only: no adapters, no live work, no engine.
 
 use tiler_core::connection::HostCapabilities;
+use tiler_protocol::world_admission_sizing::reply_upper_bound_v4;
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, decode_reply_v4, decode_reply_v4_for_host, encode_reply_v4,
+    DecodedReplyV4, decode_reply_v4, decode_reply_v4_for_host, decode_report_v4, encode_reply_v4,
 };
 use tiler_protocol::world_reply_write::{
     BrokerGestureAssoc, BrokerReplyBind, count_reply_v4, write_bound_reply_v4,
@@ -620,7 +621,6 @@ fn v4_reply_decoder_rejects_strict_envelope_violations() {
 
 #[test]
 fn v4_reply_envelope_ids_match_report_validators() {
-    use tiler_protocol::world_protocol::decode_report_v4;
     let reply = fixture_text("messages/reply-bootstrap.json");
     let report = fixture_text("messages/report-empty.json");
     let long_adapter = "a".repeat(129);
@@ -1024,6 +1024,37 @@ fn v4_reply_writer_warp_request_constructed() {
         let back = decode_reply_v4(&encoded).expect("warp re-decodes");
         assert_eq!(back, constructed, "warp re-decode equals");
     }
+}
+
+#[test]
+fn reply_upper_bound_covers_maximal_warp_request() {
+    let text = fixture_text("messages/reply-observe.json");
+    let mut constructed = decode_reply_v4(&text).expect("observe decodes");
+    // Widest admissible request: 128-byte opaque ids/target/out/ws, a
+    // 20-digit revision and pointer baseline, and the widest carried point.
+    let opaque = "i".repeat(128);
+    let mut request = warp_request((-32768, -32768), Some(u64::MAX));
+    request.id = opaque.clone();
+    request.target = tiler_core::directional::WindowId(opaque.clone());
+    request.revision = u64::MAX;
+    request.output = tiler_core::directional::OutputId(opaque.clone());
+    request.workspace = tiler_core::directional::WorkspaceId(opaque);
+    constructed.reply.warp_request = Some(request);
+    let wire = encode_reply_v4(&constructed).expect("maximal warp request encodes");
+    assert_eq!(
+        count_reply_v4(&constructed.reply).expect("protocol count succeeds"),
+        wire.len(),
+        "exact count matches maximal warp bytes"
+    );
+    let report = decode_report_v4(&fixture_text("messages/report-optionals-omitted.json"))
+        .expect("report decodes")
+        .report;
+    let bound = reply_upper_bound_v4(&report, 0, 0, 0, 0, 0);
+    assert!(
+        bound >= wire.len(),
+        "upper bound {bound} covers maximal warp reply {}",
+        wire.len()
+    );
 }
 
 #[test]

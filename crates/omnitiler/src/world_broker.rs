@@ -3748,7 +3748,7 @@ mod tests {
                 \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
                 \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
                 \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-                \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+                \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
                 \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
                 \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
                 \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -3894,7 +3894,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a},{win_b}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4210,7 +4210,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4232,7 +4232,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4380,7 +4380,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4441,7 +4441,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4469,7 +4469,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":true,\"cursor\":[10,10],\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":true,\"cursor\":[10,10],\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4492,7 +4492,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":true,\"cursor\":[600,300],\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":true,\"cursor\":[600,300],\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4668,7 +4668,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4758,7 +4758,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -4881,7 +4881,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -5028,7 +5028,7 @@ mod tests {
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
-            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
@@ -5281,7 +5281,7 @@ mod tests {
                 \"class\":\"Synthetic\",\"title\":\"FW\",\"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\"fullscreenOwner\":null,\
                 \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}}}}],\
                 \"closed\":[],\"native\":[],\"focused\":\"{win}\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":[100,100],\
-                \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"{win}\",\"minimized\":false,\
+                \"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"{win}\",\"minimized\":false,\
                 \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":[0,0,400,400],\"chordHeld\":false,\"moveWindow\":\"\",\
                 \"pagerOrder\":[\"{win}\"],\"pagerFrames\":[{{\"win\":\"{win}\",\"live\":[0,0,400,400]}}],\"witness\":null,\"foregroundOut\":\"DP-1\"}},\
                 \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\
@@ -5458,7 +5458,7 @@ mod tests {
                 \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
                 \"identity\":{{\"manufacturer\":\"Synthetic\",\"model\":\"Panel\",\"serial\":\"s-1\",\"connector\":\"DP-1\"}}}}],\
                 \"windows\":[{windows}],\"closed\":[],\"native\":[],\"focused\":\"w-{seq}-0\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":[100,100],\
-                \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"w-{seq}-0\",\"minimized\":false,\
+                \"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"w-{seq}-0\",\"minimized\":false,\
                 \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":[0,0,100,100],\"chordHeld\":false,\"moveWindow\":\"\",\
                 \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":\"DP-1\"}},\
                 \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\
@@ -5847,7 +5847,7 @@ mod tests {
               \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
               \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
               \"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
-              \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+              \"complete\":true,\"gesture\":false,\"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\
               \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
               \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
               \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\

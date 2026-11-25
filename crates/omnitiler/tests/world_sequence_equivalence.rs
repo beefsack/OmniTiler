@@ -369,7 +369,7 @@ fn inner_report_json(focused: &str) -> String {
           \"windows\":[{}],\"closed\":[],\"native\":[],\
           \"focused\":\"{focused}\",\"foregroundKnown\":{},\
           \"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
           \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\

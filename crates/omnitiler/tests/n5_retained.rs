@@ -158,7 +158,7 @@ fn inner_report(windows: &[String]) -> String {
           \"current\":\"{UUID_A}\",\
           \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}}],\
           \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
           \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
@@ -189,7 +189,7 @@ fn two_output_inner(windows: &[String]) -> String {
           {{\"out\":\"DP-2\",\"order\":[\"{UUID_B}\"],\"current\":\"{UUID_B}\",\
           \"occupancy\":[{{\"native\":\"{UUID_B}\",\"count\":null}}]}}],\
           \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
           \"presentation\":{},\
           \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\

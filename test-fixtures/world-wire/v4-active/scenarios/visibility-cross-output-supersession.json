@@ -180,6 +180,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -639,6 +641,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -1128,6 +1132,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -1548,6 +1554,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -1968,6 +1976,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -2448,6 +2458,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",

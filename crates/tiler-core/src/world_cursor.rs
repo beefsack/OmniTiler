@@ -300,27 +300,27 @@ impl WorldTransaction<'_> {
     /// only). Independent of the focus row: a satisfied focus may clear
     /// while the warp still awaits adapter spend or a final retry.
     ///
-    /// One request at most. It mints only when the setting is on, the
-    /// inventory is complete, the pointer generation is readable, the
-    /// cursor reads with a known cursor output, no game/gesture pause
-    /// holds, and the last focus effect in order (the focus that actually
-    /// results, since the adapter applies effects in order) targets a
-    /// different output than the cursor output: the focused target's
-    /// effective-frame centre clamped into its work area.
+    /// One request at most. It mints only from the winning validated
+    /// `pending_focus` when that decision is fresh this report
+    /// (`issued_revision == issuing_revision`): the focused target's
+    /// effective-frame centre clamped into its work area. Focus effects
+    /// never mint, supersede, or choose the target, so a losing same-report
+    /// effect cannot veto or retarget the validated winner.
     ///
     /// Once minted it is retained byte-identically (same `id`, revision,
     /// point) across observation-only replies, unresolved focus, applied
     /// feedback, and a legitimately moving target frame (the frozen point
     /// never recenters). It clears before publication on a paused/disabled
-    /// lane, newer pointer activity (Q2), target departure or rehoming,
+    /// lane, newer or unknown pointer activity (Q2), a validated focus
+    /// decision for another lifetime (Q1), target departure or rehoming,
     /// an unreadable frame, a held destination, or a cursor already on the
     /// pending output. It retires exactly when the adapter reports the
     /// matching id spent; a different spent id does nothing.
     pub(crate) fn warp_for_publish(
         &mut self,
-        effects: &[OneShotEffect],
         windows: &[WindowDesire],
         held_scopes: &BTreeSet<DomainKey>,
+        issuing_revision: u64,
     ) -> Option<WarpRequest> {
         // Retire exactly on the adapter's spend acknowledgement for this
         // exact id, before any retention or mint gate: a spent request is
@@ -333,60 +333,55 @@ impl WorldTransaction<'_> {
         }
         if self.world.focus.pending_warp.is_some() {
             // Q2: genuine newer pointer activity (or an unreadable witness)
-            // cancels the pending warp before publication and forbids a
-            // fresh mint from the same report: the user just moved the
-            // pointer themselves.
-            let pointer_changed = {
+            // cancels the pending warp before publication. Do not return:
+            // a fresh decision in this same report may still mint a new
+            // request at the new baseline.
+            let same_pointer = {
+                let activity = self.world.staged.observation.pointer_activity;
                 let baseline = self
                     .world
                     .focus
                     .pending_warp
                     .as_ref()
                     .and_then(|warp| warp.pointer_baseline);
-                self.world.staged.observation.pointer_activity != baseline
+                matches!((activity, baseline), (Some(a), Some(b)) if a == b)
             };
-            if pointer_changed {
+            if !same_pointer {
                 self.world.focus.pending_warp = None;
-                return None;
             }
-            // Q1 also binds here, independent of the decision hook: a newer
-            // focus intent for another lifetime supersedes the pending warp.
-            // The newest effect in effect order is the resulting focus; with
-            // no effect this report, the retained focus request speaks.
-            let newest_target = effects
-                .iter()
-                .rfind(|effect| effect.kind == EffectKind::Focus)
-                .map(|effect| effect.target.clone())
-                .or_else(|| {
+        }
+        if self.world.focus.pending_warp.is_some() {
+            // Q1: a validated focus decision for another lifetime
+            // supersedes the pending warp; a same-target decision keeps the
+            // frozen tuple for identity-preserving retention.
+            let superseded = self
+                .world
+                .focus
+                .pending_focus
+                .as_ref()
+                .is_some_and(|pending| {
                     self.world
                         .focus
-                        .pending_focus
+                        .pending_warp
                         .as_ref()
-                        .map(|pending| pending.target.clone())
+                        .is_some_and(|warp| warp.target != pending.target)
                 });
-            let superseded = newest_target.is_some_and(|target| {
-                self.world
-                    .focus
-                    .pending_warp
-                    .as_ref()
-                    .is_some_and(|warp| warp.target != target)
-            });
             if superseded {
-                // Mint a fresh request from this reply below; a same-target
-                // intent falls through to the identity-preserving retention.
                 self.world.focus.pending_warp = None;
-            } else if self.pending_warp_retains(windows, held_scopes) {
+            }
+        }
+        if self.world.focus.pending_warp.is_some() {
+            if self.pending_warp_retains(windows, held_scopes) {
                 return self
                     .world
                     .focus
                     .pending_warp
                     .as_ref()
                     .map(PendingWarp::request);
-            } else {
-                self.world.focus.pending_warp = None;
             }
+            self.world.focus.pending_warp = None;
         }
-        self.mint_warp(effects, windows, held_scopes)
+        self.mint_warp(windows, held_scopes, issuing_revision)
     }
 
     /// Whether the shared warp lane gates currently allow a request at all:
@@ -427,7 +422,14 @@ impl WorldTransaction<'_> {
         let Some(pending) = self.world.focus.pending_warp.as_ref() else {
             return false;
         };
-        if self.world.staged.observation.pointer_activity != pending.pointer_baseline {
+        let same_pointer = matches!(
+            (
+                self.world.staged.observation.pointer_activity,
+                pending.pointer_baseline
+            ),
+            (Some(a), Some(b)) if a == b
+        );
+        if !same_pointer {
             return false;
         }
         // Target departure, rehoming, or an unreadable frame clears: the
@@ -457,14 +459,15 @@ impl WorldTransaction<'_> {
         true
     }
 
-    /// Mint one fresh warp request from a cross-output final focus effect.
-    /// No request is ever fabricated: every gate, the target row frame, the
-    /// clamped point, and the pointer baseline must be known.
+    /// Mint one fresh warp request from the winning validated focus decision
+    /// when that decision is fresh this report. No request is ever
+    /// fabricated: every gate, the target row frame, the clamped point, and
+    /// the pointer baseline must be known.
     fn mint_warp(
         &mut self,
-        effects: &[OneShotEffect],
         windows: &[WindowDesire],
         held_scopes: &BTreeSet<DomainKey>,
+        issuing_revision: u64,
     ) -> Option<WarpRequest> {
         if !self.cursor_warp_available() {
             return None;
@@ -474,13 +477,18 @@ impl WorldTransaction<'_> {
             (observation.cursor?, observation.pointer_activity?)
         };
         let cursor_output = self.cursor_output_at(cursor)?;
-        // The last focus effect in order dictates the resulting focus, so
-        // it alone decides the warp: an earlier cross-output effect
-        // followed by a same-output one warps nothing.
-        let effect = effects
-            .iter()
-            .rfind(|effect| effect.kind == EffectKind::Focus)?;
-        let target = effect.target.clone();
+        // Only the validated winner speaks, and only while this report
+        // itself issued the decision: an older retained request never
+        // re-mints on an observation-only reply.
+        let (target, revision) = {
+            let focus = self
+                .world
+                .focus
+                .pending_focus
+                .as_ref()
+                .filter(|pending| pending.issued_revision == issuing_revision)?;
+            (focus.target.clone(), focus.issued_revision)
+        };
         let row = windows.iter().find(|row| row.lifetime == target)?;
         if row.output == cursor_output {
             return None;
@@ -510,15 +518,6 @@ impl WorldTransaction<'_> {
         if !crate::bounds::valid_carried_point(clamped.0, clamped.1) {
             return None;
         }
-        // Quote the retained focus decision revision when it targets the
-        // same lifetime; otherwise the effect's own issuing revision.
-        let revision = self
-            .world
-            .focus
-            .pending_focus
-            .as_ref()
-            .filter(|pending| pending.target == target)
-            .map_or(effect.issued_revision, |pending| pending.issued_revision);
         let seq = self.world.focus.warp_mint_seq;
         self.world.focus.warp_mint_seq = seq.saturating_add(1);
         let pending = PendingWarp {

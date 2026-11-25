@@ -3788,11 +3788,11 @@ pub fn decode_report_v4_map(
             "propertyAttempts",
             "focusFeedback",
             "rendererInput",
+            "pointerActivity",
+            "warpSpent",
         ],
         &[
             "cursorHit",
-            "pointerActivity",
-            "warpSpent",
             "monotonicMs",
             "primary",
             "creationAttempts",
@@ -7108,7 +7108,7 @@ mod tests {
               \"command\":{command_json},\"screens\":[],\"windows\":[],\"closed\":[],\
               \"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"focusChanges\":null,\
               \"complete\":true,\"gesture\":false,\
-              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[],\
               \"presentation\":{{\"foreground\":\"\",\"minimized\":null,\
               \"maximized\":null,\"fullscreen\":null,\"hostHidden\":null,\

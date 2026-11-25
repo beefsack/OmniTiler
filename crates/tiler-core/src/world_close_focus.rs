@@ -588,6 +588,13 @@ impl WorldTransaction<'_> {
                 reason,
             );
         }
+        // A settled non-arrival (supersession, target close/exclusion,
+        // unproven focus, or a terminal refusal) leaves no resulting focus
+        // that the frozen warp point describes: clear it. An equality
+        // arrival keeps it because the point still awaits adapter spend.
+        if decision != "equality" {
+            self.world.focus.pending_warp = None;
+        }
     }
 
     /// Supersede the pending row for a newer focus decision of any cause

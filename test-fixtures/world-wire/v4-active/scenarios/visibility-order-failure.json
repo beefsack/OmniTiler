@@ -157,6 +157,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -533,6 +535,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -931,6 +935,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -1296,6 +1302,8 @@
           "kind": "prepare-request",
           "message": {
             "actionCached": null,
+            "pointerActivity": null,
+            "warpSpent": null,
             "actionForeground": null,
             "actionOutputs": [],
             "adapter": "adapter-a",
@@ -1622,6 +1630,8 @@
         "kind": "wire",
         "message": {
           "actionCached": "out-a",
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionOutputs": [
             "out-a"
@@ -1838,6 +1848,8 @@
         "kind": "wire",
         "message": {
           "actionCached": "out-a",
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionOutputs": [
             "out-a"
@@ -2062,6 +2074,8 @@
         "kind": "wire",
         "message": {
           "actionCached": "out-a",
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionOutputs": [
             "out-a"
@@ -2278,6 +2292,8 @@
         "kind": "wire",
         "message": {
           "actionCached": "out-a",
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionOutputs": [
             "out-a"
@@ -2499,6 +2515,8 @@
         "kind": "wire",
         "message": {
           "actionCached": "out-a",
+          "pointerActivity": null,
+          "warpSpent": null,
           "actionForeground": "out-a",
           "actionOutputs": [
             "out-a"

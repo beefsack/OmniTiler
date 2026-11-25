@@ -1505,6 +1505,82 @@ fn warp_newer_other_target_decision_clears_and_remints() {
 }
 
 #[test]
+fn warp_foreground_override_supersession_clears_minted_warp() {
+    let mut engine = cross_rig_with_warp(true);
+    // Establish a third live same-output lifetime (win-c) before the
+    // explicit cross-output focus, so the later foreground change carries
+    // no admission candidate of its own.
+    let windows = || {
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-b", 800),
+            fact("win-c", "out-a", 100),
+        ]
+    };
+    let mut seed = report(
+        2,
+        2,
+        windows(),
+        "win-a",
+        Some((10, 10)),
+        None,
+        false,
+        false,
+        true,
+        false,
+    );
+    seed.pointer_activity = Some(1);
+    accepted(&mut engine, &seed);
+    // Explicit cross-output focus mints the warp; the native foreground
+    // still echoes win-a, so the request is unresolved.
+    let mut focus = command_report(
+        3,
+        3,
+        windows(),
+        "win-a",
+        Some((10, 10)),
+        None,
+        false,
+        true,
+        true,
+        false,
+        Some(11),
+        Some(WorldCommand::Focus {
+            window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
+            direction: None,
+        }),
+    );
+    focus.pointer_activity = Some(1);
+    let minted = accepted(&mut engine, &focus);
+    let warp = minted
+        .warp_request
+        .clone()
+        .expect("cross-output warp mints");
+    assert_eq!(warp.target.0, "win-b");
+    // Native foreground moves to win-c with no own focus effect: the
+    // retained request is superseded, and the warp point must not survive
+    // an unproven/refused retirement.
+    let mut overridden = report(
+        4,
+        4,
+        windows(),
+        "win-c",
+        Some((10, 10)),
+        None,
+        false,
+        true,
+        true,
+        false,
+    );
+    overridden.pointer_activity = Some(1);
+    let cleared = accepted(&mut engine, &overridden);
+    assert_eq!(
+        cleared.warp_request, None,
+        "foreground override clears the minted warp"
+    );
+}
+
+#[test]
 fn warp_pointer_activity_equal_keeps_newer_and_unknown_clear() {
     let mut engine = cross_rig_with_warp(true);
     let first = accepted(
@@ -1514,6 +1590,7 @@ fn warp_pointer_activity_equal_keeps_newer_and_unknown_clear() {
     .warp_request
     .clone()
     .expect("cross-output warp mints");
+    assert_eq!(first.pointer_baseline, Some(5));
     let equal = accepted(
         &mut engine,
         &cross_warp_report(3, (10, 10), Some(5), None, None),
@@ -1523,26 +1600,43 @@ fn warp_pointer_activity_equal_keeps_newer_and_unknown_clear() {
         Some(&first),
         "equal baseline retains"
     );
-    // Newer genuine pointer activity cancels before publication, and the
-    // same report's cross-output command must not mint after that motion.
+    // Newer genuine pointer activity with no fresh focus decision cancels
+    // before publication and mints nothing.
     let moved = accepted(
         &mut engine,
-        &cross_warp_report(4, (10, 10), Some(6), None, Some(("win-b", 12))),
+        &cross_warp_report(4, (10, 10), Some(6), None, None),
     );
-    assert_eq!(moved.warp_request, None, "newer activity clears");
-    // A fresh decision at the new generation mints again.
-    let rebuilt = accepted(
+    assert_eq!(
+        moved.warp_request, None,
+        "newer activity without a fresh decision publishes none"
+    );
+    // Newer activity plus a same-report fresh cross-output decision mints a
+    // fresh request at the new baseline (Q2 clears, then the fresh winner
+    // mints in the same report).
+    let fresh = accepted(
         &mut engine,
-        &cross_warp_report(5, (10, 10), Some(6), None, Some(("win-b", 13))),
+        &cross_warp_report(5, (10, 10), Some(6), None, Some(("win-b", 12))),
+    )
+    .warp_request
+    .clone()
+    .expect("fresh same-report decision mints after motion");
+    assert_eq!(fresh.id, "warp-1");
+    assert_ne!(fresh.id, first.id);
+    assert_eq!(fresh.pointer_baseline, Some(6));
+    // A same-generation report keeps the fresh request, then unknown
+    // activity clears it.
+    let kept = accepted(
+        &mut engine,
+        &cross_warp_report(6, (10, 10), Some(6), None, None),
     );
-    assert!(
-        rebuilt.warp_request.is_some(),
-        "fresh mint after the report"
+    assert_eq!(
+        kept.warp_request.as_ref(),
+        Some(&fresh),
+        "same baseline keeps"
     );
-    // Unknown activity clears a known baseline.
     let unknown = accepted(
         &mut engine,
-        &cross_warp_report(6, (10, 10), None, None, None),
+        &cross_warp_report(7, (10, 10), None, None, None),
     );
     assert_eq!(unknown.warp_request, None, "unknown witness clears");
 }

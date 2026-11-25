@@ -71,7 +71,7 @@ fn inner_report(windows: &[String]) -> String {
           \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
           \"windows\":[{}],\"closed\":[],\"native\":[],\
           \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\
-          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+          \"cursor\":null,\"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
           \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\

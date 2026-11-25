@@ -188,7 +188,6 @@ impl WorldTransaction<'_> {
                 row.visibility_authority = hold;
             }
         }
-        let warp_request = self.warp_for_publish(&effects, &windows, &local_held);
         self.prune_settled_outcomes();
         self.prune_drag_preview(&local_held);
         let drag_preview = self.world.gesture.drag_preview.clone();
@@ -271,8 +270,14 @@ impl WorldTransaction<'_> {
         });
         // A focus held by the shared roster suppresses this reply's request
         // without clearing retention: the pending warp may still await
-        // spend or a final retry once the epoch clears.
-        let warp_request = if focus_held { None } else { warp_request };
+        // spend or a final retry once the epoch clears. The warp mints only
+        // from the validated, fresh winning focus above, against the final
+        // published rows.
+        let warp_request = if focus_held {
+            None
+        } else {
+            self.warp_for_publish(&windows, &local_held, envelope.issuing_revision)
+        };
         WorldReplyV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: envelope.adapter_incarnation,
