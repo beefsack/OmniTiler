@@ -6624,12 +6624,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     } catch (error) {
                         void error;
                     }
-                    // Unsupported warp truth: the core may desire a cursor
-                    // warp point (cross-output focus), but this adapter
-                    // declares cursorWarp false and never actuates the
-                    // cursor. Never a write; one bounded truth line.
-                    if (parsed.warpCursor !== null) {
-                        log(`omnitiler:world:warp-desired ignored x=${parsed.warpCursor[0]} y=${parsed.warpCursor[1]}`);
+                    // Unsupported warp truth: the core may retain a
+                    // cross-output warp request, but this adapter declares
+                    // warp:false and never actuates the cursor. Never a
+                    // write; one bounded truth line.
+                    if (parsed.warpRequest !== null) {
+                        log(`omnitiler:world:warp-desired ignored x=${parsed.warpRequest.point[0]} y=${parsed.warpRequest.point[1]}`);
                     }
                     // Core-published retained-operation settlement rides the
                     // reply for core-side consumers only: the adapter never

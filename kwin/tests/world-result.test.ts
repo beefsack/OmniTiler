@@ -31,7 +31,7 @@ function baseCapture(dragPreview: string): string {
         `"scopes":[{"scope":{"kind":"output","out":"out-1"},"auth":"controlled","reason":""}],` +
         `"workspaces":[],"outputs":[],"windows":[],` +
         `"transfers":[],"focusRequest":null,${dragPreview},` +
-        `"gestureSettled":null,"operationSettled":[],"nativeCreations":[],"warpCursor":null,` +
+        `"gestureSettled":null,"operationSettled":[],"nativeCreations":[],"warpRequest":null,` +
         `"presentation":{"foreground":"","rev":"0","border":{"visible":false,"reason":"disabled",` +
         `"subject":null,"outsets":null,"width":null,"radius":null,"witness":null},` +
         `"underlay":{"status":"hidden","reason":"disabled","baseRev":null},"pager":[]},` +

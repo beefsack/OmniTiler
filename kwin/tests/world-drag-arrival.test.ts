@@ -22,7 +22,7 @@ function arrivalReply(): WorldReply {
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
         focusRequest: null,
         operationSettled: [], nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         presentation: { foreground: "", rev: "9", suspendedOutput: null, border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null }, underlay: { status: "hidden", reason: "disabled", baseRev: null }, pager: [] },
         scopes: [
             { scope: { kind: "workspace", out: "out-a", ws: "wa1" }, auth: "controlled", reason: "" },

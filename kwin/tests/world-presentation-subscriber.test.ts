@@ -411,9 +411,9 @@ describe("world presentation subscriber", () => {
         // ride alongside the paint.
         const parsed = parseWorldReply(projection("pres-x", "12", "12"));
         assert.ok(parsed !== null && isWorldPresentationReply(parsed));
-        for (const lane of ["result", "transfers", "effects", "gestureSettled", "operationSettled", "warpCursor"] as const) {
+        for (const lane of ["result", "transfers", "effects", "gestureSettled", "operationSettled", "warpRequest"] as const) {
             const tampered = JSON.parse(projection("pres-x", "12", "12")) as Record<string, unknown>;
-            tampered[lane] = lane === "result" || lane === "gestureSettled" || lane === "warpCursor" ? null : [];
+            tampered[lane] = lane === "result" || lane === "gestureSettled" || lane === "warpRequest" ? null : [];
             assert.equal(parseWorldReply(JSON.stringify(tampered)), null, `${lane} refuses on the presentation lane`);
         }
     });

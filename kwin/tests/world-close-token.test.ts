@@ -38,7 +38,7 @@ function validReplyJson(over: Record<string, unknown> = {}): string {
         focusRequest: null,
         operationSettled: [],
         nativeCreations: [],
-        warpCursor: null,
+        warpRequest: null,
         presentation: DISABLED_PRESENTATION,
         intentDesired: [],
         switchSettled: [],

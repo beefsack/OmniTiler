@@ -278,22 +278,33 @@ describe("world-reply-v4", () => {
     });
 
     it("accepts closed half-open endpoint bounds and rejects off-edge rectangles", () => {
-        const withFrame = (frame: [number, number, number, number], warp: [number, number] | null = null): string => {
+        const warpRequest = (point: [number, number]): Record<string, unknown> => ({
+            id: "warp-a", target: "win-a", rev: "7", out: "out-a", ws: "ws-a",
+            point, pointerBaseline: "3",
+        });
+        const withFrame = (
+            frame: [number, number, number, number],
+            request: Record<string, unknown> | null = null,
+        ): string => {
             const docObj = clone("reply-observe.json");
             const wins = docObj["windows"] as Array<Record<string, unknown>>;
             const first = wins[0];
             assert.ok(first !== undefined);
             first["frame"] = frame;
             first["alloc"] = frame;
-            docObj["warpCursor"] = warp;
+            docObj["warpRequest"] = request;
             return boundText(docObj);
         };
-        const positive = parseWorldReply(withFrame([16392, 8, 784, 584], [32768, -32768]));
+        const maxPoint: [number, number] = [32768, -32768];
+        const positive = parseWorldReply(withFrame([16392, 8, 784, 584], warpRequest(maxPoint)));
         assert.ok(isCoreWorldReply(positive));
         assert.deepEqual(positive.windows[0]?.frame, [16392, 8, 784, 584]);
-        assert.deepEqual(positive.warpCursor, [32768, -32768]);
+        assert.deepEqual(positive.warpRequest, {
+            id: "warp-a", target: "win-a", rev: "7", out: "out-a", ws: "ws-a",
+            point: maxPoint, pointerBaseline: "3",
+        });
 
-        const minEdge = parseWorldReply(withFrame([-32768, -32768, 16384, 16384], [-32768, 32768]));
+        const minEdge = parseWorldReply(withFrame([-32768, -32768, 16384, 16384], warpRequest([-32768, 32768])));
         assert.ok(isCoreWorldReply(minEdge));
         const maxEdge = parseWorldReply(withFrame([16384, 16384, 16384, 16384]));
         assert.ok(isCoreWorldReply(maxEdge));
@@ -302,7 +313,7 @@ describe("world-reply-v4", () => {
         assert.equal(parseWorldReply(withFrame([-32769, 0, 1, 1])), null);
         assert.equal(parseWorldReply(withFrame([16385, 0, 16384, 1])), null);
         assert.equal(parseWorldReply(withFrame([0, 0, 16385, 1])), null);
-        assert.equal(parseWorldReply(withFrame([0, 0, 100, 100], [32769, 0])), null);
+        assert.equal(parseWorldReply(withFrame([0, 0, 100, 100], warpRequest([32769, 0]))), null);
     });
 
     it("PW-OUT-03: retired effects key refuses on core/bootstrap, bound, and roster replies", () => {

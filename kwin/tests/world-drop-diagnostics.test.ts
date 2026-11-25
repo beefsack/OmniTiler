@@ -252,7 +252,7 @@ function setup(): Harness {
                 gestureSettled: settled.settled, gestureAssoc: assoc,
                 gestureSettledAssoc: settled.settled !== null && assoc !== null && settled.settled.id === assoc.coreId ? assoc : null,
                 focusRequest: null,
-                operationSettled: [], nativeCreations: [], warpCursor: null,
+                operationSettled: [], nativeCreations: [], warpRequest: null,
                 intentDesired: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
                 presentation: DISABLED_PRESENTATION,

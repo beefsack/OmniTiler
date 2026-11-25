@@ -77,7 +77,7 @@ export const FACT_NAME_CATALOG: ReadonlyArray<string> = [
 // Native maximize (setMaximize/maximizeMode), fullscreen (fullScreen),
 // sticky (onAllDesktops), and tiled-float transfer (float intent store)
 // have real actuators and stay true; cursor warp is false (the adapter
-// never warps, warpCursor stays null, desired warps only log). Unavailable
+// never warps, warpRequest stays null, desired warps only log). Unavailable
 // classification inputs are exactly the script-unreadable ones: no
 // privileged, activationInhibited, toolWindow, or owned flags, no
 // activationPolicy/layer, and no executable identity producer (processId

@@ -66,7 +66,7 @@ const ACCEPTED = (
     gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
     focusRequest: null,
     operationSettled: [], nativeCreations: [],
-    warpCursor: null,
+    warpRequest: null,
     presentation: DISABLED_PRESENTATION,
     intentDesired: [], switchSettled: [], diagnostics: [],
     source: "req-1",
