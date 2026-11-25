@@ -444,7 +444,6 @@ fn pd_fixture(with_occupant: bool) -> Fx {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     let home = state.member_home(&mover).expect("mover homed");
@@ -2401,7 +2400,6 @@ fn stale_delivery_claims_nothing_but_clears_on_incorporation() {
         None,
         false,
         String::new(),
-        false,
         Vec::new(),
     );
     let report = world

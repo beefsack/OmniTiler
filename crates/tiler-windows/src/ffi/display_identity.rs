@@ -307,6 +307,9 @@ fn read_edid_value(key: HKEY) -> Option<Vec<u8>> {
     if loaded != ERROR_SUCCESS {
         return None;
     }
+    if value_type != REG_BINARY {
+        return None;
+    }
     let read = (read as usize).min(bytes.len());
     if read < MIN_EDID_BYTES {
         return None;

@@ -712,6 +712,43 @@ impl<'a> LiveNative<'a> {
         crate::native_guards::visible_lifetime_ok(&stored, live.as_deref())
     }
 
+    /// Iconic-subject fallback for one unobservable, not-committed-hidden
+    /// member: a minimized window fails the visible observer (minimize
+    /// omission), so its live facts and frame are unreadable. The identity
+    /// (member-identity map plus live process read) and the lifetime tag
+    /// must still prove; only then does the membership lane get a
+    /// frameless, factless row (`iconic: true`). Never geometry or facts
+    /// that were not read.
+    fn read_iconic_window(&mut self, key: WindowKey, token: &str) -> Option<FreshWindow> {
+        if !(self.prims.is_iconic)(key.hwnd) {
+            return None;
+        }
+        let expected = self.member_identity.get(&key).cloned()?;
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return None;
+        }
+        let (output, workspace) = self.committed_homing(token).unwrap_or_default();
+        let sticky = self.sticky.contains_key(&key);
+        let hwnd = key.hwnd;
+        let live_tag = (self.prims.member_tag)(hwnd);
+        let float_marked = crate::product_hide::sys::peek_float_intent_raw(hwnd);
+        let floating =
+            sticky || !matches!(float_marked, crate::native_guards::MarkerSlot::Absent);
+        Some(FreshWindow {
+            key,
+            token: token.to_owned(),
+            frame: None,
+            facts: None,
+            output,
+            workspace,
+            iconic: true,
+            hidden: false,
+            sticky,
+            floating,
+            live_tag,
+        })
+    }
+
     /// Shared admission fences for one hide (proof-mode gate, scope,
     /// hosted child, visible lifetime).
     fn admit_gates(
@@ -1759,7 +1796,7 @@ impl NativeOps for LiveNative<'_> {
                 // lifetime tag must still match and the window must read
                 // back invisible. Only committed-hidden members ride here.
                 if !self.committed_hidden(&key) {
-                    return None;
+                    return self.read_iconic_window(key, token);
                 }
                 if (self.prims.is_visible)(key.hwnd) {
                     return None;
@@ -1767,32 +1804,52 @@ impl NativeOps for LiveNative<'_> {
                 if !self.lifetime_ok(&key) {
                     return None;
                 }
-                let record = self.hidden_claims.get(&key)?;
-                if !crate::model::valid_claim_tag(&record.claim.tag)
-                    || record.claim.hwnd != key.hwnd
-                    || record.claim.process.pid != key.pid
-                    || record.claim.process.process_creation != key.creation
-                {
-                    return None;
-                }
+                let claim_hwnd = {
+                    let record = self.hidden_claims.get(&key)?;
+                    if !crate::model::valid_claim_tag(&record.claim.tag)
+                        || record.claim.hwnd != key.hwnd
+                        || record.claim.process.pid != key.pid
+                        || record.claim.process.process_creation != key.creation
+                    {
+                        return None;
+                    }
+                    record.claim.hwnd
+                };
                 let stored = self.stored_tag(&key)?;
                 if stored.is_empty() {
                     return None;
                 }
+                // The observed-hidden lane is the only source of the
+                // cloak/host-hidden fact (`DWMWA_CLOAKED` inside
+                // `observe_window_inner`). A failed or identity-mismatched
+                // read leaves facts unknown (fail closed); nothing is
+                // synthesized here.
+                let hidden_ok = (self.prims.observe_hidden)(
+                    claim_hwnd,
+                    self.me,
+                    self.fulls,
+                    &mut self.tokens,
+                )
+                .ok()
+                .filter(|w| {
+                    w.hwnd == claim_hwnd
+                        && w.identity.pid == key.pid
+                        && w.identity.process_creation == key.creation
+                });
                 let (output, workspace) = self.committed_homing(token).unwrap_or_default();
                 let sticky = self.sticky.contains_key(&key);
                 Some(FreshWindow {
                     key,
                     token: token.to_owned(),
                     frame: None,
-                    facts: None,
+                    facts: hidden_ok.map(|w| w.facts),
                     output,
                     workspace,
-                    iconic: (self.prims.is_iconic)(record.claim.hwnd),
+                    iconic: (self.prims.is_iconic)(claim_hwnd),
                     hidden: true,
                     sticky,
                     floating: sticky,
-                    live_tag: (self.prims.member_tag)(record.claim.hwnd),
+                    live_tag: (self.prims.member_tag)(claim_hwnd),
                 })
             }
         }

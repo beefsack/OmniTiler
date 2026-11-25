@@ -53,7 +53,6 @@ use std::collections::HashMap;
 use tiler_core::geometry::Rect;
 
 use crate::active_border::{DEFAULT_COLOR_RGB, SystemAccent, accent_available};
-use crate::tray_pager::SelectScope;
 
 const fn right(rect: Rect) -> i32 {
     rect.x.saturating_add(rect.w)
@@ -755,19 +754,6 @@ pub const fn pager_suppression(gate: PagerGate) -> Option<&'static str> {
 #[must_use]
 pub const fn pager_covering(blocked: bool, managed_overlay: bool) -> bool {
     blocked || managed_overlay
-}
-
-/// Verify one drained pager click over plain keys: true only when the
-/// rendered output is still known and the rendered workspace is still live
-/// on it.
-#[must_use]
-pub fn verify_output_scoped_select_keys(
-    rendered: &SelectScope,
-    outputs: &[String],
-    ring: &[String],
-) -> bool {
-    outputs.iter().any(|key| key == &rendered.output)
-        && ring.iter().any(|id| id == &rendered.workspace)
 }
 
 /// Live settings accessor for the default-on opt-out.
@@ -1852,30 +1838,6 @@ mod tests {
             }),
             Some("unknown-facts")
         );
-    }
-
-    #[test]
-    fn output_scoped_select_needs_no_focus() {
-        let ring = ring_ids();
-        let outputs = vec!["mon-a".to_owned(), "mon-b".to_owned()];
-        let second = ring[1].clone();
-        // Live on its own output verifies without that output focused.
-        assert!(verify_output_scoped_select_keys(
-            &SelectScope::new("mon-b", &second, 2),
-            &outputs,
-            &ring
-        ));
-        // Unknown workspace or output refuses with no ordinal fallback.
-        assert!(!verify_output_scoped_select_keys(
-            &SelectScope::new("mon-b", "ws-gone", 2),
-            &outputs,
-            &ring
-        ));
-        assert!(!verify_output_scoped_select_keys(
-            &SelectScope::new("mon-gone", &second, 2),
-            &outputs,
-            &ring
-        ));
     }
 
     #[test]

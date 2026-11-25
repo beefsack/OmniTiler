@@ -101,6 +101,12 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     };
     state.member_tokens.insert(key.clone(), "w1".to_owned());
     state.member_tags.insert(key.clone(), "tag-1".to_owned());
+    // Production records the empty-hints read (`rows.rs` stores
+    // `WindowSizeHints::none()` for a successful no-hint read); leaving it
+    // `None` here would fabricate unreadability the adapter never sees.
+    state
+        .hint_logged
+        .insert("w1".to_owned(), tiler_core::size_hints::WindowSizeHints::none());
     state.member_identity.insert(
         key.clone(),
         crate::model::ProcessIdentity {
@@ -395,10 +401,11 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &mut Vec::new(),
         0,
     );
-    // The pure-observation reply carries no placement, so the facade
-    // holds its lone row without writing.
-    assert_eq!(stats.held, 1, "stats: {stats:?}");
-    assert_eq!(stats.geometry_writes, 0, "stats: {stats:?}");
+    // The pure-observation reply carries the single placement the core
+    // computed from the readable facts, so the facade actuates exactly that
+    // geometry write and holds nothing.
+    assert_eq!(stats.geometry_writes, 1, "stats: {stats:?}");
+    assert_eq!(stats.held, 0, "stats: {stats:?}");
     diff.gate.note_applied(&geometry_reply);
     // A racing native invalidation stops the pass before any setter.
     native.pending_invalidation = true;
@@ -546,7 +553,6 @@ fn production_observation_tick_proves_nothing_on_unreadable_natives() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("tick converges");
     assert!(reply.ready);
@@ -610,7 +616,6 @@ fn production_tick_captures_paired_proof_under_trace_only() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed tick converges");
     let proof = state.world.trace_proof().expect("proof captured").clone();
@@ -640,7 +645,6 @@ fn production_tick_captures_paired_proof_under_trace_only() {
         0,
         &fulls2,
         None,
-        false,
     )
     .expect("dark tick converges");
     assert!(dark.world.trace_proof().is_none());
@@ -689,7 +693,6 @@ fn production_select_route_reports_honest_outcome_without_proof() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed tick converges");
     assert!(first.ready);
@@ -723,6 +726,7 @@ fn production_select_route_reports_honest_outcome_without_proof() {
         &fulls,
         &areas,
         &mut observed,
+        &[],
         "DEV1",
         &target,
         None,
@@ -791,7 +795,6 @@ fn production_send_route_reports_honest_outcome_without_proof() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed tick converges");
     assert!(first.ready);
@@ -1110,7 +1113,6 @@ fn busy_command_reports_unverified_not_cached_reply() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     assert!(
@@ -1182,7 +1184,6 @@ fn busy_command_reports_unverified_not_cached_reply() {
             None,
             false,
             String::new(),
-            false,
             Vec::new(),
         );
         world
@@ -1321,7 +1322,6 @@ fn rejected_command_catchup_never_strands_the_next_command() {
         101,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     let focus = |window: &str, direction: &str| WorldCommand::FocusDirectional {
@@ -1593,7 +1593,6 @@ fn journey_snapshot_refreshes_at_command_delivery_before_callback() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed tick converges");
     assert!(super::observe::take_switch_edges().is_empty());
@@ -1660,7 +1659,6 @@ fn journey_snapshot_refreshes_at_command_delivery_before_callback() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("observation delivers");
     super::observe::JourneyEventSink.on_win_event(crate::ffi::WinEvent {
@@ -1720,7 +1718,6 @@ fn real_command_turn_consumes_pending_without_extra_pass() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     // The drained own edge, exactly as `run_tile_loop` pushes it after
@@ -1827,7 +1824,6 @@ fn real_command_with_hook_drain_needs_no_extra_pass() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     inject_pending_suspend(Some(false));

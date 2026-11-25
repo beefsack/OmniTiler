@@ -5358,6 +5358,82 @@ fn selection_focus_authority_is_explicit_selection_only() {
     );
 }
 
+/// Hidden fallback facts: a committed-hidden member's failed visible read
+/// still rides the observed-hidden seam, so the resulting hide receipt
+/// carries the live host-hidden/cape facts instead of a synthesized
+/// unknown. The visible observer rejects hidden windows (exactly like
+/// production), so only the observed-hidden read can supply them.
+#[test]
+fn hidden_fallback_publishes_observed_facts() {
+    let mut env = env_with(110_500);
+    let ws = "ws1".to_owned();
+    let out = env.state.output_token(DEV1);
+    let key = win_key(110_500, 2150, "proc-70");
+    admit_member(&mut env, &key, &ws, "w1", false);
+    env.state.member_rects.insert("w1".to_owned(), rect(0, 0, 800, 600));
+    env.state.hidden_claims.insert(
+        key.clone(),
+        super::super::HiddenRecord {
+            claim: valid_claim(key.hwnd, &identity_of(&key)),
+            iconic: false,
+        },
+    );
+    let mut facts = plain_facts();
+    facts.visible = false;
+    script_live(&key, "w1", rect(0, 0, 800, 600), facts);
+    S_VISIBLE.with(|m| {
+        m.borrow_mut().remove(&key.hwnd);
+    });
+    assert!(
+        !S_VISIBLE.with(|m| m.borrow().contains(&key.hwnd)),
+        "the visible observer must fail for a hidden claim"
+    );
+    let (mut diff, fresh) = convert(&env, &[]);
+    let mut reply = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
+    reply.windows.push(WindowDesire {
+        lifetime: WindowId("w1".to_owned()),
+        output: OutputId(out.clone()),
+        workspace: ws.clone(),
+        allocation: None,
+        effective_frame: None,
+        frame_authority: Auth::Untouched,
+        membership_authority: Auth::Untouched,
+        floating: false,
+        float_origin: None,
+        frame_operation: None,
+        command_seq: None,
+        visibility: Some(tiler_core::world_report::VisibilityTarget {
+            shown: false,
+            revision: 1,
+            fallback: false,
+        }),
+        visibility_authority: Auth::Controlled,
+        state: Vec::new(),
+    });
+    let mut native = assemble(&mut env, scripted());
+    let _ = apply_world_reply(
+        &mut diff,
+        &reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    let attempts = diff.take_visibility_attempts();
+    assert_eq!(attempts.len(), 1, "{attempts:?}");
+    let post = attempts[0].post.expect("hide receipt sample");
+    assert_eq!(post.visibility.visible, Some(false));
+    assert_eq!(post.visibility.suppression_owned, Some(true));
+    assert_eq!(
+        post.host_hidden,
+        Some(false),
+        "observed-hidden facts must ride the fallback read"
+    );
+    assert_eq!(post.minimized, Some(false));
+}
+
 #[path = "world_native_composition_tests.rs"]
 mod composition;
 #[path = "world_native_dpi_tests.rs"]

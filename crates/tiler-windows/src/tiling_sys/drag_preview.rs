@@ -14,6 +14,40 @@ fn preview_binding_matches(
     gesture_id == Some(preview_id) && preview_source == expected_source
 }
 
+/// Focused-fullscreen presentation suspension is core-owned: when the reply
+/// names the preview's own resolution (pointer) domain output, the core has
+/// suspended that output's presentation and no preview may paint there.
+fn preview_suspended(reply: Option<&tiler_core::world_report::WorldReplyV4>) -> bool {
+    let Some(reply) = reply else {
+        return false;
+    };
+    let Some(preview) = reply.drag_preview.as_ref() else {
+        return false;
+    };
+    reply
+        .presentation
+        .suspended_output
+        .as_ref()
+        .is_some_and(|suspended| suspended.0 == preview.domain.output.0)
+}
+
+/// Apply the core's suspension verdict to the preview before any geometry or
+/// paint work. Returns true when the caller must stop (preview hidden).
+fn hide_for_suspended_output(
+    state: &mut TileLoop,
+    reply: Option<&tiler_core::world_report::WorldReplyV4>,
+    hwnd: u64,
+) -> bool {
+    if !preview_suspended(reply) {
+        return false;
+    }
+    if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+        bound.hover_prior = None;
+    }
+    hide_preview(state, "suspended");
+    true
+}
+
 /// Drop-preview refresh for one loop wake while an accepted move gesture
 /// holds the loop: a separate owned click-through nonactivating filled
 /// target-slot surface ABOVE windows (KWin overlay-item analogue).
@@ -188,8 +222,14 @@ pub(super) fn refresh_drag_preview(
     // the core target.
     let cursor = super::observation::sample_cursor();
     let reply = super::world_tick::run_observation_tick(
-        state, me, store, dir, &observed, &retained, areas, foreground, fulls, cursor, false,
+        state, me, store, dir, &observed, &retained, areas, foreground, fulls, cursor,
     );
+    // Core-owned focused-fullscreen suspension: no preview paints on the
+    // suspended output, and the retained surface hides before geometry or
+    // any renderer work.
+    if hide_for_suspended_output(state, reply.as_ref(), hwnd) {
+        return;
+    }
     // Source fence on the correlated result (START bound): a stale result
     // after Finish, drift, or a mover swap never renders.
     let gesture_id = state.gesture_seq.get(&hwnd).copied();
@@ -338,5 +378,105 @@ mod preview_binding_tests {
     #[test]
     fn missing_gesture_id_fails() {
         assert!(!preview_binding_matches(7, &domain(), None, &domain()));
+    }
+
+    fn suspended_reply(
+        preview_output: &str,
+        suspended_output: Option<&str>,
+    ) -> tiler_core::world_report::WorldReplyV4 {
+        use tiler_core::directional::WindowId;
+        use tiler_core::world_report::{
+            BorderHideReasonV4, BorderPresentationV4, DragPreviewV4, WorldPresentationV4,
+        };
+        let domain = DomainKey {
+            output: OutputId(preview_output.to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        tiler_core::world_report::WorldReplyV4 {
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            request_id: "req-1".to_owned(),
+            based_on_observation_seq: 1,
+            state_revision: 1,
+            ready: true,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            windows: Vec::new(),
+            transfers: Vec::new(),
+            focus_request: None,
+            drag_preview: Some(DragPreviewV4 {
+                id: 1,
+                rect: tiler_core::geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 100,
+                },
+                hover: None,
+                domain: domain.clone(),
+                source: domain,
+                target: WindowId("w1".to_owned()),
+                revision: 1,
+            }),
+            gesture_settled: None,
+            operation_settled: Vec::new(),
+            native_creations: Vec::new(),
+            warp_request: None,
+            presentation: WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 0,
+                suspended_output: suspended_output.map(|out| OutputId(out.to_owned())),
+                border: BorderPresentationV4 {
+                    visible: false,
+                    reason: Some(BorderHideReasonV4::NoTarget),
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
+                pager: Vec::new(),
+            },
+            intent_desired: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn suspended_output_hides_preview_without_painting() {
+        use super::super::rmax03_adapter_tests::test_state;
+        use super::hide_for_suspended_output;
+        // The preview's own resolution domain names DEV1; the core suspended
+        // DEV1, so the gate hides before any geometry/paint.
+        let reply = suspended_reply("DEV1", Some("DEV1"));
+        let mut state = test_state();
+        assert!(hide_for_suspended_output(&mut state, Some(&reply), 77));
+        assert_eq!(
+            state.preview_last.as_deref(),
+            Some("hidden:suspended"),
+            "the core's suspension verdict hides the preview"
+        );
+        assert!(
+            !state.preview_overlay.is_visible(),
+            "no preview paints on the suspended output"
+        );
+        // Suspension of a different output (or no verdict) keeps the preview.
+        let other = suspended_reply("DEV1", Some("DEV2"));
+        let mut state = test_state();
+        assert!(!hide_for_suspended_output(&mut state, Some(&other), 77));
+        assert!(state.preview_last.is_none());
+        let unsuspended = suspended_reply("DEV1", None);
+        let mut state = test_state();
+        assert!(!hide_for_suspended_output(
+            &mut state,
+            Some(&unsuspended),
+            77
+        ));
+        assert!(state.preview_last.is_none());
     }
 }

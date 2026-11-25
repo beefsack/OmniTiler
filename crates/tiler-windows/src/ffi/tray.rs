@@ -533,9 +533,11 @@ unsafe extern "system" fn tray_wnd_proc(
     };
     if msg == WM_INPUT {
         // Hardware-origin pointer witness: read the queued raw record and
-        // advance the generation only for a real mouse read. `DefWindowProc`
-        // still runs below (the documented WM_INPUT cleanup path).
+        // advance the generation only for a real mouse read. DefWindowProcW
+        // is the documented WM_INPUT cleanup path; return it immediately so
+        // no shared state is touched (in particular the global SLOTS mutex).
         super::raw_input::handle_wm_input(lparam);
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
     if msg == WM_CREATE {
         let create = unsafe { &*(lparam as *const CREATESTRUCTW) };

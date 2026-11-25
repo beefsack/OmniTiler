@@ -25,6 +25,9 @@ use tiler_core::world_report::{CommandResult, RenderTarget, RendererInput, World
 /// report settled a rejected command. Per-phase timings collapse into
 /// `transition_ms`; geometry/focus ride the applied reply, so those fields
 /// stay `None`/`none`.
+///
+/// `retained` carries the observation's retained rows on the command path so
+/// core selection sees retained/iconic members truthfully.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn workspace_do_select(
     state: &mut TileLoop,
@@ -34,6 +37,7 @@ pub(super) fn workspace_do_select(
     fulls: &[Rect],
     areas: &[MonitorArea],
     observed: &mut [ObservedWindow],
+    retained: &[RetainedRow],
     output: &str,
     target: &str,
     render_rev: Option<u64>,
@@ -82,7 +86,7 @@ pub(super) fn workspace_do_select(
         store,
         dir,
         observed,
-        &[],
+        retained,
         areas,
         foreground,
         fulls,

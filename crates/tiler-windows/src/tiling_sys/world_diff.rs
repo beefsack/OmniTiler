@@ -625,6 +625,9 @@ pub(super) struct FakeNative {
     pub(super) hide_calls: Vec<String>,
     pub(super) fail_focus: HashSet<String>,
     pub(super) throw_focus: HashSet<String>,
+    /// Native focus setters dispatched, in call order (proves zero-setter
+    /// paths such as an already-foreground target record no call).
+    pub(super) focus_calls: Vec<String>,
     /// Scripted live cursor position (`None` = unreadable). Warp writes
     /// update it so re-reads observe the move, like the real position.
     pub(super) cursor: Option<(i32, i32)>,
@@ -642,6 +645,9 @@ pub(super) struct FakeNative {
     pub(super) pending_invalidation: bool,
     pub(super) frame_writes: usize,
     pub(super) membership_writes: usize,
+    /// Frame target passed to each membership actuation, in call order
+    /// (`None` = membership-only move, never a frame write).
+    pub(super) membership_frames: Vec<Option<Rect>>,
     /// Scripted target GUI-thread focus per HWND (`None` = unreadable).
     /// Absent HWNDs read `Unknown`, like the production fail-closed path.
     pub(super) gui_state: HashMap<u64, GuiFocusState>,
@@ -785,6 +791,7 @@ impl NativeOps for FakeNative {
             self.note_write();
             return Ok(false);
         }
+        self.membership_frames.push(frame);
         if let Some(window) = self.windows.get_mut(token) {
             window.output = out.to_owned();
             window.workspace = ws.to_owned();
@@ -971,6 +978,10 @@ impl NativeOps for FakeNative {
             None
         };
         let call_mono_ms = super::trace::log_mono_ms();
+        // A native setter is dispatched (accepted, refused, or threw): the
+        // move/size pre-veto above returns before this point and records
+        // nothing here.
+        self.focus_calls.push(token.to_owned());
         let (outcome, native_return) = if self.throw_focus.contains(token) {
             (Err(()), None)
         } else if self.fail_focus.contains(token) {
@@ -2271,6 +2282,16 @@ fn frame_setter_for(outcome: Result<bool, ()>) -> FrameSetter {
     }
 }
 
+/// Terminal show proof for one visibility sample: the identity/lifetime
+/// matched, the window is visible, and no native fact blocks it (minimized
+/// or host-hidden). Anything else is a hold, never a show verdict.
+fn show_sample_proven(sample: &VisibilitySample) -> bool {
+    sample.lifetime_matched == Some(true)
+        && sample.visibility.visible == Some(true)
+        && sample.minimized == Some(false)
+        && sample.host_hidden == Some(false)
+}
+
 fn focus_reason_from_visibility(disposition: VisibilityDisposition) -> FocusNoCallReason {
     match disposition {
         VisibilityDisposition::Called {
@@ -2393,12 +2414,13 @@ fn scan_arrival(
 
 /// Truthful show half of the visibility lane. Every desired shown row is
 /// decided exactly once per `(window, target, revision)` tuple: an
-/// unchanged tuple redelivers its original row without a setter, a
-/// satisfied target is a real not-called row, a non-Controlled (held or
-/// excluded) target is a not-called row carrying the mapped bounded reason,
+/// unchanged tuple redelivers its original row without a setter, and a
+/// satisfied target is a real not-called row. A non-Controlled or
+/// unreadable target emits no row (a transient hold is never latchable),
 /// and only a Controlled, unsatisfied, identity-clean target reaches one
-/// nonactivating reveal. Setter booleans never prove: the post re-read is
-/// the row's fact.
+/// nonactivating reveal. An accepted reveal whose readback does not prove
+/// stays pending and emits no row until a later proving read. Setter
+/// booleans never prove: the post re-read is the row's fact.
 #[allow(clippy::too_many_arguments)]
 fn stage_visibility_shows(
     reply: &WorldReplyV4,
@@ -2429,38 +2451,48 @@ fn stage_visibility_shows(
             // redeliver it without a new native decision. Only a new
             // target or authorization revision may re-decide.
             if existing.target == target.shown && existing.revision == target.revision {
+                // An accepted reveal whose immediate readback did not prove
+                // is still in flight: re-read (never the setter) and only a
+                // proving sample may emit the row. Anything else holds with
+                // no row so a later pass can still settle it.
+                if matches!(
+                    existing.disposition,
+                    VisibilityDisposition::Called {
+                        setter: FrameSetter::Accepted,
+                        ..
+                    }
+                ) && existing.post.is_none()
+                {
+                    let Some(read) = read_visibility(ops, fresh, token, obs) else {
+                        stats.held += 1;
+                        continue;
+                    };
+                    if !show_sample_proven(&read.sample) {
+                        stats.held += 1;
+                        continue;
+                    }
+                    let mut settled = existing.clone();
+                    settled.post = Some(read.sample);
+                    records.insert(token.to_owned(), settled.clone());
+                    attempts.insert(token.to_owned(), settled);
+                    continue;
+                }
                 attempts.insert(token.to_owned(), existing.clone());
                 continue;
             }
         }
         let Some(read) = read_visibility(ops, fresh, token, obs) else {
-            let attempt = VisibilityAttempt {
-                window: row.lifetime.clone(),
-                target: true,
-                revision: target.revision,
-                path: LastWritePath::Staged,
-                disposition: VisibilityDisposition::NotCalled {
-                    reason: VisibilityReason::Unreadable,
-                },
-                pre: None,
-                post: None,
-            };
-            records.insert(token.to_owned(), attempt.clone());
-            attempts.insert(token.to_owned(), attempt);
+            // Unreadable is transient: emit no row so the core's first-match
+            // latch cannot permanently fail a later readable pass.
             stats.held += 1;
             continue;
         };
-        let satisfied = read.sample.lifetime_matched == Some(true)
-            && read.sample.visibility.visible == Some(true)
-            && read.sample.minimized == Some(false)
-            && read.sample.host_hidden == Some(false);
+        let satisfied = show_sample_proven(&read.sample);
         let (disposition, called) = if row.visibility_authority != ScopeAuthority::Controlled {
-            (
-                VisibilityDisposition::NotCalled {
-                    reason: visibility_reason(row.visibility_authority, &read),
-                },
-                false,
-            )
+            // Held/excluded authority is transient: emit no row at all (the
+            // core's first-match latch must not pin this pass's hold).
+            stats.held += 1;
+            continue;
         } else if satisfied {
             (
                 VisibilityDisposition::NotCalled {
@@ -2509,11 +2541,36 @@ fn stage_visibility_shows(
                 false,
             )
         };
+        let accepted = matches!(
+            disposition,
+            VisibilityDisposition::Called {
+                setter: FrameSetter::Accepted,
+                ..
+            }
+        );
         let post = if called {
             read_visibility(ops, fresh, token, gate.current_obs)
         } else {
             Some(read)
         };
+        if accepted && post.as_ref().is_none_or(|read| !show_sample_proven(&read.sample)) {
+            // Async reveal: the accepted setter has not proven yet. Store
+            // the Called record with no post and emit no attempt (hold) so
+            // the next pass re-reads without re-actuating; never latch a
+            // premature visible:false for an accepted reveal.
+            let attempt = VisibilityAttempt {
+                window: row.lifetime.clone(),
+                target: true,
+                revision: target.revision,
+                path: LastWritePath::Staged,
+                disposition,
+                pre: Some(read.sample),
+                post: None,
+            };
+            records.insert(token.to_owned(), attempt);
+            stats.held += 1;
+            continue;
+        }
         let attempt = VisibilityAttempt {
             window: row.lifetime.clone(),
             target: true,
@@ -2537,12 +2594,12 @@ fn stage_visibility_shows(
 
 /// Truthful hide half of the visibility lane, run after the focus lane.
 /// Departing targets hide only under a proven live foreground (or the
-/// target's explicit fallback authority); a held/excluded target gets a
-/// real not-called row and is never actuated. The same at-most-once tuple
-/// rule applies: a reported row, called or not-called, is terminal for its
-/// `(window, target, revision)` and is redelivered without re-deciding,
-/// while a pending decision emits no row and may still re-decide on a
-/// later pass.
+/// target's explicit fallback authority); a non-Controlled or unreadable
+/// target emits no row and is never actuated, so a transient hold never
+/// latches. The same at-most-once tuple rule applies: a reported row,
+/// called or not-called, is terminal for its `(window, target, revision)`
+/// and is redelivered without re-deciding, while a pending decision emits
+/// no row and may still re-decide on a later pass.
 #[allow(clippy::too_many_arguments)]
 fn stage_visibility_hides(
     reply: &WorldReplyV4,
@@ -2578,22 +2635,17 @@ fn stage_visibility_hides(
             }
         }
         let Some(read) = read_visibility(ops, fresh, token, obs) else {
-            let attempt = VisibilityAttempt {
-                window: row.lifetime.clone(),
-                target: false,
-                revision: target.revision,
-                path: LastWritePath::Staged,
-                disposition: VisibilityDisposition::NotCalled {
-                    reason: VisibilityReason::Unreadable,
-                },
-                pre: None,
-                post: None,
-            };
-            records.insert(token.to_owned(), attempt.clone());
-            attempts.insert(token.to_owned(), attempt);
+            // Unreadable is transient: emit no row so the core's first-match
+            // latch cannot permanently fail a later readable pass.
             stats.held += 1;
             continue;
         };
+        if row.visibility_authority != ScopeAuthority::Controlled {
+            // Held/excluded authority is transient: emit no row at all (the
+            // core's first-match latch must not pin this pass's hold).
+            stats.held += 1;
+            continue;
+        }
         if read.sticky {
             // Sticky windows are visible on every workspace; a hide would
             // contradict the adapter's own combined-switch departure rule.
@@ -2618,11 +2670,7 @@ fn stage_visibility_hides(
             && read.sample.host_hidden == Some(false)
             && read.sample.visibility.suppression_owned == Some(true);
         let mut path = LastWritePath::Staged;
-        let disposition = if row.visibility_authority != ScopeAuthority::Controlled {
-            VisibilityDisposition::NotCalled {
-                reason: visibility_reason(row.visibility_authority, &read),
-            }
-        } else if hidden {
+        let disposition = if hidden {
             VisibilityDisposition::NotCalled {
                 reason: VisibilityReason::Empty,
             }
@@ -2641,8 +2689,13 @@ fn stage_visibility_hides(
         } else {
             // The target is still visible: only a proven live foreground
             // authorizes hiding, or the target's own fallback authority
-            // when the retained focus request cannot prove.
-            let request = reply.focus_request.as_ref();
+            // when the retained focus request cannot prove. Only a focus
+            // request that froze an arrival (`after_shown`) and was issued
+            // for this target revision gates the hide; an unrelated or
+            // later request never blocks a departure.
+            let request = reply.focus_request.as_ref().filter(|request| {
+                request.after_shown.is_some() && request.issued_revision <= target.revision
+            });
             let decision = match request {
                 None => Some(true),
                 Some(request) => focus_records
@@ -2651,15 +2704,26 @@ fn stage_visibility_hides(
                         record.target == request.target
                             && record.revision == request.issued_revision
                     })
-                    .map(|record| {
-                        matches!(
-                            record.disposition,
-                            FocusDisposition::Called {
-                                setter: FrameSetter::Accepted,
-                                ..
+                    .and_then(|record| match record.disposition {
+                        FocusDisposition::Called {
+                            setter: FrameSetter::Accepted,
+                            ..
+                        } => {
+                            if ops.is_foreground(&request.target.0) {
+                                Some(true)
+                            } else if record.foreground_proven {
+                                // Proven at dispatch but the live foreground
+                                // is elsewhere now: a real not-called hold.
+                                Some(false)
+                            } else {
+                                // Accepted but not landed yet (async focus):
+                                // pending, never a NotCalled latch.
+                                None
                             }
-                        ) && record.foreground_proven
-                            && ops.is_foreground(&request.target.0)
+                        }
+                        // NotCalled, refused, or threw: the focus verdict is
+                        // terminal for this tuple.
+                        _ => Some(false),
                     }),
             };
             match decision {
@@ -2792,37 +2856,52 @@ fn pre_setter_ok(
     if !lifetime_ok(&live, stored) {
         return Gate::Stop;
     }
-    if live.hidden || live.iconic || live.frame.is_none() {
+    if live.hidden {
         return Gate::Hold;
     }
-    let Some(facts) = live.facts else {
-        return Gate::Hold;
-    };
     match kind {
-        SetterKind::Frame => {
-            if !capture_facts_rideable(&facts) {
-                return Gate::Hold;
-            }
-            if overlay_guarded(&live) {
-                return Gate::Hold;
-            }
-        }
-        SetterKind::Float => {
-            // Strict eligibility: the full classify gate (cloaked,
-            // elevated, shell, tool, owned, dialog, no-activate, hidden,
-            // minimized, plus fullscreen/maximized overlay protection).
-            // Ordinary floating intent alone is allowed, and sticky rides
-            // too: this lane only ever writes under an explicit retained
-            // `frame_operation` token (directional half-snaps), so ordinary
-            // unsolicited sticky frame writes stay prohibited by the token
-            // gate plus the tiled lane.
-            if crate::tiling::classify(&facts).is_err() {
-                return Gate::Hold;
-            }
-        }
         SetterKind::Membership => {
-            if !capture_facts_rideable(&facts) {
+            // Membership-only moves never write a frame, so an iconic
+            // (minimized, unobservable) subject proves through its lifetime
+            // alone: `facts` is unreadable there by definition. A readable
+            // row must still be rideable; an unreadable row only passes
+            // when the adapter classified it iconic (nothing else proves).
+            if let Some(facts) = live.facts {
+                if !capture_facts_rideable(&facts) {
+                    return Gate::Hold;
+                }
+            } else if !live.iconic {
                 return Gate::Hold;
+            }
+        }
+        SetterKind::Frame | SetterKind::Float => {
+            // Frame/float writes require the full readable, non-iconic,
+            // framed state and rideable facts.
+            if live.iconic || live.frame.is_none() {
+                return Gate::Hold;
+            }
+            let Some(facts) = live.facts else {
+                return Gate::Hold;
+            };
+            if matches!(kind, SetterKind::Frame) {
+                if !capture_facts_rideable(&facts) {
+                    return Gate::Hold;
+                }
+                if overlay_guarded(&live) {
+                    return Gate::Hold;
+                }
+            } else {
+                // Strict eligibility: the full classify gate (cloaked,
+                // elevated, shell, tool, owned, dialog, no-activate, hidden,
+                // minimized, plus fullscreen/maximized overlay protection).
+                // Ordinary floating intent alone is allowed, and sticky rides
+                // too: this lane only ever writes under an explicit retained
+                // `frame_operation` token (directional half-snaps), so ordinary
+                // unsolicited sticky frame writes stay prohibited by the token
+                // gate plus the tiled lane.
+                if crate::tiling::classify(&facts).is_err() {
+                    return Gate::Hold;
+                }
             }
         }
     }
@@ -3558,18 +3637,14 @@ fn apply_world_reply_inner(
         };
         // Safety facts with no authority lane hold narrowly: hidden,
         // iconic, unreadable, and game/excluded facts never take automatic
-        // writes. Overlays keep membership but take no tiled frame writes.
-        // A window revealed by the show lane this pass may proceed from
-        // its stale observation preimage; the live pre-setter gate below
-        // still demands current visibility.
-        if (base.hidden && !revealed_this_pass.contains(&row.lifetime.0))
-            || base.iconic
-            || base.frame.is_none()
-        {
-            stats.held += 1;
-            continue;
-        }
-        if !revealed_this_pass.contains(&row.lifetime.0)
+        // frame writes. Overlays keep membership but take no tiled frame
+        // writes. A window revealed by the show lane this pass may proceed
+        // from its stale observation preimage; the live pre-setter gate
+        // below still demands current visibility. The membership lane below
+        // still runs under these facts: an iconic subject carries no frame,
+        // so its transfer settles through membership alone.
+        let revealed = revealed_this_pass.contains(&row.lifetime.0);
+        if !revealed
             && base
                 .facts
                 .is_some_and(|facts| !capture_facts_rideable(&facts))
@@ -3580,19 +3655,24 @@ fn apply_world_reply_inner(
         let frame_controlled = row.frame_authority == ScopeAuthority::Controlled;
         let member_controlled = row.membership_authority == ScopeAuthority::Controlled;
         let transfer = window_transfer_for(reply, &row.lifetime.0);
-        let arrival_pending = transfer.is_some_and(|t| {
-            ops.read_homing(&row.lifetime.0)
-                .is_some_and(|(out, ws)| out != t.target_output.0 || ws != t.target_workspace)
-        }) || migration_arrival_pending(
-            reply,
-            ops,
-            &row.lifetime.0,
-            &row.output.0,
-            &row.workspace,
-        );
-        // The writable frame target is `effective_frame` only: `allocation`
-        // is the canonical slot, never a write target.
-        if frame_controlled && row.effective_frame.is_some() && arrival_pending {
+        let frame_blocked = (base.hidden && !revealed) || base.iconic || base.frame.is_none();
+        if frame_controlled && frame_blocked {
+            // Nothing to write: hidden/iconic/unreadable preimages take no
+            // automatic frame write (membership still runs below).
+            stats.held += 1;
+        } else if frame_controlled
+            && row.effective_frame.is_some()
+            && (transfer.is_some_and(|t| {
+                ops.read_homing(&row.lifetime.0)
+                    .is_some_and(|(out, ws)| out != t.target_output.0 || ws != t.target_workspace)
+            }) || migration_arrival_pending(
+                reply,
+                ops,
+                &row.lifetime.0,
+                &row.output.0,
+                &row.workspace,
+            ))
+        {
             // Deferred until membership proof: the target frame belongs to
             // the destination output, so writing it pre-move would place
             // foreign geometry on the source. Never hold-count a correctly
@@ -3601,8 +3681,8 @@ fn apply_world_reply_inner(
             && row.effective_frame.is_some()
             && !row_on_current_view(reply, &row.output.0, &row.workspace)
         {
-            // The output row is missing, names no logical view, or names a
-            // different view: none of these proves this workspace is
+            // The output row is missing, names no logical view, or names
+            // a different view: none of these proves this workspace is
             // current, so the frame write withholds. A named different view
             // is logically hidden even if its native hide has not landed
             // yet; a departing workspace reflow must never write the hidden
@@ -3702,8 +3782,9 @@ fn apply_world_reply_inner(
         // Membership rides only under a retained core window transfer with
         // its stable operation identity. A Controlled frame authority with
         // no effective frame contradicts the publish contract (the
-        // effective frame is the only write target): hold fail-closed.
-        if frame_controlled && row.effective_frame.is_none() {
+        // effective frame is the only write target): hold fail-closed. A
+        // frame-blocked row already hold-counted above.
+        if frame_controlled && !frame_blocked && row.effective_frame.is_none() {
             stats.held += 1;
         }
         if !member_controlled {
@@ -3820,11 +3901,13 @@ fn apply_world_reply_inner(
         // Tiled rows carry their core-owned desired frame as the actuation
         // target (the production seam writes it as part of the move);
         // membership-only lanes (floats/sticky/overlays, frameless holds)
-        // pass `None` and preserve the physical frame. Same-output movers
+        // pass `None` and preserve the physical frame. An iconic/hidden/
+        // unreadable preimage (`frame_blocked`) has no writable frame, so a
+        // membership move never writes geometry for it. Same-output movers
         // need no translation (the view batch proves on the shared
         // screen); cross-output movers ride the published slot or the
         // sessionless migration placement.
-        let frame_target = if row.floating || base.floating {
+        let frame_target = if row.floating || base.floating || frame_blocked {
             None
         } else {
             row.effective_frame
@@ -4853,6 +4936,32 @@ fn apply_world_reply_inner(
                 }
             }
         }
+        if ops.is_foreground(&request.target.0) {
+            // Target equality satisfies the request: no setter runs. Report
+            // the truthful no-call verdict (zero setters) and keep the
+            // frozen arrival brackets for the arrival proof. `NoReason` is
+            // the non-terminal bare token: the core settles the request from
+            // the next observation's equality (`already-target`), exactly as
+            // it does when the target already holds the foreground at issue.
+            let pre = ops.foreground_managed().map(WindowId);
+            let feedback = FocusFeedback {
+                id: request.id.clone(),
+                target: request.target.clone(),
+                revision: request.issued_revision,
+                disposition: FocusDisposition::NotCalled {
+                    reason: FocusNoCallReason::NoReason,
+                },
+                pre: pre.clone(),
+                post: pre,
+                foreground_proven: true,
+                arrival: arrival_brackets,
+                attempt_ms,
+            };
+            focus_records.insert(request.id.clone(), feedback.clone());
+            pending_focus.insert(request.id.clone(), feedback);
+            push_focus!(false, "skipped", false, Some("already-foreground"));
+            continue;
+        }
         if !effects.mark_focus_spent(&request.id) {
             push_focus!(false, "skipped", false, Some("already-spent"));
             continue;
@@ -5031,8 +5140,9 @@ fn apply_world_reply_inner(
     // 4b. Departure hides after the focus decision. The per-window lane
     // re-reads the live foreground: without positive proof it records a
     // truthful not-called row (or takes the target's explicit fallback
-    // path) and never hides. The durable record makes a possibly-executed
-    // hide at-most-once.
+    // path) and never hides; a non-Controlled or unreadable target emits no
+    // row at all, so a transient hold never latches. The durable record
+    // makes a possibly-executed hide at-most-once.
     stage_visibility_hides(
         reply,
         fresh,

@@ -75,9 +75,9 @@ use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FocusFeedback,
-    FrameAttempt, FrameWitness, MemberAttempt, PresentationRowV4, RendererInput, StateAttempt,
-    StateProperty, ViewAttempt, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WorldCommand,
-    WorldReplyV4, WorldReportV4,
+    FocusRequest, FrameAttempt, FrameWitness, MemberAttempt, PresentationRowV4, RendererInput,
+    StateAttempt, StateProperty, ViewAttempt, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4,
+    WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 /// One outstanding sequenced report: the exact facts the core incorporation
@@ -219,6 +219,12 @@ pub(super) struct WorldSequencer {
     /// explicit selection variants may authorize the desktop exception;
     /// cleared on every non-accepted or observation delivery.
     last_command: Option<WorldCommand>,
+    /// Desktop-exception authority retained past the selection delivery:
+    /// `(accepted command seq, focus request id, issued revision)` of the
+    /// exact explicit `after_shown` request. Deferred arrival ticks re-emit
+    /// that same request with no command; only an exact still-carried match
+    /// keeps the authority alive. Cleared with the generation.
+    retained_selection_authority: Option<(u64, String, u64)>,
     last_accepted_obs: u64,
     last_accepted_rev: u64,
     last_accepted_req: String,
@@ -322,6 +328,7 @@ impl WorldSequencer {
             last_settlements: Vec::new(),
             last_command_seq: None,
             last_command: None,
+            retained_selection_authority: None,
             last_accepted_obs: 0,
             last_accepted_rev: 0,
             last_accepted_req: String::new(),
@@ -804,6 +811,11 @@ impl WorldSequencer {
             WorldOutcome::Accepted(_) => report.command.clone(),
             _ => None,
         };
+        self.track_selection_authority(
+            report.command.as_ref(),
+            report.command_seq,
+            &transition.outcome,
+        );
         self.last_settlements = Self::settlements(&transition.dispositions);
         transition.outcome
     }
@@ -822,18 +834,89 @@ impl WorldSequencer {
     }
 
     /// The narrow desktop-exception authority: the latest delivery was an
-    /// accepted explicit workspace-selection command, and the reply's
-    /// retained focus request is that command's exact explicit outcome
-    /// (matching sequence and a frozen after-shown scope). Follow-send and
-    /// every other command never qualify, even when core attaches
-    /// `after_shown` to a selection-backed follow focus.
+    /// accepted explicit workspace-selection command with its exact frozen
+    /// explicit outcome, or that selection's request is still being
+    /// re-emitted on a deferred arrival tick. Every other command, cause,
+    /// or widened request never qualifies.
     #[must_use]
     pub(super) fn selection_focus_authority(&self, reply: &WorldReplyV4) -> bool {
-        Self::selection_focus_authority_for(
+        if Self::selection_focus_authority_for(
             self.last_command.as_ref(),
             self.last_command_seq,
             reply,
-        )
+        ) {
+            return true;
+        }
+        let Some((seq, id, revision)) = self.retained_selection_authority.as_ref() else {
+            return false;
+        };
+        reply.focus_request.as_ref().is_some_and(|request| {
+            request.id == *id
+                && request.issued_revision == *revision
+                && Self::selection_request_binds(request)
+                && request.cmd_seq == Some(*seq)
+        })
+    }
+
+    /// Track authority across a deferred arrival tick. Only an accepted
+    /// selection whose exact frozen request rides its own reply arms it;
+    /// later publications keep it only while that exact `(id, revision)` is
+    /// still carried; any command-carrying delivery retires it.
+    /// Non-accepted outcomes never invent authority.
+    fn track_selection_authority(
+        &mut self,
+        command: Option<&WorldCommand>,
+        command_seq: Option<u64>,
+        outcome: &WorldOutcome,
+    ) {
+        let reply = match outcome {
+            WorldOutcome::Accepted(reply)
+            | WorldOutcome::Duplicate(reply)
+            | WorldOutcome::CommandConsumed(reply) => Some(reply),
+            WorldOutcome::Rejected { .. } => None,
+        };
+        let request = reply.and_then(|reply| reply.focus_request.as_ref());
+        if matches!(outcome, WorldOutcome::Accepted(_))
+            && command.is_some_and(Self::selects_workspace)
+            && let Some(seq) = command_seq
+            && let Some(request) = request
+            && Self::selection_request_binds(request)
+            && request.cmd_seq == Some(seq)
+        {
+            self.retained_selection_authority =
+                Some((seq, request.id.clone(), request.issued_revision));
+            return;
+        }
+        let still_carried = command.is_none()
+            && self
+                .retained_selection_authority
+                .as_ref()
+                .is_some_and(|(_, id, revision)| {
+                    request.is_some_and(|request| {
+                        request.id == *id && request.issued_revision == *revision
+                    })
+                });
+        if !still_carried {
+            self.retained_selection_authority = None;
+        }
+    }
+
+    /// The exact bind an explicit selection request must satisfy: a frozen,
+    /// non-empty `afterShown` scope containing the request's own target at
+    /// its own output and workspace. Derived focus and selection-backed
+    /// follow focus never satisfy it.
+    #[must_use]
+    fn selection_request_binds(request: &FocusRequest) -> bool {
+        request.cause == tiler_core::world_report::FocusRequestCause::ExplicitCommand
+            && request.cmd_seq.is_some()
+            && request.after_shown.as_ref().is_some_and(|after| {
+                !after.members.is_empty()
+                    && after.members.iter().any(|member| {
+                        member.win == request.target
+                            && member.out == request.output
+                            && member.ws == request.workspace
+                    })
+            })
     }
 
     /// Pure authority predicate shared by the delivery path and tests.
@@ -853,24 +936,7 @@ impl WorldSequencer {
             return false;
         };
         reply.focus_request.as_ref().is_some_and(|request| {
-            if request.cause != tiler_core::world_report::FocusRequestCause::ExplicitCommand
-                || request.cmd_seq != Some(seq)
-            {
-                return false;
-            }
-            // The frozen issuing scope is non-empty and must contain the
-            // request's exact target at its exact output and workspace.
-            // Without this bind a tampered target (or a mismatched scope)
-            // would ride the desktop exception on a valid command triple.
-            let Some(after) = request.after_shown.as_ref() else {
-                return false;
-            };
-            !after.members.is_empty()
-                && after.members.iter().any(|member| {
-                    member.win == request.target
-                        && member.out == request.output
-                        && member.ws == request.workspace
-                })
+            Self::selection_request_binds(request) && request.cmd_seq == Some(seq)
         })
     }
 
@@ -1062,6 +1128,7 @@ impl WorldSequencer {
         self.last_settlements.clear();
         self.last_command_seq = None;
         self.last_command = None;
+        self.retained_selection_authority = None;
         self.has_accepted = false;
         self.last_accepted_obs = 0;
         self.last_accepted_rev = 0;
@@ -1345,5 +1412,249 @@ impl WorldSequencer {
     #[cfg(test)]
     pub(super) fn last_accepted_req(&self) -> &str {
         &self.last_accepted_req
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tiler_core::directional::{OutputId, WindowId, WindowSubject, WorkspaceId};
+    use tiler_core::world_presentation::PresentationUnderlay;
+    use tiler_core::world_report::{
+        AfterShown, AfterShownMember, AfterShownScope, BorderHideReasonV4,
+        BorderPresentationV4, FocusRequestCause, WorldPresentationV4,
+    };
+
+    const OUT: &str = "out-1";
+    const WS: &str = "ws-1";
+    const TARGET: &str = "w6";
+    const ID: &str = "focus-7";
+    const REV: u64 = 7;
+
+    fn reply_shell() -> WorldReplyV4 {
+        WorldReplyV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            request_id: "req-1".to_owned(),
+            based_on_observation_seq: 1,
+            state_revision: REV,
+            ready: true,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            windows: Vec::new(),
+            transfers: Vec::new(),
+            focus_request: None,
+            drag_preview: None,
+            gesture_settled: None,
+            operation_settled: Vec::new(),
+            native_creations: Vec::new(),
+            warp_request: None,
+            presentation: WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 0,
+                suspended_output: None,
+                border: BorderPresentationV4 {
+                    visible: false,
+                    reason: Some(BorderHideReasonV4::NoTarget),
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: PresentationUnderlay::default(),
+                pager: Vec::new(),
+            },
+            intent_desired: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn focus_request() -> FocusRequest {
+        let home = AfterShownScope {
+            out: OutputId(OUT.to_owned()),
+            ws: WS.to_owned(),
+        };
+        FocusRequest {
+            id: ID.to_owned(),
+            target: WindowId(TARGET.to_owned()),
+            issued_revision: REV,
+            cause: FocusRequestCause::ExplicitCommand,
+            output: OutputId(OUT.to_owned()),
+            workspace: WS.to_owned(),
+            cmd_seq: Some(7),
+            after_shown: Some(AfterShown {
+                op: "op-7".to_owned(),
+                obs: 1,
+                members: vec![AfterShownMember {
+                    win: WindowId(TARGET.to_owned()),
+                    out: OutputId(OUT.to_owned()),
+                    ws: WS.to_owned(),
+                    frame: None,
+                }],
+                views: vec![home.clone()],
+                selected: vec![home],
+                departing: Vec::new(),
+            }),
+        }
+    }
+
+    fn selection_reply() -> WorldReplyV4 {
+        let mut reply = reply_shell();
+        reply.focus_request = Some(focus_request());
+        reply
+    }
+
+    fn selection_command() -> WorldCommand {
+        WorldCommand::SelectWorkspace {
+            output: OutputId(OUT.to_owned()),
+            workspace: WorkspaceId(WS.to_owned()),
+        }
+    }
+
+    fn arm_selection_authority(seq: &mut WorldSequencer) -> WorldReplyV4 {
+        let command = selection_command();
+        let reply = selection_reply();
+        seq.track_selection_authority(
+            Some(&command),
+            Some(7),
+            &WorldOutcome::Accepted(reply.clone()),
+        );
+        reply
+    }
+
+    #[test]
+    fn selection_focus_authority_survives_deferred_observation_tick() {
+        let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
+        assert!(seq.retained_selection_authority.is_none());
+        let reply = arm_selection_authority(&mut seq);
+        assert_eq!(
+            seq.retained_selection_authority,
+            Some((7, ID.to_owned(), REV))
+        );
+        assert!(seq.selection_focus_authority(&reply));
+
+        // The explicit request defers to the next (observation) tick: no
+        // command is delivered, but the exact request is still published.
+        seq.track_selection_authority(None, None, &WorldOutcome::Accepted(reply.clone()));
+        assert!(
+            seq.selection_focus_authority(&reply),
+            "deferred arrival keeps the selection authority"
+        );
+
+        // A reissued request is not the minted one, even with the same id.
+        let mut reissued = reply.clone();
+        reissued
+            .focus_request
+            .as_mut()
+            .expect("focus")
+            .issued_revision = REV + 1;
+        seq.track_selection_authority(None, None, &WorldOutcome::Accepted(reissued.clone()));
+        assert!(!seq.selection_focus_authority(&reissued));
+        assert!(seq.retained_selection_authority.is_none());
+
+        // Re-arm, then settle: no request carried, no authority.
+        arm_selection_authority(&mut seq);
+        let settled = reply_shell();
+        seq.track_selection_authority(None, None, &WorldOutcome::Accepted(settled.clone()));
+        assert!(!seq.selection_focus_authority(&settled));
+        assert!(seq.retained_selection_authority.is_none());
+    }
+
+    #[test]
+    fn selection_focus_authority_retained_request_never_widens() {
+        let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
+        let reply = arm_selection_authority(&mut seq);
+        assert!(seq.selection_focus_authority(&reply));
+
+        let mut other_id = reply.clone();
+        other_id.focus_request.as_mut().expect("focus").id = "focus-8".to_owned();
+        assert!(!seq.selection_focus_authority(&other_id));
+        let mut other_seq = reply.clone();
+        other_seq.focus_request.as_mut().expect("focus").cmd_seq = Some(8);
+        assert!(!seq.selection_focus_authority(&other_seq));
+        let mut no_seq = reply.clone();
+        no_seq.focus_request.as_mut().expect("focus").cmd_seq = None;
+        assert!(!seq.selection_focus_authority(&no_seq));
+        let mut unscoped = reply.clone();
+        unscoped.focus_request.as_mut().expect("focus").after_shown = None;
+        assert!(!seq.selection_focus_authority(&unscoped));
+        let mut automatic = reply.clone();
+        automatic.focus_request.as_mut().expect("focus").cause =
+            FocusRequestCause::AutomaticAdmission;
+        assert!(!seq.selection_focus_authority(&automatic));
+        let mut foreign_target = reply.clone();
+        foreign_target
+            .focus_request
+            .as_mut()
+            .expect("focus")
+            .target = WindowId("w9".to_owned());
+        assert!(!seq.selection_focus_authority(&foreign_target));
+        let mut memberless = reply.clone();
+        memberless
+            .focus_request
+            .as_mut()
+            .expect("focus")
+            .after_shown
+            .as_mut()
+            .expect("scope")
+            .members
+            .clear();
+        assert!(!seq.selection_focus_authority(&memberless));
+        // The rejected variants never replaced the retained minted request.
+        assert!(seq.selection_focus_authority(&reply));
+    }
+
+    #[test]
+    fn selection_focus_authority_non_select_delivery_clears_retention() {
+        let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
+        let reply = arm_selection_authority(&mut seq);
+        assert!(seq.selection_focus_authority(&reply));
+
+        let focus = WorldCommand::Focus {
+            window: WindowSubject::Window(WindowId(TARGET.to_owned())),
+            direction: None,
+        };
+        seq.track_selection_authority(
+            Some(&focus),
+            Some(8),
+            &WorldOutcome::Accepted(reply.clone()),
+        );
+        assert!(seq.retained_selection_authority.is_none());
+        assert!(
+            !seq.selection_focus_authority(&reply),
+            "a non-selection delivery never carries selection authority"
+        );
+    }
+
+    #[test]
+    fn selection_focus_authority_duplicate_select_delivery_clears_retention() {
+        let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
+        let reply = arm_selection_authority(&mut seq);
+        assert!(seq.selection_focus_authority(&reply));
+
+        let command = selection_command();
+        seq.track_selection_authority(
+            Some(&command),
+            Some(7),
+            &WorldOutcome::Duplicate(reply.clone()),
+        );
+        assert!(seq.retained_selection_authority.is_none());
+        assert!(!seq.selection_focus_authority(&reply));
+    }
+
+    #[test]
+    fn selection_focus_authority_generation_reset_clears_retention() {
+        let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
+        let reply = arm_selection_authority(&mut seq);
+        assert!(seq.selection_focus_authority(&reply));
+
+        assert!(seq.reset_generation("gen-2"));
+        assert!(seq.retained_selection_authority.is_none());
+        assert!(!seq.selection_focus_authority(&reply));
     }
 }

@@ -1953,7 +1953,6 @@ fn nofocus_seeded(name: &str, source_windows: usize, with_target: bool) -> NoFoc
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     assert!(seed.ready, "seed converges");
@@ -2094,7 +2093,6 @@ fn no_focus_keyboard_route_without_origin_reaches_core() {
         0,
         &fulls,
         None,
-        false,
     )
     .expect("seed converges");
     assert!(seed.ready, "seed converges");
@@ -2193,7 +2191,6 @@ fn no_focus_keyboard_route_keeps_suspend_and_elevation_fences() {
             0,
             &fulls,
             None,
-            false,
         )
         .expect("seed converges");
         inject_pending_observe(observed.clone(), Vec::new(), false);

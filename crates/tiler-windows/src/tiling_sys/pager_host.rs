@@ -1157,9 +1157,9 @@ fn areas_fingerprint(areas: &[MonitorArea]) -> u64 {
 /// log line and no native effect. The poll re-verifies the exact visibility
 /// gate (opt-out, the same fullscreen covering, elevation, unknown facts):
 /// a click queued under an old gate never dispatches after suppression, and
-/// clicks naming an output with no currently served strip refuse as
-/// not-served. Unlike the tray menu fence this never requires the output to
-/// be focused.
+/// not-served. Identity and scope belong to the core, which settles
+/// `stale-render-target` from the truthful drawn revision; this poll adds no
+/// local scope fence and never requires the output to be focused.
 pub(super) fn poll_pager_select(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -1210,19 +1210,6 @@ pub(super) fn poll_pager_select(
     if !state.pager_served.contains(&request.output) {
         let mut line = workspace_log(state, tick, "select", index, "pager", "refused-not-served");
         line["output"] = serde_json::Value::from(state.output_token(&request.output));
-        log_json_at(&state.log_path, line);
-        return;
-    }
-    // Output-scoped fence: the rendered output must still be known and
-    // the rendered workspace still live on it. Focus is irrelevant: a
-    // click on an unfocused output's strip still selects there. The
-    // 1-based ordinal is logging only, never a positional fallback.
-    let ring = state.workspace_ids(&request.output);
-    if !crate::pager::verify_output_scoped_select_keys(&request, &state.output_devices(), &ring) {
-        let mut line = workspace_log(state, tick, "select", index, "pager", "refused-stale-scope");
-        line["output"] = serde_json::Value::from(state.output_token(&request.output));
-        line["workspace"] =
-            serde_json::Value::from(state.workspace_token(&request.output, &request.workspace));
         log_json_at(&state.log_path, line);
         return;
     }
@@ -1293,6 +1280,7 @@ pub(super) fn dispatch_verified_select(
         fulls,
         areas,
         &mut observed,
+        &retained,
         output,
         target,
         render_rev,
@@ -2770,6 +2758,7 @@ mod pager_host_tests {
             &fulls,
             &areas,
             &mut observed,
+            &[],
             output,
             target,
             None,
@@ -4667,6 +4656,7 @@ mod pager_host_tests {
             &fulls,
             &areas,
             &mut observed,
+            &[],
             output,
             target,
             render_rev,

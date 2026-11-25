@@ -25,10 +25,11 @@ use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
     AfterShown, AfterShownMember, AfterShownScope, AuthorityScope, BorderHideReasonV4,
-    BorderPresentationV4, FocusRequest, FocusRequestCause, FrameSetter, HoldReason as CoreHold,
-    MemberDisposition, ScopeAuthority as Auth, ScopeStatus, TransferKind, TransferTargetV4,
-    VisibilityTarget, WORLD_CONTRACT_VERSION, WindowDesire, WorkspaceRef, WorldCommand,
-    WorldPresentationV4, WorldReplyV4, WorldReportV4,
+    BorderPresentationV4, FocusDisposition, FocusNoCallReason, FocusRequest,
+    FocusRequestCause, FrameSetter, HoldReason as CoreHold, MemberDisposition,
+    ScopeAuthority as Auth, ScopeStatus, TransferKind, TransferTargetV4,
+    VisibilityDisposition, VisibilityReason, VisibilityTarget, WORLD_CONTRACT_VERSION,
+    WindowDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
 };
 
 pub(super) const ADAPTER: &str = "adapter-1";
@@ -365,6 +366,26 @@ fn apply(
         0,
     );
     (stats, members, views)
+}
+
+/// Stats-only pass for rigs that wrap the offline stand-in behind another
+/// `NativeOps` (async setters). Raw rows are drained from the diff.
+fn apply_stats(
+    diff: &mut HostDiff,
+    reply: &WorldReplyV4,
+    fresh: &FreshHost,
+    native: &mut dyn NativeOps,
+) -> ApplyStats {
+    apply_world_reply(
+        diff,
+        reply,
+        fresh,
+        native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    )
 }
 
 /// Diff helper that keeps the mechanical raw attempts: the seam-level
@@ -820,28 +841,33 @@ fn nonmember_retained_does_not_fence_scoped_inventory() {
 }
 
 #[test]
-fn retained_overlay_rides_slot_and_holds_tiled_write() {
+fn retained_overlay_publishes_live_frame_and_holds_tiled_write() {
     let mut state = test_state();
     state.ensure_device(DEV1);
     let ws = "ws1".to_owned();
     let out = state.output_token(DEV1);
     let key = win_key(1001, 2001, "proc-1");
     admit(&mut state, &key, DEV1, &ws, "w1", false);
-    let slot = rect(0, 0, 800, 600);
-    state.member_rects.insert("w1".to_owned(), slot);
+    // A stale tiled slot must never be published for the overlay row.
+    state
+        .member_rects
+        .insert("w1".to_owned(), rect(0, 0, 800, 600));
+    let live = rect(0, 0, 1920, 1040);
     let mut overlay = plain_facts();
     overlay.maximized = true;
     let retained = vec![RetainedRow {
         key: key.clone(),
         token: "w1".to_owned(),
-        rect: Some(rect(0, 0, 1920, 1040)),
+        rect: Some(live),
         maximized: true,
         fullscreen: false,
         facts: Some(overlay),
     }];
     let captured = capture_world(&state.inputs(), Some(&[]), &retained, &one_area(DEV1), 0);
     let fact = &captured.windows[0];
-    assert_eq!(fact.rect, Some(slot));
+    // The overlay row publishes the live retained frame, never the stale
+    // tiled slot (world-contract: overlay rows carry the observed frame).
+    assert_eq!(fact.rect, Some(live));
     assert!(fact.maximized == Some(true));
     // The reserved lane never takes an automatic tiled write.
     let fresh = FreshHost::from_sources(&state.inputs(), &[], &retained, &captured);
@@ -6232,6 +6258,10 @@ fn inflight_newer_setter_supersedes_prior_inflight() {
     );
     // Newer setter for w2 with no view work: no bracket, lands at once,
     // superseding (replacing then clearing on landing) the prior in-flight.
+    // Park the foreground on an unrelated window first: the target must not
+    // already hold it, or this would exercise the already-foreground no-call
+    // path instead of a real setter.
+    probe.inner.foreground = Some("w9".to_owned());
     probe.land_setter = true;
     let mut reply2 = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
     reply2.focus_request = Some(focus_request("fx-10", "w2"));
@@ -7739,7 +7769,9 @@ fn sticky_focus_return_holds_when_live_hidden() {
 }
 
 /// Iconic target: a live-minimized sticky window holds without dispatch,
-/// unspent.
+/// unspent. Membership pre-setter eligibility no longer rejects iconic
+/// readings by itself, so the hold lands at the sticky lane's own
+/// non-iconic visibility proof.
 #[test]
 fn sticky_focus_return_holds_when_live_iconic() {
     let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
@@ -7751,7 +7783,7 @@ fn sticky_focus_return_holds_when_live_iconic() {
     assert_eq!(stats.focus_dispatch.len(), 1);
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
-    assert_eq!(row.hold, Some("pre-setter-hold"));
+    assert_eq!(row.hold, Some("view-not-shown"));
     assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
@@ -7770,4 +7802,380 @@ fn sticky_focus_return_holds_when_target_dead() {
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("pre-setter-hold"));
     assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
+}
+
+// --- iconic membership lane (world-contract: minimized subjects carry no
+// frame or facts; membership proves through the lifetime alone) ---
+
+/// Iconic subject: the observation carries no frame or facts (minimize
+/// omission), the live window reports the adapter's iconic classification,
+/// and a retained window transfer targets `ws2`.
+fn iconic_shapes() -> (Rig, HostDiff, FreshHost, FakeNative, String) {
+    let rig = rig();
+    let target = "ws2".to_owned();
+    let (diff, mut fresh, mut native) = converted(&rig);
+    if let Some(base) = fresh.baseline.get_mut("w1") {
+        base.frame = None;
+        base.facts = None;
+        base.iconic = true;
+    }
+    if let Some(live) = native.windows.get_mut("w1") {
+        live.frame = None;
+        live.facts = None;
+        live.iconic = true;
+    }
+    (rig, diff, fresh, native, target)
+}
+
+fn iconic_reply(rig: &Rig, target: &str, op: &str) -> WorldReplyV4 {
+    let mut reply = reply_shell(
+        7,
+        1,
+        &[
+            (rig.out.as_str(), rig.ws.as_str()),
+            (rig.out.as_str(), target),
+        ],
+    );
+    reply.windows.push(member_row(&rig.out, &rig.ws, "w1"));
+    reply
+        .transfers
+        .push(window_transfer(op, "w1", &rig.out, target, false, false));
+    reply
+}
+
+#[test]
+fn iconic_transfer_already_at_target_reports_no_call_receipt() {
+    let (rig, mut diff, fresh, mut native, target) = iconic_shapes();
+    native.windows.get_mut("w1").expect("live w1").workspace = target.clone();
+    let reply = iconic_reply(&rig, &target, "op-iconic-at");
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(members.len(), 1, "{members:?}");
+    let attempt = &members[0];
+    assert_eq!(attempt.window.0, "w1");
+    assert_eq!(attempt.disposition, MemberDisposition::AlreadyAtTarget);
+    assert_eq!(attempt.pre, Some(workspace_ref(&rig.out, &target)));
+    assert_eq!(attempt.pre, attempt.post);
+    assert!(diff.effects.is_member_attempted("op-iconic-at", "w1"));
+    assert_eq!(native.membership_writes, 0, "no setter for a proven arrival");
+    assert_eq!(stats.membership_writes, 0);
+    assert!(views.is_empty());
+}
+
+#[test]
+fn iconic_transfer_moves_membership_without_frame_or_facts() {
+    let (rig, mut diff, fresh, mut native, target) = iconic_shapes();
+    let reply = iconic_reply(&rig, &target, "op-iconic-move");
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(members.len(), 1, "{members:?}");
+    let attempt = &members[0];
+    assert_eq!(
+        attempt.disposition,
+        MemberDisposition::Called(FrameSetter::Accepted)
+    );
+    assert_eq!(attempt.pre, Some(workspace_ref(&rig.out, &rig.ws)));
+    assert_eq!(attempt.post, Some(workspace_ref(&rig.out, &target)));
+    assert_eq!(native.membership_writes, 1);
+    assert_eq!(native.membership_frames, vec![None], "never a frame write");
+    assert_eq!(native.frame_writes, 0, "no geometry write for an iconic row");
+    assert_eq!(stats.membership_writes, 1);
+    assert!(views.is_empty());
+}
+
+// --- visibility staging: no transient latch, async settle ---
+
+#[test]
+fn hide_waits_for_controlled_authority_without_latching() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let mut row = member_row(&rig.out, &rig.ws, "w1");
+    row.visibility = Some(VisibilityTarget {
+        shown: false,
+        revision: 1,
+        fallback: false,
+    });
+    reply.windows.push(row.clone());
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(native.hide_calls.is_empty());
+    assert!(stats.held >= 1);
+    assert!(
+        diff.take_visibility_attempts().is_empty(),
+        "a transient held authority must not latch a row"
+    );
+
+    // The authority clears; the same tuple now hides.
+    reply.windows[0].visibility_authority = Auth::Controlled;
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(native.hide_calls, vec!["w1".to_owned()]);
+    assert!(stats.staged_hides >= 1);
+    let attempts = diff.take_visibility_attempts();
+    assert_eq!(attempts.len(), 1, "{attempts:?}");
+    let attempt = &attempts[0];
+    assert_eq!(attempt.window.0, "w1");
+    assert!(!attempt.target);
+    assert!(matches!(
+        attempt.disposition,
+        VisibilityDisposition::Called {
+            setter: FrameSetter::Accepted,
+            ..
+        }
+    ));
+    let post = attempt.post.expect("post read");
+    assert_eq!(post.visibility.visible, Some(false));
+    assert_eq!(post.visibility.suppression_owned, Some(true));
+    assert_eq!(post.host_hidden, Some(false));
+}
+
+#[test]
+fn async_show_holds_until_a_later_pass_proves() {
+    let rig = rig();
+    let (mut diff, mut fresh, mut native) = converted(&rig);
+    let base = fresh.baseline.get_mut("w1").expect("base w1");
+    base.hidden = true;
+    let live = native.windows.get_mut("w1").expect("live w1");
+    live.hidden = true;
+    live.facts.as_mut().expect("facts").visible = false;
+    native.skip_reveal.insert("w1".to_owned());
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let mut row = member_row(&rig.out, &rig.ws, "w1");
+    row.visibility = Some(VisibilityTarget {
+        shown: true,
+        revision: 1,
+        fallback: false,
+    });
+    row.visibility_authority = Auth::Controlled;
+    reply.windows.push(row);
+
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls, vec!["w1".to_owned()]);
+    assert_eq!(stats.staged_reveals, 1);
+    assert!(
+        diff.take_visibility_attempts().is_empty(),
+        "an accepted reveal that has not landed emits no row"
+    );
+
+    // The async show lands: the next pass re-reads without a setter.
+    native.skip_reveal.clear();
+    let live = native.windows.get_mut("w1").expect("live w1");
+    live.hidden = false;
+    live.facts.as_mut().expect("facts").visible = true;
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(native.reveal_calls.len(), 1, "never re-actuate an accepted reveal");
+    let attempts = diff.take_visibility_attempts();
+    assert_eq!(attempts.len(), 1, "{attempts:?}");
+    let attempt = &attempts[0];
+    assert!(attempt.target);
+    assert!(matches!(
+        attempt.disposition,
+        VisibilityDisposition::Called {
+            setter: FrameSetter::Accepted,
+            ..
+        }
+    ));
+    let post = attempt.post.expect("proven post");
+    assert_eq!(post.visibility.visible, Some(true));
+    assert_eq!(post.visibility.suppression_owned, Some(false));
+    assert_eq!(post.minimized, Some(false));
+    assert_eq!(post.host_hidden, Some(false));
+    assert_eq!(stats.staged_reveals, 0, "settling is not another reveal");
+}
+
+/// Focus setter that accepts asynchronously: the primitive reports success
+/// but the live foreground only lands on a later observation.
+struct AsyncFocus {
+    inner: FakeNative,
+}
+
+impl NativeOps for AsyncFocus {
+    fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
+        self.inner.read_window(token)
+    }
+    fn read_frame(&mut self, token: &str) -> Option<Rect> {
+        self.inner.read_frame(token)
+    }
+    fn read_output_affinity(&mut self, token: &str) -> Option<String> {
+        self.inner.read_output_affinity(token)
+    }
+    fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
+        self.inner.read_homing(token)
+    }
+    fn read_view(&mut self, output: &str) -> Option<String> {
+        self.inner.read_view(output)
+    }
+    fn is_foreground(&mut self, token: &str) -> bool {
+        self.inner.is_foreground(token)
+    }
+    fn gesture_barrier(&mut self) -> bool {
+        self.inner.gesture_barrier()
+    }
+    fn read_dpi(&mut self, token: &str) -> Option<u32> {
+        self.inner.read_dpi(token)
+    }
+    fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()> {
+        self.inner.write_frame(token, rect)
+    }
+    fn move_membership(
+        &mut self,
+        token: &str,
+        out: &str,
+        ws: &str,
+        frame: Option<Rect>,
+    ) -> Result<bool, ()> {
+        self.inner.move_membership(token, out, ws, frame)
+    }
+    fn switch_view(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.inner.switch_view(output, logical)
+    }
+    fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
+        self.inner.switch_view_nonactivating(output, logical)
+    }
+    fn reveal_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.inner.reveal_window(token)
+    }
+    fn hide_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.inner.hide_window(token)
+    }
+    fn foreground_managed(&mut self) -> Option<String> {
+        self.inner.foreground_managed()
+    }
+    fn foreground_state(&mut self) -> ForegroundState {
+        self.inner.foreground_state()
+    }
+    fn poll_external_invalidation(&mut self) -> bool {
+        self.inner.poll_external_invalidation()
+    }
+    fn focus_window(&mut self, _token: &str) -> Result<bool, ()> {
+        Ok(true)
+    }
+    fn read_cursor(&mut self) -> Option<(i32, i32)> {
+        self.inner.read_cursor()
+    }
+    fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()> {
+        self.inner.move_cursor(x, y)
+    }
+}
+
+#[test]
+fn async_focus_does_not_latch_focus_unproven_and_hides_later() {
+    let (_rig, fresh, native, staged) = staged_shapes();
+    let mut diff = diff_at(7);
+    let mut probe = AsyncFocus { inner: native };
+    let stats = apply_stats(&mut diff, &staged.reply, &fresh, &mut probe);
+    assert_eq!(stats.staged_reveals, 1);
+    assert_eq!(probe.inner.reveal_calls, vec!["w2".to_owned()]);
+    assert!(
+        probe.inner.hide_calls.is_empty(),
+        "async focus must not authorize the departure hide"
+    );
+    let attempts = diff.take_visibility_attempts();
+    assert!(
+        attempts.iter().all(|attempt| attempt.window.0 != "w1"),
+        "no hold-latch row for the departure: {attempts:?}"
+    );
+    assert!(
+        !attempts.iter().any(|attempt| matches!(
+            attempt.disposition,
+            VisibilityDisposition::NotCalled {
+                reason: VisibilityReason::FocusUnproven
+            }
+        )),
+        "never a FocusUnproven latch for an async focus: {attempts:?}"
+    );
+    let feedback = diff.take_focus_feedback();
+    assert_eq!(feedback.len(), 1, "{feedback:?}");
+    assert!(matches!(
+        feedback[0].disposition,
+        FocusDisposition::Called {
+            setter: FrameSetter::Accepted,
+            ..
+        }
+    ));
+    assert!(!feedback[0].foreground_proven, "accepted is never proof");
+    assert_eq!(probe.inner.foreground.as_deref(), Some("w1"));
+
+    // The async focus lands: a later pass hides under the proven foreground
+    // without re-actuating the focus.
+    probe.inner.foreground = Some("w2".to_owned());
+    let stats = apply_stats(&mut diff, &staged.reply, &fresh, &mut probe);
+    assert_eq!(probe.inner.hide_calls, vec!["w1".to_owned()]);
+    assert!(stats.staged_hides >= 1);
+    let attempts = diff.take_visibility_attempts();
+    let hide = attempts
+        .iter()
+        .find(|attempt| attempt.window.0 == "w1")
+        .expect("departure hide row");
+    assert!(!hide.target);
+    assert!(matches!(
+        hide.disposition,
+        VisibilityDisposition::Called {
+            setter: FrameSetter::Accepted,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn hide_with_unfrozen_focus_request_skips_the_focus_barrier() {
+    let rig = rig();
+    let (mut diff, fresh, native) = converted(&rig);
+    let mut probe = AsyncFocus { inner: native };
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let mut row = member_row(&rig.out, &rig.ws, "w2");
+    row.visibility = Some(VisibilityTarget {
+        shown: false,
+        revision: 1,
+        fallback: false,
+    });
+    row.visibility_authority = Auth::Controlled;
+    reply.windows.push(row);
+    let mut request = focus_request("fx-none", "w1");
+    request.after_shown = None;
+    reply.focus_request = Some(request);
+    let stats = apply_stats(&mut diff, &reply, &fresh, &mut probe);
+    assert_eq!(probe.inner.hide_calls, vec!["w2".to_owned()]);
+    assert!(stats.staged_hides >= 1);
+    let attempts = diff.take_visibility_attempts();
+    let hide = attempts
+        .iter()
+        .find(|attempt| attempt.window.0 == "w2")
+        .expect("hide row");
+    assert!(matches!(
+        hide.disposition,
+        VisibilityDisposition::Called {
+            setter: FrameSetter::Accepted,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn focus_already_foreground_reports_no_setter_call() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.windows.get_mut("w1").expect("live w1").workspace = rig.ws.clone();
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    native.foreground = Some("w1".to_owned());
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.focus_request = Some(focus_request("fx-already", "w1"));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.effects, 0, "no setter dispatch");
+    assert!(native.focus_calls.is_empty(), "already-foreground calls nothing");
+    assert_eq!(
+        stats.focus_dispatch.len(),
+        1,
+        "one truthful no-call diagnostic row"
+    );
+    assert!(!stats.focus_dispatch[0].dispatched);
+    assert_eq!(stats.focus_dispatch[0].hold, Some("already-foreground"));
+    let feedback = diff.take_focus_feedback();
+    assert_eq!(feedback.len(), 1, "{feedback:?}");
+    assert!(matches!(
+        feedback[0].disposition,
+        FocusDisposition::NotCalled {
+            reason: FocusNoCallReason::NoReason
+        }
+    ));
+    assert!(feedback[0].foreground_proven);
+    assert_eq!(feedback[0].pre.as_ref().map(|id| id.0.as_str()), Some("w1"));
+    assert_eq!(feedback[0].post.as_ref().map(|id| id.0.as_str()), Some("w1"));
 }

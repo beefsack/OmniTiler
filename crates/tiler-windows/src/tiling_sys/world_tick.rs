@@ -1528,7 +1528,6 @@ pub(super) fn run_observation_tick(
     foreground_hwnd: u64,
     fulls: &[tiler_core::geometry::Rect],
     cursor: Option<(i32, i32)>,
-    presentation_paused: bool,
 ) -> Option<tiler_core::world_report::WorldReplyV4> {
     let trace = state.trace;
     let tick = state.tick;
@@ -1550,8 +1549,9 @@ pub(super) fn run_observation_tick(
     let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
     // Normalized presentation ingress rides this tick's capture (stage 5):
     // the foreground observation, chord/move facts, and host-scaled style,
-    // computed before the disjoint split borrows the loop. The game lane
-    // sets `presentation_paused` so the core skips presentation work.
+    // computed before the disjoint split borrows the loop. Focused-fullscreen
+    // presentation suspension is core-owned from the foreground facts; the
+    // adapter never blanks the ingress.
     let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
     // Project-suppressed claim rows carry their own lightweight live reads
@@ -1648,7 +1648,6 @@ pub(super) fn run_observation_tick(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
@@ -1715,7 +1714,6 @@ pub(super) fn run_observation_tick(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
@@ -1754,7 +1752,6 @@ pub(super) fn run_observation_tick(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
@@ -2055,14 +2052,38 @@ pub(super) fn run_observation_tick(
     }
 }
 
+/// Canonical owned-fullscreen marker read for one tick input. Tests inject
+/// scripted metadata (synthetic HWNDs cannot carry real Win32 properties);
+/// production always reads the live marker.
+fn read_tick_fullscreen_meta(hwnd: u64) -> Option<FullscreenMeta> {
+    #[cfg(test)]
+    if let Some(meta) = INJECTED_FULLSCREEN_META.with(|map| map.borrow().get(&hwnd).copied()) {
+        return Some(meta);
+    }
+    super::read_fullscreen_meta(hwnd)
+}
+
+#[cfg(test)]
+thread_local! {
+    static INJECTED_FULLSCREEN_META: std::cell::RefCell<BTreeMap<u64, FullscreenMeta>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+#[cfg(test)]
+fn inject_fullscreen_meta(hwnd: u64, meta: FullscreenMeta) {
+    INJECTED_FULLSCREEN_META.with(|map| {
+        map.borrow_mut().insert(hwnd, meta);
+    });
+}
+
 /// Core-only observation catch-up for the superseded command leg: dispatch
 /// one observation, deliver through the staged production path, and
 /// acknowledge the exact carried receipts with no native planning or
 /// application. The diff applied watermark, trace proof, gesture stash,
 /// proven receipt maps, and hidden seeds all stay untouched: those belong to
-/// the latest full pass. Neither apply oracle counter moves. Returns true
-/// only when the ack applied current (the fence cleared); stale/ignored
-/// outcomes keep the fence and return false with no loop, no timer, no wait.
+/// latest full pass. Neither apply oracle counter moves. Returns the
+/// dispatched report (the caller ignores it); stale/ignored ack outcomes
+/// keep the fence with no loop, no timer, no wait.
 /// The admission preamble is identical to the full-leg dispatch preamble
 /// (mechanical binding only, fail-closed): it may bind newly proven members
 /// exactly as a full-leg tick would, so this leg is native-free only in the
@@ -2077,7 +2098,7 @@ fn run_observation_core_only(
     foreground_hwnd: u64,
     fulls: &[tiler_core::geometry::Rect],
     cursor: Option<(i32, i32)>,
-) -> bool {
+) -> Option<tiler_core::world_report::WorldReportV4> {
     let tick = state.tick;
     let log_path = state.log_path.clone();
     admit_observed(state, me, observed);
@@ -2087,9 +2108,6 @@ fn run_observation_core_only(
     let presentation_native_order = state.last_native_order.clone();
     let gesture = state.gesture_ingress(cursor);
     let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
-    // Commands never run on the game lane, so the pause flag stays clear
-    // here like the command dispatch below.
-    let presentation_paused = false;
     let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
     // Project-suppressed claim rows carry their own lightweight live reads
@@ -2126,6 +2144,22 @@ fn run_observation_core_only(
         ref active,
         ..
     } = *state;
+    // Canonical fullscreen ownership and intent-storage reads for this
+    // tick's bound lifetimes, exactly like the full observation tick: a
+    // window that first admits during this core-only catch-up carries its
+    // owner metadata and intent record into the report instead of losing
+    // restart intent. A failed read leaves its key absent (unknown, never
+    // inferred).
+    let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
+        .keys()
+        .filter_map(|key| read_tick_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
+        .collect();
+    let intent_storage: BTreeMap<crate::native_guards::WindowKey, IntentStorage> = member_tokens
+        .keys()
+        .filter_map(|key| {
+            super::world_native::intent_storage_of(key.hwnd).map(|storage| (key.clone(), storage))
+        })
+        .collect();
     world.invalidate();
     let tick_ms = super::trace::log_mono_ms();
     let mut inputs = TileLoop::owner_inputs(
@@ -2160,10 +2194,11 @@ fn run_observation_core_only(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.fullscreen_meta = Some(&fullscreen_meta);
+    inputs.intent_storage = Some(&intent_storage);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -2173,7 +2208,7 @@ fn run_observation_core_only(
         tick_ms,
     ) {
         Ok(report) => report,
-        Err(_) => return false,
+        Err(_) => return None,
     };
     let outcome = world.deliver_production(&report);
     let (delivery, reply) = match outcome {
@@ -2184,7 +2219,7 @@ fn run_observation_core_only(
         }
         tiler_core::world_engine::WorldOutcome::Rejected { .. } => {
             world.note_rejected_or_lost(&report.request_id);
-            return false;
+            return None;
         }
     };
     // Honest row, never a native outcome: this leg planned/applied nothing.
@@ -2199,14 +2234,10 @@ fn run_observation_core_only(
             "native": "catchup-core-only-skipped",
         }),
     );
-    match ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing) {
-        // Incorporated and current: obligations acked and the fence cleared,
-        // with no native planning, no applied watermark, no trace proof, and
-        // no gesture clearing. The latest full pass owns all of those.
-        super::world_sequencer::AckOutcome::Applied(_) => true,
-        super::world_sequencer::AckOutcome::Stale(_)
-        | super::world_sequencer::AckOutcome::Ignored { .. } => false,
-    }
+    let _ = ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing);
+    // The report is returned for the offline catch-up regression; production
+    // callers ignore it. Ack outcome keeps owning the fence exactly as before.
+    Some(report)
 }
 
 /// Apply durable marker-storage results to the adapter's mechanical
@@ -2309,7 +2340,7 @@ fn run_world_command_impl(
     // turn armed. The full leg never runs this: its post-refusal path below
     // applies owed catch-up natively instead.
     if mode == CommandApplyMode::Superseded && state.world.catchup_required() {
-        run_observation_core_only(
+        let _ = run_observation_core_only(
             state,
             me,
             observed,
@@ -2332,11 +2363,10 @@ fn run_world_command_impl(
     // unreadable), so a hit never travels without its position.
     let hit_hwnd = super::observation::cursor_hit_hwnd(cursor);
     // Normalized presentation ingress rides this tick's capture (stage 5),
-    // like the observation path. Commands never run on the game lane, so
-    // the pause flag stays clear here.
+    // like the observation path. Focused-fullscreen presentation suspension
+    // is core-owned; the adapter never blanks the ingress.
     let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
-    let presentation_paused = false;
     // Project-suppressed claim rows carry their own lightweight live reads
     // (T4): built here, before the disjoint split, so capture stays pure
     // over the seam. A failed read leaves its key absent and that claim's
@@ -2429,7 +2459,6 @@ fn run_world_command_impl(
             presentation_foreground.clone(),
             presentation_chord,
             presentation_move.clone(),
-            presentation_paused,
             presentation_native_order.clone(),
         );
         inputs.hidden_reads = Some(&hidden_reads);
@@ -2503,7 +2532,6 @@ fn run_world_command_impl(
                         foreground_hwnd,
                         fulls,
                         cursor,
-                        false,
                     );
                 }
                 return None;
@@ -2544,7 +2572,7 @@ fn run_world_command_impl(
             // (core-only). Either way the rejected command stays dropped
             // (never queued, never replayed).
             if mode == CommandApplyMode::Superseded {
-                run_observation_core_only(
+                let _ = run_observation_core_only(
                     state,
                     me,
                     observed,
@@ -2566,7 +2594,6 @@ fn run_world_command_impl(
                     foreground_hwnd,
                     fulls,
                     cursor,
-                    false,
                 );
             }
             return None;
@@ -2647,7 +2674,6 @@ fn run_world_command_impl(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
@@ -2686,7 +2712,6 @@ fn run_world_command_impl(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
@@ -3219,7 +3244,6 @@ pub(super) fn dispatch_test_observation(
     let presentation_foreground: Option<super::world_capture::PresentationForeground> = None;
     let presentation_chord = false;
     let presentation_move = String::new();
-    let presentation_paused = false;
     // The stashed native order from the latest `observe` (empty when the
     // test seeds without one): capture maps it to opaque lifetimes, else
     // falls back to observed-then-retained order.
@@ -3294,7 +3318,6 @@ pub(super) fn dispatch_test_observation(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_paused,
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
@@ -7197,5 +7220,176 @@ mod apply_diag_tests {
         assert!(!text.contains("Mfr-Secret-Text"));
         assert!(!text.contains("Model-Secret-Text"));
         assert!(!text.contains("Serial-Secret-Text"));
+    }
+}
+
+#[cfg(test)]
+mod core_only_catchup_tests {
+    use super::*;
+    use crate::model::ProcessIdentity;
+    use crate::native_guards::WindowKey;
+    use tiler_core::geometry::Rect;
+    use tiler_core::world_report::FullscreenOwner;
+
+    fn me() -> ProcessIdentity {
+        ProcessIdentity {
+            pid: 4242,
+            process_creation: "proc-4242".to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        }
+    }
+
+    fn member_identity(pid: u32, creation: &str) -> ProcessIdentity {
+        ProcessIdentity {
+            pid,
+            process_creation: creation.to_owned(),
+            user_sid: "S-1-5-21-1000".to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        }
+    }
+
+    fn area() -> MonitorArea {
+        MonitorArea {
+            device: "DEV1".to_owned(),
+            work: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            },
+            full: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            dpi: 96,
+        }
+    }
+
+    fn observed_fullscreen(hwnd: u64, token: &str, pid: u32, creation: &str) -> ObservedWindow {
+        let visible = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let outer = Rect {
+            x: -8,
+            y: -8,
+            w: 1936,
+            h: 1096,
+        };
+        ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer,
+            visible,
+            insets: crate::tiling::FrameInsets::measure(outer, visible),
+            identity: crate::tiling_sys::ObservedTarget {
+                hwnd,
+                pid,
+                process_creation: creation.to_owned(),
+                exe_path: "C:\\Apps\\app.exe".to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                tag: "tag-catchup".to_owned(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: true,
+                no_activate: false,
+                dialog: false,
+            },
+            member_tag: Some("tag-catchup".to_owned()),
+        }
+    }
+
+    #[test]
+    fn core_only_catchup_carries_fullscreen_meta_and_intent() {
+        // A window that first admits during the core-only catch-up must ride
+        // the same canonical fullscreen ownership and intent-storage reads
+        // as the full observation tick, not lose restart intent.
+        use crate::product_hide::sys::fake;
+        let mut state = crate::tiling_sys::rmax03_adapter_tests::test_state();
+        state.ensure_device("DEV1");
+        let hwnd = 0x7A01;
+        let key = WindowKey {
+            hwnd,
+            pid: 7101,
+            creation: "proc-7a01".to_owned(),
+        };
+        state
+            .member_tokens
+            .insert(key.clone(), "w-catchup".to_owned());
+        state
+            .member_identity
+            .insert(key, member_identity(7101, "proc-7a01"));
+        fake::register_marks(hwnd);
+        assert!(fake::store_tile_mark(hwnd, 1));
+        inject_fullscreen_meta(
+            hwnd,
+            FullscreenMeta {
+                changed: 0,
+                was_maximized: false,
+                frame: None,
+            },
+        );
+        let observed = vec![observed_fullscreen(
+            hwnd,
+            "w-catchup",
+            7101,
+            "proc-7a01",
+        )];
+        let areas = vec![area()];
+        let fulls = vec![Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }];
+        let report = run_observation_core_only(
+            &mut state,
+            &me(),
+            &observed,
+            &[],
+            &areas,
+            hwnd,
+            &fulls,
+            None,
+        )
+        .expect("core-only catch-up dispatches its observation");
+        let fact = report
+            .windows
+            .iter()
+            .find(|fact| fact.window.0 == "w-catchup")
+            .expect("catch-up admission rides a fact row");
+        assert_eq!(
+            fact.fullscreen_owner,
+            Some(FullscreenOwner::Tiler),
+            "owned fullscreen metadata rides the catch-up capture"
+        );
+        assert_eq!(fact.fullscreen_exitable, Some(true));
+        let intent = report
+            .intent_records
+            .iter()
+            .find(|record| record.win.0 == "w-catchup")
+            .expect("intent record rides the catch-up capture");
+        assert!(
+            intent.data.contains("\"float\":false"),
+            "tile marker becomes the canonical intent record: {}",
+            intent.data
+        );
+        fake::unregister_all();
     }
 }

@@ -154,7 +154,6 @@ pub(super) fn reconcile_tick(
         foreground,
         fulls,
         super::observation::sample_cursor(),
-        false,
     )
     .is_some()
     {
@@ -212,9 +211,8 @@ pub(super) fn reconcile_limited_tick(
         fulls,
         // Focused fullscreen game: geometry for other windows converges,
         // but no cursor work runs here (no sampling, no overlay reads).
-        // The paused presentation ingress skips projection work and
-        // publishes hidden shapes with an empty pager.
+        // Core derives suspension from the foreground facts; the adapter
+        // no longer blanks presentation.
         None,
-        true,
     );
 }
