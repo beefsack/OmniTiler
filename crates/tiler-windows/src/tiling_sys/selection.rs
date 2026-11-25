@@ -42,9 +42,6 @@ pub(super) fn workspace_do_select(
     target: &str,
     render_rev: Option<u64>,
     ctx: &ActionCtx,
-    _focus_hint: Option<&crate::native_guards::WindowKey>,
-    _suppress_focus: bool,
-    _skip_geometry: bool,
 ) -> SelectEffect {
     let none =
         |outcome: &'static str, source_workspace: String, target_workspace: String| SelectEffect {

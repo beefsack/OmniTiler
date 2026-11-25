@@ -9,7 +9,9 @@
 //! `output_tokens` only; the core speaks wire ids and logical workspace ids.
 //! Nothing here mutates policy: float/session answers additionally consult
 //! the last applied reply (a read-only presentation projection) and the
-//! adapter-owned intent lanes (`floated`, `sticky`, `fixed_auto_seen`).
+//! adapter's verified intent snapshot and automatic fixed-float origins.
+
+#![forbid(unsafe_code)]
 
 use super::*;
 use tiler_core::world_report::TilingMode;

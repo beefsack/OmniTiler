@@ -92,7 +92,10 @@ fn verified_snap_origin(
 /// overlay-retained members (maximized/fullscreen), and verified iconic
 /// members that Windows can hold as foreground. Only existing members with
 /// full identity plus a live lifetime-tag match ride along: no foreign or
-/// invented members. Exactness stays with the per-intent owner recheck.
+/// invented members. An iconic candidate must also avoid the exact-lifetime
+/// hidden claims (the ledger owns those reveals) and still be hosted by the
+/// member's process: a recycled HWND never proves a stale key iconic.
+/// Exactness stays with the per-intent owner recheck.
 fn managed_origins(
     state: &TileLoop,
     me: &ProcessIdentity,
@@ -115,6 +118,19 @@ fn managed_origins(
     // refused as unmanaged before it runs. Membership is live-checked here so
     // stale tokens for non-iconic or dead windows never enter the map.
     for (key, token) in &state.member_tokens {
+        // A live hidden claim owns this exact lifetime through the ledger and
+        // its identity-safe reveal path, so the member is not an iconic
+        // origin. The lookup is exact-lifetime: a same-HWND claim for another
+        // lifetime must never mask this member.
+        if state.hidden_claims.contains_key(key) {
+            continue;
+        }
+        // Reject a recycled HWND before any iconic proof: the member's live
+        // window must still belong to the member's process, never another
+        // process's window that merely reused the number.
+        if live_window_pid(key.hwnd) != key.pid {
+            continue;
+        }
         if !live_is_iconic(key.hwnd) {
             continue;
         }
@@ -264,6 +280,26 @@ fn anchored_outer_rect(
     ))
 }
 
+/// Change-only dedup signature for the active-border "shown" log line: every
+/// resolved paint input that changes the on-screen ring rides it, including
+/// the core-provided `radius_px` (a radius-only restyle repaints the same
+/// geometry and must still log once). Shared by the `Unchanged` and
+/// shown/redrew arms so both compare against the same vocabulary.
+fn border_shown_signature(
+    token: &str,
+    outer: Rect,
+    dimensions: (i32, i32, i32),
+    topmost: bool,
+    color_hex: &str,
+    sourced: &str,
+) -> String {
+    let (width_px, gap_px, radius_px) = dimensions;
+    format!(
+        "shown:{token}:{}:{}:{}:{}:{width_px}:{gap_px}:{radius_px}:{topmost}:{color_hex}:{sourced}",
+        outer.x, outer.y, outer.w, outer.h
+    )
+}
+
 /// Fast active-border refresh for one loop wake: reads only the foreground
 /// window (fresh identity plus fresh visibility facts), without full window
 /// observation, so gesture following never waits on reconciliation. Shapes
@@ -335,17 +371,15 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
         hide_border(state, "scope-excluded");
         return;
     }
-    let hidden_workspace = state.hidden_claims.keys().any(|k| k.hwnd == foreground)
-        && state
-            .member_home(
-                &state
-                    .hidden_claims
-                    .keys()
-                    .find(|k| k.hwnd == foreground)
-                    .cloned()
-                    .expect("hidden key present"),
-            )
-            .is_some_and(|loc| loc.hidden);
+    // Hidden-workspace eligibility joins the exact observed lifetime, never an
+    // HWND-only guess: a recycled number must not inherit a stale claim.
+    let key = crate::native_guards::WindowKey {
+        hwnd: window.hwnd,
+        pid: window.identity.pid,
+        creation: window.identity.process_creation.clone(),
+    };
+    let hidden_workspace = state.hidden_claims.contains_key(&key)
+        && state.member_home(&key).is_some_and(|loc| loc.hidden);
     // Targeted shell-popup gate (border-only): base tiling shell plus
     // Start/taskbar-flyout/Alt+Tab/TaskView analogues. Ordinary dialogs,
     // tool windows, and owned windows stay eligible here.
@@ -496,7 +530,8 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
             // Resolved accent-or-fallback colour rides the signature so a
             // theme change that repaints the same geometry still logs once;
             // the accent source rides it too so a source flip logs even
-            // when both paints share one RGB. An unchanged surface with a
+            // when both paints share one RGB, and the core radius rides it
+            // so a radius-only restyle logs too. An unchanged surface with a
             // changed signature is exactly that flip: log it in
             // production (normal trace-silent Unchanged stays silent).
             let color_hex = state
@@ -506,18 +541,13 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 .unwrap_or_else(|| crate::active_border::render_color(state.border.style.color));
             let sourced =
                 crate::active_border::accent_source_label(state.border_overlay.from_accent());
-            let signature = format!(
-                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                window.token,
-                outer.x,
-                outer.y,
-                outer.w,
-                outer.h,
-                width_px,
-                gap_px,
+            let signature = border_shown_signature(
+                &window.token,
+                outer,
+                (width_px, gap_px, radius_px),
                 topmost,
-                color_hex,
-                sourced
+                &color_hex,
+                sourced,
             );
             let changed = state.border_last.as_deref() != Some(signature.as_str());
             if changed {
@@ -580,18 +610,13 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 .unwrap_or_else(|| crate::active_border::render_color(state.border.style.color));
             let sourced =
                 crate::active_border::accent_source_label(state.border_overlay.from_accent());
-            let signature = format!(
-                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                window.token,
-                outer.x,
-                outer.y,
-                outer.w,
-                outer.h,
-                width_px,
-                gap_px,
+            let signature = border_shown_signature(
+                &window.token,
+                outer,
+                (width_px, gap_px, radius_px),
                 topmost,
-                color_hex,
-                sourced
+                &color_hex,
+                sourced,
             );
             let changed = state.border_last.as_deref() != Some(signature.as_str());
             if changed {
@@ -892,5 +917,210 @@ mod anchored_outer_tests {
         assert!(
             anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none()
         );
+    }
+}
+
+/// Offline regression fences for the active-border log signature and the
+/// chord/iconic origin selection. They run on the existing proof harness (no
+/// HWNDs, hooks, or live effects) plus the fake window backend for the native
+/// leaf reads (`live_window_pid`, `live_is_iconic`, `read_member_tag`).
+#[cfg(test)]
+mod focus_fence_tests {
+    use super::{border_shown_signature, managed_origins, TileLoop};
+    use crate::native_guards::WindowKey;
+    use crate::product_hide::sys::fake::{self, FakeWindow};
+    use tiler_core::geometry::Rect;
+
+    const TAG: &str = "member-tag-1";
+    const USER_SID: &str = "S-1-5-21-1000";
+
+    fn me() -> crate::model::ProcessIdentity {
+        identity(1, "owner-creation")
+    }
+
+    fn identity(pid: u32, creation: &str) -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid,
+            process_creation: creation.to_owned(),
+            user_sid: USER_SID.to_owned(),
+            session_id: 1,
+            exe_path: "C:\\Apps\\app.exe".to_owned(),
+        }
+    }
+
+    fn member_key(hwnd: u64, pid: u32, creation: &str) -> WindowKey {
+        WindowKey {
+            hwnd,
+            pid,
+            creation: creation.to_owned(),
+        }
+    }
+
+    fn seed_member(state: &mut TileLoop, key: &WindowKey, token: &str) {
+        state.member_tokens.insert(key.clone(), token.to_owned());
+        state.member_tags.insert(key.clone(), TAG.to_owned());
+        state
+            .member_identity
+            .insert(key.clone(), identity(key.pid, &key.creation));
+    }
+
+    fn script_window(key: &WindowKey, iconic: bool, live_pid: u32) {
+        fake::register(
+            key.hwnd,
+            FakeWindow {
+                pid: live_pid,
+                process: identity(live_pid, &key.creation),
+                nonce: None,
+                member_tag: Some(TAG.to_owned()),
+                visible: true,
+                iconic,
+                maximized: false,
+                alive: true,
+                post_ok: true,
+                defer: false,
+            },
+        );
+    }
+
+    fn hidden_record(key: &WindowKey) -> super::HiddenRecord {
+        super::HiddenRecord {
+            claim: crate::model::WindowIdentity {
+                hwnd: key.hwnd,
+                process: identity(key.pid, &key.creation),
+                tag: TAG.to_owned(),
+                kind: crate::model::WindowClaimKind::Product,
+                show: crate::model::WindowShowState::default(),
+            },
+            iconic: true,
+        }
+    }
+
+    fn fresh_state() -> TileLoop {
+        super::super::rmax03_adapter_tests::test_state()
+    }
+
+    #[test]
+    fn shown_signature_carries_the_core_radius() {
+        let outer = Rect {
+            x: 1,
+            y: 2,
+            w: 30,
+            h: 40,
+        };
+        let base = border_shown_signature("w1", outer, (2, 3, 4), false, "#102030", "fallback");
+        assert_eq!(base, "shown:w1:1:2:30:40:2:3:4:false:#102030:fallback");
+        // A radius-only restyle repaints the same geometry, so the dedup
+        // signature must differ and let the change log once.
+        let rounder = border_shown_signature("w1", outer, (2, 3, 9), false, "#102030", "fallback");
+        assert_ne!(base, rounder);
+        // The remaining ring inputs keep participating too.
+        for (input, changed) in [
+            (
+                "token",
+                border_shown_signature("w2", outer, (2, 3, 4), false, "#102030", "fallback"),
+            ),
+            (
+                "outer",
+                border_shown_signature(
+                    "w1",
+                    Rect {
+                        x: 5,
+                        y: 2,
+                        w: 30,
+                        h: 40,
+                    },
+                    (2, 3, 4),
+                    false,
+                    "#102030",
+                    "fallback",
+                ),
+            ),
+            (
+                "width",
+                border_shown_signature("w1", outer, (5, 3, 4), false, "#102030", "fallback"),
+            ),
+            (
+                "gap",
+                border_shown_signature("w1", outer, (2, 5, 4), false, "#102030", "fallback"),
+            ),
+            (
+                "topmost",
+                border_shown_signature("w1", outer, (2, 3, 4), true, "#102030", "fallback"),
+            ),
+            (
+                "color",
+                border_shown_signature("w1", outer, (2, 3, 4), false, "#405060", "fallback"),
+            ),
+            (
+                "source",
+                border_shown_signature("w1", outer, (2, 3, 4), false, "#102030", "accent"),
+            ),
+        ] {
+            assert_ne!(base, changed, "{input} must ride the signature");
+        }
+    }
+
+    #[test]
+    fn iconic_member_with_matching_live_pid_and_tag_is_an_origin() {
+        let mut state = fresh_state();
+        let key = member_key(0x9A01, 4242, "creation-1");
+        seed_member(&mut state, &key, "w1");
+        script_window(&key, true, key.pid);
+        let origins = managed_origins(&state, &me(), &[], &[]);
+        assert_eq!(origins.len(), 1, "one verified iconic origin");
+        assert_eq!(origins[0].hwnd, key.hwnd);
+        assert_eq!(origins[0].token, "w1");
+        assert_eq!(origins[0].pid, key.pid);
+        assert_eq!(origins[0].creation, key.creation);
+        fake::unregister_all();
+    }
+
+    #[test]
+    fn recycled_hwnd_with_another_process_pid_never_proves_an_iconic_origin() {
+        let mut state = fresh_state();
+        let key = member_key(0x9A02, 4242, "creation-1");
+        seed_member(&mut state, &key, "w1");
+        // The number now hosts another process's iconic window: the stale
+        // member key must never inherit its iconic proof.
+        script_window(&key, true, 5151);
+        assert!(
+            managed_origins(&state, &me(), &[], &[]).is_empty(),
+            "live pid mismatch rejects before the iconic proof"
+        );
+        fake::unregister_all();
+    }
+
+    #[test]
+    fn exact_hidden_claim_is_never_an_iconic_origin() {
+        let mut state = fresh_state();
+        let key = member_key(0x9A03, 4242, "creation-1");
+        seed_member(&mut state, &key, "w1");
+        script_window(&key, true, key.pid);
+        state
+            .hidden_claims
+            .insert(key.clone(), hidden_record(&key));
+        assert!(
+            managed_origins(&state, &me(), &[], &[]).is_empty(),
+            "the ledger owns an exact hidden claim's reveal, not the chord map"
+        );
+        fake::unregister_all();
+    }
+
+    #[test]
+    fn same_hwnd_hidden_claim_for_another_lifetime_does_not_mask_the_member() {
+        let mut state = fresh_state();
+        let key = member_key(0x9A04, 4242, "creation-1");
+        let other = member_key(key.hwnd, 6161, "creation-0");
+        seed_member(&mut state, &key, "w1");
+        script_window(&key, true, key.pid);
+        // An exact-lifetime lookup must ignore a same-HWND claim belonging to
+        // a different process lifetime.
+        state
+            .hidden_claims
+            .insert(other.clone(), hidden_record(&other));
+        let origins = managed_origins(&state, &me(), &[], &[]);
+        assert_eq!(origins.len(), 1, "another lifetime's claim never masks");
+        assert_eq!(origins[0].hwnd, key.hwnd);
+        fake::unregister_all();
     }
 }

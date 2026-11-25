@@ -781,7 +781,7 @@ fn maximized_clear_runs_core_desire_through_diff_to_continuation() {
     intent.insert(
         key(101),
         IntentStorage {
-            float: true,
+            float: Some(true),
             ..IntentStorage::default()
         },
     );

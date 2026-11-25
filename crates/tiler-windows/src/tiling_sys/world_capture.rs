@@ -517,7 +517,7 @@ impl TileLoop {
                 pid: window.identity.pid,
                 creation: window.identity.process_creation.clone(),
             };
-            let hidden_workspace = self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+            let hidden_workspace = self.hidden_claims.contains_key(&key)
                 && self.member_home(&key).is_some_and(|loc| loc.hidden);
             Some(PresentationForeground {
                 token: window.token.clone(),
@@ -540,7 +540,7 @@ impl TileLoop {
                         creation: window.identity.process_creation.clone(),
                     };
                     let hidden_workspace =
-                        self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+                        self.hidden_claims.contains_key(&key)
                             && self.member_home(&key).is_some_and(|loc| loc.hidden);
                     Some(PresentationForeground {
                         token: window.token.clone(),
@@ -559,7 +559,7 @@ impl TileLoop {
                         creation: known.identity.process_creation.clone(),
                     };
                     let hidden_workspace =
-                        self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+                        self.hidden_claims.contains_key(&key)
                             && self.member_home(&key).is_some_and(|loc| loc.hidden);
                     Some(PresentationForeground {
                         token: known.token.clone(),
@@ -593,7 +593,7 @@ impl TileLoop {
                 pid: window.identity.pid,
                 creation: window.identity.process_creation.clone(),
             };
-            let hidden_workspace = self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+            let hidden_workspace = self.hidden_claims.contains_key(&key)
                 && self.member_home(&key).is_some_and(|loc| loc.hidden);
             foreground = Some(PresentationForeground {
                 token: window.token.clone(),
@@ -1045,15 +1045,10 @@ fn foreground_output_for_rect(
 /// the pager order (observed eligible members in enumeration order, then
 /// retained rows with fresh frames). Hidden members absent from both keep
 /// their retained stacking slot core-side. Unknown lifetimes never admit
-/// members. v4 carries exactly `{win, live}` pager rows: only fresh native
-/// frames ride, never the adapter's retained float/tile slots, and no
-/// adapter border/underlay style is an ingress key (the core derives it
-/// from its settings and per-output scale). The frame witness join is not
-/// implemented on Windows, so `witness` stays unknown (`None`). Capture
-/// resolves the observed foreground output separately in
-/// [`CapturedWorld::foreground_output`] from the same observed frame and the
-/// carried areas; the sequencer injects it as `foreground_out`, so this
-/// builder never guesses one (`foreground_out` stays `None` here).
+/// members. Pager rows carry only live native frames, never retained
+/// slots or adapter styling. Capture resolves the foreground output from
+/// that frame and the carried areas; the sequencer joins it and, when it
+/// agrees with the matching fact, emits the current-observation witness.
 fn presentation_ingress(
     state: &OwnerInputs<'_>,
     observed: Option<&[ObservedWindow]>,
@@ -1138,7 +1133,8 @@ fn presentation_ingress(
     // The tick's own observed row is the same foreground truth when the
     // caller supplied one without a separate presentation read (offline
     // sequencer commands and any direct capture). Production ticks still
-    // carry the richer presentation facts, including ineligible windows.
+    // carry richer presentation facts, including ineligible windows. The
+    // managed foreground wire fields apply their own membership fence.
     let observed_foreground = if state.presentation_foreground.is_none() {
         observed
             .and_then(|rows| rows.iter().find(|row| row.hwnd == foreground_hwnd))
@@ -2049,6 +2045,9 @@ pub(super) fn capture_world(
         .map(OutputId)
         .collect();
     let presentation = presentation_ingress(state, Some(observed), retained, foreground_hwnd);
+    let foreground_fact = (!presentation.foreground.is_empty())
+        .then(|| windows.iter().find(|fact| fact.window.0 == presentation.foreground))
+        .flatten();
     // The observed foreground frame's exact output, joined to the
     // foreground WindowFact: a resolved frame that disagrees with the fact
     // proves nothing (the frame and the fact are not the same observation),
@@ -2056,32 +2055,35 @@ pub(super) fn capture_world(
     let foreground_output = if presentation.foreground.is_empty() {
         None
     } else {
-        let fact_output = windows
-            .iter()
-            .find(|fact| fact.window.0 == presentation.foreground)
-            .and_then(|fact| fact.output.clone());
+        let fact_output = foreground_fact.and_then(|fact| fact.output.as_ref());
         let raw = presentation
             .foreground_frame
             .and_then(|rect| foreground_output_for_rect(areas, &rect, state.output_tokens));
         match (raw, fact_output) {
-            (Some(raw), Some(fact)) if raw != fact => None,
+            (Some(raw), Some(fact)) if &raw != fact => None,
             (raw, _) => raw,
         }
     };
+    // Presentation also samples nonmembers (e.g. a foreground game); do
+    // not report one as bound focus even if its token and frame are known.
+    let foreground_bound = foreground_hwnd != 0
+        && foreground_fact.is_some()
+        && !held_members.contains(&presentation.foreground)
+        && state.member_tokens.iter().any(|(key, token)| {
+            key.hwnd == foreground_hwnd && token == &presentation.foreground
+        });
     CapturedWorld {
         screens,
         held_screens,
         windows,
         intent_records,
         closed,
-        // One foreground sample drives both fields: the presentation
-        // ingress already resolved the tick's observed row when no richer
-        // presentation facts were supplied.
-        focused_global: presentation.foreground.clone(),
-        // The caller's foreground read is the proof: `0` positively saw no
-        // foreground window (known, empty id); a nonzero handle is known
-        // only when this tick resolves it to a verified lifetime.
-        foreground_known: foreground_hwnd == 0 || !presentation.foreground.is_empty(),
+        focused_global: if foreground_bound {
+            presentation.foreground.clone()
+        } else {
+            String::new()
+        },
+        foreground_known: foreground_hwnd == 0 || foreground_bound,
         // Snapshot-only capture: no event-coverage interval exists here.
         focus_changes: None,
         cursor: state.cursor,
@@ -2770,6 +2772,39 @@ mod tests {
                     .expect("hidden claim rides a fact row");
                 assert_eq!(fact.above, Some(topmost), "hidden topmost bit rides");
             }
+        }
+
+        #[test]
+        fn focused_global_requires_a_bound_readable_lifetime() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            let areas = [area("DEV-A")];
+            let mut row = observed(101, "win-a", 201, "proc-a");
+            let captured = capture_world(
+                &state.inputs(), Some(std::slice::from_ref(&row)), &[], &areas, 101,
+            );
+            assert_eq!(captured.presentation.foreground, "win-a");
+            assert!(captured.focused_global.is_empty());
+            assert!(!captured.foreground_known, "an unbound candidate is not managed focus");
+
+            state.member_tokens.insert(key(101, 201, "proc-a"), "win-a".to_owned());
+            let captured = capture_world(
+                &state.inputs(), Some(std::slice::from_ref(&row)), &[], &areas, 101,
+            );
+            assert_eq!(captured.focused_global, "win-a");
+            assert!(captured.foreground_known);
+
+            row.identity.exe_path = "C:\\Apps\\foreign.exe".to_owned();
+            row.identity.pid = 202;
+            row.identity.process_creation = "proc-b".to_owned();
+            row.token = "win-b".to_owned();
+            let captured = capture_world(&state.inputs(), Some(&[row]), &[], &areas, 101);
+            assert!(captured.focused_global.is_empty());
+            assert!(!captured.foreground_known, "a recycled live HWND is not the bound lifetime");
+
+            let captured = capture_world(&state.inputs(), Some(&[]), &[], &areas, 0);
+            assert!(captured.focused_global.is_empty());
+            assert!(captured.foreground_known, "zero positively proves no foreground client");
         }
 
         #[test]

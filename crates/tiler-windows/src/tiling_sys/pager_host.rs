@@ -1157,6 +1157,7 @@ fn areas_fingerprint(areas: &[MonitorArea]) -> u64 {
 /// log line and no native effect. The poll re-verifies the exact visibility
 /// gate (opt-out, the same fullscreen covering, elevation, unknown facts):
 /// a click queued under an old gate never dispatches after suppression, and
+/// clicks naming an output with no currently served strip refuse as
 /// not-served. Identity and scope belong to the core, which settles
 /// `stale-render-target` from the truthful drawn revision; this poll adds no
 /// local scope fence and never requires the output to be focused.
@@ -1284,9 +1285,6 @@ pub(super) fn dispatch_verified_select(
         target,
         render_rev,
         &ctx,
-        None,
-        false,
-        false,
     );
     log_json_at(
         &state.log_path,
@@ -2765,9 +2763,6 @@ mod pager_host_tests {
             target,
             None,
             &ctx,
-            None,
-            false,
-            false,
         );
         assert_eq!(effect.outcome, "ok", "select dispatches to {target}");
         inject_pending_observe(Vec::new(), Vec::new(), false);
@@ -4663,9 +4658,6 @@ mod pager_host_tests {
             target,
             render_rev,
             &ctx,
-            None,
-            false,
-            false,
         );
         inject_pending_observe(Vec::new(), Vec::new(), false);
         effect

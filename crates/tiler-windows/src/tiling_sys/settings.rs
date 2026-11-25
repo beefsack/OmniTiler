@@ -63,8 +63,8 @@ pub(super) const WARP_SUPPORTED: bool = true;
 ///   `executable`, `processId`) are the exact capture-emitted producer set;
 ///   an available fact may still be `None` when a single read is honestly
 ///   unknown, so availability is a producer claim, never a value claim.
-///   Capture now produces the `above` fact from the topmost style read while
-///   the capability claim remains `false` until the live proof task.
+///   Capture produces the `above` fact from the topmost style read; the
+///   typed handshake routes `above: true` to core after the Task 9 live proof.
 ///   `executable`/`processId` also stay available because [`own_identity`]
 ///   supplies both (the support-consistency gate). `privileged` is not
 ///   emitted (observe hardcodes `false` as a projected negative) and
