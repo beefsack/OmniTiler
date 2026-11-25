@@ -13,6 +13,7 @@ pub mod input_handoff;
 pub mod input_health;
 pub mod input_pump;
 pub mod lifecycle;
+pub(crate) mod log_sink;
 pub mod model;
 pub mod mouse_snap;
 #[cfg(windows)]

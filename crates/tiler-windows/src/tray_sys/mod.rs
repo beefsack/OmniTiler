@@ -71,16 +71,11 @@ pub fn tooltip_text(conflict: bool, settings_status: &str) -> String {
     tip.chars().take(120).collect()
 }
 
-/// Append one bounded JSON line to the tray log (best-effort, never panics).
+/// Append one bounded JSON line to the tray log through the shared run-log
+/// sink (best-effort, never panics).
 pub(crate) fn append_tray_log(path: Option<std::path::PathBuf>, value: serde_json::Value) {
-    use std::io::Write;
-    if let Some(path) = path.as_ref()
-        && let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-    {
-        let _ = writeln!(file, "{value}");
+    if let Some(path) = path.as_ref() {
+        let _ = crate::log_sink::append_json(path, &value);
     }
 }
 

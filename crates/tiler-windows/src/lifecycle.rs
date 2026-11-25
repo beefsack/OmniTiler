@@ -123,23 +123,16 @@ pub mod sys {
         Box::new(std::io::Error::other(msg.into()))
     }
 
+    /// First write creates the per-run file (refusing a preexisting one);
+    /// later writes share the bounded run-log sink. A bounded `Capped`
+    /// outcome is not an IO failure and never degrades the run.
     fn write_log_at(path: &Path, line: &str, first: bool) -> Result<()> {
-        use std::io::Write;
-        let mut file = if first {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
+        let result = if first {
+            crate::log_sink::create_line(path, line)
         } else {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-        }
-        .map_err(|e| err(format!("error: log write: {e}")))?;
-        writeln!(file, "{line}").map_err(|e| err(format!("error: log write: {e}")))?;
-        file.flush()
-            .map_err(|e| err(format!("error: log write: {e}")))
+            crate::log_sink::append_line(path, line).map(|_| ())
+        };
+        result.map_err(|e| err(format!("error: log write: {e}")))
     }
 
     /// Per-run unique log path persisted via the owner creation. Historical

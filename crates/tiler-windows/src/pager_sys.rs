@@ -519,17 +519,11 @@ impl PagerOverlays {
         Self::write_line(self.log_path.as_ref(), value);
     }
 
-    /// Lock-free best-effort JSON line append (create/append, single row).
+    /// Best-effort JSON line append through the bounded run-log sink.
     /// Ignores all errors; never touches Win32 or channel locks.
     fn write_line(path: Option<&PathBuf>, value: serde_json::Value) {
-        use std::io::Write;
-        if let Some(path) = path
-            && let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-        {
-            let _ = writeln!(file, "{value}");
+        if let Some(path) = path {
+            let _ = crate::log_sink::append_json(path, &value);
         }
     }
 
