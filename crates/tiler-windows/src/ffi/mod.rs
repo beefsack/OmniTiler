@@ -81,6 +81,7 @@ pub use cloak::{
 };
 pub use display_identity::monitor_identities;
 pub use dpi::{set_process_pm_v2, system_metric, system_metric_for_dpi, thread_pm_v2_active};
+pub(crate) use dpi::with_pm_v2;
 pub use enumeration::{
     MonitorInfo, enumerate_child_windows, enumerate_monitors, enumerate_windows,
 };

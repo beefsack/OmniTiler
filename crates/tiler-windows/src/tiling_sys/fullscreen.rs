@@ -529,10 +529,15 @@ pub(super) fn exit_fullscreen_owned(
 /// here. Every other outcome (`"dispatched"` for an unproven shape,
 /// `"threw"` for not attempted/refused) leaves the row for a later attempt.
 pub(super) fn restore_owned_chrome(hwnd_u64: u64, meta: &FullscreenMeta) -> &'static str {
-    match exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta, || true) {
-        OwnedExitOutcome::Restored => "restored",
-        OwnedExitOutcome::Unproven => "dispatched",
-        OwnedExitOutcome::NotAttempted | OwnedExitOutcome::Refused => "threw",
+    // Startup and graceful restore are already PMv2; the independent
+    // restore command and crash watcher are not. R12 stores physical
+    // pixels, so both the write and its independent readback need PMv2.
+    match crate::ffi::with_pm_v2(|| {
+        exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta, || true)
+    }) {
+        Some(OwnedExitOutcome::Restored) => "restored",
+        Some(OwnedExitOutcome::Unproven) => "dispatched",
+        None | Some(OwnedExitOutcome::NotAttempted | OwnedExitOutcome::Refused) => "threw",
     }
 }
 
