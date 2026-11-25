@@ -189,16 +189,15 @@ not v4 acceptance evidence.
 - Rule ([state](world-contract.md#window-state-policy)): neutral exit
   needs known exitability; unknown stays untouched; app-owned exits
   refused per baseline case. No `Alt+Enter` synthesis.
-- Source-reading: captionless-covering-monitor predicate, not a
-  presentation-mode oracle (`tiling_sys/observe.rs`); project entry saves owned
-  style/max/frame and restores mask/frame but verifies style, not
-  settled geometry (`tiling_sys/fullscreen.rs`). First-seen app fullscreen has no
-  preimage: keep refusal.
-- Measured (standalone): app-owned borderless roundtrip, all eight
-  channels matching; dedicated DXGI `SetFullscreenState` grant
-  (API grant only). App-roundtrip foreground restoration, first-seen
-  forced exit, game/exclusive and tiler-owned exitability unproved.
-  See [R14 results and limits](../changes/windows-v4-native-evidence.md#1-fullscreen-already-present-at-startup-r14).
+- Windows records an exact-lifetime adoption baseline for ordinary
+  windowed members. It is evidence independent of the project-owned
+  marker and the R12 write preimage. Project-owned exit requires
+  chrome, show state and settled outer geometry before retirement.
+- The fixture exercises normal decorated floating restore and confirms
+  app-owned refusal without a native write. App-owned, already
+  fullscreen at adoption, and exclusive cases remain refused. The
+  [real-app restoration matrix](../changes/windows-fullscreen-exit-baseline.md#per-case-live-check-matrix)
+  is user-owned.
 
 ## Opaque intent records and storage
 

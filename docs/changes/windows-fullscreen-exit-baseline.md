@@ -4,36 +4,32 @@
 
 Keep REQ-MAX-05/05b refusal for app-owned fullscreen now. Plan an
 adapter-local native-state baseline captured when a window is adopted, kept
-separate from the project-owned-fullscreen marker. Storage and crash-safe
-native-write preimages must be coordinated with R12. R14 exposes only the
+separate from the project-owned-fullscreen marker and the R12 crash-safe
+native-write preimage. R14 exposes only the
 ownership/exitability fact to core; core does not store or infer this native
 baseline.
 
 Per-case behavior changes only after user-owned live checks accept restoration.
-No live checks were run for this record. First-seen fullscreen has no adoption
-baseline and remains refused; exclusive fullscreen is also expected to remain
-refused unless its per-case test proves a safe, truthful restore.
+First-seen fullscreen has no adoption baseline and remains refused;
+exclusive fullscreen is also expected to remain refused unless its
+per-case test proves a safe, truthful restore.
 
-## Read-only current-state sizing
+## Windows adapter implementation
 
-- `crates/tiler-windows/src/tiling_sys/fullscreen.rs:286-347` captures a
-  preimage only for project-owned entry: the owned caption/thick-frame style
-  bits, whether the window was maximized, and its outer rectangle when not
-  maximized. The metadata is written before the native fullscreen effects.
-- Windows admission runs through `assignments.rs::ensure_workspace_assignments`
-  and `world_tick.rs::admit_observed`; adoption does not stamp the owned
-  fullscreen marker. `fullscreen.rs::read_fullscreen_meta` treats a missing
-  marker/preimage as app-owned. The owned marker wins toggle direction and
-  causes the owned-exit path, so stamping it on adopted windows would claim an
-  exit authority that was not acquired on entry
-  (`keyboard_overlays.rs:587-595`).
-- Native fullscreen clears are not promoted to tiler-owned clears: the float
-  toggle path treats fullscreen facts or owned metadata as a veto
-  (`float_toggle.rs:923-958`).
-- Current owned-exit success requires setter acceptance and style-bit
-  readback, then metadata removal. It does not verify a settled outer
-  rectangle after restore (`fullscreen.rs:349-367,428-467`). The new baseline
-  path must not claim stronger restore proof without adding and verifying it.
+- Ordinary windowed adoption captures the checked caption/thick-frame mask,
+  maximize state and actual outer rectangle before the tiler applies a
+  frame. The first capture wins for the lifetime; unreadable, first-seen
+  fullscreen or already project-owned state is not used as a baseline.
+- The adapter stores adoption evidence separately from R12 and prunes dead
+  lifetimes alongside R12 recovery. Both stores bind to the exact native
+  window lifetime; an adoption row neither stamps the project marker nor
+  authorizes a native write.
+- Project-owned exit verifies chrome, show state and settled outer geometry
+  before retiring its R12 preimage. Normal restoration requires the exact
+  saved outer rectangle; maximized restoration verifies the settled
+  maximized frame. Failed proof keeps the recovery record.
+- App-owned fullscreen still cannot exit via the project command. Merely
+  having an adoption row does not change the reported exitability.
 - KDE's existing native route sets the KWin `fullScreen` property to a boolean
   and schedules async observation (`kwin/src/world-native.ts:888-924`). The
   inspected macOS AX helper also sets a fullscreen boolean and requires a
@@ -60,6 +56,6 @@ authorize the others.
 - Contract boundary: [R14 window-state commands](../decisions/contract.md#window-state-commands-r14)
   separates core exitability from adapter native state.
 - Current requirement: [REQ-MAX-05/05b](../spec/functional-spec.md#maximize).
-- Implementation work remains under the [R14 backlog](../backlog.md).
-- Per-case live checks are user-owned and are not authorized by this design
-  record.
+- Fixture proof: `scripts/windows-fullscreen-baseline-proof.ps1 -Live`
+  checks adoption, exact normal outer restoration and untouched app-owned
+  fullscreen. The real-app checks above remain user-owned.

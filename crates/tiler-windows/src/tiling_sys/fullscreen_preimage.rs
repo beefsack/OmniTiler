@@ -248,7 +248,8 @@ pub(super) fn persist(dir: &Path, row: &FullscreenPreimage) -> Result<(), ()> {
 
 /// Load the row for one exact lifetime, if any. Unreadable slots return
 /// `None` (callers treat that as "no owned preimage", never as authority).
-#[cfg(test)]
+/// Used by the R14 adoption baseline to keep a project-owned chrome preimage
+/// separate from an application baseline.
 pub(super) fn load(
     dir: &Path,
     hwnd: u64,

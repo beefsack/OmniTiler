@@ -46,6 +46,9 @@ pub(super) fn test_state() -> TileLoop {
         // file would interleave garbage across parallel tests into the
         // crate directory on every run.
         log_path: std::path::PathBuf::from("NUL"),
+        // No durable baseline writes in the synthetic harness: the device
+        // path cannot host the atomic slot, and capture fails closed.
+        preimage_dir: std::path::PathBuf::from("NUL"),
         audit_path: None,
         last_observation_skips: Vec::new(),
         keyboard: crate::snapkey::KeyboardConfig::disabled(),

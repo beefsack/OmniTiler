@@ -1182,6 +1182,8 @@ fn apply_diag_value(
             .saturating_sub(stats.visibility_posts.len().min(MAX_APPLY_DIAG_FOCUS)),
         "fresh_route": fresh_route,
     });
+    out["arrival_brackets"] = serde_json::Value::Array(arrival_brackets);
+    out["arrival_brackets_omitted"] = serde_json::json!(arrival_brackets_omitted);
     out["states"] = serde_json::Value::Array(state_rows);
     out["states_omitted"] = serde_json::json!(
         state_attempts
@@ -1329,7 +1331,8 @@ fn log_apply_diag(
             state_attempts,
             reply,
         ) || hover_changed
-            || receipt_changed)
+            || receipt_changed
+            || report.focus_feedback.iter().any(|row| !row.arrival.is_empty()))
     {
         return false;
     }
@@ -1483,6 +1486,15 @@ fn admit_observed(
             .insert(key.clone(), window.token.clone());
         state.member_identity.insert(key.clone(), live);
         state.member_tags.insert(key.clone(), member_tag);
+        // R14 adoption baseline: adapter evidence only, never a window write
+        // and never an exit authority. A store failure fails closed for the
+        // baseline alone and never blocks admission.
+        super::adoption_baseline::capture_with_trace(
+            &state.preimage_dir,
+            window,
+            state.trace,
+            &state.log_path,
+        );
         // Trace-only token<->HWND join for native correlation: the stable
         // token plus the full member identity (HWND/PID/creation). No
         // titles, exe paths, or raw input. Fresh admissions only.

@@ -313,6 +313,10 @@ struct TileLoop {
     /// name the mode that is ending without re-reading the foreground.
     suspended_limited: bool,
     log_path: std::path::PathBuf,
+    /// Adapter-owned ledger directory holding the durable R12 preimage slots
+    /// and the R14 adoption baselines. Mechanical storage only: never a
+    /// policy or native-write input.
+    preimage_dir: std::path::PathBuf,
     audit_path: Option<std::path::PathBuf>,
     /// Last per-tick observation skip set, used only to emit one
     /// `world-observation-skips` trace row when the reasons change (never a
@@ -813,6 +817,9 @@ pub(crate) fn plan_snapshot_offer(
 /// considered, so the current session's own preimages are never touched.
 /// Returns how many rows were restored.
 pub(crate) fn recover_durable_preimages(dir: &Path, current_session: &str) -> usize {
+    // Adoption baselines are evidence, never restoration authority: the same
+    // recovery pass prunes their gone lifetimes but never restores from them.
+    let _ = adoption_baseline::prune_dead(dir);
     above_preimage::restore_verified_leftovers(dir, current_session)
         + fullscreen_preimage::restore_verified_leftovers(dir, current_session)
 }
@@ -894,6 +901,11 @@ mod above_preimage;
 // adapter-owned atomic slot outliving the tiler, written before stripping
 // chrome and restored only on a self-verified exact-lifetime match.
 mod fullscreen_preimage;
+
+// R14 adapter-local adoption-time native baseline for app-owned fullscreen:
+// evidence only, separate from the project marker and the R12 slot, never a
+// window write and never an exit authority.
+mod adoption_baseline;
 
 mod admission;
 
@@ -1059,6 +1071,13 @@ mod same_axis_move_tests;
 #[cfg(test)]
 #[path = "tests_owned_exit.rs"]
 mod owned_exit_tests;
+
+/// R14 adoption baseline regressions (offline): exact-lifetime row shape,
+/// first-capture-wins storage, separation from the R12 chrome preimage slot,
+/// capture refusals, dead-lifetime pruning, and the bounded presence trace.
+#[cfg(test)]
+#[path = "tests_adoption_baseline.rs"]
+mod adoption_baseline_tests;
 
 #[cfg(test)]
 #[path = "tests_float_send_gate.rs"]

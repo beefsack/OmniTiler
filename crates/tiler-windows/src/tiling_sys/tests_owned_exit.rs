@@ -12,6 +12,12 @@ struct ScriptedOwnedExit {
     fail_frame: bool,
     fail_rect: bool,
     restored_rect: Option<tiler_core::geometry::Rect>,
+    /// Scripted live outer rectangle after the move; `restore_rect` records
+    /// the placed frame here so a settled read matches by default.
+    outer: Option<tiler_core::geometry::Rect>,
+    /// Scripted answer for the settled-geometry read (`None` uses `outer`,
+    /// the inner `None` scripts an unreadable outer rectangle).
+    outer_override: Option<Option<tiler_core::geometry::Rect>>,
     /// Style bits the readback reports instead of the written style, for
     /// the unobserved-restore leg (`None` reads back the write).
     readback_override: Option<u32>,
@@ -34,6 +40,8 @@ impl ScriptedOwnedExit {
             fail_frame: false,
             fail_rect: false,
             restored_rect: None,
+            outer: None,
+            outer_override: None,
             readback_override: None,
             fail_maximize: false,
             settle_results: std::collections::VecDeque::new(),
@@ -76,7 +84,13 @@ impl super::OwnedExitEffects for ScriptedOwnedExit {
             return false;
         }
         self.restored_rect = Some(rect);
+        self.outer = Some(rect);
         true
+    }
+
+    fn outer_rect(&mut self, _hwnd: u64) -> Option<tiler_core::geometry::Rect> {
+        self.calls.push("outer");
+        self.outer_override.unwrap_or(self.outer)
     }
 
     fn style_readback(&mut self, _hwnd: u64) -> u32 {
@@ -455,6 +469,7 @@ fn ordinary_exit_restores_non_full_monitor_preimage() {
             "frame",
             "rect",
             "readback",
+            "outer",
             "clear"
         ],
         "the frame move runs after the style reapply, before verification"
@@ -463,6 +478,98 @@ fn ordinary_exit_restores_non_full_monitor_preimage() {
     assert!(
         !script.meta_present,
         "verified restoration drops the metadata"
+    );
+}
+
+#[test]
+fn ordinary_exit_requires_the_settled_actual_outer_geometry() {
+    // A confirmed style restore with a drifted, clamped, or unreadable outer
+    // rectangle is not a restore: the R12 evidence and window marker stay so
+    // a later press or the sweep retries. Only the exact pre-fullscreen frame
+    // retires restore evidence.
+    let preimage = rect(500, 300, 415, 300);
+    let meta = super::FullscreenMeta {
+        changed: super::FULLSCREEN_STYLE_BITS,
+        was_maximized: false,
+        frame: Some(preimage),
+    };
+    let drifted = rect(500, 300, 414, 300);
+    for scripted in [Some(drifted), None] {
+        let mut script = ScriptedOwnedExit::passing(UNRELATED);
+        script.outer_override = Some(scripted);
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta, || true);
+        assert_eq!(
+            outcome,
+            OwnedExitOutcome::Unproven,
+            "an unsettled outer rectangle ({scripted:?}) never claims a restore"
+        );
+        assert_eq!(
+            script.calls,
+            vec![
+                "is-window",
+                "style",
+                "restore",
+                "frame",
+                "rect",
+                "readback",
+                "outer"
+            ],
+            "the settled read precedes durable retirement and marker removal"
+        );
+        assert!(
+            script.meta_present,
+            "unsettled geometry keeps the preimage for retry"
+        );
+    }
+    // The same press path retires once the exact frame reads back.
+    let mut script = ScriptedOwnedExit::passing(UNRELATED);
+    script.outer_override = Some(Some(drifted));
+    assert_eq!(
+        super::exit_fullscreen_owned_with(&mut script, 101, &meta, || true),
+        OwnedExitOutcome::Unproven
+    );
+    script.outer_override = None;
+    script.calls.clear();
+    let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta, || true);
+    assert_eq!(outcome, OwnedExitOutcome::Restored);
+    assert_eq!(
+        script.calls,
+        vec![
+            "is-window",
+            "style",
+            "restore",
+            "frame",
+            "rect",
+            "readback",
+            "outer",
+            "clear"
+        ]
+    );
+    assert!(!script.meta_present);
+}
+
+#[test]
+fn settled_outer_geometry_requires_the_exact_recorded_frame() {
+    let preimage = rect(-20, 30, 800, 600);
+    assert!(
+        super::fullscreen::outer_rect_settled(preimage, Some(preimage)),
+        "the exact recorded outer rectangle settles"
+    );
+    for actual in [
+        rect(-19, 30, 800, 600),
+        rect(-20, 31, 800, 600),
+        rect(-20, 30, 801, 600),
+        rect(-20, 30, 800, 599),
+        rect(0, 0, 1920, 1080),
+    ] {
+        assert!(
+            !super::fullscreen::outer_rect_settled(preimage, Some(actual)),
+            "drifted or fullscreen geometry never settles: {actual:?}"
+        );
+    }
+    assert!(
+        !super::fullscreen::outer_rect_settled(preimage, None),
+        "an unreadable outer rectangle is never a settled proof"
     );
 }
 

@@ -145,6 +145,15 @@ pub(super) fn ensure_workspace_assignments(
                 .insert(fresh_token.clone(), window.visible);
             state.member_identity.insert(key.clone(), identity);
             state.member_tags.insert(key.clone(), member_tag);
+            // R14 adoption baseline: adapter evidence only, never a window
+            // write and never an exit authority. A store failure fails closed
+            // for the baseline alone and never blocks adoption.
+            super::adoption_baseline::capture_with_trace(
+                &state.preimage_dir,
+                window,
+                state.trace,
+                &state.log_path,
+            );
             // Trace-only token<->HWND join for native correlation (see the
             // world-tick admission path): stable token plus the full member
             // identity, no titles or app content. Fresh admissions only.

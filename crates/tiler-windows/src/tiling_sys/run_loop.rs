@@ -203,6 +203,7 @@ pub(super) fn run_tile_loop(
         suspended: false,
         suspended_limited: false,
         log_path: log_path.clone(),
+        preimage_dir: dir.to_path_buf(),
         audit_path: audit_path.clone(),
         last_observation_skips: Vec::new(),
         keyboard,

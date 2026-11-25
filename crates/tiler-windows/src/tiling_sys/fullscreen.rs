@@ -148,7 +148,7 @@ fn remove_fullscreen_meta_props(hwnd: HWND) {
 /// A partial `SetProp` sequence cleans up before returning false, so a later
 /// press never mistakes residue for an owned preimage. Non-maximized entries
 /// always carry their pre-fullscreen frame; maximized entries carry none.
-fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
+pub(super) fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
     let hwnd = hwnd_u64 as isize as HWND;
     if !crate::ffi::is_window(hwnd_u64) {
         return false;
@@ -317,6 +317,18 @@ fn restore_maximized_work_area(hwnd_u64: u64) -> bool {
     )
 }
 
+/// Pure settled-outer-geometry proof for a non-maximized preimage restore:
+/// the live `GetWindowRect` must equal the recorded pre-fullscreen frame
+/// exactly. A refused/read-failed move, a clamped placement, an application
+/// or window-manager adjustment, and a still-fullscreen rectangle all fail.
+/// This is the proof the owned exit was missing before it retires its R12
+/// evidence; a maximized restore proves the work-area frame separately
+/// ([`frame_settled_on_work_area`]) because its outer rectangle is not a
+/// direct placement target.
+pub(super) fn outer_rect_settled(expected: Rect, actual: Option<Rect>) -> bool {
+    actual.is_some_and(|actual| actual == expected)
+}
+
 /// Best-effort degraded-slot line after a verified restore: the native state
 /// is already restored, so a failed durable removal is reported (a later
 /// startup re-checks the slot) and never turned into another window write.
@@ -466,10 +478,11 @@ pub(super) enum OwnedExitOutcome {
 /// Exit project-owned fullscreen: restore exactly the owned mask bits
 /// (unrelated application style changes meanwhile are preserved), reapply
 /// the frame without moving (so externally moved frames still exit), move a
-/// non-maximized window back to its pre-fullscreen frame, reassert
-/// a preexisting maximize, verify the restored shape, then retire the exact
-/// durable R12 row *before* dropping the window metadata. A failed restore or
-/// a durable row that cannot clear keeps the metadata so a later press or the
+/// non-maximized window back to its pre-fullscreen frame, verify the live
+/// style *and the settled actual outer rectangle*, reassert a preexisting
+/// maximize, then retire the exact durable R12 row *before* dropping the
+/// window metadata. A failed restore, an unsettled outer rectangle, or a
+/// durable row that cannot clear keeps the metadata so a later press or the
 /// retirement sweep can retry; nothing is guessed and nothing retries
 /// automatically. `meta.changed` is already validated to the owned mask on
 /// read, so restoration never touches arbitrary bits. A legacy preimage
@@ -651,6 +664,9 @@ pub(super) trait OwnedExitEffects {
     fn reapply_frame(&mut self, hwnd: u64) -> bool;
     /// Move to the pre-fullscreen frame (non-maximized exits only).
     fn restore_rect(&mut self, hwnd: u64, rect: Rect) -> bool;
+    /// Fresh actual outer rectangle (`GetWindowRect`) after the move. `None`
+    /// is unreadable and never a settled frame.
+    fn outer_rect(&mut self, hwnd: u64) -> Option<Rect>;
     fn style_readback(&mut self, hwnd: u64) -> u32;
     fn reassert_maximize(&mut self, hwnd: u64) -> bool;
     /// Fresh readback of the maximized frame: reads maximized and covers
@@ -695,6 +711,10 @@ impl OwnedExitEffects for NativeOwnedExit {
         )
     }
 
+    fn outer_rect(&mut self, hwnd: u64) -> Option<Rect> {
+        crate::ffi::window_rect(hwnd).and_then(rect_from_win)
+    }
+
     fn style_readback(&mut self, hwnd: u64) -> u32 {
         crate::ffi::window_style(hwnd)
     }
@@ -718,7 +738,8 @@ impl OwnedExitEffects for NativeOwnedExit {
 
 /// Owned-exit effect ordering shared by the native wrapper and hermetic
 /// tests: the exact durable row is retired only after the style restore,
-/// frame reapply, pre-fullscreen frame move, style readback, and maximize
+/// frame reapply, pre-fullscreen frame move, style readback, settled actual
+/// outer geometry (non-maximized frame preimages only), and maximize
 /// reassert all verify, and the native marker is dropped only after that
 /// durable retirement succeeded. A maximized entry additionally proves the
 /// async maximize really returned the frame to the covered display's work
@@ -755,6 +776,16 @@ pub(super) fn exit_fullscreen_owned_with(
         return OwnedExitOutcome::Refused;
     }
     if effects.style_readback(hwnd_u64) & meta.changed != meta.changed {
+        return OwnedExitOutcome::Unproven;
+    }
+    // Settled actual outer geometry: the move must have produced exactly the
+    // recorded pre-fullscreen frame before any restore evidence is retired.
+    // A read failure or a drifted/clamped frame keeps the metadata for a
+    // later press or the retirement sweep; nothing is guessed.
+    if !meta.was_maximized
+        && let Some(frame) = meta.frame
+        && !outer_rect_settled(frame, effects.outer_rect(hwnd_u64))
+    {
         return OwnedExitOutcome::Unproven;
     }
     if meta.was_maximized {
