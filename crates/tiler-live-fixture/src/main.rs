@@ -42,11 +42,12 @@ fn run() -> i32 {
             eprintln!("usage:");
             eprintln!("  tiler-live-fixture serve [--dir PATH] [--socket-name NAME]");
             eprintln!(
-                "  tiler-live-fixture send --socket PATH --nonce NONCE [--events N|--follow] [--compact] [JSON...]"
+                "  tiler-live-fixture send --socket PATH [--events N|--follow] [--compact] [JSON...]"
             );
             eprintln!(
-                "  tiler-live-fixture send --socket PATH --nonce NONCE --wait-ms N --expect JSON [--compact] [JSON...]"
+                "  tiler-live-fixture send --socket PATH --wait-ms N --expect JSON [--compact] [JSON...]"
             );
+            eprintln!("  Set TILER_LIVE_FIXTURE_NONCE for the send process.");
             2
         }
     }
@@ -344,9 +345,16 @@ fn serve_connection(
 // send
 // ---------------------------------------------------------------------------
 
+const NONCE_ENV: &str = "TILER_LIVE_FIXTURE_NONCE";
+
+fn valid_client_nonce(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn send(args: &[String]) -> i32 {
     let mut socket: Option<PathBuf> = None;
-    let mut nonce = String::new();
+    #[cfg(not(windows))]
+    let mut argv_nonce = None;
     let mut events: Option<u64> = None;
     let mut follow = false;
     let mut compact = false;
@@ -364,13 +372,14 @@ fn send(args: &[String]) -> i32 {
                 }
                 socket = Some(PathBuf::from(&args[i]));
             }
+            #[cfg(not(windows))]
             "--nonce" => {
                 i += 1;
                 if i >= args.len() {
                     eprintln!("send: --nonce needs a value");
                     return 2;
                 }
-                nonce = args[i].clone();
+                argv_nonce = Some(args[i].clone());
             }
             "--events" => {
                 i += 1;
@@ -422,10 +431,15 @@ fn send(args: &[String]) -> i32 {
         eprintln!("send: --socket is required");
         return 2;
     };
-    if nonce.is_empty() {
-        eprintln!("send: --nonce is required");
+    let nonce = std::env::var(NONCE_ENV)
+        .ok()
+        .filter(|value| valid_client_nonce(value));
+    #[cfg(not(windows))]
+    let nonce = nonce.or(argv_nonce);
+    let Some(nonce) = nonce else {
+        eprintln!("send: set {NONCE_ENV} to the announced 64-digit hex nonce");
         return 2;
-    }
+    };
     if wait_ms.is_some() != expect_raw.is_some() {
         eprintln!("send: --wait-ms and --expect must be given together");
         return 2;
@@ -484,6 +498,14 @@ fn send(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_nonce_requires_the_announcement_shape() {
+        assert!(valid_client_nonce(&"01ab".repeat(16)));
+        assert!(!valid_client_nonce(&"01ab".repeat(15)));
+        assert!(!valid_client_nonce(&"zzzz".repeat(16)));
+        assert!(!valid_client_nonce(&format!("{}\n", "01ab".repeat(16))));
+    }
 
     /// Full framed round trip over a real socket pair with the fake host: no
     /// event loop is initialized, but framing, auth, dispatch, replies and

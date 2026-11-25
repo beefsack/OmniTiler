@@ -24,11 +24,17 @@
 - T2 fixture client, ready to paste:
 ```powershell
 $ann = (Read-Host 'Paste announcement JSON') | ConvertFrom-Json
-function Send-Fixture([string]$Json) { mise exec -- cargo run --locked -p tiler-live-fixture -- send --socket $ann.socket --nonce $ann.nonce $Json }
+function Send-Fixture([string]$Json) {
+    $prior = $env:TILER_LIVE_FIXTURE_NONCE
+    try {
+        $env:TILER_LIVE_FIXTURE_NONCE = $ann.nonce
+        mise exec -- cargo run --locked -p tiler-live-fixture -- send --socket $ann.socket $Json
+    } finally { $env:TILER_LIVE_FIXTURE_NONCE = $prior }
+}
 Send-Fixture '{"v":1,"request_id":"spawn1","op":"spawn","windows":[{"id":"a"},{"id":"b"}]}'
 Send-Fixture '{"v":1,"request_id":"get-s0","op":"get","ids":["a","b"]}'
 ```
-`--nonce` is auto-injected into payloads that omit it; every `request_id` must be unique per call, so change the suffix each time. Read back only with `get`/`list` (observed predicates, never setter echoes; `list` returns ids only).
+The environment nonce is auto-injected into payloads that omit it; every `request_id` must be unique per call, so change the suffix each time. Read back only with `get`/`list` (observed predicates, never setter echoes; `list` returns ids only).
 - T3 tiler with trace capture: `mise exec -- just dev trace --scope-exe tiler-live-fixture.exe` (`dev` adds `--user-start`/`--trace`). Logs and provenance sidecars land under `%LOCALAPPDATA%\omnitiler\session-1\`; retain each block's pair.
 - Tray Settings > Shortcuts: apply Authentic, then rebind `toggle-float` to `Ctrl+Win+G` and `toggle-fullscreen` to `Ctrl+Win+F11`, Apply. Call this the **working binding setup**. Do not press the bare Xbox chords. Compatible alone is NOT suitable for S1-S4/D: it disables Win+digits, arrows and Win+O. Verify keyboard takeover on, workspace scope local, workspace tiling on, switch target cursor, focus-follows-cursor off and cursor-warp off; preserve/restore the originals.
 - Stage WS1 with only A/B tiled and WS2 empty (pager plus trace member/view rows). If admission put A/B elsewhere, click each and press Win+Shift+1 (numbered send-follow to WS1), then Win+1. Fixture `get` has no workspace/output field. Stop if this layout cannot be established; do not involve other applications.

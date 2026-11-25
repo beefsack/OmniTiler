@@ -75,6 +75,9 @@ mod probe {
     pub const TOPMOST_FALSE_CODE: u64 = 0xFA15_E000_0000_0001;
     pub const TOPMOST_TRUE_CODE: u64 = 0x7A1E_0000_0000_0001;
     const WS_EX_TOPMOST_BIT: u32 = 0x0000_0008;
+    /// Client nonce channel on Windows: the fixture `send` CLI reads it from
+    /// the environment, never argv (argv is visible to same-user processes).
+    const NONCE_ENV: &str = "TILER_LIVE_FIXTURE_NONCE";
 
     // -----------------------------------------------------------------------
     // Titles: server-controlled `sentinel/id/run-tag` plus optional suffix.
@@ -1501,6 +1504,19 @@ mod probe {
         send_all(exe, socket, nonce, &[payload.to_string()])
     }
 
+    /// Remove the top-level `nonce` before a request crosses the argv
+    /// boundary. The fixture `send` client injects it from `NONCE_ENV`, so
+    /// the secret never appears in a same-user-readable command line.
+    fn without_nonce_arg(payload: &str) -> Result<String, String> {
+        let mut value: serde_json::Value =
+            serde_json::from_str(payload).map_err(|e| format!("parse send payload: {e}"))?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| "send payload is not a JSON object".to_string())?;
+        object.remove("nonce");
+        serde_json::to_string(&value).map_err(|e| format!("serialize send payload: {e}"))
+    }
+
     /// One client connection carrying several ordered payload lines (one
     /// reply line per payload). Same hung-client bound as `send_one`.
     fn send_all(
@@ -1513,14 +1529,16 @@ mod probe {
         // send_mutation(s) which re-verify the fixture immediately before send.
         // Bounded: spawn + wait_timeout + kill-hung-client, 30s cap.
         use std::io::Read;
+        // The fixture client CLI takes the scope nonce from the environment
+        // on Windows (the argv route is Unix-legacy only), so the secret
+        // never appears in this process's command line.
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("send")
             .arg("--socket")
             .arg(socket)
-            .arg("--nonce")
-            .arg(nonce);
+            .env(NONCE_ENV, nonce);
         for payload in payloads {
-            cmd.arg(payload);
+            cmd.arg(without_nonce_arg(payload)?);
         }
         let mut child = cmd
             .stdout(std::process::Stdio::piped())

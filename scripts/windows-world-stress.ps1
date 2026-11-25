@@ -918,8 +918,14 @@ function Get-StressDisplayBaseline {
 function Send-StressFixture([string]$FixtureExe, [string]$Socket, [string]$Nonce, [string]$Json) {
   # Stdout carries exactly the reply lines; stderr carries logs (never
   # parsed). Fixture reply shape: {ok, result:{windows:[...]}}.
-  $lines = @(& $FixtureExe send --socket $Socket --nonce $Nonce $Json 2>$null | Out-String -Stream |
-    Where-Object { "$_".TrimStart().StartsWith("{") })
+  $priorNonce = $env:TILER_LIVE_FIXTURE_NONCE
+  try {
+    $env:TILER_LIVE_FIXTURE_NONCE = $Nonce
+    $lines = @(& $FixtureExe send --socket $Socket $Json 2>$null | Out-String -Stream |
+      Where-Object { "$_".TrimStart().StartsWith("{") })
+  } finally {
+    $env:TILER_LIVE_FIXTURE_NONCE = $priorNonce
+  }
   if ($LASTEXITCODE -ne 0) { Fail-Ws "fixture send exit ${LASTEXITCODE}: $Json" }
   if ($lines.Count -eq 0) { return @{ ok = $true; result = $null } }
   if ($lines.Count -ne 1) { Fail-Ws "fixture send returned $($lines.Count) lines: $Json" }
