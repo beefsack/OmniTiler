@@ -891,6 +891,52 @@ fn apply_diag_value(
     } else {
         Vec::new()
     };
+    // Preserve the actual W2 evidence that rode the matching report, not a
+    // reconstruction from desired homing or eventual foreground. Cap the
+    // flattened rows across all grants, with the same provenance as geometry.
+    let (arrival_brackets, arrival_brackets_omitted) = if geometry_paired {
+        use tiler_core::world_report::{ArrivalLocation, VisibilitySample};
+        let sample = |read: &VisibilitySample| {
+            serde_json::json!({
+                "obs": read.obs,
+                "lifetime_matched": read.lifetime_matched,
+                "visible": read.visibility.visible,
+                "suppression_owned": read.visibility.suppression_owned,
+                "minimized": read.minimized,
+                "host_hidden": read.host_hidden,
+            })
+        };
+        let rows: Vec<_> = report
+            .focus_feedback
+            .iter()
+            .flat_map(|feedback| feedback.arrival.iter().map(move |row| (feedback, row)))
+            .take(MAX_APPLY_DIAG_ATTEMPTS)
+            .map(|(feedback, row)| {
+                let out = match &row.location {
+                    ArrivalLocation::Output { out } => out.as_ref().map(|id| id.0.as_str()),
+                    ArrivalLocation::Native { .. } => None,
+                };
+                serde_json::json!({
+                    "id": feedback.id,
+                    "target": feedback.target.0,
+                    "rev": feedback.revision,
+                    "foreground_proven": feedback.foreground_proven,
+                    "window": row.window.0,
+                    "obs": row.obs,
+                    "kind": row.location.kind_str(),
+                    "out": out,
+                    "frame": row.frame.map(rect_value),
+                    "before": sample(&row.before),
+                    "after": sample(&row.after),
+                })
+            })
+            .collect();
+        let total: usize = report.focus_feedback.iter().map(|f| f.arrival.len()).sum();
+        let omitted = total.saturating_sub(rows.len());
+        (rows, Some(omitted))
+    } else {
+        (Vec::new(), None)
+    };
     let held_scopes: Vec<serde_json::Value> = reply
         .scopes
         .iter()
@@ -6153,6 +6199,99 @@ mod apply_diag_tests {
         // only, never the accepted desired windows/outputs projection.
         assert_eq!(value["request"], serde_json::json!("req-9"));
         assert_eq!(value["desired_windows_omitted"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn diag_arrival_brackets_keep_exact_samples_and_bound_only_paired_reports() {
+        use tiler_core::world_report::{
+            ArrivalBracket, ArrivalLocation, FocusDisposition, FocusFeedback, FocusNoCallReason,
+            VisibilityFact, VisibilitySample,
+        };
+        let before = VisibilitySample {
+            obs: 8,
+            lifetime_matched: Some(true),
+            visibility: VisibilityFact {
+                visible: Some(false),
+                suppression_owned: Some(true),
+            },
+            minimized: Some(false),
+            host_hidden: Some(false),
+        };
+        let after = VisibilitySample {
+            visibility: VisibilityFact {
+                visible: Some(true),
+                suppression_owned: Some(false),
+            },
+            ..before
+        };
+        let bracket = ArrivalBracket {
+            window: tiler_core::directional::WindowId("w3".to_owned()),
+            obs: 8,
+            before,
+            location: ArrivalLocation::Output {
+                out: Some(tiler_core::directional::OutputId("o2".to_owned())),
+            },
+            frame: Some(tiler_core::geometry::Rect {
+                x: 1200,
+                y: -8,
+                w: 600,
+                h: 500,
+            }),
+            after,
+        };
+        let mut report = report_shell(vec![]);
+        report.focus_feedback.push(FocusFeedback {
+            id: "focus-42".to_owned(),
+            target: bracket.window.clone(),
+            revision: 42,
+            disposition: FocusDisposition::NotCalled {
+                reason: FocusNoCallReason::NoReason,
+            },
+            pre: None,
+            post: None,
+            foreground_proven: false,
+            arrival: vec![bracket; MAX_APPLY_DIAG_ATTEMPTS + 1],
+            attempt_ms: 1,
+        });
+        let reply = reply_shell();
+        let project = |report: &_| {
+            apply_diag_value(
+                35,
+                &reply,
+                "accepted",
+                "observation",
+                &stats_shell(),
+                &[],
+                &[],
+                None,
+                &[],
+                &[],
+                serde_json::json!({}),
+                None,
+                false,
+                report,
+                &[],
+                None,
+            )
+        };
+        let paired = project(&report);
+        let rows = paired["arrival_brackets"].as_array().unwrap();
+        assert_eq!(rows.len(), MAX_APPLY_DIAG_ATTEMPTS);
+        assert_eq!(paired["arrival_brackets_omitted"], 1);
+        let row = &rows[0];
+        assert_eq!(row["kind"], "output");
+        assert_eq!(row["out"], "o2");
+        assert_eq!(row["window"], "w3");
+        assert_eq!(row["frame"]["x"], 1200);
+        assert_eq!(row["obs"], row["before"]["obs"]);
+        assert_eq!(row["obs"], row["after"]["obs"]);
+        assert_eq!(row["before"]["suppression_owned"], true);
+        assert_eq!(row["after"]["suppression_owned"], false);
+
+        report.request_id = "foreign".to_owned();
+        let mismatch = project(&report);
+        assert_eq!(mismatch["arrival_brackets"], serde_json::json!([]));
+        assert!(mismatch["arrival_brackets_omitted"].is_null());
     }
 
     #[test]

@@ -140,13 +140,14 @@ pub(super) fn dispatch_launch_intent(
 /// `SetSticky` compensation exists.
 fn float_toggle_command(
     token: &str,
-    float_rect: Option<Rect>,
+    was_floating: bool,
+    live_frame: impl FnOnce() -> Option<Rect>,
 ) -> tiler_core::world_report::WorldCommand {
     tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
         window: tiler_core::directional::WindowSubject::Window(
             tiler_core::directional::WindowId(token.to_owned()),
         ),
-        float_rect,
+        float_rect: if was_floating { live_frame() } else { None },
     })
 }
 
@@ -241,24 +242,21 @@ pub(super) fn dispatch_float_intent(
     // fullscreen/maximized/overlay holds from its staged facts (R-MAX-10,
     // R-MAX-11, B9), and this seam mutates no local intent table.
     //
-    // Unfloat carries the live frame rect so a moved/resized float is
-    // retained; the core resolves the float direction and placement.
-    let live_rect = observed
-        .iter()
-        .find(|w| w.hwnd == member_key.hwnd)
-        .map(|w| w.visible)
-        .or_else(|| {
-            retained
-                .iter()
-                .find(|r| r.key == member_key)
-                .and_then(|row| row.rect)
-        });
-    // World-owned toggle: Win+G is always the ordinary float toggle, sticky
-    // origins included. The core clears sticky and re-evaluates the
-    // conversion/rehome in the same command (window-state.md); the applied
-    // reply IS the outcome, and the host diff applies sibling reflow with
-    // fresh proof.
-    let command = float_toggle_command(&from, live_rect);
+    // Only unfloat carries a live frame; on a tiled subject an explicit
+    // rectangle would override core's retained or centered placement.
+    // Sticky subjects still take core's composed transition.
+    let command = float_toggle_command(&from, is_float, || {
+        observed
+            .iter()
+            .find(|w| w.hwnd == member_key.hwnd)
+            .map(|w| w.visible)
+            .or_else(|| {
+                retained
+                    .iter()
+                    .find(|r| r.key == member_key)
+                    .and_then(|row| row.rect)
+            })
+    });
     let foreground = crate::ffi::foreground_window();
     let reply = super::world_tick::run_world_command(
         state,
@@ -720,7 +718,7 @@ mod tests {
             w: 300,
             h: 200,
         };
-        let command = float_toggle_command("win-a", Some(rect));
+        let command = float_toggle_command("win-a", true, || Some(rect));
         let tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
             window: tiler_core::directional::WindowSubject::Window(window),
             float_rect,
@@ -733,8 +731,10 @@ mod tests {
     }
 
     #[test]
-    fn win_g_without_a_live_frame_still_sends_toggle_float() {
-        let command = float_toggle_command("win-a", None);
+    fn win_g_on_a_tile_leaves_placement_to_core() {
+        let command = float_toggle_command("win-a", false, || {
+            panic!("tiled geometry must not override float placement")
+        });
         assert!(matches!(
             command,
             tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
