@@ -78,15 +78,46 @@ impl WorldTransaction<'_> {
             .is_some_and(|ring| ring.iter().any(|kept| kept == id))
     }
 
-    /// Rekey every member homed at `(from_output, workspace)` onto
-    /// `(to_output, workspace)` (migration, swap, displacement, return,
-    /// refusal rollback). Tiling modes ride alongside via the existing
-    /// [`WorldEngine::carry_tiling`] caller.
+    /// Rekey every non-sticky member homed at `(from_output, workspace)`
+    /// onto `(to_output, workspace)` (migration, swap, displacement,
+    /// return, refusal rollback). Tiling modes ride alongside via the
+    /// existing [`WorldEngine::carry_tiling`] caller.
+    ///
+    /// Composed-sticky lifetimes are exempt: their membership home is the
+    /// all-desktop anchor and must not follow swap/migration relocations
+    /// (the physical window stays put while logical units move around it).
+    /// Displaced-output reads still remap onto the survivor through
+    /// [`rehome_displaced_in`]/[`core_homing_in`], so retaining the
+    /// recorded home stays truthful, and [`Self::prune_members_off_live`]
+    /// keeps it while a displacement record exists. Sticky truth comes
+    /// from the staged derived lane, never the raw native fact: hosts
+    /// without native sticky support report a null fact while core's
+    /// retained intent still proves the lifetime.
     pub(crate) fn rekey_members(&mut self, workspace: &str, from_output: &str, to_output: &str) {
         if from_output == to_output {
             return;
         }
-        for state in self.world.workspace.members.values_mut() {
+        // Precompute sticky member keys: the derived map must be read
+        // while `members` is only borrowed immutably, and it is the
+        // authority for composed sticky (raw facts stay null there).
+        let sticky: BTreeSet<WindowId> = self
+            .world
+            .workspace
+            .members
+            .keys()
+            .filter(|window| {
+                self.world
+                    .staged
+                    .derived
+                    .get(*window)
+                    .is_some_and(|derived| derived.sticky)
+            })
+            .cloned()
+            .collect();
+        for (window, state) in self.world.workspace.members.iter_mut() {
+            if sticky.contains(window) {
+                continue;
+            }
             if state.home.output.0 == from_output && state.home.workspace.0 == workspace {
                 state.home.output = OutputId(to_output.to_owned());
             }
