@@ -117,11 +117,13 @@
   plumbing) have landed, and `warp:true` is declared on the clean-HEAD live
   receipt below.
 
-## Tentative decisions (2026-11-25)
+## Accepted decisions T1–T7
 
 Recorded canonically in
-[Windows tentative v4 port direction](../decisions/windows.md#tentative-v4-port-direction)
-and flagged tentative for later review:
+[Windows v4 port direction](../decisions/windows.md#accepted-v4-port-direction).
+The [Phase 1 gates](#phase-1-windows-review-verification) validate the
+follow-up corrections; the Task 5 and Task 9 evidence below records the
+settings, visibility, R12, border, and C3 behavior used for acceptance.
 
 - **T1 (Revert core hidden-target hack):** Revert `9a98994d`'s
   `has_minimized_resident` and `lone_root` core changes; fix Windows
@@ -134,9 +136,11 @@ and flagged tentative for later review:
   (suppresses frame write) when the output row is absent or `logical_view` is
   `None`.
 - **T4 (Live reads on suppressed HWNDs):** For project-suppressed (`SW_HIDE`)
-  windows, capture performs lightweight live reads (`IsWindowVisible`, DWM
-  cloaked, style/owner/class) with fail-closed hold if unreadable, reporting
-  `host_hidden: Some(cloaked)` and `visibility: { visible: Some(vis), suppression_owned: Some(true) }`.
+  windows, capture performs lightweight checked native reads (visibility,
+  DWM cloak, style/owner/class) with fail-closed holds on unreadable inputs,
+  reporting `host_hidden: Some(cloaked)` and
+  `visibility: { visible: Some(vis), suppression_owned: Some(true) }`.
+  A hide/reveal claim is not proof that a pending native change has landed.
 - **T5 (Truthful incremental capabilities):** Advertise `above: true` in
   `windows_capabilities()` only after its actuator, R12 preimages, release
   path, and live border follow are proved; the Task 9 section below records
@@ -158,6 +162,12 @@ and flagged tentative for later review:
   spend-before-move by exact request id, and an ignored live probe whose
   clean-HEAD run is recorded below. `warp` flips to `true` in this separate
   commit; `cursorWarp` remains off by default.
+
+Windows keeps `focusChanges: null` (snapshot-only focus) and the current
+`unavailableFacts` set: `privileged`, `managed`, `acceptsInput`,
+`activationInhibited`, `transient`, `modal`, `resizable`, `below`, `owner`,
+`parent`, `role`, `appId`, `class`, `title`, `activationPolicy`, and `layer`.
+A supported fact can still be unknown in an individual observation.
 
 ## Ordered task plan
 
@@ -632,3 +642,61 @@ Remaining TBD (explicit, not claimed):
   no unsupported row is claimed.
 - Drag preview: no input driver was used, so `dragPreview.id` gating is
   unit-tested only; live drag interaction remains a residual.
+
+### Phase 1 Windows review verification
+
+On `ae765774e1`, `cargo test -p tiler-windows --lib` passed (1,374
+passed, 3 ignored), `cargo test -p tiler-windows --tests --no-fail-fast`
+passed all 17 integration suites, and `cargo clippy -p tiler-windows
+--all-targets --no-deps -- -D warnings` passed. The dependency-inclusive
+Clippy run on the preceding Windows review tree reported the existing
+`collapsible_if` in `tiler-core/src/world_sends.rs:595`. The static stress
+check and the stress and float mocks passed.
+
+The Windows owner and live fixture were rebuilt with `cargo build --locked
+-p tiler-windows -p tiler-live-fixture`. After the scope fix, the six
+fixture-only matrix rows ran with `mise exec -- just world-stress -Case
+test-fixtures/world-stress-<case>.json -DelayMs <n>`. Every row reported
+102 publications, 61 burst gaps, `status=pass`, and `world-stress final
+cleanup ok`. Each evidence directory below contains `world-stress-report.json`.
+
+| Case | Delay (ms) | Added delay (ms) | Evidence directory |
+| --- | ---: | ---: | --- |
+| home-away | 0 | 0 | `target/windows-world-stress/20261126-021044-24468` |
+| home-away | 10 | 1490 | `target/windows-world-stress/20261126-021129-22084` |
+| home-away | 50 | 7450 | `target/windows-world-stress/20261126-021210-21428` |
+| trio-churn | 0 | 0 | `target/windows-world-stress/20261126-021256-10676` |
+| trio-churn | 10 | 1560 | `target/windows-world-stress/20261126-021342-7624` |
+| trio-churn | 50 | 7800 | `target/windows-world-stress/20261126-021426-17176` |
+
+The targeted fixture-only proofs use
+`pwsh -NoProfile -File scripts/windows-phase1-proofs.ps1 -Proof <leg>`:
+
+- **Graceful:** The accepted fullscreen state write and native chrome readback
+  established the mutation; its durable frame matched the native outer rect,
+  not the DWM visible frame. An exact-owner stop restored the topmost band,
+  fullscreen chrome, and the pre-fullscreen visible frame and retired both
+  rows before independent cleanup. Evidence:
+  `target/task9/phase1-graceful-20261126-021030-18804/evidence.json`.
+- **Startup:** A recorded producer run wrote both preimages. The proof
+  reattached those exact bytes without a ledger after a clean stop, verified
+  the fixture mutations, and restarted. The restarted owner's restore of two
+  preimages precedes its first admission, observation, and world apply in its
+  own trace. Native readback confirmed restored chrome, the first accepted
+  fullscreen-subject row was controlled, and the float was re-adopted with a
+  fresh `priorTopmost: false` preimage. Evidence:
+  `target/task9/phase1-startup-20261126-021033-2660/evidence.json`.
+- **Crash:** The exact producer owner was terminated while its verified
+  watcher was live. The watcher restored both native states under the lease
+  and exited before restart; the restarted owner had no orphan rows to
+  restore and re-adopted the durable float intent. Evidence:
+  `target/task9/phase1-crash-20261126-021036-20384/evidence.json`.
+- **Already-foreground departure:** A fixture window showed and focused itself
+  while homed off-view. The owner's foreground-follow selection recorded
+  `already-foreground` with no native focus call; that apply made one staged
+  reveal and one staged hide, with zero combined view writes. Its async
+  `SetWindowPos` hide (`0x4097`, no activation) settled, and native readback
+  confirmed the departing window stayed hidden and alive. Regression tests
+  also cover controlled staging and floating visibility under both collapsed
+  output authority and mixed exact workspace authority. Evidence:
+  `target/task9/phase1-foreground-20261126-021039-17752/evidence.json`.
