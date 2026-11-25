@@ -4437,6 +4437,13 @@ fn numbered_send_moves_minimized_member_without_engine_carrier() {
             .all(|domain| domain.windows.iter().all(|w| w.window.0 != "w0")),
         "no Engine carrier exists for the iconified member"
     );
+    assert!(
+        engine
+            .world
+            .layout
+            .has_minimized_slot(&source_home, &WindowId("w0".to_owned())),
+        "minimize retains the source restore slot"
+    );
     let (outcome, settlements) = admit_with_settlements(
         &mut engine,
         &report(
@@ -4454,7 +4461,7 @@ fn numbered_send_moves_minimized_member_without_engine_carrier() {
             Vec::new(),
         ),
     );
-    let _reply = accepted_reply(3, outcome);
+    let reply = accepted_reply(3, outcome);
     assert_eq!(settlements.len(), 1);
     assert!(
         settlements[0].result.is_none(),
@@ -4469,6 +4476,22 @@ fn numbered_send_moves_minimized_member_without_engine_carrier() {
         .expect("iconic membership survives the send")
         .home
         .clone();
+    let row = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "w0")
+        .expect("iconic member publishes one row");
+    assert_eq!(
+        row.workspace, target_home.workspace.0,
+        "the published row follows the committed home"
+    );
+    assert!(
+        !engine
+            .world
+            .layout
+            .has_minimized_slot(&source_home, &WindowId("w0".to_owned())),
+        "the source restore slot is forgotten on the membership move"
+    );
     assert_ne!(target_home.workspace, source_home.workspace);
     assert_eq!(target_home.output, source_home.output);
     let transfer = engine

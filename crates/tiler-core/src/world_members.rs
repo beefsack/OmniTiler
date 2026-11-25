@@ -142,7 +142,15 @@ impl WorldTransaction<'_> {
     /// tiled sends), preserving its float/minimized marks. Sticky facts
     /// never reach here (refused upstream).
     pub(crate) fn commit_send_member(&mut self, window: &WindowId, target: &DomainKey) {
+        // A minimized member's restore slot stores the source workspace's
+        // tree; restoring it there after membership moved would regress the
+        // committed home. Forget it on the move: a later restore admits
+        // fresh into the target (D23 option B).
+        let mut stale_slot = None;
         if let Some(state) = self.world.workspace.members.get_mut(window) {
+            if state.minimized {
+                stale_slot = Some(state.home.clone());
+            }
             state.home = target.clone();
         } else {
             self.world.workspace.members.insert(
@@ -154,6 +162,9 @@ impl WorldTransaction<'_> {
                     geometry: None,
                 },
             );
+        }
+        if let Some(source) = stale_slot {
+            self.world.layout.forget_minimized_slot(&source, window);
         }
     }
 
