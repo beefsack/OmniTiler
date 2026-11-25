@@ -1835,6 +1835,36 @@ fn focus_succeeds_with_same_pass_hidden_departure() {
     assert_eq!(native.focus_window("w2"), Ok(true));
 }
 
+#[test]
+fn staged_hide_releases_only_the_authorized_live_foreground() {
+    for (may_release, foreground, releases) in [
+        (true, 110_045, true),
+        (true, 110_046, false),
+        (false, 110_045, false),
+    ] {
+        let mut env = env_with(110_045);
+        let leaving = win_key(110_045, 2145, "proc-65");
+        admit_member(&mut env, &leaving, "ws1", "w1", false);
+        script_live(&leaving, "w1", rect(0, 0, 800, 600), plain_facts());
+        S_FG.with(|m| *m.borrow_mut() = foreground);
+        S_ADMIT.with(|m| {
+            m.borrow_mut().insert(
+                leaving.hwnd,
+                Ok(script_claim(leaving.hwnd, &identity_of(&leaving))),
+            );
+        });
+        let mut prims = scripted();
+        prims.hide_claim = |_, _, claim, _, _| {
+            S_FG.with(|m| *m.borrow_mut() = 0);
+            Ok(claim.clone())
+        };
+        prims.hide_claim_na = |_, _, claim, _, _| Ok(claim.clone());
+        let mut native = assemble(&mut env, prims);
+        assert_eq!(native.hide_window("w1", may_release), Ok(true));
+        assert_eq!((native.prims.foreground)(), if releases { 0 } else { foreground });
+    }
+}
+
 /// Same-pass departure with fullscreen hidden facts still vetoes.
 #[test]
 fn focus_vetoes_same_pass_hidden_fullscreen_departure() {

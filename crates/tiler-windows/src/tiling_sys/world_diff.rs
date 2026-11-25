@@ -416,10 +416,10 @@ pub(super) trait NativeOps {
     fn reveal_window(&mut self, _token: &str) -> Result<bool, ()> {
         Err(())
     }
-    /// One nonactivating native hide for one window lifetime through the
-    /// committed hide-claim path; same disposition shape as
-    /// [`Self::reveal_window`]. Fail-closed default.
-    fn hide_window(&mut self, _token: &str) -> Result<bool, ()> {
+    /// Hide one exact lifetime through the committed hide-claim path.
+    /// Preserve foreground unless an ungated departure may relinquish its
+    /// own live foreground. Same disposition shape as [`Self::reveal_window`].
+    fn hide_window(&mut self, _token: &str, _release_foreground: bool) -> Result<bool, ()> {
         Err(())
     }
     /// Fallback authority is conditional on a fresh native foreground veto
@@ -610,6 +610,7 @@ pub(super) struct FakeNative {
     /// already-satisfied targets record nothing: no setter ran).
     pub(super) reveal_calls: Vec<String>,
     pub(super) hide_calls: Vec<String>,
+    pub(super) hide_release_foreground: Vec<String>,
     pub(super) fail_focus: HashSet<String>,
     pub(super) throw_focus: HashSet<String>,
     /// Native focus setters dispatched, in call order (proves zero-setter
@@ -848,8 +849,11 @@ impl NativeOps for FakeNative {
         self.note_write();
         Ok(true)
     }
-    fn hide_window(&mut self, token: &str) -> Result<bool, ()> {
+    fn hide_window(&mut self, token: &str, release_foreground: bool) -> Result<bool, ()> {
         self.hide_calls.push(token.to_owned());
+        if release_foreground {
+            self.hide_release_foreground.push(token.to_owned());
+        }
         if self.throw_hide.contains(token) {
             return Err(());
         }
@@ -2829,6 +2833,7 @@ fn stage_visibility_hides(
         }
         let hidden = hide_sample_proven(&read.sample);
         let mut path = LastWritePath::Staged;
+        let mut release_foreground = false;
         let disposition = if hidden {
             VisibilityDisposition::NotCalled {
                 reason: VisibilityReason::Empty,
@@ -2895,10 +2900,13 @@ fn stage_visibility_hides(
                     stats.held += 1;
                     continue;
                 }
-                Some(true) => VisibilityDisposition::Called {
-                    setter: FrameSetter::Accepted,
-                    reason: VisibilityReason::Empty,
-                },
+                Some(true) => {
+                    release_foreground = reply.focus_request.is_none();
+                    VisibilityDisposition::Called {
+                        setter: FrameSetter::Accepted,
+                        reason: VisibilityReason::Empty,
+                    }
+                }
                 Some(false) if target.fallback => {
                     path = LastWritePath::Fallback;
                     VisibilityDisposition::Called {
@@ -2928,7 +2936,7 @@ fn stage_visibility_hides(
                 stats.held += 1;
                 continue;
             }
-            let outcome = ops.hide_window(token);
+            let outcome = ops.hide_window(token, release_foreground);
             if outcome == Ok(true) {
                 stats.staged_hides += 1;
             }

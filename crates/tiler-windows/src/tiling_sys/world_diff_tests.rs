@@ -7276,10 +7276,29 @@ fn staged_switch_hides_when_arrival_is_already_foreground() {
     );
     assert!(feedback[0].foreground_proven);
     assert_eq!(native.hide_calls, ["w1"]);
+    assert!(native.hide_release_foreground.is_empty());
     let attempts = diff.take_visibility_attempts();
     let hide = attempts.iter().find(|attempt| attempt.window.0 == "w1").unwrap();
     assert_eq!(hide.path, tiler_core::world_report::LastWritePath::Staged);
     assert_eq!(hide.post.unwrap().visibility.visible, Some(false));
+}
+
+#[test]
+fn staged_ungated_departure_can_release_its_foreground() {
+    let (_rig, fresh, mut native, mut staged) = staged_shapes();
+    // The first combined apply lost its continuation to a visibility edge.
+    // This publication carries the still-controlled departing hide but no
+    // transfer or focus grant (an empty destination).
+    staged.reply.focus_request = None;
+    staged.reply.transfers.clear();
+    staged.reply.windows.truncate(1);
+    let mut diff = diff_at(7);
+    let (stats, _, _) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
+    assert_eq!(stats.staged_hides, 1);
+    assert_eq!(native.hide_release_foreground, ["w1"]);
+    let attempts = diff.take_visibility_attempts();
+    assert_eq!(attempts[0].path, tiler_core::world_report::LastWritePath::Staged);
+    assert_eq!(attempts[0].post.unwrap().visibility.visible, Some(false));
 }
 
 #[test]
@@ -8166,8 +8185,8 @@ impl NativeOps for AsyncFocus {
     fn reveal_window(&mut self, token: &str) -> Result<bool, ()> {
         self.inner.reveal_window(token)
     }
-    fn hide_window(&mut self, token: &str) -> Result<bool, ()> {
-        self.inner.hide_window(token)
+    fn hide_window(&mut self, token: &str, release_foreground: bool) -> Result<bool, ()> {
+        self.inner.hide_window(token, release_foreground)
     }
     fn foreground_managed(&mut self) -> Option<String> {
         self.inner.foreground_managed()

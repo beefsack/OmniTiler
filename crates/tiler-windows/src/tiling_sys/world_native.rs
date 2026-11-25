@@ -489,6 +489,12 @@ impl Default for NativePrimitives {
     }
 }
 
+enum HidePost {
+    Pumped,
+    Nonactivating,
+    ReleaseForeground,
+}
+
 /// Production native actuator over the world-route diff.
 ///
 /// Holds the exact owner pieces the diff needs: shared identity/lifetime
@@ -1307,16 +1313,16 @@ impl<'a> LiveNative<'a> {
         expected: &ProcessIdentity,
         iconic: bool,
     ) -> Result<(), AdmitOutcome> {
-        self.commit_hide_with(key, expected, iconic, false)
+        self.commit_hide_with(key, expected, iconic, HidePost::Pumped)
     }
 
-    /// Mode-parameterized hide; `true` takes the nonactivating lane.
+    /// Choose the hide post after the exact-lifetime and claim gates.
     fn commit_hide_with(
         &mut self,
         key: &WindowKey,
         expected: &ProcessIdentity,
         iconic: bool,
-        nonactivating: bool,
+        post: HidePost,
     ) -> Result<(), AdmitOutcome> {
         self.admit_gates(key, expected)?;
         if !self.identity_ok(key, expected) {
@@ -1341,10 +1347,16 @@ impl<'a> LiveNative<'a> {
             topmost,
         );
         let claim = (self.prims.admit)(key.hwnd, self.me, expected, &stored, allow_topmost)?;
-        let hide = if nonactivating {
-            self.prims.hide_claim_na
-        } else {
-            self.prims.hide_claim
+        let hide = match post {
+            HidePost::Pumped => self.prims.hide_claim,
+            HidePost::ReleaseForeground if (self.prims.foreground)() == key.hwnd => {
+                // Hiding with SWP_NOACTIVATE can leave this now-invisible
+                // HWND as native foreground. With no arrival grant to
+                // preserve, use the ordinary SW_HIDE transition only for
+                // the live departing foreground, not for bystanders.
+                self.prims.hide_claim
+            }
+            HidePost::Nonactivating | HidePost::ReleaseForeground => self.prims.hide_claim_na,
         };
         // Trace-armed sink only: unarmed passes `None` so the native post
         // records nothing and skips the clock. Early vetos above return
@@ -1543,7 +1555,12 @@ impl<'a> LiveNative<'a> {
                 continue;
             }
             let iconic = (self.prims.is_iconic)(key.hwnd);
-            match self.commit_hide_with(key, expected, iconic, nonactivating) {
+            let post = if nonactivating {
+                HidePost::Nonactivating
+            } else {
+                HidePost::Pumped
+            };
+            match self.commit_hide_with(key, expected, iconic, post) {
                 Ok(()) => {
                     if nonactivating
                         && Some(key.hwnd) == entry_fg
@@ -2334,13 +2351,18 @@ impl NativeOps for LiveNative<'_> {
         }
     }
 
-    fn hide_window(&mut self, token: &str) -> Result<bool, ()> {
+    fn hide_window(&mut self, token: &str, release_foreground: bool) -> Result<bool, ()> {
         if (self.prims.hook_pending)() {
             return Err(());
         }
         let key = self.key_of(token).ok_or(())?;
         let expected = self.member_identity.get(&key).cloned().ok_or(())?;
-        match self.commit_hide_with(&key, &expected, false, true) {
+        let post = if release_foreground {
+            HidePost::ReleaseForeground
+        } else {
+            HidePost::Nonactivating
+        };
+        match self.commit_hide_with(&key, &expected, false, post) {
             Ok(()) => Ok(true),
             Err(AdmitOutcome::Refused | AdmitOutcome::OriginVanished) => Ok(false),
             Err(_) => Err(()),
