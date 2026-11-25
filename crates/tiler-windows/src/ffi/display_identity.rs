@@ -9,16 +9,18 @@
 //! its device-key `EDID` value is handed to the pure parser in
 //! [`crate::tiling_sys::output_identity`].
 //!
-//! Every field comes from the parsed EDID. QDC's own `edidManufactureId` /
-//! `edidProductCodeId` are deliberately unused: mixing their raw byte order
-//! with parsed EDID order would produce two spellings of one identity.
+//! Every physical field comes from the parsed EDID. QDC's own
+//! `edidManufactureId` / `edidProductCodeId` are deliberately unused: mixing
+//! their raw byte order with parsed EDID order would produce two spellings
+//! of one identity.
 //!
-//! `connector` is always `None`. No physical-connection normalization is
-//! proved on this platform: display ids, adapter LUID/target ids,
-//! `connectorInstance`, device-instance UID hashes, and `DISPLAY` ordinals
-//! are connection observations or instance ordinals, not durable physical
-//! connection names. An unknown connector makes the core hold ambiguous
-//! reconnects instead of picking a candidate.
+//! `connector` comes from the target's monitor device path, normalized to a
+//! case-insensitive SetupAPI device instance. That is a live connection
+//! identity, not physical panel identity: it distinguishes identical
+//! serial-less panels on different routes, moves with a cable/port change,
+//! and is therefore the core's fallback only when the triple is unreadable
+//! or duplicated. It is never an adapter LUID, target id, connector
+//! instance, `DISPLAY` ordinal, or device-instance UID alone.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -42,7 +44,9 @@ use windows_sys::Win32::System::Registry::{
     HKEY, KEY_READ, REG_BINARY, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
 };
 
-use crate::tiling_sys::output_identity::{device_instance_id, parse_edid};
+use crate::tiling_sys::output_identity::{
+    connection_identity, device_instance_id, normalized_connector, parse_edid,
+};
 
 /// Upper bound on active display paths accepted from the OS. A real desktop
 /// is far below this; an oversized answer is refused rather than allocated.
@@ -70,10 +74,11 @@ const EDID_SUBKEY: [u16; 18] = [
 ///
 /// `None` only when the active-path query itself fails; the caller then
 /// treats every output as unknown for this tick. A per-monitor failure
-/// (unavailable source name, missing target name, unparsable device path,
-/// refused device-instance open, unreadable registry value, short or
-/// malformed EDID) yields [`OutputIdentity::unknown`] for that device and
-/// never fails the whole enumeration.
+/// (unavailable source name, missing target name, unparsable device path)
+/// yields [`OutputIdentity::unknown`] for that device and never fails the
+/// whole enumeration. When the device path is readable but its EDID is not,
+/// the row carries the normalized connection identity with an unknown
+/// physical triple, preserving the connector fallback.
 #[must_use]
 pub fn monitor_identities() -> Option<HashMap<String, OutputIdentity>> {
     let paths = query_active_paths()?;
@@ -178,7 +183,9 @@ fn source_gdi_name(path: &DISPLAYCONFIG_PATH_INFO) -> Option<String> {
     wide_text(&packet.viewGdiDeviceName)
 }
 
-/// Identity of one active path's target monitor, or explicit unknown.
+/// Identity of one active path's target monitor: EDID triple plus the
+/// normalized connection route, or explicit unknown when the target/path
+/// itself is unreadable.
 fn target_identity(path: &DISPLAYCONFIG_PATH_INFO) -> OutputIdentity {
     let mut packet = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
     packet.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
@@ -199,10 +206,16 @@ fn target_identity(path: &DISPLAYCONFIG_PATH_INFO) -> OutputIdentity {
     let Some(instance) = device_instance_id(&monitor_path) else {
         return OutputIdentity::unknown();
     };
+    let connector = normalized_connector(&instance);
     let Some(edid) = read_edid(&instance) else {
-        return OutputIdentity::unknown();
+        // The connection route is readable even though the panel's EDID is
+        // not: report that fallback instead of discarding it. Identical
+        // serial-less panels remain distinguishable by their live routes.
+        return connection_identity(&instance);
     };
-    parse_edid(&edid)
+    let mut identity = parse_edid(&edid);
+    identity.connector = connector;
+    identity
 }
 
 /// Read the device-key `EDID` value of one monitor device instance.

@@ -1376,8 +1376,8 @@ pub(super) fn capture_world(
             full_rect: Some(area.full),
             work_area: Some(area.work),
             complete: !enum_failed,
-            // Effective per-monitor DPI measured at the enumeration seam:
-            // adapter units per logical pixel.
+            // Effective per-monitor DPI measured by that output's own PMv2
+            // observer: adapter units per logical pixel.
             scale: f64::from(area.dpi) / 96.0,
             // Adapter-read physical identity for this exact device; a device
             // the map does not know is explicit unknown, never fabricated.

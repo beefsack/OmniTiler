@@ -38,9 +38,11 @@
 
 [CmdletBinding()]
 param(
+  [Alias("Proof")]
   [ValidateSet("graceful", "startup", "crash", "foreground", "all")]
-  [string]$Proof = "all",
-  [int]$OwnerSeconds = 300
+  [string]$Phase1Proof = "all",
+  [int]$OwnerSeconds = 300,
+  [switch]$DefinitionsOnly
 )
 
 Set-StrictMode -Version Latest
@@ -1623,32 +1625,36 @@ function Invoke-P1Foreground {
 
 # --- top-level staging and dispatch -----------------------------------------
 
-$script:P1TargetDir = Get-StressTargetDir
-if (-not (Test-Path -LiteralPath $script:P1TargetDir -PathType Container)) {
-  throw "missing build target directory $($script:P1TargetDir)"
+function Initialize-P1Artifacts([string]$ProofGroup) {
+  $script:P1TargetDir = Get-StressTargetDir
+  if (-not (Test-Path -LiteralPath $script:P1TargetDir -PathType Container)) {
+    throw "missing build target directory $($script:P1TargetDir)"
+  }
+  $script:P1TargetDir = (Resolve-Path -LiteralPath $script:P1TargetDir).Path
+  $sourceOwner = Join-Path $script:P1TargetDir "debug\tiler-windows.exe"
+  $sourceFixture = Join-Path $script:P1TargetDir "debug\tiler-live-fixture.exe"
+  if (-not (Test-Path -LiteralPath $sourceOwner -PathType Leaf)) {
+    throw "missing $sourceOwner; build tiler-windows and tiler-live-fixture first"
+  }
+  if (-not (Test-Path -LiteralPath $sourceFixture -PathType Leaf)) {
+    throw "missing $sourceFixture; build tiler-windows and tiler-live-fixture first"
+  }
+  $script:P1SettingsPath = Join-Path $env:LOCALAPPDATA "omnitiler\settings.json"
+  if (-not (Test-Path -LiteralPath $script:P1SettingsPath -PathType Leaf)) {
+    throw "missing live settings preimage source $script:P1SettingsPath"
+  }
+  $script:P1BinDir = Join-Path $script:P1TargetDir "task9\$ProofGroup-bin-$((Get-Date -Format 'yyyyMMdd-HHmmss'))-$PID"
+  New-Item -ItemType Directory -Force -Path $script:P1BinDir | Out-Null
+  $script:P1OwnerCopy = Join-Path $script:P1BinDir "tiler-windows.exe"
+  $script:P1FixtureCopy = Join-Path $script:P1BinDir "tiler-live-fixture.exe"
+  Copy-Item -LiteralPath $sourceOwner -Destination $script:P1OwnerCopy -Force
+  Copy-Item -LiteralPath $sourceFixture -Destination $script:P1FixtureCopy -Force
 }
-$script:P1TargetDir = (Resolve-Path -LiteralPath $script:P1TargetDir).Path
-$script:P1BinDir = Join-Path $script:P1TargetDir "task9\phase1-bin-$((Get-Date -Format 'yyyyMMdd-HHmmss'))-$PID"
-New-Item -ItemType Directory -Force -Path $script:P1BinDir | Out-Null
-$sourceOwner = Join-Path $script:P1TargetDir "debug\tiler-windows.exe"
-$sourceFixture = Join-Path $script:P1TargetDir "debug\tiler-live-fixture.exe"
-if (-not (Test-Path -LiteralPath $sourceOwner -PathType Leaf)) {
-  throw "missing $sourceOwner; build tiler-windows and tiler-live-fixture first"
-}
-if (-not (Test-Path -LiteralPath $sourceFixture -PathType Leaf)) {
-  throw "missing $sourceFixture; build tiler-windows and tiler-live-fixture first"
-}
-$script:P1OwnerCopy = Join-Path $script:P1BinDir "tiler-windows.exe"
-$script:P1FixtureCopy = Join-Path $script:P1BinDir "tiler-live-fixture.exe"
-Copy-Item -LiteralPath $sourceOwner -Destination $script:P1OwnerCopy -Force
-Copy-Item -LiteralPath $sourceFixture -Destination $script:P1FixtureCopy -Force
 
-if (-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA "omnitiler\settings.json") -PathType Leaf)) {
-  throw "missing live settings preimage source $(Join-Path $env:LOCALAPPDATA 'omnitiler\settings.json')"
-}
-$script:P1SettingsPath = Join-Path $env:LOCALAPPDATA "omnitiler\settings.json"
+if ($DefinitionsOnly) { return }
+Initialize-P1Artifacts "phase1"
 
-$proofs = if ($Proof -eq "all") { @("graceful", "startup", "crash", "foreground") } else { @($Proof) }
+$proofs = if ($Phase1Proof -eq "all") { @("graceful", "startup", "crash", "foreground") } else { @($Phase1Proof) }
 $failure = $null
 foreach ($name in $proofs) {
   try {

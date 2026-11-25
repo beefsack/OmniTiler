@@ -15,13 +15,13 @@ not v4 acceptance evidence.
 
 ## V4 native coordinate normalization
 
-- Target, not delivered by this note: PMv2 physical-pixel reads are
-  native integers, never scaled again. Per-screen v4 `scale` is that
-  output's effective DPI / 96 (measured A=120, B=96). Core scales each
-  logical setting once, then rounds nearest, halves toward positive
-  infinity. See the [scale rule](world-contract.md#scale-and-rounding).
-  `GetDpiForWindow` proves only the queried window's DPI, so each
-  output needs its own PMv2 window, including empty outputs.
+- PMv2 reads use native physical pixels. Windows reports each output's
+  effective DPI / 96; core applies the scale once, then rounds nearest,
+  halves toward positive infinity. See the
+  [scale rule](world-contract.md#scale-and-rounding).
+- The owner thread maintains an invisible, nonactivating PMv2 observer
+  on each output, even without application windows. It resamples after
+  DPI, display or settings change notifications.
 
 ## Handshake (exact v4 declaration)
 
@@ -218,19 +218,18 @@ not v4 acceptance evidence.
 
 ## Output identity matching
 
-- Nullable `manufacturer/model/serial/connector`; core derives
-  reconnect identity from the triple, connector only when unreadable
-  or duplicated; ambiguous reconnect holds; `connector:null` until
-  normalization is proved ([rule](world-contract.md#screenreport)).
-- Source-reading: `MonitorArea` has no physical metadata
-  (`tiling_sys/monitors.rs`); QDC target-name plus SetupAPI EDID device-key route
-  is API-feasible. Connector instance is adapter-local, may be zero.
-- Measured (standalone): distinct triples; text-serial retention;
-  empty-output scale-only cycle delivered per-output `WM_DPICHANGED`
-  with exact restore; reconnect, port move/return, sleep/resume,
-  reboot stable (reboot changed adapter LUIDs: not durable keys).
-  Identical-monitor fallback and connector normalization open. See
-  [physical series](../changes/windows-v4-native-evidence.md#physical-check-series-closing-summary).
+- The core prefers the manufacturer/model/serial triple and uses the
+  connector for unreadable or duplicated triples; ambiguity holds
+  ([rule](world-contract.md#screenreport)). Windows supplies a normalized
+  monitor device instance ID from QDC target discovery and SetupAPI,
+  not the volatile adapter LUID or runtime display index.
+- Offline cases cover identical serial-less monitors, normalization
+  across spelling changes and ambiguity. The fixture-only
+  `scripts/windows-output-dpi-proof.ps1 -Live` compares accepted output
+  rows at empty startup against independent PMv2 reads; it does not
+  change scale or disconnect a display. Physical scale changes,
+  identical-monitor reconnect and port moves remain user-owned. See
+  [prior standalone measurements](../changes/windows-v4-native-evidence.md#physical-check-series-closing-summary).
 
 ## Border and K5 witness
 
@@ -270,8 +269,6 @@ not v4 acceptance evidence.
 - Untagged foreground capture must not mint continuity from HWND/PID
   alone. Unknown/unbound lifetime stays empty or nullable as specified;
   do not synthesize negative foreground facts from admission filtering.
-- Empty-output scale measurements used a PMv2 observer on each output;
-  current windowless fallback does not establish equivalent coverage.
 - Elevated-denial measurements discarded DWM failure HRESULTs and did
   not prove independent restoration. Keep those [gaps](../changes/windows-v4-native-evidence.md#elevated-fixed-harness-matrix-measured-with-acceptance-limitations)
   open; per-window denial never adds an `unavailableFacts` entry.

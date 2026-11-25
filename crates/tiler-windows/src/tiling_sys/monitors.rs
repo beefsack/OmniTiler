@@ -25,9 +25,10 @@ pub(super) struct MonitorArea {
     pub(super) device: String,
     pub(super) work: Rect,
     pub(super) full: Rect,
-    /// Effective per-monitor DPI measured at the enumeration seam
-    /// (`MDT_EFFECTIVE_DPI`). `0` is unknown: the report holds the screen
-    /// instead of carrying a fabricated scale.
+    /// Effective per-monitor DPI measured by this output's own persistent
+    /// PMv2 observer window, including outputs with no application windows.
+    /// `0` is unknown: the report holds the screen instead of carrying a
+    /// fabricated scale.
     pub(super) dpi: u32,
 }
 

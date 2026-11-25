@@ -2,11 +2,12 @@
 //! Neutral output identity facts read from the native presentation seam.
 //!
 //! This module is pure: it turns raw EDID bytes into the core's
-//! [`OutputIdentity`] and normalizes a monitor device path into a SetupAPI
-//! device instance ID. Neither function invents a value: every unreadable or
-//! malformed field is `None`, and the connector stays `None` because EDID
-//! carries no connector and physical-connection normalization is not proved
-//! on this platform.
+//! [`OutputIdentity`], normalizes a monitor device path into a SetupAPI
+//! device instance ID, and normalizes that instance into the connector
+//! fact. Neither function invents a value: every unreadable or malformed
+//! field is `None`. EDID itself carries no connector, so [`parse_edid`]
+//! leaves it unknown; the caller attaches the normalized connection
+//! identity from the display path.
 
 use tiler_core::world_report::{MAX_IDENTITY_TEXT_BYTES, OutputIdentity};
 
@@ -33,12 +34,11 @@ const TEXT_TERMINATOR_NUL: u8 = 0x00;
 /// Upper bound on accepted monitor device paths.
 const MAX_MONITOR_DEVICE_PATH_BYTES: usize = 512;
 
-/// Decode the first 128-byte EDID base block into neutral identity facts.
+/// Decode the first 128-byte EDID base block into neutral physical facts.
 ///
 /// Fewer than 128 bytes, a bad header, or a malformed descriptor yields
 /// per-field `None`; the function never panics and never fabricates a value.
-/// `connector` is always `None`: EDID has no connector, and this platform
-/// does not prove physical-connection normalization.
+/// `connector` is always `None`: it is connection metadata, not EDID data.
 #[must_use]
 pub(crate) fn parse_edid(bytes: &[u8]) -> OutputIdentity {
     if bytes.len() < EDID_BASE_BLOCK_LEN {
@@ -207,6 +207,36 @@ pub(crate) fn device_instance_id(monitor_device_path: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Normalize one native monitor device instance into the `connector` fact.
+///
+/// The SetupAPI instance is the connection identity, deliberately not the
+/// physical triple: it stays with the port/route and changes when the cable
+/// moves, which is exactly the connector fallback's meaning. Windows
+/// instance IDs are case-insensitive and may arrive with either slash
+/// direction, so one connection has one spelling: ASCII-lowercase and
+/// rewrite `/` to `\`. Empty or overbound values are `None` (never
+/// truncated), because an overbound value would make the core refuse the
+/// screen row.
+#[must_use]
+pub(crate) fn normalized_connector(device_instance: &str) -> Option<String> {
+    let normalized = device_instance.replace('/', "\\").to_ascii_lowercase();
+    if normalized.is_empty() || normalized.len() > MAX_IDENTITY_TEXT_BYTES {
+        return None;
+    }
+    Some(normalized)
+}
+
+/// Connection-only identity, used when EDID is unreadable or malformed:
+/// the triple stays unknown while the normalized connector still lets core
+/// distinguish identical serial-less panels by their live route.
+#[must_use]
+pub(crate) fn connection_identity(device_instance: &str) -> OutputIdentity {
+    OutputIdentity {
+        connector: normalized_connector(device_instance),
+        ..OutputIdentity::unknown()
+    }
 }
 
 #[cfg(test)]
@@ -473,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn connector_is_always_none() {
+    fn parse_edid_never_invents_a_connector() {
         let cases = [
             parse_edid(&base_edid()),
             parse_edid(&[]),
@@ -543,5 +573,70 @@ mod tests {
         assert_eq!(device_instance_id("display-device-1"), None);
         assert_eq!(device_instance_id(""), None);
         assert_eq!(device_instance_id(r"\\?\DISPLAY"), None);
+    }
+
+    #[test]
+    fn connector_normalization_is_case_and_slash_stable() {
+        let expected = r"display\del4098\5&2b1e&0&uid4352";
+        assert_eq!(
+            normalized_connector(r"DISPLAY\DEL4098\5&2B1E&0&UID4352").as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            normalized_connector(r"display/del4098/5&2b1e&0&uid4352").as_deref(),
+            Some(expected)
+        );
+        // The two native path spellings of one display normalize equal.
+        let interface = r"\\?\DISPLAY#DEL4098#5&2b1e&0&UID4352#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+        let instance = device_instance_id(interface).expect("instance");
+        assert_eq!(
+            normalized_connector(&instance),
+            normalized_connector(r"display\del4098\5&2B1E&0&uid4352")
+        );
+    }
+
+    #[test]
+    fn connector_normalization_rejects_invalid_text() {
+        assert_eq!(normalized_connector(""), None);
+        let max = "a".repeat(MAX_IDENTITY_TEXT_BYTES);
+        assert_eq!(normalized_connector(&max).as_deref(), Some(max.as_str()));
+        let over = "a".repeat(MAX_IDENTITY_TEXT_BYTES + 1);
+        assert_eq!(normalized_connector(&over), None);
+    }
+
+    #[test]
+    fn identical_serialless_edids_are_distinguished_by_connector() {
+        // Two panels with the same EDID and no serial: the physical triple
+        // cannot tell them apart, which is exactly the connector fallback.
+        let bytes = base_edid();
+        let first = parse_edid(&bytes);
+        let second = parse_edid(&bytes);
+        assert_eq!(first.manufacturer, second.manufacturer);
+        assert_eq!(first.model, second.model);
+        assert_eq!(first.serial, None);
+        assert_eq!(second.serial, None);
+
+        let mut first = parse_edid(&bytes);
+        first.connector = normalized_connector(r"DISPLAY\DEL4098\5&2b1e&0&UID4352");
+        let mut second = parse_edid(&bytes);
+        second.connector = normalized_connector(r"DISPLAY\DEL4098\5&2b1e&0&UID4353");
+
+        assert!(first.connector.is_some());
+        assert!(second.connector.is_some());
+        assert_ne!(first.connector, second.connector);
+        assert_ne!(first, second, "identical triples need distinct connectors");
+    }
+
+    #[test]
+    fn unreadable_edid_keeps_the_connection_identity() {
+        let identity = connection_identity(r"DISPLAY\DEL4098\5&2b1e&0&UID4352");
+        assert_eq!(identity.manufacturer, None);
+        assert_eq!(identity.model, None);
+        assert_eq!(identity.serial, None);
+        assert_eq!(
+            identity.connector.as_deref(),
+            Some(r"display\del4098\5&2b1e&0&uid4352")
+        );
+        assert_eq!(connection_identity(""), OutputIdentity::unknown());
     }
 }
