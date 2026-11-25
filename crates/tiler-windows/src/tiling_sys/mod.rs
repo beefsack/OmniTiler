@@ -324,6 +324,10 @@ struct TileLoop {
     /// restored by one scan per process, before membership-tag rotation on
     /// the first admission preamble, so later ticks never rescan the slots.
     durable_preimage_recovery_done: bool,
+    /// Last per-tick observation skip set, used only to emit one
+    /// `world-observation-skips` trace row when the reasons change (never a
+    /// policy input). Held scopes otherwise repeat the same skip silently.
+    last_observation_skips: Vec<(String, String)>,
     /// Product keyboard policy for this run (takeover switch + Win+L opt-in).
     /// Live settings edits update this in place; the hook gate republishes
     /// every pump and the classifier applies policy plus the rebound table

@@ -49,6 +49,7 @@ pub(super) fn test_state() -> TileLoop {
         audit_path: None,
         durable_dir: std::env::temp_dir(),
         durable_preimage_recovery_done: true,
+        last_observation_skips: Vec::new(),
         keyboard: crate::snapkey::KeyboardConfig::disabled(),
         inner_gap: crate::tiling::INNER_GAP,
         outer_gap: crate::tiling::OUTER_GAP,
@@ -153,4 +154,39 @@ pub(super) fn test_state() -> TileLoop {
         cursor_wake: super::cursor_wake::CursorWake::new(),
         render_frames: RenderFrameHealth::default(),
     }
+}
+
+#[test]
+fn observation_skip_trace_names_reasons_once_per_change() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "omnitiler-skips-{}-{stamp}.log",
+        std::process::id()
+    ));
+    let mut state = test_state();
+    state.trace = true;
+    state.log_path = path.clone();
+    let skips = vec![
+        ("w24".to_owned(), "fullscreen".to_owned()),
+        ("w25".to_owned(), "minimized".to_owned()),
+    ];
+    state.note_observation_skips(&skips);
+    let first = std::fs::read_to_string(&path).expect("first row");
+    assert!(first.contains("\"event\":\"world-observation-skips\""));
+    assert!(first.contains("\"w24\"") && first.contains("\"fullscreen\""));
+    assert!(first.contains("\"w25\"") && first.contains("\"minimized\""));
+    // An unchanged set stays quiet; a cleared set re-arms without a row.
+    state.note_observation_skips(&skips);
+    state.note_observation_skips(&[]);
+    let after_quiet = std::fs::read_to_string(&path).expect("quiet rows");
+    assert_eq!(after_quiet, first);
+    // A changed set emits exactly one more row.
+    state.note_observation_skips(&[("w26".to_owned(), "hidden".to_owned())]);
+    let changed = std::fs::read_to_string(&path).expect("changed row");
+    assert_eq!(changed.lines().count(), 2);
+    assert!(changed.contains("\"w26\"") && changed.contains("\"hidden\""));
+    let _ = std::fs::remove_file(path);
 }

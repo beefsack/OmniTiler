@@ -193,6 +193,7 @@ pub(super) fn run_tile_loop(
         audit_path: audit_path.clone(),
         durable_dir: dir.to_path_buf(),
         durable_preimage_recovery_done: false,
+        last_observation_skips: Vec::new(),
         keyboard,
         inner_gap,
         outer_gap,
