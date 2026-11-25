@@ -1006,6 +1006,17 @@ mod live {
             }
         }
     }
+
+    /// One drop whose correlated callback did not carry its terminal: the
+    /// exact gesture id plus the publication counter captured before
+    /// submit. Reconciles against the shared retained settlement only on an
+    /// exact id with a strictly newer publication, so a prior terminal (or
+    /// any other gesture) can never settle it.
+    struct PendingDrop {
+        id: u64,
+        seq_before: u64,
+    }
+
     /// Owned Meta+left drag-preview route on the tile main thread (one
     /// [`crate::drag_session::DragSession`] plus one filled carrier plus
     /// one mouse-tap owner thread). Armed only on the tap input route with
@@ -1031,6 +1042,12 @@ mod live {
         pub previews: u64,
         pub drops: u64,
         pub cancels: u64,
+        /// Drop awaiting its own terminal from the shared publication (the
+        /// correlated callback was skipped, timed out, or carried a
+        /// mismatched id). One slot, latest drop only; reconciled at the
+        /// start of every turn and written off unproven when a new press
+        /// arrives.
+        pending_drop: Option<PendingDrop>,
     }
 
     impl DragRunState {
@@ -1125,6 +1142,7 @@ mod live {
                 previews: 0,
                 drops: 0,
                 cancels: 0,
+                pending_drop: None,
             })
         }
 
@@ -1303,6 +1321,42 @@ mod live {
         }
     }
 
+    /// Reconcile one outstanding drop against the engine's retained
+    /// gesture settlement publication. Resolves only on the pending drop's
+    /// exact id with a publication counter strictly newer than the submit
+    /// (so a terminal published before this drop can never settle it), and
+    /// writes the obligation off unproven when a new press proves the
+    /// callback will never carry it. Read-only over shared state; the
+    /// counters stay the only authority.
+    fn reconcile_pending_drop(
+        state: &mut DragRunState,
+        handle: &crate::runtime::RuntimeHandle,
+        new_press: bool,
+    ) {
+        let Some(pending) = state.pending_drop.as_ref() else {
+            return;
+        };
+        let (settlement, seq) = handle.gesture_settlement_snapshot();
+        if let Some(settled) = settlement
+            && settled.id == pending.id
+            && seq > pending.seq_before
+        {
+            state.pending_drop = None;
+            if settled.committed {
+                state.drops += 1;
+            } else {
+                state.cancels += 1;
+                eprintln!("tiler-macos dev drag drop settled without commit");
+            }
+            return;
+        }
+        if new_press {
+            state.pending_drop = None;
+            state.cancels += 1;
+            eprintln!("tiler-macos dev drag drop unproven before next press");
+        }
+    }
+
     /// One drag turn on the tile main thread: gate the tap, drain both
     /// channels (mouse batches coalesce to the latest sample; Escape wins
     /// over release), fence against published facts, resolve exactly one
@@ -1350,6 +1404,9 @@ mod live {
                 }
             }
         }
+        // An owed drop settles from the retained publication even on turns
+        // with no input; a new press below writes it off unproven.
+        reconcile_pending_drop(state, handle, false);
         if mouse_dead {
             // Tap thread death: never strand a held gesture. Cancel stale
             // with the overlay cleared and the snapshot invalidated.
@@ -1378,6 +1435,11 @@ mod live {
             && hits
                 .iter()
                 .any(|hit| hit.kind == crate::ffi::DragMouseKind::Down);
+        if need_owner {
+            // The prior callback can no longer arrive once a new press
+            // owns the route; an unresolved drop stays honestly unproven.
+            reconcile_pending_drop(state, handle, true);
+        }
         let owner = if need_owner {
             match (
                 reads.frontmost_pid,
@@ -1546,6 +1608,8 @@ mod live {
                 // Hide-before-mutation: the overlay clears before the
                 // core commits or any native frame moves.
                 state.carrier.hide();
+                let gesture_id = ingress.id;
+                let seq_before = handle.gesture_settlement_snapshot().1;
                 match handle.submit_drag_gesture(
                     ingress,
                     Some(press_revision),
@@ -1555,14 +1619,30 @@ mod live {
                         Some(settled) if settled.committed => {
                             state.drops += 1;
                         }
-                        _ => {
+                        Some(_) => {
                             state.cancels += 1;
                             eprintln!("tiler-macos dev drag drop settled without commit");
                         }
+                        None => {
+                            // The correlated reply carried no terminal for
+                            // this drop (skipped ticket or late drain): the
+                            // retained publication still owes the exact id.
+                            state.pending_drop = Some(PendingDrop {
+                                id: gesture_id,
+                                seq_before,
+                            });
+                            eprintln!("tiler-macos dev drag drop awaiting terminal");
+                        }
                     },
                     None => {
-                        state.cancels += 1;
-                        eprintln!("tiler-macos dev drag drop timed out; cancelled stale");
+                        // Timed out or the queue refused: the engine may
+                        // still settle this exact id later, so never count
+                        // a verdict the core has not produced.
+                        state.pending_drop = Some(PendingDrop {
+                            id: gesture_id,
+                            seq_before,
+                        });
+                        eprintln!("tiler-macos dev drag drop timed out; awaiting terminal");
                     }
                 }
             }

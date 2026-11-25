@@ -120,13 +120,9 @@ pub(crate) fn gate_close_baseline(
 /// Owner-side retained no-call verdict for one retained-focus binding: `None`
 /// passes, `Some(reason)` must not call. Checks the bound lifetime,
 /// topology revision, frozen home, shown/current readable Space, and the
-/// visible/non-minimized/non-fullscreen legs over retained truth plus the
-/// live native context. Game defers to the core pre-publish gate (no
-/// adapter-side game fact exists). Pure over already-read state; the fresh
-/// foreground recheck rides [`gate_close_baseline`], never here.
-/// Cause-specific exemption: an explicit user command bypasses the
-/// same-domain fullscreen steal guard (the intent IS the foreground move);
-/// every other cause keeps it.
+/// visible/non-minimized legs over retained truth plus the live native
+/// context. Pure over already-read state; the fresh foreground recheck rides
+/// [`gate_close_baseline`], never here.
 #[cfg(test)]
 pub(crate) fn gate_close_retained(
     close: &CloseFocusBinding,
@@ -186,23 +182,6 @@ pub(crate) fn gate_close_retained(
         }
         Some(_) => return Some(VisibilityReason::Unsupported),
         None => {}
-    }
-    // Fullscreen holds the foreground: the target itself or any same-domain
-    // sibling holding a retained fullscreen window refuses the steal —
-    // except for an explicit user command, whose intent IS the move.
-    let sibling_fullscreen = close.cause
-        != tiler_core::world_report::FocusRequestCause::ExplicitCommand
-        && retained.apps.iter().any(|(pid, app)| {
-            app.windows.iter().any(|w| {
-                w.fullscreen
-                    && retained
-                        .window_domains
-                        .get(&window_id(*pid, w.wid))
-                        .is_some_and(|home| home == &close.domain)
-            })
-        });
-    if sibling_fullscreen {
-        return Some(VisibilityReason::Fullscreen);
     }
     None
 }
@@ -1550,116 +1529,6 @@ mod tests {
                 false
             ),
             Some(VisibilityReason::Unsupported),
-        );
-        // Fullscreen target holds the foreground: refuse the steal.
-        let mut fs_target = close_retained();
-        fs_target
-            .apps
-            .get_mut(&CLOSE_PID)
-            .expect("app")
-            .windows
-            .push(ObservedWindow {
-                wid: CLOSE_WID,
-                x: 0,
-                y: 0,
-                w: 100,
-                h: 100,
-                floating: false,
-                fullscreen: true,
-                hints: WindowSizeHints::none(),
-            });
-        assert_eq!(
-            gate_close_retained(
-                &binding,
-                &fs_target,
-                Some(&current),
-                CLOSE_REV,
-                Some(CLOSE_GEN),
-                false
-            ),
-            Some(VisibilityReason::Fullscreen),
-        );
-        // Same-domain fullscreen sibling holds the foreground too.
-        let mut fs_sibling = close_retained();
-        fs_sibling
-            .apps
-            .get_mut(&CLOSE_PID)
-            .expect("app")
-            .windows
-            .push(ObservedWindow {
-                wid: 8,
-                x: 0,
-                y: 0,
-                w: 100,
-                h: 100,
-                floating: false,
-                fullscreen: true,
-                hints: WindowSizeHints::none(),
-            });
-        fs_sibling
-            .window_domains
-            .insert(window_id(CLOSE_PID, 8), close_key());
-        assert_eq!(
-            gate_close_retained(
-                &binding,
-                &fs_sibling,
-                Some(&current),
-                CLOSE_REV,
-                Some(CLOSE_GEN),
-                false
-            ),
-            Some(VisibilityReason::Fullscreen),
-        );
-    }
-
-    #[test]
-    fn explicit_command_exempt_from_fullscreen_steal_guard() {
-        // Cause-specific exemption: a same-domain fullscreen sibling refuses
-        // the steal for every other cause but never for an explicit user
-        // command, whose intent IS the foreground move.
-        let current = close_ctx(CLOSE_REV, true, true);
-        let mut fs_sibling = close_retained();
-        fs_sibling
-            .apps
-            .get_mut(&CLOSE_PID)
-            .expect("app")
-            .windows
-            .push(ObservedWindow {
-                wid: 8,
-                x: 0,
-                y: 0,
-                w: 100,
-                h: 100,
-                floating: false,
-                fullscreen: true,
-                hints: WindowSizeHints::none(),
-            });
-        fs_sibling
-            .window_domains
-            .insert(window_id(CLOSE_PID, 8), close_key());
-        assert_eq!(
-            gate_close_retained(
-                &close_binding(),
-                &fs_sibling,
-                Some(&current),
-                CLOSE_REV,
-                Some(CLOSE_GEN),
-                false
-            ),
-            Some(VisibilityReason::Fullscreen),
-        );
-        let mut explicit = close_binding();
-        explicit.cause = tiler_core::world_report::FocusRequestCause::ExplicitCommand;
-        assert_eq!(
-            gate_close_retained(
-                &explicit,
-                &fs_sibling,
-                Some(&current),
-                CLOSE_REV,
-                Some(CLOSE_GEN),
-                false
-            ),
-            None,
         );
     }
 

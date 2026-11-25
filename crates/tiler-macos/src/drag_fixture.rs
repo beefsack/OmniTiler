@@ -386,17 +386,6 @@ impl DragFixture {
         }
     }
 
-    fn to_preview(reply: &tiler_core::world_report::WorldReplyV4) -> PreviewOutcome {
-        match &reply.drag_preview {
-            Some(preview) => PreviewOutcome::Show {
-                rect: preview.rect,
-                hover_prior: preview.hover.clone().map(Box::new),
-                target: preview.target.clone(),
-            },
-            None => PreviewOutcome::HideTransient { reason: "held" },
-        }
-    }
-
     /// Main-thread idle publish for the press point: the exact cursor point
     /// joined with the explicit AX/WindowServer legs (offline these are the
     /// true owners; the live leg reads them from the OS and refuses on any
@@ -466,13 +455,20 @@ impl DragFixture {
     /// behavior probe for before/after comparison.
     fn preview_summary(&mut self, _window: &str, _point: (i32, i32)) -> PreviewSummary {
         let reply = self.dispatch(None, self.frames());
-        match Self::to_preview(&reply) {
-            PreviewOutcome::Show { rect, target, .. } => (
+        // Probe what core retained, even when there is no native gesture
+        // left. This summary never authorizes a paint.
+        match reply.drag_preview {
+            Some(preview) => (
                 "show".to_owned(),
-                Some((rect.x, rect.y, rect.w, rect.h)),
-                Some(target.0),
+                Some((
+                    preview.rect.x,
+                    preview.rect.y,
+                    preview.rect.w,
+                    preview.rect.h,
+                )),
+                Some(preview.target.0),
             ),
-            other => (Self::outcome_token(&other), None, None),
+            None => ("held".to_owned(), None, None),
         }
     }
 
@@ -604,8 +600,9 @@ impl DragFixture {
         let mut overlay_text = "hide".to_owned();
         let mut order_verified = None;
         if let Some(ingress) = preview_ingress {
+            let id = ingress.id;
             let updated = self.dispatch(Some(ingress), self.frames());
-            let outcome = Self::to_preview(&updated);
+            let outcome = crate::world_runtime::map_gesture_preview(&updated, id);
             preview_outcome_text = Self::outcome_token(&outcome);
             self.session.note_preview(&outcome);
             if let PreviewOutcome::Show { rect, target, .. } = &outcome {
@@ -647,6 +644,7 @@ impl DragFixture {
                 "release drops the proven owner"
             );
             let start_frame = rect_tuple(self.pair.a.frame);
+            let gesture_id = ingress.id;
             let mut moved_frames = self.frames();
             for (token, frame) in &mut moved_frames {
                 if *token == self.pair.a.token() {
@@ -661,7 +659,12 @@ impl DragFixture {
                 "post-gesture observation must differ from START"
             );
             let released = self.dispatch(Some(ingress), moved_frames);
-            match released.gesture_settled {
+            // A terminal belongs to this drop only on its exact gesture id;
+            // a late drain of an older id is not this requester's verdict.
+            match released
+                .gesture_settled
+                .filter(|terminal| terminal.id == gesture_id)
+            {
                 Some(terminal) if terminal.committed => {
                     drop_outcome = Some("planned".to_owned());
                     applied_frames = released

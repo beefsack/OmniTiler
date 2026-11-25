@@ -4300,6 +4300,8 @@ mod native {
                 last_core_generation: String::new(),
                 indicator_revision: 0,
                 presentation_style: crate::active_border::PresentationStylePx::default(),
+                gesture_settlement: None,
+                gesture_settlement_seq: 0,
             }));
             crate::runtime::RuntimeHandle {
                 shared: Arc::clone(&shared),

@@ -578,8 +578,8 @@ pub(crate) fn dispatch_report(
 /// (a terminal already consumed its id core-side, so a replay stays dead;
 /// queued successors converge next). Returns the verdict plus the
 /// requester-correlated transient outputs: the read-only preview outcome
-/// and the incorporated terminal, if any. Exactly one engine transaction
-/// per call; duplicates never re-emit.
+/// and the incorporated terminal, if any. When an issuing reply is skipped,
+/// the terminal remains available to the requester on a later applied reply.
 pub(crate) fn dispatch_gesture_report(
     session: &mut WorldSession,
     retained: &mut RetainedCore,
@@ -760,7 +760,7 @@ pub(crate) fn dispatch_gesture_report(
                         None,
                     );
                 };
-                let preview = map_gesture_preview(&applied);
+                let preview = map_gesture_preview(&applied, gesture_id);
                 // A terminal belongs to the gesture this report carries:
                 // a reply that still settles an older id is a late
                 // drain, not this report's terminal.
@@ -856,7 +856,7 @@ pub(crate) fn dispatch_gesture_report(
                         None,
                     );
                 };
-                let preview = map_gesture_preview(&applied);
+                let preview = map_gesture_preview(&applied, gesture_id);
                 // A terminal belongs to the gesture this report carries:
                 // a reply that still settles an older id is a late
                 // drain, not this report's terminal.
@@ -908,7 +908,7 @@ pub(crate) fn dispatch_gesture_report(
             emit(shared, pid, generation, seq, "core-reply", "duplicate", 0);
             (
                 DispatchVerdict::Duplicate,
-                map_gesture_preview(&reply),
+                map_gesture_preview(&reply, gesture_id),
                 reply
                     .gesture_settled
                     .filter(|settled| settled.id == gesture_id),
@@ -1991,7 +1991,7 @@ fn consume_switch_settlements(
     generation: u64,
     seq: u64,
 ) {
-    for settlement in session.apply_switch_settlements(&reply.switch_settled) {
+    session.apply_switch_settlements(&reply.switch_settled, |settlement| {
         let failed = settlement.failed.len() as u64;
         // Correlate the receipt to the settled parent operation; a parent
         // token with no numeric op falls back to this dispatch's sequence
@@ -2015,7 +2015,90 @@ fn consume_switch_settlements(
             settlement.focus.as_str(),
             failed,
         );
-    }
+    });
+}
+
+/// Apply the applied reply's retained gesture terminal, publish one
+/// lifecycle receipt, and publish the terminal for the adapter-local
+/// requester.
+///
+/// [`WorldSession::apply_gesture_settlement`] owns the one-slot rule: the
+/// field re-publishes on every applied reply, a same-id replay is inert
+/// (never regressing identity or changing the original verdict), and only
+/// a newly incorporated terminal applies. A terminal whose issuing reply
+/// was skipped first lands on a later accepted reply, which is the only
+/// publisher for the adapter-local requester. The shared publication lets a
+/// main-thread drop whose issuing callback was skipped or dropped settle
+/// from the exact terminal instead of a fabricated verdict. Receipts are
+/// diagnostic: a settled gesture never authorizes a setter, unspends a
+/// dispatch, or releases an arrival barrier. The ring's reference id
+/// carries the settled gesture identity for correlation.
+fn consume_gesture_settlement(
+    session: &mut WorldSession,
+    shared: &Arc<Mutex<Shared>>,
+    reply: &WorldReplyV4,
+    pid: u32,
+    generation: u64,
+) {
+    let Some(applied) = session.apply_gesture_settlement(reply.gesture_settled.as_ref()) else {
+        return;
+    };
+    let outcome = if applied.committed {
+        "committed"
+    } else {
+        "uncommitted"
+    };
+    emit(shared, pid, generation, applied.id, "gesture", outcome, 0);
+    crate::runtime_shared::publish_gesture_settlement(
+        shared,
+        crate::runtime_shared::PublishedGestureSettlement {
+            id: applied.id,
+            committed: applied.committed,
+        },
+    );
+}
+
+/// Apply the applied reply's retained operation-settlement projection and
+/// publish one lifecycle receipt per newly applied terminal.
+///
+/// [`WorldSession::apply_operation_settlements`] owns the once-per-identity
+/// rule: the projection is complete current state re-published on every
+/// applied reply, so an exact replay is inert and a differing row for the
+/// same `(window, kind)` replaces the earlier applied snapshot. This
+/// wrapper only turns each genuine application into a receipt: the ring
+/// kind names the phase (`operation-clear`/`operation-float`), the outcome
+/// carries the closed terminal token, and the reference id is this
+/// dispatch's sequence (no operation-id parsing, no adopted identity). The
+/// narrow `cause` stays typed in the retained row (the ring carries static
+/// tokens only, never eagerly formatted text). Receipts are diagnostic: a
+/// settled operation never authorizes a setter, unspends a dispatch, or
+/// releases an arrival barrier.
+fn consume_operation_settlements(
+    session: &mut WorldSession,
+    shared: &Arc<Mutex<Shared>>,
+    reply: &WorldReplyV4,
+    pid: u32,
+    generation: u64,
+    seq: u64,
+) {
+    session.apply_operation_settlements(&reply.operation_settled, |settlement| {
+        let kind = match settlement.kind {
+            tiler_core::world_report::OperationKind::Clear => "operation-clear",
+            tiler_core::world_report::OperationKind::Float => "operation-float",
+        };
+        // Diagnostic reference id is the dispatch sequence: the settlement
+        // note forbids parsing/adopting operation-id authority here, and a
+        // receipt never needs the parent token to name its verdict.
+        emit(
+            shared,
+            pid,
+            generation,
+            seq,
+            kind,
+            settlement.outcome.as_str(),
+            0,
+        );
+    });
 }
 
 /// Consume one applied world reply: current-scope controlled frames into
@@ -2043,6 +2126,18 @@ fn consume_world_reply(
     ticket_request_seq: u64,
 ) {
     publish_native_creations(shared, reply, native);
+    // Retained settlement projections: a fresh generation clears every
+    // retained outcome before any row applies.
+    if session.sync_settlement_generation(&reply.core_generation) {
+        lock_shared(shared).gesture_settlement = None;
+    }
+    // Retained gesture terminal: applied once per exact identity across
+    // every applied reply, so a terminal whose issuing reply was skipped
+    // still lands (see `consume_gesture_settlement`).
+    consume_gesture_settlement(session, shared, reply, pid, generation);
+    // Retained operation settlement projection: applied once per exact
+    // `(window, kind)` terminal (see `consume_operation_settlements`).
+    consume_operation_settlements(session, shared, reply, pid, generation, seq);
     // Retained switch settlement projection: applied once per exact
     // terminal across every applied reply, so a verdict whose issuing
     // reply was skipped still lands (see `consume_switch_settlements`).
@@ -3827,8 +3922,7 @@ pub(crate) fn drop_selection_focus_for_operation(
 /// correlation-bound deferred intent released only after the native
 /// selection proves arrival — never dispatched early, never reconstructed
 /// from latest window rows. A bare explicit command dispatches at once
-/// (exempt from the automatic fullscreen steal guard) and supersedes any
-/// pending deferred intent.
+/// when safe and supersedes any pending deferred intent.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_close_focus(
     session: &mut WorldSession,
@@ -4375,32 +4469,8 @@ fn dispatch_close_focus(
         }
         None => {}
     }
-    // Fullscreen holds the foreground: the target itself or any same-domain
-    // sibling holding a retained fullscreen window refuses the steal —
-    // except for a bare explicit user command, whose intent IS the move.
-    let sibling_fullscreen = req.cause != FocusRequestCause::ExplicitCommand
-        && retained.apps.iter().any(|(apid, app)| {
-            app.windows.iter().any(|w| {
-                w.fullscreen
-                    && retained
-                        .window_domains
-                        .get(&crate::runtime_types::window_id(*apid, w.wid))
-                        .is_some_and(|home| home == &domain)
-            })
-        });
-    if sibling_fullscreen {
-        no_call(
-            session,
-            shared,
-            FocusNoCallReason::Fullscreen,
-            "no-call-fullscreen",
-            fpid,
-            app_generation,
-        );
-        return;
-    }
-    // Game/overlay defers to the core pre-publish gate (no adapter-side
-    // game fact exists); unknown foreground never dispatches blind.
+    // Core resolves automatic fullscreen/game policy before publishing a
+    // request. The owner still rechecks the target's live native safety.
     if retained.observed_focus.is_none() && !retained.observed_focus_known {
         no_call(
             session,
@@ -4752,7 +4822,9 @@ mod tests {
         tiler_core::world_report::WorldReplyV4,
     );
     use tiler_core::directional::OutputId;
-    use tiler_core::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
+    use tiler_core::world_report::{
+        OperationEvent, OperationKind, OperationOutcome, SwitchEvent, SwitchFocus, SwitchOutcome,
+    };
 
     fn output() -> OutputId {
         OutputId("macos-display-1".to_owned())
@@ -5289,7 +5361,7 @@ mod tests {
     }
 
     /// `(outcome, count)` receipts of one ring kind, in emission order.
-    fn switch_receipts(shared: &Arc<Mutex<Shared>>, kind: &str) -> Vec<(&'static str, u64)> {
+    fn receipts(shared: &Arc<Mutex<Shared>>, kind: &str) -> Vec<(&'static str, u64)> {
         lock_shared(shared)
             .log
             .iter()
@@ -5336,7 +5408,7 @@ mod tests {
             session.switch_settlements.is_empty(),
             "a skipped reply applies no switch terminal"
         );
-        assert!(switch_receipts(&shared, "switch").is_empty());
+        assert!(receipts(&shared, "switch").is_empty());
 
         // The catch-up reply carries the retained projection: the verdict
         // lands here, exactly once, even though the issuing reply never
@@ -5360,21 +5432,60 @@ mod tests {
         assert_eq!(session.switch_settlements[0].output, output());
         assert_eq!(session.switch_settlements[0].operation_id, "op-5");
         assert_eq!(
-            switch_receipts(&shared, "switch"),
+            receipts(&shared, "switch"),
             vec![("complete", 0)],
             "one receipt for the terminal the skipped reply lost"
         );
-        assert_eq!(
-            switch_receipts(&shared, "switch-focus"),
-            vec![("proven", 0)]
-        );
+        assert_eq!(receipts(&shared, "switch-focus"), vec![("proven", 0)]);
         // A later applied reply re-publishes the same row: inert.
         consume_switch_settlements(&mut session, &shared, &applied, 0, 0, 0);
         assert_eq!(
-            switch_receipts(&shared, "switch").len(),
+            receipts(&shared, "switch").len(),
             1,
             "retained re-projection never double-applies"
         );
+    }
+
+    #[test]
+    fn retained_operation_settlements_distinguish_phases_and_prune_departed_owner() {
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let window = WindowId("4242_7".to_owned());
+        let mut reply = empty_reply();
+        reply.operation_settled = vec![
+            OperationEvent {
+                window: window.clone(),
+                kind: OperationKind::Clear,
+                operation_id: "same-operation".to_owned(),
+                outcome: OperationOutcome::ClearContinuedFloat,
+                cause: None,
+            },
+            OperationEvent {
+                window,
+                kind: OperationKind::Float,
+                operation_id: "same-operation".to_owned(),
+                outcome: OperationOutcome::FloatFrameProven,
+                cause: None,
+            },
+        ];
+        for _ in 0..2 {
+            consume_operation_settlements(&mut session, &shared, &reply, 0, 0, 0);
+        }
+        let old_rows = std::mem::take(&mut reply.operation_settled);
+        consume_operation_settlements(&mut session, &shared, &reply, 0, 0, 0);
+        assert_eq!(
+            receipts(&shared, "operation-clear"),
+            [("continued-float", 0)]
+        );
+        assert_eq!(
+            receipts(&shared, "operation-float"),
+            [("float-frame-proven", 0)]
+        );
+        // An owner seen after departure does not inherit the old dedup slot.
+        reply.operation_settled = old_rows;
+        consume_operation_settlements(&mut session, &shared, &reply, 0, 0, 0);
+        assert_eq!(receipts(&shared, "operation-clear").len(), 2);
+        assert_eq!(receipts(&shared, "operation-float").len(), 2);
     }
 
     #[test]
@@ -5401,13 +5512,10 @@ mod tests {
         assert_eq!(slot.focus, SwitchFocus::Refused);
         assert_eq!(slot.failed.len(), 2, "frozen failed members preserved");
         assert_eq!(
-            switch_receipts(&shared, "switch"),
+            receipts(&shared, "switch"),
             vec![("completed-with-failures", 2)]
         );
-        assert_eq!(
-            switch_receipts(&shared, "switch-focus"),
-            vec![("refused", 2)]
-        );
+        assert_eq!(receipts(&shared, "switch-focus"), vec![("refused", 2)]);
     }
 
     #[test]
@@ -5472,7 +5580,7 @@ mod tests {
         assert_eq!(session.switch_settlements.len(), 1);
         assert_eq!(session.switch_settlements[0].operation_id, "op-5");
         assert_eq!(
-            switch_receipts(&shared, "switch"),
+            receipts(&shared, "switch"),
             vec![("complete", 0)],
             "agreement between the two channels applies the terminal once"
         );
@@ -5541,7 +5649,7 @@ mod tests {
         assert_eq!(session.switch_settlements[1].output, other);
         assert_eq!(session.switch_settlements[1].operation_id, "op-7");
         assert_eq!(
-            switch_receipts(&shared, "switch"),
+            receipts(&shared, "switch"),
             vec![
                 ("complete", 0),
                 ("completed-with-failures", 1),
@@ -5552,18 +5660,18 @@ mod tests {
 
         // A corrected verdict for the same parent operation is a distinct
         // terminal identity: the projection wins and the slot is replaced.
-        let mut corrected = empty_reply();
-        corrected.switch_settled.push(switch_event(
+        let mut corrected = later;
+        corrected.switch_settled[1] = switch_event(
             &other,
             "op-7",
             SwitchOutcome::Complete,
             &[],
             SwitchFocus::Proven,
-        ));
+        );
         consume_switch_settlements(&mut session, &shared, &corrected, 0, 0, 0);
         assert_eq!(session.switch_settlements[1].focus, SwitchFocus::Proven);
         assert_eq!(
-            switch_receipts(&shared, "switch").len(),
+            receipts(&shared, "switch").len(),
             4,
             "the corrected verdict is applied, not dropped in favour of the first"
         );
@@ -6098,6 +6206,8 @@ mod tests {
             last_core_generation: String::new(),
             indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
+            gesture_settlement: None,
+            gesture_settlement_seq: 0,
         }))
     }
 
@@ -10646,6 +10756,39 @@ mod tests {
             1,
             0,
         );
+    }
+
+    #[test]
+    fn retained_focus_does_not_reapply_automatic_fullscreen_policy() {
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
+        let mut retained = close_retained(9, Some(close_target(7)), true);
+        // Model adapter-only retained inventory: the accepted core reply owns
+        // policy, so a sibling from that inventory cannot veto it again.
+        let mut sibling = close_roster_entry(8).observed.expect("sibling frame");
+        sibling.fullscreen = true;
+        retained
+            .apps
+            .get_mut(&CLOSE_PID)
+            .unwrap()
+            .windows
+            .push(sibling);
+        retained
+            .window_domains
+            .insert(close_target(8).0, close_domain());
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let reply = close_reply_for(&session, "close-focus-7", 7, 9);
+        consume_close(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &reply,
+            None,
+        );
+        assert_eq!(lock_focus(&focus_queue).len(), 1);
+        assert_eq!(slot.take().expect("approved request reaches owner").wid, 9);
     }
 
     #[test]

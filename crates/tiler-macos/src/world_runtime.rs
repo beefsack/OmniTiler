@@ -46,13 +46,13 @@ use std::sync::Arc;
 
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
-use tiler_core::gesture::GestureIngress;
+use tiler_core::gesture::{GestureIngress, GestureSettled};
 use tiler_core::session::DomainKey;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     FocusFeedback, FrameAttempt, FramePurpose, FrameSetter, HoldReason, IntentRecord,
-    MemberAttempt, NativeCreationAttempt, SwitchEvent, SwitchFocus, SwitchOutcome, ViewAttempt,
-    WorldCommand, WorldReplyV4, WorldReportV4,
+    MemberAttempt, NativeCreationAttempt, OperationEvent, SwitchEvent, ViewAttempt, WorldCommand,
+    WorldReplyV4, WorldReportV4,
 };
 
 use crate::focus_route::FocusRoute;
@@ -98,21 +98,51 @@ fn session_tokens() -> Option<(String, String)> {
 const UNBOUND_INCARNATION: &str = "unbound";
 const UNBOUND_GENERATION: &str = "unbound";
 
-/// One applied retained switch terminal: the owning output, the parent
-/// operation the core settled, and the closed verdict fields, projected
-/// verbatim from the reply's `switch_settled` row. The adapter publishes
-/// this completion receipt only; it never authorizes a native write (the
-/// retained outcome describes completed core accounting, not a setter).
-/// The row's `fallback` flag is deliberately not projected: this adapter
-/// lane authorizes no fallback hides, so the core always reports it false
-/// and there is no verdict to record.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SwitchSettlement {
-    pub output: OutputId,
-    pub operation_id: String,
-    pub outcome: SwitchOutcome,
-    pub failed: Vec<WindowId>,
-    pub focus: SwitchFocus,
+/// Merge the core's complete, key-ordered projection. Departed keys disappear
+/// without a verdict. Inert redelivery allocates nothing; on change, move
+/// unchanged rows and copy only rows whose contents changed.
+fn apply_settlement_projection<T: Eq + Clone>(
+    current: &mut Vec<T>,
+    incoming: &[T],
+    compare_key: impl Fn(&T, &T) -> std::cmp::Ordering,
+    mut receipt: impl FnMut(&T),
+) {
+    if current.as_slice() == incoming {
+        return;
+    }
+    let mut previous = std::mem::replace(current, Vec::with_capacity(incoming.len()))
+        .into_iter()
+        .peekable();
+    for row in incoming {
+        while previous
+            .peek()
+            .is_some_and(|old| compare_key(old, row).is_lt())
+        {
+            previous.next();
+        }
+        if previous
+            .peek()
+            .is_some_and(|old| compare_key(old, row).is_eq())
+        {
+            let old = previous.next().expect("matching row");
+            if &old == row {
+                current.push(old);
+                continue;
+            }
+        }
+        receipt(row);
+        current.push(row.clone());
+    }
+}
+
+/// One applied retained gesture terminal: the core-incorporated gesture
+/// identity and its committed verdict, verbatim from `gesture_settled`.
+/// Generation-scoped; a fresh generation never inherits the previous
+/// terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GestureSettlement {
+    pub id: u64,
+    pub committed: bool,
 }
 
 /// One pointer sample stored on the session: the pointer point plus the
@@ -248,8 +278,25 @@ pub(crate) struct WorldSession {
     /// projection's stable output order (see
     /// [`WorldSession::apply_switch_settlements`]). Adapter-visible
     /// completion receipts only: no claim, frame, or focus decision reads
-    /// this, and an absent owner is never a verdict.
-    pub(crate) switch_settlements: Vec<SwitchSettlement>,
+    /// this, and an absent owner is never a verdict (its row is dropped
+    /// with the owner, so retention is bounded by the projection).
+    pub(crate) switch_settlements: Vec<SwitchEvent>,
+    /// Applied retained operation terminals, latest per `(window, kind)` in
+    /// the projection's stable key order (see
+    /// [`WorldSession::apply_operation_settlements`]). Completion receipts
+    /// only: no actuator reads this, and a key absent from the complete
+    /// projection is dropped, never a verdict.
+    operation_settlements: Vec<OperationEvent>,
+    /// Latest applied retained gesture terminal for the bound generation
+    /// (see [`WorldSession::apply_gesture_settlement`]). One nullable slot
+    /// per generation, never a take-once queue; a consumed/stale replay
+    /// cannot regress its identity or change its original verdict.
+    gesture_settlement: Option<GestureSettlement>,
+    /// Generation the retained settlement projections were applied under.
+    /// A rebind (fresh handshake/new generation) clears every retained
+    /// outcome and the retained gesture terminal; same-generation replays
+    /// preserve them.
+    settlements_generation: String,
 }
 
 impl WorldSession {
@@ -319,6 +366,9 @@ impl WorldSession {
                 intent_admitted: BTreeSet::new(),
                 intent_unverifiable: BTreeSet::new(),
                 switch_settlements: Vec::new(),
+                operation_settlements: Vec::new(),
+                gesture_settlement: None,
+                settlements_generation: UNBOUND_GENERATION.to_owned(),
             };
         };
         // `seed` mints the bound generation below, so the constructor always
@@ -364,6 +414,9 @@ impl WorldSession {
             intent_admitted: BTreeSet::new(),
             intent_unverifiable: BTreeSet::new(),
             switch_settlements: Vec::new(),
+            operation_settlements: Vec::new(),
+            gesture_settlement: None,
+            settlements_generation: bound_generation,
         }
     }
 
@@ -615,49 +668,74 @@ impl WorldSession {
             .is_err()
     }
 
-    /// Apply one applied reply's `switch_settled` rows.
+    /// The applied projections and gesture terminal are generation-scoped.
+    pub(crate) fn sync_settlement_generation(&mut self, bound: &str) -> bool {
+        if self.settlements_generation == bound {
+            return false;
+        }
+        self.settlements_generation = bound.to_owned();
+        self.gesture_settlement = None;
+        self.operation_settlements.clear();
+        self.switch_settlements.clear();
+        true
+    }
+
+    /// Apply one applied reply's `gesture_settled` slot.
     ///
-    /// The field is a complete retained projection, not a take-once queue:
-    /// every applied reply re-publishes the same rows, and the issuing
-    /// reply may have been skipped (refused as stale or coalesced as a
-    /// duplicate) with the terminal first delivered by a later reply. A
-    /// terminal is therefore applied once per settlement identity: the
-    /// owning output (the projection's unique key) plus the exact verdict
-    /// (parent operation, outcome, failed members, focus). An exact replay
-    /// is inert, so redelivery and re-projection never double-apply.
-    ///
-    /// The retained projection is authoritative over anything the adapter
-    /// applied earlier for the same output: it is complete current state,
-    /// so a differing row (the successor operation's terminal after new
-    /// same-key work, or a corrected verdict once later evidence lands)
-    /// replaces the published slot and is applied, while an absent row
-    /// proves no verdict and never removes one. Returns only the rows this
-    /// call applied, in projection order, for the receipt emission.
+    /// The slot is one nullable retained value per `(adapter, gen)`, not a
+    /// take-once queue: it re-publishes on later applied replies, so a
+    /// terminal whose issuing reply was skipped still lands. Only a newly
+    /// incorporated terminal replaces it; a same-id replay can neither
+    /// regress a newer identity nor change the original verdict. Returns
+    /// only a genuinely applied terminal, for the receipt/publication.
+    pub(crate) fn apply_gesture_settlement(
+        &mut self,
+        settled: Option<&GestureSettled>,
+    ) -> Option<GestureSettlement> {
+        let settled = settled?;
+        if self
+            .gesture_settlement
+            .is_some_and(|current| current.id == settled.id)
+        {
+            // Same identity re-published: exact replay is inert, including
+            // after the core consumed the id and even if a (corrupt)
+            // verdict differs.
+            return None;
+        }
+        let settlement = GestureSettlement {
+            id: settled.id,
+            committed: settled.committed,
+        };
+        self.gesture_settlement = Some(settlement);
+        Some(settlement)
+    }
+
+    /// Apply changed operation terminals, keyed by window lifetime and phase.
+    pub(crate) fn apply_operation_settlements(
+        &mut self,
+        events: &[OperationEvent],
+        receipt: impl FnMut(&OperationEvent),
+    ) {
+        apply_settlement_projection(
+            &mut self.operation_settlements,
+            events,
+            |left, right| (&left.window, left.kind).cmp(&(&right.window, right.kind)),
+            receipt,
+        );
+    }
+
+    /// Apply changed switch terminals, keyed by their owning output.
     pub(crate) fn apply_switch_settlements(
         &mut self,
         events: &[SwitchEvent],
-    ) -> Vec<SwitchSettlement> {
-        let mut applied = Vec::new();
-        for event in events {
-            let row = SwitchSettlement {
-                output: event.output.clone(),
-                operation_id: event.operation_id.clone(),
-                outcome: event.outcome,
-                failed: event.failed.clone(),
-                focus: event.focus,
-            };
-            match self
-                .switch_settlements
-                .iter()
-                .position(|slot| slot.output == row.output)
-            {
-                Some(index) if self.switch_settlements[index] == row => continue,
-                Some(index) => self.switch_settlements[index] = row.clone(),
-                None => self.switch_settlements.push(row.clone()),
-            }
-            applied.push(row);
-        }
-        applied
+        receipt: impl FnMut(&SwitchEvent),
+    ) {
+        apply_settlement_projection(
+            &mut self.switch_settlements,
+            events,
+            |left, right| left.output.cmp(&right.output),
+            receipt,
+        );
     }
 
     /// Adapter incarnation bound into every report.
@@ -1534,20 +1612,27 @@ pub(crate) fn build_dispatch_report(
 /// Map one applied gesture reply to its read-only preview outcome: a
 /// core-resolved insertion slot shows the filled rect above the
 /// core-resolved target neighbor (never the mover, never an adapter
-/// guess); every other applied reply hides transiently with the gesture
-/// retained for the next sample. The carried sticky hover stays core-side
-/// (the ingress carries no hover prior); the outcome still reports it for
+/// guess) only when the retained preview names the active gesture. The
+/// core preserves an older gesture's preview across an ignored mismatched
+/// newcomer, so an unbound id never repaints a replacement gesture;
+/// every other applied reply hides transiently with the gesture retained
+/// for the next sample. The carried sticky hover stays core-side (the
+/// ingress carries no hover prior); the outcome still reports it for
 /// evidence parity with the offline harness, but production never feeds
 /// it back into the next ingress.
 pub(crate) fn map_gesture_preview(
     reply: &tiler_core::world_report::WorldReplyV4,
+    gesture_id: u64,
 ) -> crate::drag_drop::PreviewOutcome {
     use crate::drag_drop::PreviewOutcome;
     match &reply.drag_preview {
-        Some(preview) => PreviewOutcome::Show {
+        Some(preview) if preview.id == gesture_id => PreviewOutcome::Show {
             rect: preview.rect,
             hover_prior: preview.hover.clone().map(Box::new),
             target: preview.target.clone(),
+        },
+        Some(_) => PreviewOutcome::HideTransient {
+            reason: "stale-preview",
         },
         None => PreviewOutcome::HideTransient { reason: "held" },
     }

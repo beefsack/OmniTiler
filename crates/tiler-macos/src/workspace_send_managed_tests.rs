@@ -3740,6 +3740,8 @@ mod send_join_tests {
             last_core_generation: String::new(),
             indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
+            gesture_settlement: None,
+            gesture_settlement_seq: 0,
         }))
     }
 

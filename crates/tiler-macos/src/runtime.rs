@@ -350,6 +350,8 @@ impl Runtime {
                 last_core_generation: String::new(),
                 indicator_revision: 0,
                 presentation_style: crate::active_border::PresentationStylePx::default(),
+                gesture_settlement: None,
+                gesture_settlement_seq: 0,
             }));
             let inbox = Arc::new(Inbox::new(config.engine_queue_depth.max(1)));
             let focus_queue = Arc::new(Mutex::new(Vec::<FocusRequest>::new()));
@@ -415,6 +417,8 @@ impl Runtime {
             last_core_generation: String::new(),
             indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
+            gesture_settlement: None,
+            gesture_settlement_seq: 0,
         }));
         emit(&shared, 0, 0, 0, "runtime", "starting", 0);
         let inbox = Arc::new(Inbox::new(config.engine_queue_depth));
@@ -1404,6 +1408,21 @@ impl RuntimeHandle {
             return None;
         }
         rx.recv_timeout(timeout).ok()
+    }
+
+    /// Latest genuinely applied retained gesture terminal plus its
+    /// monotonic publication counter. The main-thread drag session reads
+    /// this to settle a drop whose issuing callback was skipped or dropped
+    /// (exact id plus a counter strictly newer than the submit). Read-only
+    /// and lock-scope-local: never actuates, never consumes.
+    pub(crate) fn gesture_settlement_snapshot(
+        &self,
+    ) -> (
+        Option<crate::runtime_shared::PublishedGestureSettlement>,
+        u64,
+    ) {
+        let guard = lock_shared(&self.shared);
+        (guard.gesture_settlement, guard.gesture_settlement_seq)
     }
 
     /// Offline fault injection only: makes the engine thread panic on its

@@ -749,9 +749,7 @@ pub struct FocusEvidence {
 /// is empty, never unknown-by-default) and `fallback_known` tells whether
 /// that fallback was proven (a bound window or proven windowless) or
 /// unknown — an unknown baseline must refuse as `FocusUnproven`, never
-/// bypass the fresh foreground recheck. `cause` selects cause-specific
-/// explicit exemptions (an explicit user command is exempt from the
-/// automatic fullscreen steal guard; every other cause keeps it).
+/// bypass the fresh foreground recheck. `cause` identifies the core decision;
 /// `cmd_seq` correlates exactly the explicit-command origin (`None`
 /// otherwise) and `after_shown` carries the frozen selection dependencies
 /// for selection-backed explicit requests (`None` otherwise). `None` on

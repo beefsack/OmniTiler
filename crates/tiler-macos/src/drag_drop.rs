@@ -1764,24 +1764,6 @@ mod tests {
                 start_frame,
             }
         }
-
-        fn to_preview(reply: &tiler_core::world_report::WorldReplyV4) -> PreviewOutcome {
-            match &reply.drag_preview {
-                Some(tiler_core::world_report::DragPreviewV4 {
-                    rect,
-                    hover,
-                    target,
-                    ..
-                }) => PreviewOutcome::Show {
-                    rect: *rect,
-                    hover_prior: hover.clone().map(Box::new),
-                    target: target.clone(),
-                },
-                _ => PreviewOutcome::HideTransient {
-                    reason: "no-preview",
-                },
-            }
-        }
     }
 
     #[test]
@@ -1858,7 +1840,7 @@ mod tests {
         );
         assert!(
             matches!(
-                WorldDrag::to_preview(&zero),
+                crate::world_runtime::map_gesture_preview(&zero, 1),
                 PreviewOutcome::HideTransient { .. }
             ),
             "zero movement must hold with no overlay"
@@ -1876,7 +1858,9 @@ mod tests {
                 start,
             )),
         );
-        let PreviewOutcome::Show { rect, .. } = WorldDrag::to_preview(&moved) else {
+        let PreviewOutcome::Show { rect, .. } =
+            crate::world_runtime::map_gesture_preview(&moved, 1)
+        else {
             panic!("moved pointer must resolve a slot");
         };
         assert!(rect.w > 0 && rect.h > 0);
@@ -1892,7 +1876,7 @@ mod tests {
         );
         assert!(
             matches!(
-                WorldDrag::to_preview(&outside),
+                crate::world_runtime::map_gesture_preview(&outside, 1),
                 PreviewOutcome::HideTransient { .. }
             ),
             "outside must hold with no overlay"
@@ -1927,7 +1911,8 @@ mod tests {
                 start,
             )),
         );
-        let PreviewOutcome::Show { .. } = WorldDrag::to_preview(&moved) else {
+        let PreviewOutcome::Show { .. } = crate::world_runtime::map_gesture_preview(&moved, 2)
+        else {
             panic!("need a resolved slot for the release");
         };
         // The native move happened (the window server moved the window

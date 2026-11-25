@@ -158,6 +158,19 @@ pub type MidflightHook = Arc<dyn Fn() + Send + Sync>;
 /// [`RuntimeHandle::set_post_accept_hook_for_test`]`(None)`.
 pub type PostAcceptHook = Arc<dyn Fn() + Send + Sync>;
 
+/// Latest retained gesture terminal the engine applied for this runtime,
+/// published on every genuine application (a retained slot re-published by
+/// a later accepted reply, never a held/refused ticket). The main-thread
+/// drag session reconciles an owed drop against its exact gesture id;
+/// [`Shared::gesture_settlement_seq`] fences a publication older than the
+/// submit that owed it, so a stale prior terminal can never settle a
+/// replacement gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PublishedGestureSettlement {
+    pub id: u64,
+    pub committed: bool,
+}
+
 /// Current close-focus publication identity for taken-but-not-started
 /// owner invalidation: the dispatch half publishes the latest coherent
 /// nullable close envelope here on every reply (`Some` on a fresh close
@@ -516,6 +529,16 @@ pub(crate) struct Shared {
     /// once by the tile main thread at startup; the engine copies it into
     /// every report so core shapes use the configured outset.
     pub(crate) presentation_style: crate::active_border::PresentationStylePx,
+    /// Latest retained gesture terminal the engine genuinely applied (see
+    /// [`PublishedGestureSettlement`]); `None` until the first terminal
+    /// for this runtime. Written only by the engine thread, read by the
+    /// main-thread drag session to settle an owed drop whose issuing
+    /// callback was skipped or dropped.
+    pub(crate) gesture_settlement: Option<PublishedGestureSettlement>,
+    /// Monotonic publication counter for [`Self::gesture_settlement`],
+    /// bumped only when a new terminal publishes: a pending drop captured
+    /// before its submit accepts only a strictly newer publication.
+    pub(crate) gesture_settlement_seq: u64,
 }
 
 /// Lock the shared state, recovering from poisoning so stop/reap/diagnostics
@@ -543,6 +566,23 @@ pub(crate) fn lock_focus(
 /// submitter is told to retry. Lock-free; safe mid-flight from any thread.
 pub(crate) fn invalidate_clock(shared: &Mutex<Shared>) {
     lock_shared(shared).clock.invalidate();
+}
+
+/// Publish one genuinely applied retained gesture terminal for the
+/// adapter-local requester: the engine calls this only from an applied
+/// reply's settlement consumer (a held/refused ticket never publishes), so
+/// a main-thread drop whose issuing callback was skipped or dropped can
+/// settle from the exact terminal a later accepted reply re-published. The
+/// counter bumps only on publication; the latest terminal is retained
+/// until replaced (never a take-once queue).
+pub(crate) fn publish_gesture_settlement(
+    shared: &Arc<Mutex<Shared>>,
+    settlement: PublishedGestureSettlement,
+) {
+    let mut guard = lock_shared(shared);
+    guard.gesture_settlement = Some(settlement);
+    guard.gesture_settlement_seq = guard.gesture_settlement_seq.saturating_add(1);
+    guard.notify_test_waiters();
 }
 
 /// Publish the latest coherent close-focus envelope identity for

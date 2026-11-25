@@ -3412,6 +3412,8 @@ mod trailing_join_tests {
             last_core_generation: String::new(),
             indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
+            gesture_settlement: None,
+            gesture_settlement_seq: 0,
         }))
     }
 
@@ -11566,6 +11568,8 @@ mod drag_gesture_handoff_tests {
             last_core_generation: String::new(),
             indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
+            gesture_settlement: None,
+            gesture_settlement_seq: 0,
         }))
     }
 
@@ -12005,6 +12009,12 @@ mod drag_gesture_handoff_tests {
                     other => panic!("moved pointer must resolve a slot, got {other:?}"),
                 }
                 assert!(reply.settled.is_none(), "update never settles");
+                let latest = session.sequencer().last_reply().expect("accepted preview");
+                let id = latest.drag_preview.as_ref().expect("retained slot").id;
+                assert!(matches!(
+                    crate::world_runtime::map_gesture_preview(&latest, id + 1),
+                    PreviewOutcome::HideTransient { .. }
+                ));
             }
             other => panic!("moved sample must preview, got {other:?}"),
         }
@@ -12013,6 +12023,15 @@ mod drag_gesture_handoff_tests {
 
     #[test]
     fn gesture_release_commits_once_and_replay_stays_dead() {
+        gesture_release_journey(false);
+    }
+
+    #[test]
+    fn gesture_release_settles_from_later_accepted_report_without_gesture_ticket() {
+        gesture_release_journey(true);
+    }
+
+    fn gesture_release_journey(skip_issuing_reply: bool) {
         let (mut session, mut retained, shared, inbox, focus_queue) = harness();
         assert_fixture_admitted(&session, &retained);
         let drag = DragSession::new(DragOptions::default(), ProbeModifier::Ctrl);
@@ -12056,6 +12075,15 @@ mod drag_gesture_handoff_tests {
             other => panic!("release must drop, got {other:?}"),
         };
         assert_eq!(press_revision, 9);
+        if skip_issuing_reply {
+            let clock = Arc::clone(&lock_shared(&shared).clock);
+            *lock_shared(&shared)
+                .midflight_hook
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(move || {
+                clock.invalidate();
+            }));
+        }
         let reply = submit(
             &mut session,
             &mut retained,
@@ -12065,8 +12093,45 @@ mod drag_gesture_handoff_tests {
             ingress.clone(),
             Some(press_revision),
         );
-        let settled = reply.settled.expect("release incorporates a terminal");
-        assert!(settled.committed, "a moved release commits");
+        if skip_issuing_reply {
+            assert!(reply.settled.is_none(), "the issuing reply did not apply");
+            assert!(lock_shared(&shared).gesture_settlement.is_none());
+            *lock_shared(&shared)
+                .midflight_hook
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = None;
+            for _ in 0..2 {
+                let context = dispatch_context(&shared, &session);
+                assert!(matches!(
+                    crate::world_dispatch::dispatch_report(
+                        &mut session,
+                        &mut retained,
+                        &shared,
+                        &inbox,
+                        &focus_queue,
+                        8,
+                        context,
+                        Vec::new(),
+                        None,
+                        None,
+                        false,
+                        "reconcile",
+                        0,
+                        0,
+                        0,
+                    ),
+                    crate::world_dispatch::DispatchVerdict::Applied { .. }
+                ));
+                let guard = lock_shared(&shared);
+                let settled = guard.gesture_settlement.expect("retained terminal");
+                assert_eq!(settled.id, ingress.id);
+                assert!(settled.committed, "a moved release commits");
+                assert_eq!(guard.gesture_settlement_seq, 1, "redelivery is inert");
+            }
+        } else {
+            let settled = reply.settled.expect("release incorporates a terminal");
+            assert!(settled.committed, "a moved release commits");
+        }
         // Exactly-once main-side: the trailing release ignores.
         assert!(matches!(
             drag.on_up(10, 450),
