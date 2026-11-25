@@ -425,9 +425,9 @@ fn build_report(
 
 fn stop_requested(dir: &Path, owner_creation: &str) -> std::result::Result<bool, String> {
     match crate::tiling::read_control_request(&dir.join(crate::lifecycle::STOP_REQUEST_FILE)) {
-        crate::tiling::ControlRequestRead::Body(text) => {
-            Ok(crate::lifecycle::stop_request_matches(&text, owner_creation))
-        }
+        crate::tiling::ControlRequestRead::Body(text) => Ok(
+            crate::lifecycle::stop_request_matches(&text, owner_creation),
+        ),
         crate::tiling::ControlRequestRead::Missing => Ok(false),
         crate::tiling::ControlRequestRead::Rejected => Ok(false),
         crate::tiling::ControlRequestRead::Unreadable => {

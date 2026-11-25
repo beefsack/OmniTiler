@@ -4504,8 +4504,7 @@ fn numbered_send_moves_minimized_member_without_engine_carrier() {
     assert_eq!(transfer.target.target_workspace, target_home.workspace.0);
     assert!(
         engine.world.staged.domains.iter().any(|domain| {
-            domain.key == target_home
-                && domain.minimized.iter().any(|w| w.0 == "w0")
+            domain.key == target_home && domain.minimized.iter().any(|w| w.0 == "w0")
         }),
         "the iconified mover stages minimized in its new domain"
     );
@@ -4523,9 +4522,7 @@ fn numbered_send_moves_minimized_member_without_engine_carrier() {
             PresentationRowV4::Valid(ingress("w0")),
             Some(3),
             Some(WorldCommand::SendNumbered {
-                window: crate::directional::WindowSubject::Window(WindowId(
-                    "w-ghost".to_owned(),
-                )),
+                window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
                 source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index: 1,
                 follow: false,
@@ -4535,9 +4532,7 @@ fn numbered_send_moves_minimized_member_without_engine_carrier() {
     );
     let _unknown_reply = accepted_reply(4, unknown_outcome);
     assert_eq!(
-        unknown_settlements
-            .first()
-            .and_then(|s| s.result.clone()),
+        unknown_settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::SendWindowUnknown
         }),

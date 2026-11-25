@@ -227,9 +227,9 @@ impl TileLoop {
         {
             return true;
         }
-        self.member_tokens.iter().any(|(key, bound)| {
-            bound == token && self.floating_of(key)
-        })
+        self.member_tokens
+            .iter()
+            .any(|(key, bound)| bound == token && self.floating_of(key))
     }
 
     /// Whether one token floats by automatic fixed-size classification:
@@ -246,10 +246,7 @@ impl TileLoop {
 /// same snapshot a production tick reads, so no test-only mirror exists.
 #[cfg(test)]
 impl TileLoop {
-    pub(super) fn sticky_prior_value(
-        &self,
-        key: &crate::native_guards::WindowKey,
-    ) -> Option<bool> {
+    pub(super) fn sticky_prior_value(&self, key: &crate::native_guards::WindowKey) -> Option<bool> {
         self.intent_snapshot
             .get(key)
             .and_then(|storage| storage.sticky_prior)

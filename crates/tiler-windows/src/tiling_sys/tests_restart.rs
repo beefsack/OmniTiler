@@ -227,12 +227,7 @@ fn sticky_markers_readopt_through_real_tileloop_twice() {
             state.log_path = std::path::PathBuf::from("NUL");
             let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
             let observed = vec![observed(win.hwnd, &token)];
-            adopt_seeded(
-                &mut state,
-                &observed,
-                &[],
-                &areas_for(&output),
-            );
+            adopt_seeded(&mut state, &observed, &[], &areas_for(&output));
             assert_eq!(
                 state.sticky_prior_value(&key),
                 Some(prior),
@@ -267,12 +262,7 @@ fn tile_override_marker_hydrates_override_without_writes_or_float() {
         state.log_path = std::path::PathBuf::from("NUL");
         let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
         let observed = vec![observed(win.hwnd, &token)];
-        adopt_seeded(
-            &mut state,
-            &observed,
-            &[],
-            &areas_for(&output),
-        );
+        adopt_seeded(&mut state, &observed, &[], &areas_for(&output));
         assert!(
             state.tile_override_of(&key),
             "restart {restart}: override hydrated into the intent snapshot"
@@ -375,12 +365,7 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         super::clear_test_hints();
         // Maximized members never appear in `observed`.
         let retained = vec![retained_max(&key, &token)];
-        adopt_seeded(
-            &mut state,
-            &[],
-            &retained,
-            &areas_for(&output),
-        );
+        adopt_seeded(&mut state, &[], &retained, &areas_for(&output));
         assert!(
             intent_of(win.hwnd, &tag).is_some_and(|storage| storage.float == Some(false)),
             "born {born}: canonical marker present"
@@ -410,8 +395,7 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         // Settled removal clears the slot; membership prune drops cached intent.
         seed_intent(win.hwnd, &tag, super::IntentStorage::default());
         assert!(
-            !intent_of(win.hwnd, &tag)
-                .is_some_and(|storage| storage.float == Some(false)),
+            !intent_of(win.hwnd, &tag).is_some_and(|storage| storage.float == Some(false)),
             "born {born}: settled removal clears the marker"
         );
         state.clear_tile(&key);
@@ -448,12 +432,7 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         let mut state = test_state();
         let (key, token, output, _) = seed_real_member(&mut state, win.hwnd, &tag, &real);
         let retained = vec![retained_max(&key, &token)];
-        adopt_seeded(
-            &mut state,
-            &[],
-            &retained,
-            &areas_for(&output),
-        );
+        adopt_seeded(&mut state, &[], &retained, &areas_for(&output));
         assert!(
             !state.intent_snapshot.contains_key(&key) && !state.tile_override_of(&key),
             "corrupt plants no override"
@@ -469,12 +448,7 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         let (key, token, output, _) =
             seed_real_member(&mut state, win.hwnd, "deadbeefdeadbeef", &real);
         let retained = vec![retained_max(&key, &token)];
-        adopt_seeded(
-            &mut state,
-            &[],
-            &retained,
-            &areas_for(&output),
-        );
+        adopt_seeded(&mut state, &[], &retained, &areas_for(&output));
         assert!(
             !state.intent_snapshot.contains_key(&key) && !state.tile_override_of(&key),
             "tag mismatch hydrates nothing"
@@ -491,12 +465,7 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
         let mut state = test_state();
         let (key, token, output, _) = seed_real_member(&mut state, hwnd, &tag, &real);
         let retained = vec![retained_max(&key, &token)];
-        adopt_seeded(
-            &mut state,
-            &[],
-            &retained,
-            &areas_for(&output),
-        );
+        adopt_seeded(&mut state, &[], &retained, &areas_for(&output));
         assert!(
             !state.intent_snapshot.contains_key(&key) && !state.tile_override_of(&key),
             "destroyed window hydrates nothing"
@@ -517,12 +486,7 @@ fn float_marker_readopts_through_real_tileloop() {
     state.log_path = std::path::PathBuf::from("NUL");
     let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
     let observed = vec![observed(win.hwnd, &token)];
-    adopt_seeded(
-        &mut state,
-        &observed,
-        &[],
-        &areas_for(&output),
-    );
+    adopt_seeded(&mut state, &observed, &[], &areas_for(&output));
     assert!(
         state.floating_of(&key),
         "float intent re-adopted into the runtime set"
@@ -584,12 +548,7 @@ fn mixed_markers_readopt_through_real_tileloop_in_any_order() {
         if reverse {
             ordered.reverse();
         }
-        adopt_seeded(
-            &mut state,
-            &ordered,
-            &[],
-            &areas_for(&output),
-        );
+        adopt_seeded(&mut state, &ordered, &[], &areas_for(&output));
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();
         let _ = std::fs::remove_file(&log_path);
         assert_eq!(
@@ -683,7 +642,10 @@ fn marker_install_remove_roundtrip_on_owned_window() {
     seed_intent(win.hwnd, &tag, sticky_intent(true));
     assert_eq!(intent_of(win.hwnd, &tag), Some(sticky_intent(true)));
     seed_intent(win.hwnd, &tag, super::IntentStorage::default());
-    assert_eq!(intent_of(win.hwnd, &tag), Some(super::IntentStorage::default()));
+    assert_eq!(
+        intent_of(win.hwnd, &tag),
+        Some(super::IntentStorage::default())
+    );
 }
 
 #[test]
@@ -691,7 +653,10 @@ fn absent_slot_reads_verified_empty_on_a_tagged_window() {
     let win = AdoptWindow::create();
     let tag = crate::product_hide::sys::install_member_tag(win.hwnd, std::process::id())
         .expect("tag the owned window");
-    assert_eq!(intent_of(win.hwnd, &tag), Some(super::IntentStorage::default()));
+    assert_eq!(
+        intent_of(win.hwnd, &tag),
+        Some(super::IntentStorage::default())
+    );
 }
 
 #[test]
@@ -708,12 +673,7 @@ fn corrupt_marker_adopts_nothing_without_side_effects() {
     state.log_path = std::path::PathBuf::from("NUL");
     let (key, token, output, _active) = seed_member(&mut state, win.hwnd, &tag);
     let observed = vec![observed(win.hwnd, &token)];
-    adopt_seeded(
-        &mut state,
-        &observed,
-        &[],
-        &areas_for(&output),
-    );
+    adopt_seeded(&mut state, &observed, &[], &areas_for(&output));
     assert!(!state.sticky_of(&key), "corrupt never sticks");
     assert!(!state.floating_of(&key), "corrupt never floats");
 }
@@ -727,16 +687,8 @@ fn absent_markers_adopt_nothing_without_side_effects() {
     let hwnd = 0x00BEEF42u64;
     let (key, token, output, _active) = seed_member(&mut state, hwnd, "9f2c41aa07bd33e0");
     let observed = vec![observed(hwnd, &token)];
-    adopt_seeded(
-        &mut state,
-        &observed,
-        &[],
-        &areas_for(&output),
-    );
-    assert!(
-        !state.sticky_of(&key),
-        "no sticky without a marker"
-    );
+    adopt_seeded(&mut state, &observed, &[], &areas_for(&output));
+    assert!(!state.sticky_of(&key), "no sticky without a marker");
     assert!(!state.floating_of(&key), "no float without a marker");
     assert!(
         !state.float_rects.contains_key(&token),
@@ -1027,12 +979,7 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
     // recomputes the same stable adoption.
     let mut rig = reject_rig();
     let areas = reject_areas_for(&rig.output);
-    adopt_seeded(
-        &mut rig.state,
-        &rig.observed,
-        &[],
-        &areas,
-    );
+    adopt_seeded(&mut rig.state, &rig.observed, &[], &areas);
     assert_eq!(
         rig.state.sticky_prior_value(&rig.keys[2]),
         Some(false),
@@ -1043,10 +990,7 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
         Some(true),
         "ex-float sticky adopts its prior"
     );
-    assert!(
-        rig.state.floating_of(&rig.keys[4]),
-        "ordinary float adopts"
-    );
+    assert!(rig.state.floating_of(&rig.keys[4]), "ordinary float adopts");
     for token in &rig.tokens[2..] {
         assert_eq!(
             rig.state.float_rects.get(token),
@@ -1082,8 +1026,7 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
         "plain remainder stays tiled"
     );
     assert!(
-        intent_of_window(rig.wins[4].hwnd)
-            .is_some_and(|storage| storage.float == Some(true)),
+        intent_of_window(rig.wins[4].hwnd).is_some_and(|storage| storage.float == Some(true)),
         "durable float marker survives adoption"
     );
     for (win, prior) in [(&rig.wins[2], false), (&rig.wins[3], true)] {
@@ -1111,12 +1054,7 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
     }
     // A repeated identical observation recomputes the same stable adoption:
     // no hold, lanes kept, markers untouched.
-    adopt_seeded(
-        &mut rig.state,
-        &rig.observed,
-        &[],
-        &areas,
-    );
+    adopt_seeded(&mut rig.state, &rig.observed, &[], &areas);
     assert_eq!(
         rig.state.sticky_prior_value(&rig.keys[2]),
         Some(false),
@@ -1132,8 +1070,7 @@ fn mixed_roster_adoption_carries_fixed_anchor_as_exception() {
         "repeat adoption keeps ordinary float"
     );
     assert!(
-        intent_of_window(rig.wins[4].hwnd)
-            .is_some_and(|storage| storage.float == Some(true)),
+        intent_of_window(rig.wins[4].hwnd).is_some_and(|storage| storage.float == Some(true)),
         "repeat adoption keeps the durable marker"
     );
     super::clear_test_hints();
@@ -1147,23 +1084,13 @@ fn next_consistent_observation_revalidates_after_adoption() {
     // empty, and later planned writes never target the floats.
     let mut rig = reject_rig();
     let areas = reject_areas_for(&rig.output);
-    adopt_seeded(
-        &mut rig.state,
-        &rig.observed,
-        &[],
-        &areas,
-    );
+    adopt_seeded(&mut rig.state, &rig.observed, &[], &areas);
     assert!(
         rig.state.floating_of(&rig.keys[4]),
         "first observation commits the candidate"
     );
     super::inject_test_hints(rig.wins[0].hwnd, min_anchor_hints());
-    adopt_seeded(
-        &mut rig.state,
-        &rig.observed,
-        &[],
-        &areas,
-    );
+    adopt_seeded(&mut rig.state, &rig.observed, &[], &areas);
     assert_eq!(
         rig.state.sticky_prior_value(&rig.keys[2]),
         Some(false),
@@ -1253,8 +1180,7 @@ fn monitorless_snapshot_adopts_durable_intent() {
         "only the seeding dispatch committed; adoption stages no command"
     );
     assert!(
-        intent_of_window(rig.wins[4].hwnd)
-            .is_some_and(|storage| storage.float == Some(true)),
+        intent_of_window(rig.wins[4].hwnd).is_some_and(|storage| storage.float == Some(true)),
         "durable float marker survives monitorless adoption"
     );
     for (win, prior) in [(&rig.wins[2], false), (&rig.wins[3], true)] {
@@ -1301,20 +1227,13 @@ fn invalid_slot_and_replaced_lifetime_do_not_preserve_cached_intent() {
         let (key, token, output, _) = seed_member(&mut state, win.hwnd, &tag);
         state.intent_snapshot.insert(key.clone(), float_intent());
         let observed = vec![observed(win.hwnd, &token)];
-        adopt_seeded(
-            &mut state,
-            &observed,
-            &[],
-            &areas_for(&output),
-        );
+        adopt_seeded(&mut state, &observed, &[], &areas_for(&output));
         assert!(
             !state.intent_snapshot.contains_key(&key),
             "corrupt slot invalidates the cached intent"
         );
         assert!(
-            !state.sticky_of(&key)
-                && !state.floating_of(&key)
-                && !state.tile_override_of(&key),
+            !state.sticky_of(&key) && !state.floating_of(&key) && !state.tile_override_of(&key),
             "corrupt marker stages no lane"
         );
     }
@@ -1333,20 +1252,13 @@ fn invalid_slot_and_replaced_lifetime_do_not_preserve_cached_intent() {
             .expect("replacement tag installs on the owned window");
         state.intent_snapshot.insert(key.clone(), float_intent());
         let observed = vec![observed(win.hwnd, &token)];
-        adopt_seeded(
-            &mut state,
-            &observed,
-            &[],
-            &areas_for(&output),
-        );
+        adopt_seeded(&mut state, &observed, &[], &areas_for(&output));
         assert!(
             !state.intent_snapshot.contains_key(&key),
             "tag replacement invalidates the cached intent"
         );
         assert!(
-            !state.sticky_of(&key)
-                && !state.floating_of(&key)
-                && !state.tile_override_of(&key),
+            !state.sticky_of(&key) && !state.floating_of(&key) && !state.tile_override_of(&key),
             "replaced lifetime stages no lane"
         );
         assert!(
@@ -1371,8 +1283,8 @@ fn restart_admission_adopts_surviving_tag_and_keeps_durable_intent() {
         .expect("member tag installs on the owned window");
     seed_intent(win.hwnd, &tag, float_intent());
     crate::product_hide::sys::reset_install_tag_attempts();
-    let adopted = crate::product_hide::sys::ensure_member_tag(win.hwnd, pid)
-        .expect("surviving tag adopts");
+    let adopted =
+        crate::product_hide::sys::ensure_member_tag(win.hwnd, pid).expect("surviving tag adopts");
     assert_eq!(adopted, tag, "restart admission keeps the live tag");
     assert_eq!(
         crate::product_hide::sys::install_tag_attempts(),
@@ -1380,15 +1292,14 @@ fn restart_admission_adopts_surviving_tag_and_keeps_durable_intent() {
         "adoption performs no tag write"
     );
     assert!(
-        intent_of(win.hwnd, &tag)
-            .is_some_and(|storage| storage.float == Some(true)),
+        intent_of(win.hwnd, &tag).is_some_and(|storage| storage.float == Some(true)),
         "durable float intent still decodes against the adopted tag"
     );
     // A window with no tag still gets a fresh stamp (same-process reuse).
     let fresh = AdoptWindow::create();
     crate::product_hide::sys::reset_install_tag_attempts();
-    let stamped = crate::product_hide::sys::ensure_member_tag(fresh.hwnd, pid)
-        .expect("fresh tag installs");
+    let stamped =
+        crate::product_hide::sys::ensure_member_tag(fresh.hwnd, pid).expect("fresh tag installs");
     assert_eq!(crate::product_hide::sys::install_tag_attempts(), 1);
     assert_ne!(stamped, tag);
     assert_eq!(

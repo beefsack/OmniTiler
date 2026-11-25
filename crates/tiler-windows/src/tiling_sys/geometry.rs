@@ -26,4 +26,3 @@ pub(super) struct VetoDiag {
     pub(super) dwm_readable: bool,
     pub(super) cloaked: bool,
 }
-

@@ -262,10 +262,7 @@ fn monitor_topology_changed(
         return true;
     }
     areas.iter().zip(fresh).any(|(a, b)| {
-        a.device != b.device
-            || a.work != b.work
-            || a.full != b.full
-            || a.dpi != b.dpi
+        a.device != b.device || a.work != b.work || a.full != b.full || a.dpi != b.dpi
     })
 }
 
@@ -1037,7 +1034,9 @@ mod tests {
         let previous = identities("\\\\.\\DISPLAY1", "ACME");
         let current = identities("\\\\.\\DISPLAY1", "ACME");
 
-        assert!(!monitor_topology_changed(&areas, &fresh, &previous, &current));
+        assert!(!monitor_topology_changed(
+            &areas, &fresh, &previous, &current
+        ));
     }
 
     #[test]
@@ -1061,7 +1060,9 @@ mod tests {
         let previous = identities("\\\\.\\DISPLAY1", "ACME");
         let current = identities("\\\\.\\DISPLAY1", "OTHER");
 
-        assert!(monitor_topology_changed(&areas, &fresh, &previous, &current));
+        assert!(monitor_topology_changed(
+            &areas, &fresh, &previous, &current
+        ));
     }
 
     #[test]
@@ -1074,7 +1075,9 @@ mod tests {
         let previous = identities("\\\\.\\DISPLAY2", "ACME");
         let current = HashMap::new();
 
-        assert!(monitor_topology_changed(&areas, &fresh, &previous, &current));
+        assert!(monitor_topology_changed(
+            &areas, &fresh, &previous, &current
+        ));
     }
 
     #[test]

@@ -376,8 +376,7 @@ impl WorldTransaction<'_> {
             // (Windows) has no below band to prove, so its `None` is not a
             // veto; a present `below: true` always is.
             let below_ok = self.world.staged.facts.get(&window).is_some_and(|fact| {
-                fact.below == Some(false)
-                    || (fact.below.is_none() && self.below_fact_unavailable())
+                fact.below == Some(false) || (fact.below.is_none() && self.below_fact_unavailable())
             });
             let stack_ok = self.world.staged.facts.get(&window).is_some_and(|fact| {
                 below_ok && (!binding.target.value || fact.above == Some(false))
@@ -474,8 +473,7 @@ impl WorldTransaction<'_> {
                 {
                     return false;
                 }
-                if fact.above.is_none()
-                    || (fact.below.is_none() && !self.below_fact_unavailable())
+                if fact.above.is_none() || (fact.below.is_none() && !self.below_fact_unavailable())
                 {
                     return false;
                 }

@@ -76,8 +76,8 @@ use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FocusFeedback,
     FocusRequest, FrameAttempt, FrameWitness, MemberAttempt, PresentationRowV4, RendererInput,
-    StateAttempt, StateProperty, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4,
-    WorldCommand, WorldReplyV4, WorldReportV4,
+    StateAttempt, StateProperty, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WorldCommand,
+    WorldReplyV4, WorldReportV4,
 };
 
 /// One outstanding sequenced report: the exact facts the core incorporation
@@ -1375,8 +1375,8 @@ mod tests {
     use tiler_core::directional::{OutputId, WindowId, WindowSubject, WorkspaceId};
     use tiler_core::world_presentation::PresentationUnderlay;
     use tiler_core::world_report::{
-        AfterShown, AfterShownMember, AfterShownScope, BorderHideReasonV4,
-        BorderPresentationV4, FocusRequestCause, WorldPresentationV4,
+        AfterShown, AfterShownMember, AfterShownScope, BorderHideReasonV4, BorderPresentationV4,
+        FocusRequestCause, WorldPresentationV4,
     };
 
     const OUT: &str = "out-1";
@@ -1542,11 +1542,7 @@ mod tests {
             FocusRequestCause::AutomaticAdmission;
         assert!(!seq.selection_focus_authority(&automatic));
         let mut foreign_target = reply.clone();
-        foreign_target
-            .focus_request
-            .as_mut()
-            .expect("focus")
-            .target = WindowId("w9".to_owned());
+        foreign_target.focus_request.as_mut().expect("focus").target = WindowId("w9".to_owned());
         assert!(!seq.selection_focus_authority(&foreign_target));
         let mut memberless = reply.clone();
         memberless

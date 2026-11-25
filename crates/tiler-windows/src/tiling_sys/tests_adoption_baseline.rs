@@ -10,7 +10,9 @@ use super::adoption_baseline::{
     AdoptionBaseline, CaptureOutcome, capture, load, persist_first, prune_dead, trace_line,
 };
 use super::fullscreen::{FULLSCREEN_STYLE_BITS, FullscreenMeta};
-use super::fullscreen_preimage::{FullscreenPreimage, clear as clear_preimage, load as load_preimage};
+use super::fullscreen_preimage::{
+    FullscreenPreimage, clear as clear_preimage, load as load_preimage,
+};
 use crate::tiling::{FrameInsets, ObservedTarget, WindowFacts};
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -99,19 +101,15 @@ fn observed(hwnd: u64, outer: Rect, facts: WindowFacts) -> super::ObservedWindow
 /// owns and never tiles.
 fn tagged_window(name: &str) -> (crate::ffi::FfiOwnedTestWindow, u64, String) {
     let window = crate::ffi::FfiOwnedTestWindow::create(
-        name,
-        100,
-        120,
-        800,
-        600,
+        name, 100, 120, 800, 600,
         // The capture path trusts the observed visibility fact; the fixture
         // stays invisible so no real desktop window appears.
         false,
     )
     .expect("owned window");
     let hwnd = window.hwnd();
-    let tag = crate::product_hide::sys::ensure_member_tag(hwnd, std::process::id())
-        .expect("member tag");
+    let tag =
+        crate::product_hide::sys::ensure_member_tag(hwnd, std::process::id()).expect("member tag");
     (window, hwnd, tag)
 }
 
@@ -129,7 +127,13 @@ fn baseline_row_validates_and_round_trips_exactly() {
         AdoptionBaseline::from_json(&borderless.to_json()),
         Some(borderless.clone())
     );
-    let maximized = row(12, "tag-c", FULLSCREEN_STYLE_BITS, true, rect(0, 0, 1920, 1040));
+    let maximized = row(
+        12,
+        "tag-c",
+        FULLSCREEN_STYLE_BITS,
+        true,
+        rect(0, 0, 1920, 1040),
+    );
     assert_eq!(
         AdoptionBaseline::from_json(&maximized.to_json()),
         Some(maximized)
@@ -141,12 +145,30 @@ fn baseline_row_validates_and_round_trips_exactly() {
     assert!(AdoptionBaseline::new(1, 1, "creation", "", "session", 0, false, frame()).is_none());
     assert!(AdoptionBaseline::new(1, 1, "creation", "tag", "", 0, false, frame()).is_none());
     assert!(
-        AdoptionBaseline::new(1, 1, "creation", "tag", "session", 0x8000_0000, false, frame())
-            .is_none()
+        AdoptionBaseline::new(
+            1,
+            1,
+            "creation",
+            "tag",
+            "session",
+            0x8000_0000,
+            false,
+            frame()
+        )
+        .is_none()
     );
     assert!(
-        AdoptionBaseline::new(1, 1, "creation", "tag", "session", 0, false, rect(0, 0, 0, 100))
-            .is_none()
+        AdoptionBaseline::new(
+            1,
+            1,
+            "creation",
+            "tag",
+            "session",
+            0,
+            false,
+            rect(0, 0, 0, 100)
+        )
+        .is_none()
     );
 
     // Decode refuses the same corrupt shapes and a wrong document version.
@@ -170,7 +192,10 @@ fn first_capture_wins_and_storage_is_lifetime_exact() {
     // even one that would look plausible.
     let later = row(10, "tag-a", 0, true, rect(0, 0, 1920, 1040));
     assert_eq!(persist_first(&dir, &later), Ok(false));
-    assert_eq!(load(&dir, 10, 7, "creation-a", "tag-a"), Some(first.clone()));
+    assert_eq!(
+        load(&dir, 10, 7, "creation-a", "tag-a"),
+        Some(first.clone())
+    );
 
     // Recycled handle or recycled process: no exact-lifetime match.
     assert!(load(&dir, 10, 7, "creation-b", "tag-a").is_none());
@@ -179,7 +204,13 @@ fn first_capture_wins_and_storage_is_lifetime_exact() {
 
     // Same window object with a fresh membership tag is a new generation:
     // the stale row is replaced instead of accumulating forever.
-    let reused = row(10, "tag-b", FULLSCREEN_STYLE_BITS, false, rect(20, 20, 500, 400));
+    let reused = row(
+        10,
+        "tag-b",
+        FULLSCREEN_STYLE_BITS,
+        false,
+        rect(20, 20, 500, 400),
+    );
     assert_eq!(persist_first(&dir, &reused), Ok(true));
     assert!(load(&dir, 10, 7, "creation-a", "tag-a").is_none());
     assert_eq!(load(&dir, 10, 7, "creation-a", "tag-b"), Some(reused));
@@ -429,7 +460,11 @@ fn adoption_trace_is_presence_only() {
         } else {
             &["event", "outcome", "window"]
         };
-        assert_eq!(keys.as_slice(), expected, "bounded trace vocabulary: {line}");
+        assert_eq!(
+            keys.as_slice(),
+            expected,
+            "bounded trace vocabulary: {line}"
+        );
         for forbidden in ["hwnd", "pid", "creation", "tag", "outer", "title", "exe"] {
             assert!(
                 line.get(forbidden).is_none(),

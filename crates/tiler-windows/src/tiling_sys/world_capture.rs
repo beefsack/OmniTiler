@@ -539,9 +539,8 @@ impl TileLoop {
                         pid: window.identity.pid,
                         creation: window.identity.process_creation.clone(),
                     };
-                    let hidden_workspace =
-                        self.hidden_claims.contains_key(&key)
-                            && self.member_home(&key).is_some_and(|loc| loc.hidden);
+                    let hidden_workspace = self.hidden_claims.contains_key(&key)
+                        && self.member_home(&key).is_some_and(|loc| loc.hidden);
                     Some(PresentationForeground {
                         token: window.token.clone(),
                         minimized: window.facts.minimized,
@@ -558,9 +557,8 @@ impl TileLoop {
                         pid: known.identity.pid,
                         creation: known.identity.process_creation.clone(),
                     };
-                    let hidden_workspace =
-                        self.hidden_claims.contains_key(&key)
-                            && self.member_home(&key).is_some_and(|loc| loc.hidden);
+                    let hidden_workspace = self.hidden_claims.contains_key(&key)
+                        && self.member_home(&key).is_some_and(|loc| loc.hidden);
                     Some(PresentationForeground {
                         token: known.token.clone(),
                         minimized: reason == SkipReason::Minimized,
@@ -2046,7 +2044,11 @@ pub(super) fn capture_world(
         .collect();
     let presentation = presentation_ingress(state, Some(observed), retained, foreground_hwnd);
     let foreground_fact = (!presentation.foreground.is_empty())
-        .then(|| windows.iter().find(|fact| fact.window.0 == presentation.foreground))
+        .then(|| {
+            windows
+                .iter()
+                .find(|fact| fact.window.0 == presentation.foreground)
+        })
         .flatten();
     // The observed foreground frame's exact output, joined to the
     // foreground WindowFact: a resolved frame that disagrees with the fact
@@ -2069,9 +2071,10 @@ pub(super) fn capture_world(
     let foreground_bound = foreground_hwnd != 0
         && foreground_fact.is_some()
         && !held_members.contains(&presentation.foreground)
-        && state.member_tokens.iter().any(|(key, token)| {
-            key.hwnd == foreground_hwnd && token == &presentation.foreground
-        });
+        && state
+            .member_tokens
+            .iter()
+            .any(|(key, token)| key.hwnd == foreground_hwnd && token == &presentation.foreground);
     CapturedWorld {
         screens,
         held_screens,
@@ -2545,7 +2548,9 @@ mod tests {
             let mut state = test_state();
             state.ensure_device("DEV-A");
             let key = key(501, 601, "proc-501");
-            state.member_tokens.insert(key.clone(), "w-overlay".to_owned());
+            state
+                .member_tokens
+                .insert(key.clone(), "w-overlay".to_owned());
             // Stale adapter tile slot: the live retained frame must win.
             state.member_rects.insert(
                 "w-overlay".to_owned(),
@@ -2570,7 +2575,8 @@ mod tests {
                 fullscreen: false,
                 facts: Some(facts(true)),
             }];
-            let captured = capture_world(&state.inputs(), Some(&[]), &retained, &[area("DEV-A")], 0);
+            let captured =
+                capture_world(&state.inputs(), Some(&[]), &retained, &[area("DEV-A")], 0);
             let fact = captured
                 .windows
                 .iter()
@@ -2589,8 +2595,12 @@ mod tests {
             let mut state = test_state();
             state.ensure_device("DEV-A");
             let key = key(701, 801, "proc-701");
-            state.member_tokens.insert(key.clone(), "w-hidden".to_owned());
-            state.member_tags.insert(key.clone(), "0123456789abcdef".to_owned());
+            state
+                .member_tokens
+                .insert(key.clone(), "w-hidden".to_owned());
+            state
+                .member_tags
+                .insert(key.clone(), "0123456789abcdef".to_owned());
             state.member_rects.insert(
                 "w-hidden".to_owned(),
                 Rect {
@@ -2640,8 +2650,12 @@ mod tests {
             let mut state = test_state();
             state.ensure_device("DEV-A");
             let key = key(702, 802, "proc-702");
-            state.member_tokens.insert(key.clone(), "w-hidden2".to_owned());
-            state.member_tags.insert(key.clone(), "0123456789abcdef".to_owned());
+            state
+                .member_tokens
+                .insert(key.clone(), "w-hidden2".to_owned());
+            state
+                .member_tags
+                .insert(key.clone(), "0123456789abcdef".to_owned());
             state.member_rects.insert(
                 "w-hidden2".to_owned(),
                 Rect {
@@ -2702,13 +2716,8 @@ mod tests {
                 state.ensure_device("DEV-A");
                 let mut row = observed(103, "w-flag-top", 203, "proc-flag");
                 row.facts.topmost = topmost;
-                let captured = capture_world(
-                    &state.inputs(),
-                    Some(&[row]),
-                    &[],
-                    &[area("DEV-A")],
-                    0,
-                );
+                let captured =
+                    capture_world(&state.inputs(), Some(&[row]), &[], &[area("DEV-A")], 0);
                 let fact = captured
                     .windows
                     .iter()
@@ -2781,15 +2790,28 @@ mod tests {
             let areas = [area("DEV-A")];
             let mut row = observed(101, "win-a", 201, "proc-a");
             let captured = capture_world(
-                &state.inputs(), Some(std::slice::from_ref(&row)), &[], &areas, 101,
+                &state.inputs(),
+                Some(std::slice::from_ref(&row)),
+                &[],
+                &areas,
+                101,
             );
             assert_eq!(captured.presentation.foreground, "win-a");
             assert!(captured.focused_global.is_empty());
-            assert!(!captured.foreground_known, "an unbound candidate is not managed focus");
+            assert!(
+                !captured.foreground_known,
+                "an unbound candidate is not managed focus"
+            );
 
-            state.member_tokens.insert(key(101, 201, "proc-a"), "win-a".to_owned());
+            state
+                .member_tokens
+                .insert(key(101, 201, "proc-a"), "win-a".to_owned());
             let captured = capture_world(
-                &state.inputs(), Some(std::slice::from_ref(&row)), &[], &areas, 101,
+                &state.inputs(),
+                Some(std::slice::from_ref(&row)),
+                &[],
+                &areas,
+                101,
             );
             assert_eq!(captured.focused_global, "win-a");
             assert!(captured.foreground_known);
@@ -2800,11 +2822,17 @@ mod tests {
             row.token = "win-b".to_owned();
             let captured = capture_world(&state.inputs(), Some(&[row]), &[], &areas, 101);
             assert!(captured.focused_global.is_empty());
-            assert!(!captured.foreground_known, "a recycled live HWND is not the bound lifetime");
+            assert!(
+                !captured.foreground_known,
+                "a recycled live HWND is not the bound lifetime"
+            );
 
             let captured = capture_world(&state.inputs(), Some(&[]), &[], &areas, 0);
             assert!(captured.focused_global.is_empty());
-            assert!(captured.foreground_known, "zero positively proves no foreground client");
+            assert!(
+                captured.foreground_known,
+                "zero positively proves no foreground client"
+            );
         }
 
         #[test]

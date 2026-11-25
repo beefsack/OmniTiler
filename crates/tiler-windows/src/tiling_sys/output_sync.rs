@@ -566,8 +566,17 @@ pub(super) fn workspace_maintenance(
     );
     // Foreground-driven select only on an actual foreground change to an
     // exactly verified hidden member; event-only wakes never switch.
-    if poll_foreground_workspace(state, me, store, dir, fulls, areas, &mut observed, &retained)
-        .is_some()
+    if poll_foreground_workspace(
+        state,
+        me,
+        store,
+        dir,
+        fulls,
+        areas,
+        &mut observed,
+        &retained,
+    )
+    .is_some()
     {
         return;
     }

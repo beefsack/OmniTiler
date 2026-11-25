@@ -104,13 +104,7 @@ impl AdoptionBaseline {
 
     /// Exact lifetime equality (HWND plus pid plus process creation plus the
     /// stored tag). Never a HWND-only or pid-only match.
-    fn same_lifetime(
-        &self,
-        hwnd: u64,
-        pid: u32,
-        creation: &str,
-        tag: &str,
-    ) -> bool {
+    fn same_lifetime(&self, hwnd: u64, pid: u32, creation: &str, tag: &str) -> bool {
         self.hwnd == hwnd
             && self.pid == pid
             && self.creation == creation
@@ -218,8 +212,7 @@ fn write_store(dir: &Path, rows: &[AdoptionBaseline]) -> Result<(), ()> {
         "rows": rows.iter().map(AdoptionBaseline::to_json).collect::<Vec<_>>(),
     });
     let bytes = serde_json::to_vec_pretty(&document).map_err(|_| ())?;
-    crate::storage::publish_replace(dir, BASELINE_FILE, &bytes, "adoption-baseline")
-        .map_err(|_| ())
+    crate::storage::publish_replace(dir, BASELINE_FILE, &bytes, "adoption-baseline").map_err(|_| ())
 }
 
 /// Persist one row exactly once per lifetime: the first adoption wins and a
@@ -291,8 +284,7 @@ fn lifetime_provably_dead(row: &AdoptionBaseline) -> bool {
 /// HWND reuse: the stored tag can never verify again. An absent/unreadable
 /// live tag is not proof (never guessed), so it keeps the row.
 fn live_tag_reused(row: &AdoptionBaseline) -> bool {
-    crate::product_hide::sys::read_member_tag(row.hwnd)
-        .is_some_and(|live| live != row.tag)
+    crate::product_hide::sys::read_member_tag(row.hwnd).is_some_and(|live| live != row.tag)
 }
 
 /// Drop baseline rows whose exact lifetime is provably gone. Runs from the
@@ -369,8 +361,7 @@ pub(super) fn capture(dir: &Path, window: &ObservedWindow) -> CaptureOutcome {
     let Ok(live) = held.identity() else {
         return CaptureOutcome::Skipped("unverified-lifetime");
     };
-    if live.pid != window.identity.pid
-        || live.process_creation != window.identity.process_creation
+    if live.pid != window.identity.pid || live.process_creation != window.identity.process_creation
     {
         return CaptureOutcome::Skipped("unverified-lifetime");
     }
@@ -393,14 +384,7 @@ pub(super) fn capture(dir: &Path, window: &ObservedWindow) -> CaptureOutcome {
     }
     // Coordinate with R12: a pending chrome preimage for this exact
     // lifetime means a project entry/restore still owns the native frame.
-    if super::fullscreen_preimage::load(
-        dir,
-        hwnd,
-        live.pid,
-        &live.process_creation,
-        &tag,
-    )
-    .is_some()
+    if super::fullscreen_preimage::load(dir, hwnd, live.pid, &live.process_creation, &tag).is_some()
     {
         return CaptureOutcome::Skipped("r12-preimage");
     }

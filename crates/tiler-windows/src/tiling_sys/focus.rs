@@ -66,12 +66,7 @@ fn verified_snap_origin(
     if !scope_allows(&state.scope, &stored.exe_path) {
         return None;
     }
-    if !hosted_gate_allows(
-        &stored.exe_path,
-        key.hwnd,
-        stored.pid,
-        &state.scope_hosts,
-    ) {
+    if !hosted_gate_allows(&stored.exe_path, key.hwnd, stored.pid, &state.scope_hosts) {
         return None;
     }
     if let Some(entries) = state.allowlist.as_ref() {
@@ -720,14 +715,9 @@ mod anchored_outer_tests {
 
     #[test]
     fn live_frame_expands_by_uniform_outsets_and_carries_core_style() {
-        let (outer, width, gap, radius) = anchored_outer_rect(
-            "win-a",
-            &visible_border(),
-            "win-a",
-            live_frame(),
-            OBS,
-        )
-        .expect("joined visible row yields the anchored outer rect");
+        let (outer, width, gap, radius) =
+            anchored_outer_rect("win-a", &visible_border(), "win-a", live_frame(), OBS)
+                .expect("joined visible row yields the anchored outer rect");
         assert_eq!(
             outer,
             Rect {
@@ -744,35 +734,26 @@ mod anchored_outer_tests {
     fn non_uniform_outsets_veto_geometry() {
         let mut border = visible_border();
         border.outsets = Some([5, 6, 5, 5]);
-        assert!(
-            anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none());
     }
 
     #[test]
     fn missing_witness_or_outsets_veto_geometry() {
         let mut no_witness = visible_border();
         no_witness.witness = None;
-        assert!(
-            anchored_outer_rect("win-a", &no_witness, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &no_witness, "win-a", live_frame(), OBS).is_none());
         let mut no_outsets = visible_border();
         no_outsets.outsets = None;
-        assert!(
-            anchored_outer_rect("win-a", &no_outsets, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &no_outsets, "win-a", live_frame(), OBS).is_none());
     }
 
     #[test]
     fn hidden_row_or_other_foreground_vetoes_geometry() {
         let mut hidden = visible_border();
         hidden.visible = false;
+        assert!(anchored_outer_rect("win-a", &hidden, "win-a", live_frame(), OBS).is_none());
         assert!(
-            anchored_outer_rect("win-a", &hidden, "win-a", live_frame(), OBS).is_none()
-        );
-        assert!(
-            anchored_outer_rect("win-b", &visible_border(), "win-a", live_frame(), OBS)
-                .is_none()
+            anchored_outer_rect("win-b", &visible_border(), "win-a", live_frame(), OBS).is_none()
         );
     }
 
@@ -782,14 +763,10 @@ mod anchored_outer_tests {
         // about this target, even with a plausible witness frame.
         let mut no_subject = visible_border();
         no_subject.subject = None;
-        assert!(
-            anchored_outer_rect("win-a", &no_subject, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &no_subject, "win-a", live_frame(), OBS).is_none());
         let mut other_subject = visible_border();
         other_subject.subject = Some(WindowId("win-b".to_owned()));
-        assert!(
-            anchored_outer_rect("win-a", &other_subject, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &other_subject, "win-a", live_frame(), OBS).is_none());
         // Witness subject leg (`win`) and observed-foreground leg must join
         // the same live target as the presentation foreground token.
         let mut cross_win = visible_border();
@@ -797,17 +774,14 @@ mod anchored_outer_tests {
             win: WindowId("win-b".to_owned()),
             ..witness()
         });
-        assert!(
-            anchored_outer_rect("win-a", &cross_win, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &cross_win, "win-a", live_frame(), OBS).is_none());
         let mut cross_foreground = visible_border();
         cross_foreground.witness = Some(FrameWitness {
             foreground: WindowId("win-b".to_owned()),
             ..witness()
         });
         assert!(
-            anchored_outer_rect("win-a", &cross_foreground, "win-a", live_frame(), OBS)
-                .is_none()
+            anchored_outer_rect("win-a", &cross_foreground, "win-a", live_frame(), OBS).is_none()
         );
     }
 
@@ -818,9 +792,7 @@ mod anchored_outer_tests {
             obs: OBS + 1,
             ..witness()
         });
-        assert!(
-            anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none());
     }
 
     #[test]
@@ -835,14 +807,9 @@ mod anchored_outer_tests {
             },
             ..witness()
         });
-        let (outer, width, gap, radius) = anchored_outer_rect(
-            "win-a",
-            &border,
-            "win-a",
-            live_frame(),
-            OBS,
-        )
-        .expect("a stale witness frame never vetoes a joined live frame");
+        let (outer, width, gap, radius) =
+            anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS)
+                .expect("a stale witness frame never vetoes a joined live frame");
         assert_eq!(
             outer,
             Rect {
@@ -861,14 +828,9 @@ mod anchored_outer_tests {
         border.width = Some(7);
         border.radius = Some(0);
         border.outsets = Some([10, 10, 10, 10]);
-        let (outer, width, gap, radius) = anchored_outer_rect(
-            "win-a",
-            &border,
-            "win-a",
-            live_frame(),
-            OBS,
-        )
-        .expect("core style and outsets yield a joined anchored rect");
+        let (outer, width, gap, radius) =
+            anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS)
+                .expect("core style and outsets yield a joined anchored rect");
         assert_eq!(
             outer,
             Rect {
@@ -885,14 +847,10 @@ mod anchored_outer_tests {
     fn missing_invalid_or_too_wide_core_style_vetoes_geometry() {
         let mut zero_width = visible_border();
         zero_width.width = Some(0);
-        assert!(
-            anchored_outer_rect("win-a", &zero_width, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &zero_width, "win-a", live_frame(), OBS).is_none());
         let mut missing_width = visible_border();
         missing_width.width = None;
-        assert!(
-            anchored_outer_rect("win-a", &missing_width, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &missing_width, "win-a", live_frame(), OBS).is_none());
         let mut missing_radius = visible_border();
         missing_radius.radius = None;
         assert!(
@@ -905,18 +863,14 @@ mod anchored_outer_tests {
         );
         let mut too_wide = visible_border();
         too_wide.outsets = Some([1, 1, 1, 1]);
-        assert!(
-            anchored_outer_rect("win-a", &too_wide, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &too_wide, "win-a", live_frame(), OBS).is_none());
     }
 
     #[test]
     fn overflow_vetoes_geometry_instead_of_wrapping() {
         let mut border = visible_border();
         border.outsets = Some([i32::MAX, i32::MAX, i32::MAX, i32::MAX]);
-        assert!(
-            anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none()
-        );
+        assert!(anchored_outer_rect("win-a", &border, "win-a", live_frame(), OBS).is_none());
     }
 }
 
@@ -926,7 +880,7 @@ mod anchored_outer_tests {
 /// leaf reads (`live_window_pid`, `live_is_iconic`, `read_member_tag`).
 #[cfg(test)]
 mod focus_fence_tests {
-    use super::{border_shown_signature, managed_origins, TileLoop};
+    use super::{TileLoop, border_shown_signature, managed_origins};
     use crate::native_guards::WindowKey;
     use crate::product_hide::sys::fake::{self, FakeWindow};
     use tiler_core::geometry::Rect;
@@ -1096,9 +1050,7 @@ mod focus_fence_tests {
         let key = member_key(0x9A03, 4242, "creation-1");
         seed_member(&mut state, &key, "w1");
         script_window(&key, true, key.pid);
-        state
-            .hidden_claims
-            .insert(key.clone(), hidden_record(&key));
+        state.hidden_claims.insert(key.clone(), hidden_record(&key));
         assert!(
             managed_origins(&state, &me(), &[], &[]).is_empty(),
             "the ledger owns an exact hidden claim's reveal, not the chord map"

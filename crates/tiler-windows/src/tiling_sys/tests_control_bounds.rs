@@ -23,10 +23,7 @@ use crate::tiling::{
 };
 
 fn control_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "tiler-control-{name}-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("tiler-control-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
     dir
 }
@@ -195,11 +192,8 @@ fn control_unknown_field_ingress_consumes_with_refused() {
         .find(|(name, _)| *name == "workspace")
         .map(|(_, body)| body)
         .expect("workspace body");
-    std::fs::write(
-        dir.join(WORKSPACE_REQUEST_FILE),
-        with_unknown_field(&body),
-    )
-    .expect("workspace body");
+    std::fs::write(dir.join(WORKSPACE_REQUEST_FILE), with_unknown_field(&body))
+        .expect("workspace body");
 
     poll_workspace_cli_request(&mut state, &me, &store, &dir, &[], &[]);
 
@@ -231,7 +225,10 @@ fn control_oversized_bodies_are_consumed_once_with_bounded_refusal() {
 
     std::fs::write(dir.join(WORKSPACE_REQUEST_FILE), &secret).expect("workspace body");
     poll_workspace_cli_request(&mut state, &me, &store, &dir, &[], &[]);
-    assert!(!dir.join(WORKSPACE_REQUEST_FILE).exists(), "workspace consumed");
+    assert!(
+        !dir.join(WORKSPACE_REQUEST_FILE).exists(),
+        "workspace consumed"
+    );
 
     std::fs::write(dir.join(RESIZE_REQUEST_FILE), &secret).expect("resize body");
     poll_resize_cli_request(&mut state, &me, &store, &dir, &[], &[]);

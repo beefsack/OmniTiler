@@ -280,10 +280,7 @@ fn maximized_exit_without_work_area_proof_keeps_metadata() {
         ],
         "an unsettled frame never reaches metadata removal"
     );
-    assert!(
-        script.meta_present,
-        "unproven maximize keeps the preimage"
-    );
+    assert!(script.meta_present, "unproven maximize keeps the preimage");
 }
 
 #[test]
@@ -791,10 +788,7 @@ fn retire_restored_fullscreen_fails_closed_without_a_live_lifetime() {
     assert!(!super::fullscreen::retire_restored_fullscreen(
         &dir, &dead, "tag-x", &meta
     ));
-    let zero = super::FullscreenMeta {
-        changed: 0,
-        ..meta
-    };
+    let zero = super::FullscreenMeta { changed: 0, ..meta };
     assert!(!super::fullscreen::retire_restored_fullscreen(
         &dir, &dead, "tag-x", &zero
     ));

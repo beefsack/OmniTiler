@@ -433,8 +433,7 @@ fn scaled_edge(value: i32, client: i32, design: i32) -> i32 {
     if client <= 0 {
         return 0;
     }
-    let scaled =
-        (i64::from(value) * i64::from(client) + i64::from(design) / 2) / i64::from(design);
+    let scaled = (i64::from(value) * i64::from(client) + i64::from(design) / 2) / i64::from(design);
     scaled.clamp(0, i64::from(client)) as i32
 }
 

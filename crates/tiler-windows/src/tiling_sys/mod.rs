@@ -33,9 +33,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use self::action_context::{ActionCtx, ActionLine, ActionTimings, SelectEffect, SendEffect};
-use self::admission::{
-    engine_is_float, fixed_predicate_for, overlay_refusal_for,
-};
+use self::admission::{engine_is_float, fixed_predicate_for, overlay_refusal_for};
 #[cfg(test)]
 use self::assignments::MAX_HIDE_DIAG_PER_SELECT;
 use self::assignments::{ensure_workspace_assignments, workspace_close_cleanup};
@@ -134,9 +132,7 @@ use self::pending_seams::{
 };
 use self::preview::{PreviewBound, PreviewStartBinding};
 pub use self::probes::live_overlay_flags;
-use self::probes::{
-    is_zoomed_now, pid_current, restore_wake_probe, revalidate_target,
-};
+use self::probes::{is_zoomed_now, pid_current, restore_wake_probe, revalidate_target};
 pub use self::proof_commands::{
     cmd_hide_proof, cmd_shortcut_proof, cmd_tile_proof, cmd_workspace_proof,
 };
@@ -230,13 +226,13 @@ use crate::tiling::{
     AllowEntry, CaptureOptions, ChildrenOptions, ControlRequestRead, DIRECTIONAL_REQUEST_FILE,
     DirectionalOptions, FrameInsets, HideProofOptions, INNER_GAP, InspectOptions,
     MIGRATE_WORKSPACE_REQUEST_FILE, MigrateWorkspaceOptions, OUTER_GAP, OWNER_ID, ObservedTarget,
-    ObservedTargetRef, RESIZE_REQUEST_FILE, ResizeOptions, SEND_OUTPUT_REQUEST_FILE, ScopeHostChild,
-    SendOutputOptions, SkipReason, StatelessVerdict, TileOptions, TileProofOptions, TokenMap,
-    WindowFacts, WorkspaceAction, WorkspaceOptions, allow_match, allowlist_digest, classify,
-    hosted_child_allows, inspect_stateless_verdict, is_borderless_fullscreen,
+    ObservedTargetRef, RESIZE_REQUEST_FILE, ResizeOptions, SEND_OUTPUT_REQUEST_FILE,
+    ScopeHostChild, SendOutputOptions, SkipReason, StatelessVerdict, TileOptions, TileProofOptions,
+    TokenMap, WindowFacts, WorkspaceAction, WorkspaceOptions, allow_match, allowlist_digest,
+    classify, hosted_child_allows, inspect_stateless_verdict, is_borderless_fullscreen,
     parse_allowlist, parse_directional_request, parse_migrate_workspace_request,
-    parse_resize_request, parse_send_output_request, parse_workspace_request,
-    read_control_request, scope_allows, scope_exe_basename, tiling_domain_bounds_with,
+    parse_resize_request, parse_send_output_request, parse_workspace_request, read_control_request,
+    scope_allows, scope_exe_basename, tiling_domain_bounds_with,
 };
 use tiler_core::gesture::preview_prior_desc;
 type DynError = Box<dyn std::error::Error>;
@@ -731,8 +727,10 @@ struct TileLoop {
     /// (`sticky_prior`/`float`/`tile`) read from each bound member's window
     /// once per world tick. Refreshed only by the tick helper; it is the
     /// single adapter-readable intent lane and never a policy mirror.
-    intent_snapshot:
-        std::collections::BTreeMap<crate::native_guards::WindowKey, self::world_diff::IntentStorage>,
+    intent_snapshot: std::collections::BTreeMap<
+        crate::native_guards::WindowKey,
+        self::world_diff::IntentStorage,
+    >,
     /// Adapter-asserted automatic fixed-float origins by stable member key
     /// (R-SPC-04 D4): first-seen maximized windows whose fresh tracks are
     /// fixed under the live predicate. They admit slotless and ride floating

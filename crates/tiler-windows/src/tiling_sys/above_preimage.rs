@@ -513,9 +513,15 @@ mod tests {
     #[test]
     fn unreadable_band_holds_instead_of_writing_blind() {
         let creation = self_creation();
-        let row =
-            AbovePreimage::new(0, std::process::id(), &creation, "tag-a", false, "session-a")
-                .expect("row");
+        let row = AbovePreimage::new(
+            0,
+            std::process::id(),
+            &creation,
+            "tag-a",
+            false,
+            "session-a",
+        )
+        .expect("row");
         // The pre-read is unreadable, so the restore holds immediately and
         // performs no native write from a guessed band.
         assert!(!restore_topmost_band(&row));
@@ -635,8 +641,8 @@ mod tests {
         // Handle 0 is a closed window owned by a still-live process: the
         // process is not provably dead, so only the window check can prune
         // this row, and it can never verify its lifetime again.
-        let closed = AbovePreimage::new(0, pid, &creation, "tag-a", false, "session-a")
-            .expect("row");
+        let closed =
+            AbovePreimage::new(0, pid, &creation, "tag-a", false, "session-a").expect("row");
         persist(&dir, &closed).expect("persist");
         assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
         assert!(load(&dir, 0, pid, &creation, "tag-a").is_none());

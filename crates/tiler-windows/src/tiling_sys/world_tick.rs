@@ -1378,7 +1378,10 @@ fn log_apply_diag(
             reply,
         ) || hover_changed
             || receipt_changed
-            || report.focus_feedback.iter().any(|row| !row.arrival.is_empty()))
+            || report
+                .focus_feedback
+                .iter()
+                .any(|row| !row.arrival.is_empty()))
     {
         return false;
     }
@@ -2041,12 +2044,7 @@ pub(super) fn run_observation_tick(
     let hidden_seeds = native.take_hidden_seeds();
     let reveals = native.take_reveals();
     drop(native);
-    super::visibility_diag::emit_reveal_records(
-        &log_path,
-        tick,
-        &format!("tick-{tick}"),
-        &reveals,
-    );
+    super::visibility_diag::emit_reveal_records(&log_path, tick, &format!("tick-{tick}"), &reveals);
     super::world_native::apply_hidden_seeds(
         hidden_seeds,
         member_tokens,
@@ -2851,12 +2849,7 @@ fn run_world_command_impl(
     let hidden_seeds = native.take_hidden_seeds();
     let reveals = native.take_reveals();
     drop(native);
-    super::visibility_diag::emit_reveal_records(
-        &log_path,
-        tick,
-        &format!("tick-{tick}"),
-        &reveals,
-    );
+    super::visibility_diag::emit_reveal_records(&log_path, tick, &format!("tick-{tick}"), &reveals);
     super::world_native::apply_hidden_seeds(
         hidden_seeds,
         member_tokens,
@@ -5839,8 +5832,14 @@ mod apply_diag_tests {
         assert!(desired[0]["frame_hold"].is_null());
         assert_eq!(desired[0]["floating"], serde_json::json!(false));
         assert!(desired[0]["frame_op"].is_null());
-        assert_eq!(desired[0]["automatic_clear_pending"], serde_json::json!(false));
-        assert_eq!(desired[1]["automatic_clear_pending"], serde_json::json!(true));
+        assert_eq!(
+            desired[0]["automatic_clear_pending"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            desired[1]["automatic_clear_pending"],
+            serde_json::json!(true)
+        );
         // Held row keeps its explicit hold reasons and stays pending with
         // no fabricated frame write.
         assert_eq!(desired[1]["window"], serde_json::json!("w-held"));
@@ -7497,9 +7496,10 @@ mod core_only_catchup_tests {
         state
             .member_tokens
             .insert(key.clone(), "w-catchup".to_owned());
-        state
-            .member_identity
-            .insert(key.clone(), member_identity(real.pid, &real.process_creation));
+        state.member_identity.insert(
+            key.clone(),
+            member_identity(real.pid, &real.process_creation),
+        );
         state.member_tags.insert(key.clone(), tag.clone());
         inject_fullscreen_meta(
             hwnd,

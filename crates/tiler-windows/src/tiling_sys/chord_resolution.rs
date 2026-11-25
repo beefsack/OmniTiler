@@ -17,10 +17,7 @@ pub(super) fn observe_chord_intent(
     let mut observed = state.observe(me, fulls, &mut skipped, &mut retained)?;
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    Some(ChordObserved {
-        observed,
-        retained,
-    })
+    Some(ChordObserved { observed, retained })
 }
 
 /// Resolved chord target: the Engine token, member key, and world-backed home.

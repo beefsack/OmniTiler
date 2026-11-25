@@ -133,9 +133,7 @@ impl RunLogSink {
 static SINK: std::sync::Mutex<Option<RunLogSink>> = std::sync::Mutex::new(None);
 
 fn with_sink<T>(f: impl FnOnce(&mut RunLogSink) -> T) -> T {
-    let mut guard = SINK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = SINK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     f(guard.get_or_insert_with(RunLogSink::default))
 }
 
@@ -175,10 +173,7 @@ pub fn create_line(path: &Path, line: &str) -> io::Result<()> {
 /// Each call checks [`LOG_FILE_CAP_BYTES`] plus
 /// [`LOG_EMERGENCY_HEADROOM_BYTES`] before appending; concurrent panic
 /// callbacks can race, so the check is a per-call bound.
-pub fn append_emergency_json(
-    path: &Path,
-    value: &serde_json::Value,
-) -> io::Result<AppendOutcome> {
+pub fn append_emergency_json(path: &Path, value: &serde_json::Value) -> io::Result<AppendOutcome> {
     let line = match serde_json::to_string(value) {
         Ok(line) => line,
         Err(_) => return Ok(AppendOutcome::Capped),
@@ -197,7 +192,11 @@ pub(crate) fn append_emergency_line_with_cap(
 ) -> io::Result<AppendOutcome> {
     let (line, omitted) = bounded_line(line);
     let len = file_len(path)?;
-    if len.saturating_add(byte_len(line.as_ref())).saturating_add(1) > cap {
+    if len
+        .saturating_add(byte_len(line.as_ref()))
+        .saturating_add(1)
+        > cap
+    {
         return Ok(AppendOutcome::Capped);
     }
     append_raw(path, line.as_ref())?;

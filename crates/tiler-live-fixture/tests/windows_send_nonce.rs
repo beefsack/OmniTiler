@@ -24,7 +24,11 @@ fn windows_send_reads_the_nonce_from_the_environment_not_argv() {
 
     let absent = send().args(["--wait-ms", "1"]).output().unwrap();
     assert_eq!(absent.status.code(), Some(2));
-    assert!(String::from_utf8(absent.stderr).unwrap().contains(NONCE_ENV));
+    assert!(
+        String::from_utf8(absent.stderr)
+            .unwrap()
+            .contains(NONCE_ENV)
+    );
 
     // This pair check runs after nonce validation and before any transport IO.
     let present = send()

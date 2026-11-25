@@ -105,9 +105,10 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     // Production records the empty-hints read (`rows.rs` stores
     // `WindowSizeHints::none()` for a successful no-hint read); leaving it
     // `None` here would fabricate unreadability the adapter never sees.
-    state
-        .hint_logged
-        .insert("w1".to_owned(), tiler_core::size_hints::WindowSizeHints::none());
+    state.hint_logged.insert(
+        "w1".to_owned(),
+        tiler_core::size_hints::WindowSizeHints::none(),
+    );
     state.member_identity.insert(
         key.clone(),
         crate::model::ProcessIdentity {

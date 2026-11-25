@@ -204,8 +204,13 @@ fn read_store(dir: &Path) -> Result<Vec<FullscreenPreimage>, ()> {
     };
     let text = std::str::from_utf8(&bytes).map_err(|_| ())?;
     let document: serde_json::Value = serde_json::from_str(text).map_err(|_| ())?;
-    let version = u32::try_from(document.get("v").and_then(serde_json::Value::as_u64).ok_or(())?)
-        .map_err(|_| ())?;
+    let version = u32::try_from(
+        document
+            .get("v")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(())?,
+    )
+    .map_err(|_| ())?;
     if version != PREIMAGE_VERSION {
         return Err(());
     }
@@ -520,18 +525,11 @@ mod tests {
 
         // Construction refuses empty identity, foreign style bits, and
         // inconsistent frame shapes.
+        assert!(FullscreenPreimage::new(1, 1, "", "tag", "session", 0, true, None).is_none());
+        assert!(FullscreenPreimage::new(1, 1, "creation", "", "session", 0, true, None).is_none());
+        assert!(FullscreenPreimage::new(1, 1, "creation", "tag", "", 0, true, None).is_none());
         assert!(
-            FullscreenPreimage::new(1, 1, "", "tag", "session", 0, true, None).is_none()
-        );
-        assert!(
-            FullscreenPreimage::new(1, 1, "creation", "", "session", 0, true, None).is_none()
-        );
-        assert!(
-            FullscreenPreimage::new(1, 1, "creation", "tag", "", 0, true, None).is_none()
-        );
-        assert!(
-            FullscreenPreimage::new(1, 1, "creation", "tag", "session", 0x1, true, None)
-                .is_none()
+            FullscreenPreimage::new(1, 1, "creation", "tag", "session", 0x1, true, None).is_none()
         );
         assert!(
             FullscreenPreimage::new(1, 1, "creation", "tag", "session", 0, true, Some(frame()))
@@ -643,10 +641,7 @@ mod tests {
         // path may prune or retire anything, even a provably dead row.
         assert_eq!(restore_verified_leftovers(&dir, ""), 0);
         assert_eq!(restore_verified_current(&dir, ""), (0, false));
-        assert_eq!(
-            load(&dir, 0, u32::MAX, "creation-a", "tag-a"),
-            Some(dead)
-        );
+        assert_eq!(load(&dir, 0, u32::MAX, "creation-a", "tag-a"), Some(dead));
         assert_eq!(read_store(&dir).expect("store").len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -657,28 +652,12 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let pid = std::process::id();
         let creation = self_creation();
-        let own = FullscreenPreimage::new(
-            0,
-            pid,
-            &creation,
-            "tag-a",
-            "session-self",
-            0,
-            true,
-            None,
-        )
-        .expect("row");
-        let foreign = FullscreenPreimage::new(
-            0,
-            pid,
-            &creation,
-            "tag-b",
-            "session-other",
-            0,
-            true,
-            None,
-        )
-        .expect("row");
+        let own =
+            FullscreenPreimage::new(0, pid, &creation, "tag-a", "session-self", 0, true, None)
+                .expect("row");
+        let foreign =
+            FullscreenPreimage::new(0, pid, &creation, "tag-b", "session-other", 0, true, None)
+                .expect("row");
         persist(&dir, &own).expect("persist own");
         persist(&dir, &foreign).expect("persist foreign");
         // Handle 0 is closed, so the current-session row can never restore
@@ -686,10 +665,7 @@ mod tests {
         // not this pass's business.
         assert_eq!(restore_verified_current(&dir, "session-self"), (0, false));
         assert!(load(&dir, 0, pid, &creation, "tag-a").is_none());
-        assert_eq!(
-            load(&dir, 0, pid, &creation, "tag-b"),
-            Some(foreign)
-        );
+        assert_eq!(load(&dir, 0, pid, &creation, "tag-b"), Some(foreign));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

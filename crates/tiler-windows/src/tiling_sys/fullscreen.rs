@@ -802,8 +802,7 @@ pub(super) fn exit_fullscreen_owned_with(
             return OwnedExitOutcome::Unproven;
         }
         if !effects.maximize_settled(hwnd_u64)
-            && (!effects.restore_maximized_frame(hwnd_u64)
-                || !effects.maximize_settled(hwnd_u64))
+            && (!effects.restore_maximized_frame(hwnd_u64) || !effects.maximize_settled(hwnd_u64))
         {
             return OwnedExitOutcome::Unproven;
         }

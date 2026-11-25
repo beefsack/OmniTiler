@@ -37,20 +37,19 @@ pub(super) fn sweep_retire_restored_fullscreen(
         if meta.changed == 0 {
             continue;
         }
-        let live_fullscreen =
-            match observed
+        let live_fullscreen = match observed
+            .iter()
+            .find(|window| window.token == token && window.identity.hwnd == key.hwnd)
+        {
+            Some(window) => Some(window.facts.captionless_fullscreen),
+            None => match retained
                 .iter()
-                .find(|window| window.token == token && window.identity.hwnd == key.hwnd)
+                .find(|row| row.token == token && row.key == key)
             {
-                Some(window) => Some(window.facts.captionless_fullscreen),
-                None => match retained
-                    .iter()
-                    .find(|row| row.token == token && row.key == key)
-                {
-                    Some(row) => Some(row.fullscreen),
-                    None => continue,
-                },
-            };
+                Some(row) => Some(row.fullscreen),
+                None => continue,
+            },
+        };
         // Only a positive non-fullscreen read retires: unknown or fullscreen
         // keeps the marker.
         if live_fullscreen != Some(false) {

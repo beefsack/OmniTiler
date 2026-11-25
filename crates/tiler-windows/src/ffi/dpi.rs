@@ -27,9 +27,8 @@ pub(crate) fn with_pm_v2<T>(work: impl FnOnce() -> T) -> Option<T> {
     if thread_pm_v2_active() {
         return Some(work());
     }
-    let previous = unsafe {
-        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-    };
+    let previous =
+        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     if previous.is_null() {
         return None;
     }

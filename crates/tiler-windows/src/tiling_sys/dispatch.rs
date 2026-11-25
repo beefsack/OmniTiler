@@ -144,9 +144,9 @@ fn float_toggle_command(
     live_frame: impl FnOnce() -> Option<Rect>,
 ) -> tiler_core::world_report::WorldCommand {
     tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: tiler_core::directional::WindowSubject::Window(
-            tiler_core::directional::WindowId(token.to_owned()),
-        ),
+        window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+            token.to_owned(),
+        )),
         float_rect: if was_floating { live_frame() } else { None },
     })
 }
@@ -221,10 +221,7 @@ pub(super) fn dispatch_float_intent(
         log_json_at(&log_path, line);
         return;
     };
-    let ChordObserved {
-        observed,
-        retained,
-    } = chord;
+    let ChordObserved { observed, retained } = chord;
     let ChordTarget {
         from,
         member_key,
@@ -285,7 +282,10 @@ pub(super) fn dispatch_float_intent(
         state.float_rects.insert(from.clone(), frame);
     }
     let (outcome, target) = match reply.as_ref() {
-        None => ("float-unverified", if is_float { "unfloated" } else { "floated" }),
+        None => (
+            "float-unverified",
+            if is_float { "unfloated" } else { "floated" },
+        ),
         Some(outcome) => match outcome.result.as_ref() {
             Some(tiler_core::world_report::CommandResult::Float { no_space: true, .. }) => {
                 ("unfloat-no-space", "floated")
@@ -296,9 +296,7 @@ pub(super) fn dispatch_float_intent(
             Some(tiler_core::world_report::CommandResult::Float { rect: None, .. }) => {
                 ("unfloat-applied", "unfloated")
             }
-            Some(tiler_core::world_report::CommandResult::Rejected { .. }) => {
-                ("rejected", "float")
-            }
+            Some(tiler_core::world_report::CommandResult::Rejected { .. }) => ("rejected", "float"),
             _ => ("float-applied", "floated"),
         },
     };
@@ -387,10 +385,7 @@ pub(super) fn dispatch_orientation_intent(
         log_json_at(&log_path, line);
         return;
     };
-    let ChordObserved {
-        observed,
-        retained,
-    } = chord;
+    let ChordObserved { observed, retained } = chord;
     let ChordTarget {
         from,
         member_key,

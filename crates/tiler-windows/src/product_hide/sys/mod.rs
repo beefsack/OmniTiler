@@ -413,11 +413,7 @@ fn intent_slot_hash(process_creation: &str, tag: &str) -> u32 {
     const OFFSET: u32 = 0x811c_9dc5;
     const PRIME: u32 = 0x0100_0193;
     let mut hash = OFFSET;
-    for byte in process_creation
-        .as_bytes()
-        .iter()
-        .chain(tag.as_bytes())
-    {
+    for byte in process_creation.as_bytes().iter().chain(tag.as_bytes()) {
         hash ^= u32::from(*byte);
         hash = hash.wrapping_mul(PRIME);
     }
@@ -539,10 +535,7 @@ fn intent_slot_identity(hwnd: u64) -> Option<(u32, String, String)> {
 /// caller touches the window property: the HWND must be live, its live PID
 /// must equal `key.pid`, the held process must report `key.creation`, and the
 /// live member tag must equal `tag` (nonempty). Every mismatch fails closed.
-fn verified_slot_lifetime(
-    key: &crate::native_guards::WindowKey,
-    tag: &str,
-) -> Option<HeldProcess> {
+fn verified_slot_lifetime(key: &crate::native_guards::WindowKey, tag: &str) -> Option<HeldProcess> {
     if tag.is_empty() || !crate::ffi::is_window(key.hwnd) {
         return None;
     }
@@ -570,9 +563,9 @@ fn slot_lifetime_still_live(
     tag: &str,
     held: &HeldProcess,
 ) -> bool {
-    held.identity().is_ok_and(|identity| {
-        identity.pid == key.pid && identity.process_creation == key.creation
-    }) && crate::ffi::is_window(key.hwnd)
+    held.identity()
+        .is_ok_and(|identity| identity.pid == key.pid && identity.process_creation == key.creation)
+        && crate::ffi::is_window(key.hwnd)
         && crate::ffi::window_pid(key.hwnd) == key.pid
         && read_member_tag(key.hwnd).as_deref() == Some(tag)
 }
@@ -702,8 +695,11 @@ pub(crate) fn write_intent_slot_for(
 /// verified empty slot. Returns `(float, sticky_prior)` in canonical `v:1`
 /// order.
 pub fn read_window_intent(hwnd_u64: u64) -> Option<(Option<bool>, Option<bool>)> {
-    read_intent_slot(hwnd_u64)
-        .map(|slot| slot.map_or((None, None), |storage| (storage.float, storage.sticky_prior)))
+    read_intent_slot(hwnd_u64).map(|slot| {
+        slot.map_or((None, None), |storage| {
+            (storage.float, storage.sticky_prior)
+        })
+    })
 }
 
 /// Canonical intent write for integration proofs: binds both canonical lanes
@@ -715,8 +711,14 @@ pub fn write_window_intent(
     float: Option<bool>,
     sticky_prior: Option<bool>,
 ) -> Result<()> {
-    write_intent_slot(hwnd_u64, IntentStorage { float, sticky_prior })
-        .map_err(|()| err("error: intent slot write failed"))
+    write_intent_slot(
+        hwnd_u64,
+        IntentStorage {
+            float,
+            sticky_prior,
+        },
+    )
+    .map_err(|()| err("error: intent slot write failed"))
 }
 
 /// Reconstruct canonical storage from the scripted per-lane marker tables.
@@ -2558,8 +2560,8 @@ mod mode_tests {
     use super::{
         INTENT_FLOAT_MASK, INTENT_FLOAT_SHIFT, INTENT_HASH_SHIFT, INTENT_PID_MASK,
         INTENT_PID_SHIFT, INTENT_RESERVED_MASK, INTENT_STICKY_MASK, VisibilityMode,
-        commit_intent_slot, decode_intent_slot, encode_intent_slot,
-        hide_managed_claim_with_mode, reveal_product_claim_to_with_mode,
+        commit_intent_slot, decode_intent_slot, encode_intent_slot, hide_managed_claim_with_mode,
+        reveal_product_claim_to_with_mode,
     };
     use crate::model::{
         LEDGER_SCHEMA_VERSION, ProcessIdentity, RecoveryLedger, WindowClaimKind, WindowIdentity,
@@ -3069,8 +3071,7 @@ mod mode_tests {
     #[test]
     fn intent_slot_foreign_pid_or_lifetime_reads_unreadable() {
         let storage = slot_storage(Some(true), Some(true));
-        let stored =
-            encode_intent_slot(&storage, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
+        let stored = encode_intent_slot(&storage, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
         assert_eq!(
             decode_intent_slot(stored, SLOT_PID + 1, SLOT_CREATION, TAG),
             None,
@@ -3106,14 +3107,24 @@ mod mode_tests {
 
         let sticky3 = (encoded & !INTENT_STICKY_MASK) | 0b11;
         assert_eq!(
-            decode_intent_slot(usize::try_from(sticky3 + 1).expect("fits"), SLOT_PID, SLOT_CREATION, TAG),
+            decode_intent_slot(
+                usize::try_from(sticky3 + 1).expect("fits"),
+                SLOT_PID,
+                SLOT_CREATION,
+                TAG
+            ),
             None,
             "sticky code 3 is invalid"
         );
 
         let float3 = (encoded & !INTENT_FLOAT_MASK) | (0b11 << INTENT_FLOAT_SHIFT);
         assert_eq!(
-            decode_intent_slot(usize::try_from(float3 + 1).expect("fits"), SLOT_PID, SLOT_CREATION, TAG),
+            decode_intent_slot(
+                usize::try_from(float3 + 1).expect("fits"),
+                SLOT_PID,
+                SLOT_CREATION,
+                TAG
+            ),
             None,
             "float code 3 is invalid"
         );
@@ -3182,8 +3193,7 @@ mod mode_tests {
     #[test]
     fn intent_slot_failed_set_keeps_previous_storage() {
         let previous = slot_storage(Some(true), Some(true));
-        let stored =
-            encode_intent_slot(&previous, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
+        let stored = encode_intent_slot(&previous, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
         let table = RefCell::new(Some(stored));
         let set_calls = Cell::new(0u32);
         let result = commit_intent_slot(
@@ -3227,15 +3237,18 @@ mod mode_tests {
             || read_scripted(&table),
         );
         assert_eq!(result, Ok(()));
-        assert_eq!(remove_calls.get(), 1, "the slot removal is the single commit");
+        assert_eq!(
+            remove_calls.get(),
+            1,
+            "the slot removal is the single commit"
+        );
         assert_eq!(read_scripted(&table), Some(None));
     }
 
     #[test]
     fn intent_slot_empty_transition_fails_when_removal_does_not_verify() {
         let previous = slot_storage(None, Some(true));
-        let stored =
-            encode_intent_slot(&previous, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
+        let stored = encode_intent_slot(&previous, SLOT_PID, SLOT_CREATION, TAG).expect("encodes");
         let table = RefCell::new(Some(stored));
         let result = commit_intent_slot(
             IntentStorage::default(),
@@ -3252,12 +3265,14 @@ mod mode_tests {
         );
     }
 
-    fn live_intent_window() -> (crate::ffi::TestWindow, crate::model::ProcessIdentity, String) {
-        let window = crate::ffi::TestWindow::create_message_only(
-            "OmniTiler.IntentSlotTest",
-            "intent-slot",
-        )
-        .expect("message-only test window creates");
+    fn live_intent_window() -> (
+        crate::ffi::TestWindow,
+        crate::model::ProcessIdentity,
+        String,
+    ) {
+        let window =
+            crate::ffi::TestWindow::create_message_only("OmniTiler.IntentSlotTest", "intent-slot")
+                .expect("message-only test window creates");
         let me = crate::native::current_identity().expect("current identity reads");
         let tag = super::install_member_tag(window.hwnd(), me.pid).expect("member tag installs");
         (window, me, tag)
@@ -3332,8 +3347,8 @@ mod mode_tests {
         let key = live_intent_key(window.hwnd(), &me);
         let old = slot_storage(None, Some(true));
         super::write_intent_slot_for(&key, &tag, old).expect("writes under the first tag");
-        let replacement = super::install_member_tag(window.hwnd(), me.pid)
-            .expect("replacement tag installs");
+        let replacement =
+            super::install_member_tag(window.hwnd(), me.pid).expect("replacement tag installs");
         assert_ne!(replacement, tag);
         assert_eq!(
             super::read_intent_slot_for(&key, &tag),

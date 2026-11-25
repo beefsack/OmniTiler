@@ -450,7 +450,13 @@ fn scripted() -> NativePrimitives {
             }
             S_IDENT.with(|m| m.borrow().get(&hwnd).cloned())
         },
-        read_topmost: |hwnd| S_OBSERVE.with(|m| m.borrow().get(&hwnd).map_or(Some(false), |w| Some(w.facts.topmost))),
+        read_topmost: |hwnd| {
+            S_OBSERVE.with(|m| {
+                m.borrow()
+                    .get(&hwnd)
+                    .map_or(Some(false), |w| Some(w.facts.topmost))
+            })
+        },
         admit: |hwnd, _me, _expected, _tag, _topmost| {
             S_ADMIT_CALLS.with(|m| m.borrow_mut().push(hwnd));
             S_ADMIT.with(|m| {
@@ -1128,7 +1134,10 @@ fn fallback_hide_gate_resamples_foreground_before_write() {
     S_FG_SEQ.with(|seq| *seq.borrow_mut() = vec![ordinary.hwnd, game.hwnd, 108_006]);
     assert!(native.fallback_hide_allowed("w1"));
     assert!(!native.fallback_hide_allowed("w1"), "late fullscreen veto");
-    assert!(!native.fallback_hide_allowed("w1"), "unreadable foreground veto");
+    assert!(
+        !native.fallback_hide_allowed("w1"),
+        "unreadable foreground veto"
+    );
 }
 
 #[test]
@@ -1861,7 +1870,10 @@ fn staged_hide_releases_only_the_authorized_live_foreground() {
         prims.hide_claim_na = |_, _, claim, _, _| Ok(claim.clone());
         let mut native = assemble(&mut env, prims);
         assert_eq!(native.hide_window("w1", may_release), Ok(true));
-        assert_eq!((native.prims.foreground)(), if releases { 0 } else { foreground });
+        assert_eq!(
+            (native.prims.foreground)(),
+            if releases { 0 } else { foreground }
+        );
     }
 }
 
@@ -2901,9 +2913,9 @@ fn applied_of_members(
     members.iter().any(|a| {
         a.operation_id == op
             && ref_workspace(a.post.as_ref()).is_some_and(|ws| ws == a.target_workspace)
-    }) || views.iter().any(|a| {
-        a.operation_id == op && a.post.as_deref() == Some(a.target_workspace.as_str())
-    })
+    }) || views
+        .iter()
+        .any(|a| a.operation_id == op && a.post.as_deref() == Some(a.target_workspace.as_str()))
 }
 
 fn window_op(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> String {
@@ -3185,10 +3197,7 @@ fn genuine_reveal_records_one_production_row_and_noop_records_none() {
     assert_eq!(refused[0].outcome, "refused");
     assert_eq!(refused[0].detail, Some("reveal-refused"));
     // Proven retry: exactly one more row, named revealed, claim retired.
-    S_REVEAL.with(|m| {
-        m.borrow_mut()
-            .insert(rig.leaving.hwnd, Ok(Revealed::Shown))
-    });
+    S_REVEAL.with(|m| m.borrow_mut().insert(rig.leaving.hwnd, Ok(Revealed::Shown)));
     native.switch_view(&rig.out, &ws1).expect("reveal");
     assert!(!native.hidden_claims.contains_key(&rig.leaving));
     let revealed = native.take_reveals();
@@ -3211,7 +3220,10 @@ fn absent_reveal_is_recorded_as_retired() {
     );
     native.switch_view(&rig.out, &rig.ws2).expect("hide");
     assert!(native.hidden_claims.contains_key(&rig.leaving));
-    S_REVEAL.with(|m| m.borrow_mut().insert(rig.leaving.hwnd, Ok(Revealed::Retired)));
+    S_REVEAL.with(|m| {
+        m.borrow_mut()
+            .insert(rig.leaving.hwnd, Ok(Revealed::Retired))
+    });
 
     assert!(!native.reveal_window("w1").expect("retire absent member"));
     assert!(!native.hidden_claims.contains_key(&rig.leaving));
@@ -5514,7 +5526,9 @@ fn hidden_fallback_publishes_observed_facts() {
     let out = env.state.output_token(DEV1);
     let key = win_key(110_500, 2150, "proc-70");
     admit_member(&mut env, &key, &ws, "w1", false);
-    env.state.member_rects.insert("w1".to_owned(), rect(0, 0, 800, 600));
+    env.state
+        .member_rects
+        .insert("w1".to_owned(), rect(0, 0, 800, 600));
     env.state.hidden_claims.insert(
         key.clone(),
         super::super::HiddenRecord {

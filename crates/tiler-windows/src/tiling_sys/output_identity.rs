@@ -587,7 +587,8 @@ mod tests {
             Some(expected)
         );
         // The two native path spellings of one display normalize equal.
-        let interface = r"\\?\DISPLAY#DEL4098#5&2b1e&0&UID4352#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+        let interface =
+            r"\\?\DISPLAY#DEL4098#5&2b1e&0&UID4352#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
         let instance = device_instance_id(interface).expect("instance");
         assert_eq!(
             normalized_connector(&instance),

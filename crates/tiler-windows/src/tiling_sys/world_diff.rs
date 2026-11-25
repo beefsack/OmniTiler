@@ -81,8 +81,8 @@ use tiler_core::world_report::{
     AfterShownMember, ArrivalBracket, ArrivalLocation, AuthorityScope, FocusDisposition,
     FocusFeedback, FocusNoCallReason, FrameAttempt, FramePurpose, FrameSetter, HoldReason,
     LastWritePath, MemberAttempt, MemberDisposition, ScopeAuthority, StateAttempt, StateProperty,
-    TransferKind, TransferTargetV4, VisibilityAttempt, VisibilityDisposition,
-    VisibilityFact, VisibilityReason, VisibilitySample, WindowDesire, WorkspaceRef, WorldReplyV4,
+    TransferKind, TransferTargetV4, VisibilityAttempt, VisibilityDisposition, VisibilityFact,
+    VisibilityReason, VisibilitySample, WindowDesire, WorkspaceRef, WorldReplyV4,
 };
 
 /// The two independent v1 intent choices stored in the packed native slot.
@@ -2090,7 +2090,11 @@ impl ApplyStats {
 /// Core compresses uniform workspace authority into one output row. A
 /// specific workspace row always wins; without either match there is no
 /// authority for the domain.
-fn workspace_authority(reply: &WorldReplyV4, output: &str, workspace: &str) -> Option<ScopeAuthority> {
+fn workspace_authority(
+    reply: &WorldReplyV4,
+    output: &str,
+    workspace: &str,
+) -> Option<ScopeAuthority> {
     let mut output_authority = None;
     for status in &reply.scopes {
         match &status.scope {
@@ -2127,19 +2131,16 @@ fn view_transfer_yields_to_per_window_lane(
     reply: &WorldReplyV4,
     transfer: &TransferTargetV4,
 ) -> bool {
-    let yields = match workspace_authority(
-        reply,
-        &transfer.target_output.0,
-        &transfer.target_workspace,
-    ) {
-        Some(ScopeAuthority::Controlled) => reply
-            .focus_request
-            .as_ref()
-            .and_then(|request| request.after_shown.as_ref())
-            .is_some_and(|after| after.op == transfer.operation_id),
-        Some(ScopeAuthority::Untouched) => true,
-        _ => false,
-    };
+    let yields =
+        match workspace_authority(reply, &transfer.target_output.0, &transfer.target_workspace) {
+            Some(ScopeAuthority::Controlled) => reply
+                .focus_request
+                .as_ref()
+                .and_then(|request| request.after_shown.as_ref())
+                .is_some_and(|after| after.op == transfer.operation_id),
+            Some(ScopeAuthority::Untouched) => true,
+            _ => false,
+        };
     yields
         && reply.windows.iter().any(|candidate| {
             candidate.output == transfer.target_output
@@ -2693,7 +2694,11 @@ fn stage_visibility_shows(
         } else {
             Some(read)
         };
-        if accepted && post.as_ref().is_none_or(|read| !show_sample_proven(&read.sample)) {
+        if accepted
+            && post
+                .as_ref()
+                .is_none_or(|read| !show_sample_proven(&read.sample))
+        {
             // Async reveal: the accepted setter has not proven yet. Store
             // the Called record with no post and emit no attempt (hold) so
             // the next pass re-reads without re-actuating; never latch a
@@ -2959,7 +2964,10 @@ fn stage_visibility_hides(
                 ..
             }
         );
-        let pending = accepted && post.as_ref().is_none_or(|read| !hide_sample_proven(&read.sample));
+        let pending = accepted
+            && post
+                .as_ref()
+                .is_none_or(|read| !hide_sample_proven(&read.sample));
         let attempt = VisibilityAttempt {
             window: row.lifetime.clone(),
             target: false,
@@ -3787,16 +3795,7 @@ fn apply_world_reply_inner(
     // 0a. Intent reconcile precedes every dependent write: markers are the
     // preimage the core's own intent records and sticky/float lanes ride.
     // Any unreadable/failed publish holds the whole reply and retries.
-    if reconcile_intent(
-        reply,
-        fresh,
-        ops,
-        gate,
-        entry_obs,
-        intent_persisted,
-    )
-    .is_none()
-    {
+    if reconcile_intent(reply, fresh, ops, gate, entry_obs, intent_persisted).is_none() {
         stats.held += 1;
         stats.stopped_mid_apply = true;
         finalize(&mut stats);
@@ -5432,15 +5431,13 @@ fn apply_world_reply_inner(
                                 // retained destination, plus the actual
                                 // observed foreground: the focus must have
                                 // landed, not merely been dispatched.
-                                let shown = ops.read_homing(&warp.target.0).is_some_and(
-                                    |(out, ws)| {
+                                let shown =
+                                    ops.read_homing(&warp.target.0).is_some_and(|(out, ws)| {
                                         out == warp.output.0
                                             && ws == warp.workspace.0
                                             && scope_controlled(reply, &out, &ws)
-                                            && ops.read_view(&out).as_deref()
-                                                == Some(ws.as_str())
-                                    },
-                                );
+                                            && ops.read_view(&out).as_deref() == Some(ws.as_str())
+                                    });
                                 if !shown || !ops.is_foreground(&warp.target.0) {
                                     stats.held += 1;
                                 } else if ops.read_cursor() == Some((x, y)) {

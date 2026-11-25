@@ -665,9 +665,7 @@ impl WorldTransaction<'_> {
                 // move lane yet; refuse instead of inventing one.
                 return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
             }
-            if iconic_mover
-                && self.world.staged.observation.focused_global != window.0
-            {
+            if iconic_mover && self.world.staged.observation.focused_global != window.0 {
                 return Err((
                     RefusalKind::FocusMismatch.as_str(),
                     "the moved window is not the focused window",

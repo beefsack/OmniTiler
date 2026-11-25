@@ -77,8 +77,8 @@ pub(super) type RevealClaimFn = fn(
     bool,
     Option<&mut VisibilityPostTrace>,
 ) -> Result<Revealed, String>;
-use super::{AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, ScopeHostChild, TokenMap};
 use super::visibility_diag::RevealRecord;
+use super::{AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, ScopeHostChild, TokenMap};
 use crate::model::{ProcessIdentity, WindowIdentity};
 use crate::native::HeldProcess;
 use crate::native_guards::WindowKey;
@@ -1952,18 +1952,14 @@ impl NativeOps for LiveNative<'_> {
                 // `observe_window_inner`). A failed or identity-mismatched
                 // read leaves facts unknown (fail closed); nothing is
                 // synthesized here.
-                let hidden_ok = (self.prims.observe_hidden)(
-                    claim_hwnd,
-                    self.me,
-                    self.fulls,
-                    &mut self.tokens,
-                )
-                .ok()
-                .filter(|w| {
-                    w.hwnd == claim_hwnd
-                        && w.identity.pid == key.pid
-                        && w.identity.process_creation == key.creation
-                });
+                let hidden_ok =
+                    (self.prims.observe_hidden)(claim_hwnd, self.me, self.fulls, &mut self.tokens)
+                        .ok()
+                        .filter(|w| {
+                            w.hwnd == claim_hwnd
+                                && w.identity.pid == key.pid
+                                && w.identity.process_creation == key.creation
+                        });
                 let (output, workspace) = self.committed_homing(token).unwrap_or_default();
                 let intent = self.window_intent(&key);
                 Some(FreshWindow {
@@ -2370,7 +2366,8 @@ impl NativeOps for LiveNative<'_> {
     }
 
     fn fallback_hide_allowed(&mut self, token: &str) -> bool {
-        self.key_of(token).is_some_and(|key| !self.write_vetoed(key.hwnd))
+        self.key_of(token)
+            .is_some_and(|key| !self.write_vetoed(key.hwnd))
     }
 
     fn foreground_managed(&mut self) -> Option<String> {
@@ -2739,7 +2736,11 @@ impl NativeOps for LiveNative<'_> {
         if crate::product_hide::sys::fake::marker_active(key.hwnd) {
             return crate::product_hide::sys::write_intent_slot(key.hwnd, desired);
         }
-        crate::product_hide::sys::write_intent_slot_for(&key, self.stored_tag(&key).ok_or(())?, desired)
+        crate::product_hide::sys::write_intent_slot_for(
+            &key,
+            self.stored_tag(&key).ok_or(())?,
+            desired,
+        )
     }
 
     fn foreground_state(&mut self) -> super::world_diff::ForegroundState {
@@ -3006,10 +3007,8 @@ mod r12_native_tests {
     const TAG: &str = "abcdef0123456789";
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "omnitiler-r12-native-{}-{tag}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("omnitiler-r12-native-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir
     }
@@ -3036,9 +3035,8 @@ mod r12_native_tests {
     fn failed_above_release_reports_threw_and_keeps_preimage() {
         let dir = temp_dir("above-fail");
         let key = key(0x4001);
-        let row =
-            AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
-                .expect("row builds");
+        let row = AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
+            .expect("row builds");
         above_preimage::persist(&dir, &row).expect("preimage persists");
 
         let mut calls = 0;
@@ -3065,9 +3063,8 @@ mod r12_native_tests {
     fn verified_above_release_clears_preimage() {
         let dir = temp_dir("above-ok");
         let key = key(0x4002);
-        let row =
-            AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
-                .expect("row builds");
+        let row = AbovePreimage::new(key.hwnd, key.pid, &key.creation, TAG, false, "session-1")
+            .expect("row builds");
         above_preimage::persist(&dir, &row).expect("preimage persists");
 
         let result = release_above(

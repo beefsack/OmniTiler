@@ -78,14 +78,14 @@ pub(super) fn adopt_floats_from_reply(
 
 #[cfg(test)]
 mod tests {
-    use super::super::rmax03_adapter_tests::test_state;
     use super::super::TileLoop;
+    use super::super::rmax03_adapter_tests::test_state;
     use super::*;
     use tiler_core::directional::{OutputId, WindowId};
     use tiler_core::geometry::Rect;
     use tiler_core::world_report::{
-        BorderHideReasonV4, BorderPresentationV4, ScopeAuthority, WindowDesire,
-        WorldPresentationV4, WorldReplyV4, WORLD_CONTRACT_VERSION,
+        BorderHideReasonV4, BorderPresentationV4, ScopeAuthority, WORLD_CONTRACT_VERSION,
+        WindowDesire, WorldPresentationV4, WorldReplyV4,
     };
 
     fn float_row(origin: Option<tiler_core::world_report::FloatOrigin>) -> WindowDesire {

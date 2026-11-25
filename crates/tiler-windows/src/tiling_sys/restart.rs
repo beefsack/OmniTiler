@@ -278,4 +278,3 @@ pub(super) fn admit_slotless_maximized(
     }
     admitted
 }
-

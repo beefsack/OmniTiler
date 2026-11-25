@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM};
 use windows_sys::Win32::UI::Input::{
-    GetRawInputData, RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT,
+    GetRawInputData, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK, RIDEV_REMOVE,
     RIM_TYPEMOUSE, RegisterRawInputDevices,
 };
 
@@ -136,9 +136,7 @@ pub fn handle_wm_input(lparam: LPARAM) -> bool {
     // `header_size` bytes at `buffer`'s start. The byte buffer has alignment
     // 1, so the header is read unaligned rather than borrowed as a reference;
     // `RAWINPUTHEADER` is plain old data.
-    let header = unsafe {
-        std::ptr::read_unaligned(buffer.as_ptr().cast::<RAWINPUTHEADER>())
-    };
+    let header = unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<RAWINPUTHEADER>()) };
     if header.dwType != RIM_TYPEMOUSE {
         return false;
     }
@@ -249,9 +247,7 @@ mod tests {
         if msg == windows_sys::Win32::UI::WindowsAndMessaging::WM_INPUT {
             handle_wm_input(lp);
         }
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wp, lp)
-        }
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wp, lp) }
     }
 
     /// Unregister the witness even when an assertion unwinds.
@@ -374,7 +370,10 @@ mod tests {
         // proves the same handler that must see user motion actually sees a
         // delivered mouse record. A negative/absent witness fails the probe
         // and therefore cannot support a capability flip.
-        assert!(owned_foreground(hwnd), "refused: foreground changed before synthetic leg");
+        assert!(
+            owned_foreground(hwnd),
+            "refused: foreground changed before synthetic leg"
+        );
         let inserted = crate::ffi::input::send_mouse_move_relative(1, 0);
         assert!(
             inserted > 0,
@@ -391,6 +390,9 @@ mod tests {
             "Raw Input witness did not observe injected motion \
              (gen {after_sets} -> {after_inject}); witness liveness unproven"
         );
-        assert!(owned_foreground(hwnd), "probe ownership changed before teardown");
+        assert!(
+            owned_foreground(hwnd),
+            "probe ownership changed before teardown"
+        );
     }
 }

@@ -11,8 +11,8 @@ use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
-    MONITOR_DEFAULTTONEAREST, MonitorFromWindow,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFOEXW,
+    MonitorFromWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
@@ -196,10 +196,7 @@ unsafe extern "system" fn observer_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if matches!(
-        msg,
-        WM_DPICHANGED | WM_DISPLAYCHANGE | WM_SETTINGCHANGE
-    ) {
+    if matches!(msg, WM_DPICHANGED | WM_DISPLAYCHANGE | WM_SETTINGCHANGE) {
         crate::tiling_sys::mark_monitor_dirty();
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -471,10 +468,7 @@ mod tests {
     #[test]
     fn observer_origin_is_the_output_centre() {
         assert_eq!(observer_origin(rect(0, 0, 800, 600)), Some((400, 300)));
-        assert_eq!(
-            observer_origin(rect(-1920, 0, 0, 1080)),
-            Some((-960, 540))
-        );
+        assert_eq!(observer_origin(rect(-1920, 0, 0, 1080)), Some((-960, 540)));
         assert_eq!(
             observer_origin(rect(1920, -200, 4480, 1240)),
             Some((3200, 520))

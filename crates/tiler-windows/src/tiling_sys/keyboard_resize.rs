@@ -95,10 +95,7 @@ pub(super) fn dispatch_resize_intent(
         log_json_at(&log_path, line);
         return;
     };
-    let ChordObserved {
-        observed,
-        retained,
-    } = chord;
+    let ChordObserved { observed, retained } = chord;
     let ChordTarget {
         from,
         member_key,

@@ -3166,10 +3166,7 @@ fn warp_new_id_after_a_spent_id_acts_once() {
     let (stats, _, _) = apply(&mut diff, &next, &fresh, &mut native);
     assert_eq!(stats.cursor_warps, 1);
     assert_eq!(native.warp_calls, vec![(900, 300), (910, 310)]);
-    assert_eq!(
-        diff.warp_spent().as_deref(),
-        Some("warp-windows-test-2")
-    );
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test-2"));
 }
 
 #[test]
@@ -7272,13 +7269,18 @@ fn staged_switch_hides_when_arrival_is_already_foreground() {
     assert_eq!(feedback.len(), 1, "{stats:?}");
     assert_eq!(
         feedback[0].disposition,
-        FocusDisposition::NotCalled { reason: FocusNoCallReason::NoReason }
+        FocusDisposition::NotCalled {
+            reason: FocusNoCallReason::NoReason
+        }
     );
     assert!(feedback[0].foreground_proven);
     assert_eq!(native.hide_calls, ["w1"]);
     assert!(native.hide_release_foreground.is_empty());
     let attempts = diff.take_visibility_attempts();
-    let hide = attempts.iter().find(|attempt| attempt.window.0 == "w1").unwrap();
+    let hide = attempts
+        .iter()
+        .find(|attempt| attempt.window.0 == "w1")
+        .unwrap();
     assert_eq!(hide.path, tiler_core::world_report::LastWritePath::Staged);
     assert_eq!(hide.post.unwrap().visibility.visible, Some(false));
 }
@@ -7297,7 +7299,10 @@ fn staged_ungated_departure_can_release_its_foreground() {
     assert_eq!(stats.staged_hides, 1);
     assert_eq!(native.hide_release_foreground, ["w1"]);
     let attempts = diff.take_visibility_attempts();
-    assert_eq!(attempts[0].path, tiler_core::world_report::LastWritePath::Staged);
+    assert_eq!(
+        attempts[0].path,
+        tiler_core::world_report::LastWritePath::Staged
+    );
     assert_eq!(attempts[0].post.unwrap().visibility.visible, Some(false));
 }
 
@@ -7320,13 +7325,18 @@ fn staged_foreground_departure_resolves_both_scope_shapes() {
 
         let mut diff = diff_at(7);
         let (stats, _, views) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
-        assert!(views.is_empty(), "{collapsed}: combined view write: {views:?}");
+        assert!(
+            views.is_empty(),
+            "{collapsed}: combined view write: {views:?}"
+        );
         assert_eq!(stats.staged_hides, 1, "{collapsed}: {stats:?}");
         let feedback = diff.take_focus_feedback();
         assert_eq!(feedback.len(), 1);
         assert_eq!(
             feedback[0].disposition,
-            FocusDisposition::NotCalled { reason: FocusNoCallReason::NoReason },
+            FocusDisposition::NotCalled {
+                reason: FocusNoCallReason::NoReason
+            },
         );
         assert!(feedback[0].foreground_proven);
         assert_eq!(native.hide_calls, ["w1"]);
@@ -7351,10 +7361,16 @@ fn floating_visibility_yields_under_both_scope_shapes() {
         arrival.frame_authority = Auth::Untouched;
         arrival.allocation = None;
         arrival.effective_frame = None;
-        staged.reply.outputs.push(output_row(&rig.out, &staged.ws2, None));
+        staged
+            .reply
+            .outputs
+            .push(output_row(&rig.out, &staged.ws2, None));
 
         let (stats, _, views) = staged_apply(&mut diff_at(7), &staged.reply, &fresh, &mut native);
-        assert!(views.is_empty(), "{collapsed}: combined view write: {views:?}");
+        assert!(
+            views.is_empty(),
+            "{collapsed}: combined view write: {views:?}"
+        );
         assert_eq!(stats.staged_reveals, 1, "{collapsed}: {stats:?}");
         assert_eq!(native.reveal_calls, ["w2"]);
     }
@@ -7970,7 +7986,10 @@ fn iconic_transfer_already_at_target_reports_no_call_receipt() {
     assert_eq!(attempt.pre, Some(workspace_ref(&rig.out, &target)));
     assert_eq!(attempt.pre, attempt.post);
     assert!(diff.effects.is_member_attempted("op-iconic-at", "w1"));
-    assert_eq!(native.membership_writes, 0, "no setter for a proven arrival");
+    assert_eq!(
+        native.membership_writes, 0,
+        "no setter for a proven arrival"
+    );
     assert_eq!(stats.membership_writes, 0);
     assert!(views.is_empty());
 }
@@ -7990,7 +8009,10 @@ fn iconic_transfer_moves_membership_without_frame_or_facts() {
     assert_eq!(attempt.post, Some(workspace_ref(&rig.out, &target)));
     assert_eq!(native.membership_writes, 1);
     assert_eq!(native.membership_frames, vec![None], "never a frame write");
-    assert_eq!(native.frame_writes, 0, "no geometry write for an iconic row");
+    assert_eq!(
+        native.frame_writes, 0,
+        "no geometry write for an iconic row"
+    );
     assert_eq!(stats.membership_writes, 1);
     assert!(views.is_empty());
 }
@@ -8047,7 +8069,11 @@ fn async_hide_holds_visible_or_unreadable_until_a_later_proven_sample() {
     native.pending_hide.insert("w1".to_owned());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
     let mut row = member_row(&rig.out, &rig.ws, "w1");
-    row.visibility = Some(VisibilityTarget { shown: false, revision: 1, fallback: false });
+    row.visibility = Some(VisibilityTarget {
+        shown: false,
+        revision: 1,
+        fallback: false,
+    });
     row.visibility_authority = Auth::Controlled;
     reply.windows.push(row);
 
@@ -8055,7 +8081,10 @@ fn async_hide_holds_visible_or_unreadable_until_a_later_proven_sample() {
     assert_eq!(stats.staged_hides, 1);
     assert!(stats.departures_hidden_mono_ms.is_none());
     assert!(native.windows["w1"].hidden);
-    assert!(native.windows["w1"].facts.unwrap().visible, "the setter has not landed");
+    assert!(
+        native.windows["w1"].facts.unwrap().visible,
+        "the setter has not landed"
+    );
     assert!(diff.take_visibility_attempts().is_empty());
 
     let live = native.windows.get_mut("w1").unwrap();
@@ -8063,7 +8092,10 @@ fn async_hide_holds_visible_or_unreadable_until_a_later_proven_sample() {
     let _ = apply(&mut diff, &reply, &fresh, &mut native);
     assert!(diff.take_visibility_attempts().is_empty());
 
-    native.windows.get_mut("w1").unwrap().facts = Some(WindowFacts { visible: false, ..plain_facts() });
+    native.windows.get_mut("w1").unwrap().facts = Some(WindowFacts {
+        visible: false,
+        ..plain_facts()
+    });
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert!(stats.departures_hidden_mono_ms.is_some());
     assert_eq!(native.hide_calls, ["w1"]);
@@ -8093,8 +8125,11 @@ fn async_show_holds_until_a_later_pass_proves() {
         fallback: false,
     });
     row.visibility_authority = Auth::Controlled;
-    row.state.push(state_target(StateProperty::Above, true, None, false));
-    native.state.insert(("w1".to_owned(), StateProperty::Above), false);
+    row.state
+        .push(state_target(StateProperty::Above, true, None, false));
+    native
+        .state
+        .insert(("w1".to_owned(), StateProperty::Above), false);
     reply.windows.push(row);
 
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
@@ -8104,7 +8139,10 @@ fn async_show_holds_until_a_later_pass_proves() {
         diff.take_visibility_attempts().is_empty(),
         "an accepted reveal that has not landed emits no row"
     );
-    assert!(native.state_writes.is_empty(), "unproven show must not unlock state writes");
+    assert!(
+        native.state_writes.is_empty(),
+        "unproven show must not unlock state writes"
+    );
 
     // The async show lands: the next pass re-reads without a setter.
     native.skip_reveal.clear();
@@ -8112,7 +8150,11 @@ fn async_show_holds_until_a_later_pass_proves() {
     live.hidden = false;
     live.facts.as_mut().expect("facts").visible = true;
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
-    assert_eq!(native.reveal_calls.len(), 1, "never re-actuate an accepted reveal");
+    assert_eq!(
+        native.reveal_calls.len(),
+        1,
+        "never re-actuate an accepted reveal"
+    );
     let attempts = diff.take_visibility_attempts();
     assert_eq!(attempts.len(), 1, "{attempts:?}");
     let attempt = &attempts[0];
@@ -8130,7 +8172,10 @@ fn async_show_holds_until_a_later_pass_proves() {
     assert_eq!(post.minimized, Some(false));
     assert_eq!(post.host_hidden, Some(false));
     assert_eq!(stats.staged_reveals, 0, "settling is not another reveal");
-    assert_eq!(native.state_writes, [("w1".to_owned(), StateProperty::Above, true)]);
+    assert_eq!(
+        native.state_writes,
+        [("w1".to_owned(), StateProperty::Above, true)]
+    );
 }
 
 /// Focus setter that accepts asynchronously: the primitive reports success
@@ -8312,7 +8357,10 @@ fn focus_already_foreground_reports_no_setter_call() {
     reply.focus_request = Some(focus_request("fx-already", "w1"));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0, "no setter dispatch");
-    assert!(native.focus_calls.is_empty(), "already-foreground calls nothing");
+    assert!(
+        native.focus_calls.is_empty(),
+        "already-foreground calls nothing"
+    );
     assert_eq!(
         stats.focus_dispatch.len(),
         1,
@@ -8330,7 +8378,10 @@ fn focus_already_foreground_reports_no_setter_call() {
     ));
     assert!(feedback[0].foreground_proven);
     assert_eq!(feedback[0].pre.as_ref().map(|id| id.0.as_str()), Some("w1"));
-    assert_eq!(feedback[0].post.as_ref().map(|id| id.0.as_str()), Some("w1"));
+    assert_eq!(
+        feedback[0].post.as_ref().map(|id| id.0.as_str()),
+        Some("w1")
+    );
 }
 
 // --- R14 state-target lane: durable redelivery, pruning, phase-0 reveal ---
@@ -8653,8 +8704,15 @@ fn intent_capture_and_baseline_preserve_independent_sticky_and_float() {
     assert!(fresh.baseline["w1"].sticky && fresh.baseline["w1"].floating);
     assert!(!fresh.baseline["w2"].sticky && fresh.baseline["w2"].floating);
     for (token, wanted) in [("w1", sticky), ("w2", floating)] {
-        let record = captured.intent_records.iter().find(|row| row.win.0 == token).unwrap();
-        assert_eq!(tiler_core::intent_data::decode_intent_data(&record.data), Ok(wanted));
+        let record = captured
+            .intent_records
+            .iter()
+            .find(|row| row.win.0 == token)
+            .unwrap();
+        assert_eq!(
+            tiler_core::intent_data::decode_intent_data(&record.data),
+            Ok(wanted)
+        );
     }
 }
 
@@ -8694,14 +8752,35 @@ fn intent_reconcile_caches_equal_read_and_prunes_departed_lifetime() {
     let mut gap = fresh.clone();
     gap.baseline.remove("w1");
 
-    let (stats, _, _) = apply(&mut diff, &intent_reply(7, 1, &[("w1", data)]), &fresh, &mut native);
+    let (stats, _, _) = apply(
+        &mut diff,
+        &intent_reply(7, 1, &[("w1", data)]),
+        &fresh,
+        &mut native,
+    );
     assert!(!stats.stopped_mid_apply, "{stats:?}");
-    let (stats, _, _) = apply(&mut diff, &intent_reply(7, 2, &[("w1", data)]), &gap, &mut native);
-    assert!(!stats.stopped_mid_apply, "a verified-equal read survives a gap: {stats:?}");
+    let (stats, _, _) = apply(
+        &mut diff,
+        &intent_reply(7, 2, &[("w1", data)]),
+        &gap,
+        &mut native,
+    );
+    assert!(
+        !stats.stopped_mid_apply,
+        "a verified-equal read survives a gap: {stats:?}"
+    );
 
     let _ = apply(&mut diff, &intent_reply(7, 3, &[]), &gap, &mut native);
-    let (stats, _, _) = apply(&mut diff, &intent_reply(7, 4, &[("w1", data)]), &gap, &mut native);
-    assert!(stats.stopped_mid_apply, "a departed lifetime cannot reuse its cache: {stats:?}");
+    let (stats, _, _) = apply(
+        &mut diff,
+        &intent_reply(7, 4, &[("w1", data)]),
+        &gap,
+        &mut native,
+    );
+    assert!(
+        stats.stopped_mid_apply,
+        "a departed lifetime cannot reuse its cache: {stats:?}"
+    );
     assert!(native.intent_writes.is_empty());
 }
 
