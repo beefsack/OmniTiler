@@ -8,9 +8,13 @@
 //! No parallel
 //! DTOs: fixtures instantiate these exact production structures through the
 //! same [`capture_world`] constructor the runtime will use. No Engine
-//! mutation, no FFI, no sequencing: observation/request/command counters and
-//! acknowledgement belong to the dependent sequencer unit, which is
-//! deliberately not built here.
+//! mutation, no native writes, no sequencing: observation/request/command
+//! counters and acknowledgement belong to the dependent sequencer unit,
+//! which is deliberately not built here. The only native reads are the
+//! lightweight per-claim reads for project-suppressed windows
+//! ([`read_hidden_claim`], through the safe `ffi` wrappers), which the tick
+//! builds into [`OwnerInputs::hidden_reads`] before capture so this body
+//! stays pure over its seam.
 //!
 //! Source map:
 //! - `observe.rs` `ObservedWindow`: identity-first observation with
@@ -25,29 +29,63 @@
 //!   `HiddenRecord` (durable hide-time show preimage
 //!   `claim.show: WindowShowState` plus hide-time `iconic`) and
 //!   `PendingClosed` (homed verified-close obligations).
-//! - Core logical topology: committed membership, logical ring/active
-//!   view, and the mechanical device-to-wire output tokens that serve as
-//!   the wire-opaque output ids (native device keys such as
-//!   `\\.\DISPLAY1` fail the core `is_opaque_id` gate, so the existing
-//!   `output_token` source maps them collision-free).
+//! - The mechanical device-to-wire output tokens that serve as the
+//!   wire-opaque output ids (native device keys such as `\\.\DISPLAY1` fail
+//!   the core `is_opaque_id` gate, so the existing `output_token` source
+//!   maps them collision-free).
 //! - `monitors.rs` `MonitorArea`: device-keyed work (placement) and full
-//!   (overlay) rectangles. `MonitorArea` carries no primary flag; the owner
-//!   orders `all_monitors` primary-first, so capture derives primary from
-//!   the `areas.first()` device, never from managed output order (which may
-//!   be reordered relative to the native list).
+//!   (overlay) rectangles plus the effective per-monitor DPI measured at
+//!   the enumeration seam. `MonitorArea` carries no primary flag; the owner
+//!   orders `all_monitors` primary-first, so the report-level
+//!   `primary_output` derives from the `areas.first()` device, never from
+//!   managed output order (which may be reordered relative to the native
+//!   list).
 //! - Owner intent lanes (`floated`, `sticky`, `restart_reject_hold`,
 //!   `fixed_auto_seen`, `fixed_tile_overrides`, `fixed_origin_overrides`,
 //!   `born_fullscreen`, `born_first_exit`), lifetime tags (`member_tags`),
 //!   stored identities (`member_identity`), snapshots (`member_rects` /
-//!   `float_rects`), last-good constraints (`hint_logged`) and the Engine
-//!   exception read (`engine_is_float`) are all consumed read-only.
+//!   `float_rects`), recorded constraints (`hint_logged`) and the durable
+//!   hide claims (`hidden_claims`) are consumed read-only. The intent
+//!   lanes pick only the adapter-local snapshot source below; none of them
+//!   is a published v4 fact.
 //!
-//! Truthfulness rules enforced here (W1 discriminators):
-//! - Domains carry raw work (placement) bounds plus the configured
-//!   `outer_gap` separately: the core insets exactly once through
-//!   `inset_world_domain`/`world_publish`. The adapter-side inset helper
-//!   runs offline only as a validates-the-margin check (a work area that
-//!   cannot carry the margin holds instead of tiling un-inset).
+//! v4 report truthfulness rules enforced here:
+//! - Screens carry the stable wire output id, the FULL rectangle, the work
+//!   area, the per-output scale (`effective DPI / 96`, measured at the
+//!   monitor enumeration seam) and neutral identity metadata. Gaps and
+//!   primary are not screen keys: the core derives per-output physical gaps
+//!   from its settings and this scale, and the host designation rides
+//!   exactly once as the report-level `primary_output`. An unmeasurable
+//!   scale or an unmapped device never fabricates a row: an identifiable
+//!   output with an unknown scale is held narrowly ([`HeldScreenRow`],
+//!   `unreadable`), an unidentifiable device carries no row, and both clear
+//!   completeness.
+//! - Window rows carry raw facts only. `sticky` and `native_workspace` are
+//!   native facts and Windows has neither (`sticky: None`,
+//!   `NativeWorkspaceFact::Omitted`), so no native rows exist. The neutral
+//!   facts the recorded observation proves ride: `tool_window`
+//!   (`WS_EX_TOOLWINDOW`), `owned` (`GW_OWNER`), `executable` (the
+//!   bound/observed process image), `process_id` (the lifetime key's pid)
+//!   and `window_type: Dialog` for the proven generic dialog class. Every
+//!   other neutral fact stays `None`: `privileged` because the observation
+//!   never reads integrity, `class`/`title`/`role`/`app_id` because the
+//!   class and title reads are not carried into the observation this pure
+//!   capture consumes, and the remaining lanes because Windows has no
+//!   producer. Never a fabricated `false`. `hints` is the recorded
+//!   constraint (`hint_logged`) or `None`, never an empty-hint stand-in.
+//!   Two fresh-read lanes supply these facts: the ordinary visible
+//!   observation (`WindowFacts`) and the lightweight per-claim read for a
+//!   project-suppressed member with no live observed row ([`HiddenClaimRead`]).
+//!   `host_hidden` is the fresh native cloak read (never project
+//!   suppression), `visibility.visible` the fresh native shown state,
+//!   `visibility.suppression_owned` the durable hide-claim presence, and
+//!   `suppression_available` is claimed only where that claim proves
+//!   suppression worked. The core derives floating, fit-exclusion, and
+//!   fixed-size intent from its own settings and these facts; the adapter
+//!   publishes none of them.
+//! - Unknown output affinity is `output: None`, never the first screen or a
+//!   placeholder id: a frame whose device has no live wire id reports no
+//!   affinity rather than a guess.
 //! - Every carried row re-validates its token against `member_tokens` for
 //!   the same `WindowKey`. A mismatched lifetime inherits no flags and no
 //!   lanes: its domain holds instead of carrying a partial controlled list.
@@ -57,17 +95,10 @@
 //! - Fresh native facts ride only when the typed report can express them:
 //!   eligible, or an overlay (`fullscreen`/`maximized`) with a dedicated
 //!   lane. Cloaked, elevated, shell, tool, owned, dialog, no-activate,
-//!   hidden, or minimized facts have no window authority lane
-//!   (`fit_excluded` is fit semantics only and is dropped at the session
-//!   boundary in `observed_window_from_engine`), so the domain holds
-//!   instead of authorizing geometry, membership, or effects. Scope
-//!   exclusion holds the same way: unlike the legacy row assembly (which
-//!   rides a row and gates writes in `writable_tokens`), the typed report
-//!   has no scope authority lane, so riding would authorize writes.
-//!   Maximized/fullscreen overlays keep their reserved tiled allocation
-//!   where the shared contract supports it and are never blanket-floated:
-//!   born-fullscreen slotless (floating) stays distinct from ordinary
-//!   tiled-fullscreen reserved (tiled with fullscreen set).
+//!   hidden, or minimized facts have no window authority lane, so the
+//!   domain holds instead of authorizing geometry, membership, or effects.
+//!   Scope exclusion holds the same way: the typed report has no scope
+//!   authority lane, so riding would authorize writes.
 //! - Hidden members additionally prove the claim association: the
 //!   `HiddenRecord` claim identity must equal the member key, the claim tag
 //!   must satisfy `model::valid_claim_tag`, and a stamped lifetime tag must
@@ -77,14 +108,17 @@
 //!   hidden lifetimes hold even when iconic: minimization is never granted
 //!   on unverified identity.
 //! - Hidden non-iconic members ride their snapshot rectangles with the
-//!   durable hide-time maximized preimage (`claim.show.maximized`), the
-//!   adapter intent lanes and fresh same-tick rows when present. Fullscreen
-//!   rides only verified sources (a token-matched fresh observed/retained
-//!   row, or the `born_fullscreen` hold lane); a hidden member with no
-//!   verifiable fullscreen holds its domain. Ordinary hidden fullscreen
-//!   rides reserved (tiled lane with fullscreen set), never floated:
-//!   floating comes only from the intent lanes. Nothing hidden defaults
-//!   flags to `false` to authorize writes.
+//!   durable hide-time maximized preimage (`claim.show.maximized`) and the
+//!   fresh observed row when present. Fullscreen rides only verified
+//!   sources (a token-matched fresh observed/retained row, or the
+//!   `born_fullscreen` hold lane); a hidden member with no verifiable
+//!   fullscreen holds its domain. The snapshot source (float or tile slot)
+//!   is adapter-local placement memory, never a published float intent.
+//!   Their native facts come only from that claim's lightweight live read:
+//!   `host_hidden` is the DWM cloak, `visibility.visible` the shown state,
+//!   and `owned`/`tool_window`/`window_type` their real reads. A claim with
+//!   no read holds as unreadable; nothing hidden defaults flags to `false`
+//!   to authorize writes.
 //! - Frameless retained rows (`facts: None`) and scope-excluded members are
 //!   never minimized: frameless iconic omission yields an explicit
 //!   minimized entry, anything else frameless holds its domain as
@@ -101,12 +135,14 @@
 //!   tick infers no close and no minimize. Explicit queued closes still
 //!   ride beside the hold, matching the incomplete-inventory contract.
 //! - Screens carry no adjacency and no native workspace vocabulary: FULL
-//!   rectangles plus work areas only. Unknown inventory never fabricates
-//!   an empty row: any member that cannot resolve to a verified row rides
-//!   an unreadable fact (rect `None`) and clears the global completeness
-//!   flag.
+//!   rectangles plus work areas and a measured per-output scale only.
+//!   Unknown inventory never fabricates an empty row: any member that
+//!   cannot resolve to a verified row rides an unreadable fact (rect
+//!   `None`) and clears the global completeness flag.
 //!
-//! Production prerequisites consumed read-only (no FFI here):
+//! Production prerequisites consumed read-only (rest of the module is pure;
+//! only [`read_hidden_claim`] touches native reads, for claims without a
+//! live observed row):
 //! - `assignments::audit_hidden_claims` retires dead claims through the
 //!   identity-safe reveal path; `queue_verified_close` gates close queueing
 //!   on the stored lifetime tag no longer reading live; admission stamps and
@@ -121,7 +157,12 @@ use crate::native_guards::WindowKey;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_report::{ScreenReport, ScreenView, WindowFact};
+use tiler_core::world_report::{
+    AuthorityScope, HeldScreenRow, NativeWorkspaceFact, OutputIdentity, PresentationIngressV4,
+    PresentationPagerFrameV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
+    VisibilityFact, WindowFact,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW;
 
 /// Normalized foreground facts for one tick's uniform presentation ingress
 /// (stage 5): the genuinely observed foreground lifetime (proof-verified
@@ -136,8 +177,8 @@ pub(super) struct PresentationForeground {
     pub minimized: bool,
     pub maximized: bool,
     pub fullscreen: bool,
-    pub cloaked: bool,
-    pub shell: bool,
+    /// Native host-hidden (DWM cloak) read, the v4 `hostHidden` fact.
+    pub host_hidden: bool,
     pub hidden_workspace: bool,
     pub frame: Option<Rect>,
 }
@@ -170,6 +211,13 @@ pub(super) struct OwnerInputs<'a> {
     pub fixed_tile_overrides: &'a BTreeSet<WindowKey>,
     pub fixed_origin_overrides: &'a BTreeSet<WindowKey>,
     pub hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
+    /// Fresh lightweight live reads for project-suppressed claim lifetimes
+    /// with no live observed row (T4), keyed by the exact lifetime. Built by
+    /// the tick from the safe native wrappers before capture (capture stays
+    /// pure over this seam) and `None` for offline fixtures that supply
+    /// their own reads. A claim with no entry holds as unreadable rather
+    /// than inventing suppression or host hiding.
+    pub hidden_reads: Option<&'a BTreeMap<WindowKey, HiddenClaimRead>>,
     pub minimized_omitted: &'a HashSet<WindowKey>,
     pub pending_closed: &'a BTreeMap<String, PendingClosed>,
     pub scope: &'a [String],
@@ -207,8 +255,6 @@ pub(super) struct OwnerInputs<'a> {
     /// Adapter-retained last applied logical views per output (from the last
     /// applied reply outputs). View receipts prove this commitment.
     pub applied_views: &'a HashMap<String, String>,
-    pub inner_gap: i32,
-    pub outer_gap: i32,
     pub active: &'a HashSet<u64>,
     /// Normalized foreground facts for the uniform presentation ingress
     /// (stage 5): `None` when there is no foreground window. The tick
@@ -220,14 +266,6 @@ pub(super) struct OwnerInputs<'a> {
     /// Classified focused Move subject token (`""` when none): the move arm
     /// of the underlay trigger.
     pub presentation_move: String,
-    /// Overlay enable flags for the presentation ingress.
-    pub presentation_border_enabled: bool,
-    pub presentation_underlay_enabled: bool,
-    /// Host-scaled presentation style (gap, border width, resolved underlay
-    /// extension) in physical pixels. DPI conversion runs tick-side before
-    /// this seam; zeros on unreadable DPI (the adapter keeps its own
-    /// scale veto render-side).
-    pub presentation_style: (i32, i32, i32),
     /// Focused-fullscreen-game lane: the core skips presentation work
     /// (hidden shapes, empty pager) instead of projecting under the game.
     pub presentation_paused: bool,
@@ -268,8 +306,6 @@ impl TileLoop {
         active_output: &'a str,
         applied_homing: &'a HashMap<String, (String, String)>,
         applied_views: &'a HashMap<String, String>,
-        inner_gap: i32,
-        outer_gap: i32,
         active: &'a HashSet<u64>,
         cursor: Option<(i32, i32)>,
         hit_hwnd: Option<u64>,
@@ -277,9 +313,6 @@ impl TileLoop {
         presentation_foreground: Option<PresentationForeground>,
         presentation_chord: bool,
         presentation_move: String,
-        presentation_border_enabled: bool,
-        presentation_underlay_enabled: bool,
-        presentation_style: (i32, i32, i32),
         presentation_paused: bool,
         presentation_native_order: Vec<crate::native_guards::WindowKey>,
     ) -> OwnerInputs<'a> {
@@ -299,6 +332,7 @@ impl TileLoop {
             fixed_tile_overrides,
             fixed_origin_overrides,
             hidden_claims,
+            hidden_reads: None,
             minimized_omitted,
             pending_closed,
             scope,
@@ -307,8 +341,6 @@ impl TileLoop {
             active_output,
             applied_homing,
             applied_views,
-            inner_gap,
-            outer_gap,
             active,
             cursor,
             hit_hwnd,
@@ -316,9 +348,6 @@ impl TileLoop {
             presentation_foreground,
             presentation_chord,
             presentation_move,
-            presentation_border_enabled,
-            presentation_underlay_enabled,
-            presentation_style,
             presentation_paused,
             presentation_native_order,
         }
@@ -346,6 +375,7 @@ impl TileLoop {
             fixed_tile_overrides: &self.fixed_tile_overrides,
             fixed_origin_overrides: &self.fixed_origin_overrides,
             hidden_claims: &self.hidden_claims,
+            hidden_reads: None,
             minimized_omitted: &self.minimized_omitted,
             pending_closed: &self.pending_closed,
             scope: &self.scope,
@@ -354,8 +384,6 @@ impl TileLoop {
             active_output: self.active_output.as_str(),
             applied_homing: &self.applied_homing,
             applied_views: &self.applied_views,
-            inner_gap: self.inner_gap,
-            outer_gap: self.outer_gap,
             active: &self.active,
             cursor: None,
             hit_hwnd: None,
@@ -363,9 +391,6 @@ impl TileLoop {
             presentation_foreground: None,
             presentation_chord: false,
             presentation_move: String::new(),
-            presentation_border_enabled: false,
-            presentation_underlay_enabled: false,
-            presentation_style: (0, 0, 0),
             presentation_paused: false,
             presentation_native_order: Vec::new(),
         }
@@ -452,40 +477,53 @@ impl TileLoop {
 
     /// Normalized presentation facts for one tick's uniform presentation
     /// ingress (stage 5): the foreground observation (proof-verified token,
-    /// fresh flags, live frame), the movement-only chord level, the
-    /// classified focused Move subject token, and the host-scaled style.
-    /// Fact collection only: the core owns every verdict from here. The
-    /// shell/hidden flags mirror the fast overlay path exactly (targeted
-    /// popup gate plus hide-claim membership). A known-but-frameless
-    /// foreground (minimized, maximized, fullscreen, cloaked) still carries
-    /// its token and accurate flags with no frame; anything else unreadable
-    /// carries nothing.
+    /// fresh flags, live frame), the movement-only chord level, and the
+    /// classified focused Move subject token. Fact collection only: the
+    /// core owns every verdict from here. The foreground mirrors the fast
+    /// overlay path's native facts (iconic/zoom/fullscreen/cloak plus hide-claim
+    /// membership for the logical hidden-workspace leg); the adapter-side
+    /// shell projection has no v4 ingress lane and is not produced. A
+    /// known-but-frameless foreground (minimized, maximized, fullscreen,
+    /// cloaked) still carries its token and accurate flags with no frame;
+    /// anything else unreadable carries nothing.
     #[allow(clippy::too_many_lines)]
     pub(super) fn presentation_tick_inputs(
         &mut self,
         me: &ProcessIdentity,
         fulls: &[Rect],
         foreground_hwnd: u64,
-    ) -> (
-        Option<PresentationForeground>,
-        bool,
-        String,
-        (i32, i32, i32),
-    ) {
+        observed: &[ObservedWindow],
+    ) -> (Option<PresentationForeground>, bool, String) {
         use crate::group_underlay::MoveSizeKind;
-        let foreground = if foreground_hwnd == 0 {
+        // Prefer the tick's own observation: it is the same enumeration the
+        // command/observation carries, so presentation focus never diverges
+        // from the staged rows and needs no extra native read. Only an
+        // ineligible/missing foreground falls through to the native probe.
+        let observed_foreground = observed.iter().find(|row| row.hwnd == foreground_hwnd);
+        #[allow(unused_mut)]
+        let mut foreground = if let Some(window) = observed_foreground {
+            let key = crate::native_guards::WindowKey {
+                hwnd: window.hwnd,
+                pid: window.identity.pid,
+                creation: window.identity.process_creation.clone(),
+            };
+            let hidden_workspace = self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+                && self.member_home(&key).is_some_and(|loc| loc.hidden);
+            Some(PresentationForeground {
+                token: window.token.clone(),
+                minimized: window.facts.minimized,
+                maximized: window.facts.maximized,
+                fullscreen: window.facts.captionless_fullscreen,
+                host_hidden: window.facts.cloaked,
+                hidden_workspace,
+                frame: Some(window.visible),
+            })
+        } else if foreground_hwnd == 0 {
             None
         } else {
             let hwnd = foreground_hwnd as isize as HWND;
             match super::observe::observe_window(hwnd, me, fulls, &mut self.tokens) {
                 Ok(window) => {
-                    let exe_file =
-                        super::shell::exe_file_name(&window.identity.exe_path).to_ascii_lowercase();
-                    let border_shell = window.facts.shell
-                        || super::shell::is_border_shell_popup(
-                            &super::observe::class_of(hwnd),
-                            &exe_file,
-                        );
                     let key = crate::native_guards::WindowKey {
                         hwnd: window.hwnd,
                         pid: window.identity.pid,
@@ -499,8 +537,7 @@ impl TileLoop {
                         minimized: window.facts.minimized,
                         maximized: window.facts.maximized,
                         fullscreen: window.facts.captionless_fullscreen,
-                        cloaked: window.facts.cloaked,
-                        shell: border_shell,
+                        host_hidden: window.facts.cloaked,
                         hidden_workspace,
                         frame: Some(window.visible),
                     })
@@ -519,8 +556,7 @@ impl TileLoop {
                         minimized: reason == SkipReason::Minimized,
                         maximized: reason == SkipReason::Maximized,
                         fullscreen: reason == SkipReason::Fullscreen,
-                        cloaked: reason == SkipReason::Cloaked,
-                        shell: false,
+                        host_hidden: reason == SkipReason::Cloaked,
                         hidden_workspace,
                         frame: None,
                     })
@@ -528,6 +564,37 @@ impl TileLoop {
                 Err(_) => None,
             }
         };
+        // Offline fixtures inject observed rows for synthetic HWNDs; the
+        // native foreground re-read above cannot see them. Reuse the injected
+        // row so presentation/focus ingress matches the same observation.
+        #[cfg(test)]
+        if observed_foreground.is_none()
+            && let Some(window) = super::INJECTED_OBSERVE.with(|slot| {
+                slot.borrow().as_ref().and_then(|(observed, _, failed)| {
+                    (!*failed)
+                        .then(|| observed.iter().find(|row| row.hwnd == foreground_hwnd))
+                        .flatten()
+                        .cloned()
+                })
+            })
+        {
+            let key = crate::native_guards::WindowKey {
+                hwnd: window.hwnd,
+                pid: window.identity.pid,
+                creation: window.identity.process_creation.clone(),
+            };
+            let hidden_workspace = self.hidden_claims.keys().any(|k| k.hwnd == foreground_hwnd)
+                && self.member_home(&key).is_some_and(|loc| loc.hidden);
+            foreground = Some(PresentationForeground {
+                token: window.token.clone(),
+                minimized: window.facts.minimized,
+                maximized: window.facts.maximized,
+                fullscreen: window.facts.captionless_fullscreen,
+                host_hidden: window.facts.cloaked,
+                hidden_workspace,
+                frame: Some(window.visible),
+            });
+        }
         let (win_held, shift_held) = super::group_underlay::chord_held_now();
         let chord = tiler_core::visual::group_underlay_chord_held(win_held, shift_held);
         let move_token = if self
@@ -542,48 +609,27 @@ impl TileLoop {
         } else {
             String::new()
         };
-        let dpi = crate::ffi::dpi_for_window(foreground_hwnd);
-        let (width_px, gap_px, _) =
-            crate::active_border::scale_style(&self.border.style, dpi).unwrap_or((0, 0, 0));
-        let extension_logical = tiler_core::visual::group_underlay_effective_extension(
-            self.underlay.style.extension,
-            self.border.style.width,
-        );
-        let extension_px =
-            crate::active_border::scale_to_physical(extension_logical, dpi).unwrap_or(0);
-        (
-            foreground,
-            chord,
-            move_token,
-            (gap_px, width_px, extension_px),
-        )
+        (foreground, chord, move_token)
     }
 }
 
 /// Captured world: the typed core observation pieces the sequencer unit
-/// will envelope into a `WorldReport`. Sequencing fields (contract version,
+/// envelopes into a `WorldReportV4`. Sequencing fields (contract version,
 /// owner/incarnation/generation, observation/request/command counters,
-/// commands, raw attempts) and view echoes are deliberately absent here:
-/// screens plus window facts are the only topology prerequisites, with the
-/// sampled cursor and the retained targeting settings riding as core
-/// ingress (never an adapter placement or output policy). Views echo the
-/// core's last desired logical views out of band.
+/// commands, attempts, native/held lanes, retained intent) are deliberately
+/// absent here: screens, held screens and window facts are the observation
+/// prerequisites, with the sampled cursor and the retained targeting
+/// settings riding as core ingress (never an adapter placement or output
+/// policy). Observed logical views/membership are core-owned in v4 and are
+/// not captured.
 #[derive(Debug, Clone)]
 pub(super) struct CapturedWorld {
     pub(super) screens: Vec<ScreenReport>,
+    /// Identifiable outputs whose per-output scale could not be measured:
+    /// held narrowly (`unreadable`) instead of carrying a fabricated scale.
+    pub(super) held_screens: Vec<HeldScreenRow>,
     pub(super) windows: Vec<WindowFact>,
     pub(super) closed: Vec<WindowId>,
-    /// Adapter-observed applied logical views per screen (visibility-proven
-    /// receipts from `world_native_receipts::observed_view_receipts`). Empty means
-    /// unknown: the core treats missing echoes as gaps and retains pending
-    /// flights, never as proof.
-    pub(super) observed_views: Vec<ScreenView>,
-    /// Workspace scope mode from the saved `core.workspace.mode` (restart
-    /// adopted, like the owner state). Drives core ring/view/history,
-    /// hotplug, startup, and migration policy for the report.
-    pub(super) workspace_mode: tiler_core::workspace_scope::WorkspaceMode,
-    /// Equal-workspace-count parity capability for the report.
-    pub(super) equal_workspace_count: bool,
     /// Cursor-first switch target for subsequent selections (report ingress
     /// only; never an adapter output decision). Backfills the default when
     /// no live settings exist (proof owners).
@@ -596,7 +642,9 @@ pub(super) struct CapturedWorld {
     /// [`crate::world_cursor`]).
     pub(super) focus_follows_cursor: bool,
     /// Retained cursor-warp setting (stage 4b actuates it in
-    /// [`crate::world_cursor`]).
+    /// [`crate::world_cursor`] once C3 lands; tests read the captured
+    /// projection today). Kept as adapter truth, never a policy input.
+    #[allow(dead_code)]
     pub(super) cursor_warp: bool,
     /// Normalized cursor position in adapter units (`None` when unreadable
     /// or deliberately unsampled). Never continuous polling: one sample per
@@ -616,6 +664,15 @@ pub(super) struct CapturedWorld {
     /// `None` on observation-only ticks.
     pub(super) gesture: Option<tiler_core::gesture::GestureIngress>,
     pub(super) focused_global: String,
+    /// Provenance of [`CapturedWorld::focused_global`]: `true` plus a
+    /// nonempty id when a fresh observed foreground names it, `true` plus
+    /// empty when the native read positively saw no foreground window
+    /// (`GetForegroundWindow` returned none), `false` plus empty when the
+    /// foreground is unreadable or unbound (unknown, never no-client).
+    pub(super) foreground_known: bool,
+    /// `None` is snapshot-only: this capture has no event-coverage interval,
+    /// so it never asserts a gap or a covered span.
+    pub(super) focus_changes: Option<tiler_core::world_report::FocusChanges>,
     /// Neutral migration/control action foreground: the live foreground
     /// window's frame grounded to a live device and mapped to wire
     /// (`None` without a readable foreground frame or on an unmapped
@@ -636,18 +693,15 @@ pub(super) struct CapturedWorld {
     /// disconnected mappings, never reordered) translated to wire. Empty
     /// only when the adapter knows no output at all.
     pub(super) action_outputs: Vec<OutputId>,
-    pub(super) default_tiled: bool,
-    pub(super) fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate,
-    /// Born-maximized admission mode for subsequent admissions (report
-    /// ingress only; never an adapter clear policy). Backfills the default
-    /// when no live settings exist.
-    pub(super) born_maximized: tiler_core::born_maximized::BornMaximized,
-    pub(super) migration_source_refill: tiler_core::output_selection::MigrationSourceRefill,
-    /// Uniform presentation ingress (stage 5): normalized foreground, style,
-    /// and movement facts plus the native stacking snapshot. The sequencer
-    /// envelopes it into the report; the core publishes the reply
-    /// presentation from it.
-    pub(super) presentation: tiler_core::world_report::PresentationIngress,
+    /// Host-designated primary output: the primary-first monitor area's
+    /// device mapped to wire. `None` when the host designates none or the
+    /// primary device has no live wire id (unknown, never a replacement).
+    pub(super) primary_output: Option<OutputId>,
+    /// Uniform presentation ingress (stage 5): normalized foreground,
+    /// movement, chord, stacking order and live pager frames. The sequencer
+    /// envelopes it as `PresentationRowV4::Valid`; the core publishes the
+    /// reply presentation from it.
+    pub(super) presentation: PresentationIngressV4,
     /// Closes observed live again: stale, dropped, never carried.
     /// (Read by the 2b owner cutover; capture retains the evidence meanwhile.)
     #[allow(dead_code)]
@@ -661,13 +715,14 @@ pub(super) struct CapturedWorld {
     pub(super) held_members: Vec<String>,
 }
 
-/// Bootstrap restoration ingress: none (deleted wrapper).
-/// Floating membership for one row: sticky wins unconditionally; the D4
-/// automatic-fixed latch floats unless an explicit tile win dominates;
-/// marker-derived adapter float intent (floats, restart-holds, born holds)
-/// floats unless a first-exit mark already returned the member to the tiled
-/// lane. Never inferred from hints alone. No legacy Engine exception lane:
-/// the core owns float exceptions outright.
+/// Adapter-local snapshot slot selection for one hidden row: sticky wins
+/// unconditionally; the D4 automatic-fixed latch floats unless an explicit
+/// tile win dominates; marker-derived adapter float intent (floats,
+/// restart-holds, born holds) floats unless a first-exit mark already
+/// returned the member to the tiled lane. It only picks the retained float
+/// vs tile frame source for a hidden snapshot; v4 publishes no float
+/// intent, so this is never a report fact. No legacy Engine exception
+/// lane: the core owns float exceptions outright.
 fn capture_floating(
     state: &OwnerInputs<'_>,
     key: &crate::native_guards::WindowKey,
@@ -687,12 +742,13 @@ fn capture_floating(
     )
 }
 
-/// The three fixed-size lanes, preserved distinctly: the explicit tile-win
-/// lanes (`fixed_tile_overrides` runtime plus `fixed_origin_overrides`
-/// durable) dominate as `fixed_suppress`; the D4 automatic latch
-/// (`fixed_auto_seen`) reports only when neither sticky intent nor a
-/// durable win reframes it (production stamp parity: sticky dominates
-/// automatic origin and durable wins never acquire it).
+/// The three fixed-size lanes, preserved distinctly for the snapshot-slot
+/// decision: the explicit tile-win lanes (`fixed_tile_overrides` runtime
+/// plus `fixed_origin_overrides` durable) dominate as `fixed_suppress`; the
+/// D4 automatic latch (`fixed_auto_seen`) reports only when neither sticky
+/// intent nor a durable win reframes it (production stamp parity: sticky
+/// dominates automatic origin and durable wins never acquire it). No lane
+/// is published in v4.
 fn capture_fixed(state: &OwnerInputs<'_>, key: &crate::native_guards::WindowKey) -> (bool, bool) {
     let durable =
         state.fixed_tile_overrides.contains(key) || state.fixed_origin_overrides.contains(key);
@@ -701,14 +757,236 @@ fn capture_fixed(state: &OwnerInputs<'_>, key: &crate::native_guards::WindowKey)
     (automatic, durable)
 }
 
+/// One project-suppressed (`SW_HIDE`) claim lifetime's lightweight live read
+/// (T4). Such a member is absent from the ordinary visible observation, so
+/// capture cannot reuse `WindowFacts`; these are the only native inputs that
+/// classify it truthfully: the shown state (`visibility.visible`), the DWM
+/// cloak (`host_hidden`, not project suppression), the tool-window style
+/// bit, native ownership, and the generic dialog kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HiddenClaimRead {
+    /// Fresh `IsWindowVisible` read. Project-suppressed windows normally read
+    /// `false`; the native truth rides, never the claim's target.
+    pub visible: bool,
+    /// Fresh DWM cloak read: the only `host_hidden` source for these rows.
+    pub cloaked: bool,
+    /// `GW_OWNER` non-null: native ownership, independent of dialog kind.
+    pub owned: bool,
+    /// `WS_EX_TOOLWINDOW` set.
+    pub tool_window: bool,
+    /// Unowned generic Win32 dialog class (`#32770`), mirroring the observed
+    /// `facts.dialog` kind gate. The class text itself stays unpublished:
+    /// `class` is declared unavailable on this route.
+    pub dialog: bool,
+}
+
+/// Real lightweight live read for one project-suppressed claim HWND, through
+/// the safe `ffi` wrappers. Fail closed: an invalid handle or any unreadable
+/// required input (cloak, style word, class name) returns `None`, so capture
+/// holds that scope instead of inventing a native verdict.
+pub(super) fn read_hidden_claim(hwnd: u64) -> Option<HiddenClaimRead> {
+    if !crate::ffi::is_window(hwnd) {
+        return None;
+    }
+    let visible = crate::ffi::is_visible(hwnd);
+    let cloaked = crate::ffi::cloaked(hwnd)?;
+    crate::ffi::window_style_checked(hwnd)?;
+    let exstyle = crate::ffi::window_exstyle(hwnd);
+    let owned = crate::ffi::owner_of(hwnd) != 0;
+    let class = crate::ffi::try_class_name(hwnd)?;
+    Some(HiddenClaimRead {
+        visible,
+        cloaked,
+        owned,
+        tool_window: exstyle & WS_EX_TOOLWINDOW != 0,
+        dialog: !owned && class == crate::tiling::GENERIC_DIALOG_CLASS,
+    })
+}
+
+/// Live reads for every hidden claim without a live observed row: the
+/// production tick builds this before capture and threads it through
+/// [`OwnerInputs::hidden_reads`]. Keys already observed ride the ordinary
+/// visible lane, and a failed read stays absent so capture holds exactly
+/// that claim's scope. A failed enumeration already holds every scope, so
+/// no reads are attempted then.
+pub(super) fn hidden_claim_reads(
+    hidden_claims: &BTreeMap<WindowKey, HiddenRecord>,
+    observed: Option<&[ObservedWindow]>,
+) -> BTreeMap<WindowKey, HiddenClaimRead> {
+    let Some(observed) = observed else {
+        return BTreeMap::new();
+    };
+    let observed_keys: HashSet<WindowKey> = observed
+        .iter()
+        .map(|window| WindowKey {
+            hwnd: window.hwnd,
+            pid: window.identity.pid,
+            creation: window.identity.process_creation.clone(),
+        })
+        .collect();
+    hidden_claims
+        .keys()
+        .filter(|key| !observed_keys.contains(*key))
+        .filter_map(|key| read_hidden_claim(key.hwnd).map(|read| (key.clone(), read)))
+        .collect()
+}
+
+/// One captured fact row's inputs. Grouped so every call site states the
+/// exact truth it carries, and no field can silently pick up a default.
+struct FactSeed<'a> {
+    token: &'a str,
+    /// Bound lifetime key: the source of the process id and of the durable
+    /// hide-claim verdict.
+    key: &'a WindowKey,
+    /// Executable the recorded/observed identity proves for this lifetime,
+    /// `None` when identity is unread or drifted.
+    executable: Option<&'a str>,
+    /// Durable hide-claim presence: the only suppression-ownership proof.
+    suppression_owned: bool,
+    /// Recorded constraint (`hint_logged`) or `None`, never an empty stand-in.
+    hints: Option<WindowSizeHints>,
+    output: Option<OutputId>,
+    rect: Option<Rect>,
+    /// Fresh native read for this tick (`None` for unreadable/minimized
+    /// rows): the sole source of shown state, the native cloak fact, and the
+    /// neutral style facts below.
+    flags: Option<&'a WindowFacts>,
+    /// Lightweight live read for a project-suppressed claim with no live
+    /// observed row: the only source of shown state, cloak, `owned`,
+    /// `tool_window`, and the generic dialog kind for that lane. Mutually
+    /// exclusive with `flags` by construction; `None` keeps the flags lane.
+    live: Option<&'a HiddenClaimRead>,
+    /// Explicit host-hidden override for rows with no fresh native read
+    /// (hidden-workspace claims); `None` keeps the flags-derived value.
+    host_hidden: Option<bool>,
+    fullscreen: Option<bool>,
+    maximized: Option<bool>,
+    minimized: Option<bool>,
+}
+
+/// One v4 window fact built from capture truth. Every neutral lane the
+/// recorded native read proves is carried (`tool_window`, `owned`,
+/// `executable`, `process_id`, `#32770`-to-dialog `window_type`); lanes with
+/// no producer on this route stay `None`, never a fabricated default.
+/// `privileged` stays `None`: the current observation never reads integrity
+/// (the legacy `elevated` bit is a hardcoded false, not a read). `class`
+/// stays `None`: it is declared unavailable on this route, and the hidden
+/// claim lane publishes only its generic-dialog kind, never the class text.
+/// `hints` is the recorded constraint or `None`. The durable hide claim is
+/// the only suppression ownership proof: presence proves this lifetime is
+/// suppressed (and that suppression worked), absence proves the adapter owns
+/// no suppression for it.
+fn window_fact(seed: FactSeed<'_>) -> WindowFact {
+    let FactSeed {
+        token,
+        key,
+        executable,
+        suppression_owned,
+        hints,
+        output,
+        rect,
+        flags,
+        live,
+        host_hidden,
+        fullscreen,
+        maximized,
+        minimized,
+    } = seed;
+    WindowFact {
+        window: WindowId(token.to_owned()),
+        output,
+        rect,
+        fullscreen,
+        maximized,
+        // Windows has no native sticky fact (W3): logical sticky composes
+        // core-side through suppression.
+        sticky: None,
+        minimized,
+        hints,
+        native_workspace: NativeWorkspaceFact::Omitted,
+        host_hidden: host_hidden
+            .or_else(|| flags.map(|facts| facts.cloaked))
+            .or_else(|| live.map(|read| read.cloaked)),
+        privileged: None,
+        managed: None,
+        accepts_input: None,
+        activation_inhibited: None,
+        // `WS_EX_TOOLWINDOW` and `GW_OWNER` come from the same fresh read as
+        // the frame (or the claim lane's lightweight live read); a held row
+        // carries neither.
+        tool_window: flags
+            .map(|facts| facts.tool_window)
+            .or_else(|| live.map(|read| read.tool_window)),
+        owned: flags
+            .map(|facts| facts.owned)
+            .or_else(|| live.map(|read| read.owned)),
+        transient: None,
+        modal: None,
+        resizable: None,
+        above: None,
+        below: None,
+        owner: None,
+        parent: None,
+        role: None,
+        app_id: None,
+        executable: executable.map(str::to_owned),
+        process_id: Some(key.pid.to_string()),
+        class: None,
+        title: None,
+        // Normal for an eligible ordinary window; `#32770` dialog rows keep
+        // their dialog kind. Shell/tool/owned/dialog rows never reach this
+        // direct-fact constructor (capture holds them as unreadable).
+        window_type: flags
+            .map(|facts| facts.dialog)
+            .or_else(|| live.map(|read| read.dialog))
+            .map(|dialog| {
+                if dialog {
+                    tiler_core::world_report::WindowType::Dialog
+                } else {
+                    tiler_core::world_report::WindowType::Normal
+                }
+            }),
+        activation_policy: None,
+        layer: None,
+        fullscreen_owner: None,
+        fullscreen_exitable: None,
+        // Availability is the adapter's capability to suppress this window,
+        // not proof that a claim already exists: ordinary readable rows are
+        // suppressible on demand, hidden rows proved it, and unreadable rows
+        // stay unknown. `visibility.suppression_owned` carries the current
+        // durable claim separately.
+        suppression_available: if suppression_owned || flags.is_some() || live.is_some() {
+            Some(true)
+        } else {
+            None
+        },
+        visibility: VisibilityFact {
+            visible: flags
+                .map(|facts| facts.visible)
+                .or_else(|| live.map(|read| read.visible)),
+            suppression_owned: Some(suppression_owned),
+        },
+    }
+}
+
+/// Stored executable for a bound lifetime, only when the stored identity
+/// still names the same process (`pid` and `process_creation` equal the
+/// key): a drifted identity proves nothing about this lifetime.
+fn bound_executable<'a>(state: &'a OwnerInputs<'_>, key: &WindowKey) -> Option<&'a str> {
+    state
+        .member_identity
+        .get(key)
+        .filter(|identity| identity.pid == key.pid && identity.process_creation == key.creation)
+        .map(|identity| identity.exe_path.as_str())
+}
+
 /// Whether fresh native facts may ride a typed report row: eligible, or an
 /// overlay (`fullscreen`/`maximized`) with a dedicated `EngineWindow` lane.
 /// Every other `classify` refusal (cloaked, elevated, shell, tool, owned,
-/// dialog, no-activate, hidden, minimized) has no window authority lane:
-/// `fit_excluded` is fit semantics only and is dropped at the session
-/// boundary (`observed_window_from_engine`), so carrying such a row as
-/// tiled would publish controlled frame authority for a window the adapter
-/// must not touch. Callers hold the domain instead.
+/// dialog, no-activate, hidden, minimized) has no window authority lane, so
+/// carrying such a row as tiled would publish controlled frame authority
+/// for a window the adapter must not touch. Callers hold the domain
+/// instead.
 pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
     match crate::tiling::classify(facts) {
         Ok(()) => true,
@@ -718,17 +996,30 @@ pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
 }
 
 /// Uniform presentation ingress (stage 5): normalized foreground facts
-/// plus host-scaled style and movement facts from the seam, with the
-/// native top-to-bottom stacking snapshot derived from the same
-/// observed/retained products as the old pager order (observed eligible
-/// members in enumeration order, then retained rows with fresh frames).
-/// Hidden members absent from both keep their retained stacking slot
-/// core-side. Unknown lifetimes never admit members.
+/// plus movement/chord facts from the seam, with the native top-to-bottom
+/// stacking snapshot derived from the same observed/retained products as
+/// the pager order (observed eligible members in enumeration order, then
+/// retained rows with fresh frames). Hidden members absent from both keep
+/// their retained stacking slot core-side. Unknown lifetimes never admit
+/// members. v4 carries exactly `{win, live}` pager rows: only fresh native
+/// frames ride, never the adapter's retained float/tile slots, and no
+/// adapter border/underlay style is an ingress key (the core derives it
+/// from its settings and per-output scale). The frame witness join is not
+/// implemented on Windows, so `witness` stays unknown (`None`), and no
+/// foreground-output sample exists here, so `foreground_out` is unknown
+/// (`None`) rather than a guess.
 fn presentation_ingress(
     state: &OwnerInputs<'_>,
     observed: Option<&[ObservedWindow]>,
     retained: &[RetainedRow],
-) -> tiler_core::world_report::PresentationIngress {
+    foreground_hwnd: u64,
+) -> PresentationIngressV4 {
+    // v4 has no pause lane: the game lane suppresses presentation by
+    // publishing an empty ingress, never by asking the core to project and
+    // then dropping the reply.
+    if state.presentation_paused {
+        return PresentationIngressV4::default();
+    }
     // Stable token per enumerated key: observed and retained rows carry
     // theirs; hidden members absent from the enumeration keep theirs in
     // `member_tokens`.
@@ -778,83 +1069,74 @@ fn presentation_ingress(
             }
         }
     }
-    // Pager frame rows, one per token with any source: fresh native frames
-    // (observed visible, then retained overlay rows) fill the live slot;
-    // the adapter's float slots fill the float slot; tile slots fill the
-    // tile slot. First source wins per slot; the core applies the live >
-    // float > tile precedence. Never a fresh observation beyond the
-    // enumeration tables, never an adapter precedence decision.
-    let mut rows: BTreeMap<String, tiler_core::world_report::PresentationPagerFrame> =
-        BTreeMap::new();
+    // One live pager source per token: the fresh native frame from this
+    // tick's enumeration (observed visible, then retained overlay rows).
+    // Retained float/tile slots are adapter placement memory, not v4 ingress
+    // rows, so a slot without a fresh frame renders no miniature rather
+    // than echoing a stale rectangle.
+    let mut frames: BTreeMap<String, PresentationPagerFrameV4> = BTreeMap::new();
     if let Some(observed) = observed {
         for window in observed {
-            rows.entry(window.token.clone()).or_insert(
-                tiler_core::world_report::PresentationPagerFrame {
-                    window: tiler_core::directional::WindowId(window.token.clone()),
+            frames
+                .entry(window.token.clone())
+                .or_insert(PresentationPagerFrameV4 {
+                    window: WindowId(window.token.clone()),
                     live: Some(window.visible),
-                    float_frame: None,
-                    tile_frame: None,
-                },
-            );
+                });
         }
     }
     for row in retained {
         if let Some(rect) = row.rect {
-            rows.entry(row.token.clone()).or_insert(
-                tiler_core::world_report::PresentationPagerFrame {
-                    window: tiler_core::directional::WindowId(row.token.clone()),
+            frames
+                .entry(row.token.clone())
+                .or_insert(PresentationPagerFrameV4 {
+                    window: WindowId(row.token.clone()),
                     live: Some(rect),
-                    float_frame: None,
-                    tile_frame: None,
-                },
-            );
+                });
         }
     }
-    for (token, frame) in state.float_rects.iter() {
-        rows.entry(token.clone())
-            .or_insert_with(|| tiler_core::world_report::PresentationPagerFrame {
-                window: tiler_core::directional::WindowId(token.clone()),
-                live: None,
-                float_frame: None,
-                tile_frame: None,
+    // The tick's own observed row is the same foreground truth when the
+    // caller supplied one without a separate presentation read (offline
+    // sequencer commands and any direct capture). Production ticks still
+    // carry the richer presentation facts, including ineligible windows.
+    let observed_foreground = if state.presentation_foreground.is_none() {
+        observed
+            .and_then(|rows| rows.iter().find(|row| row.hwnd == foreground_hwnd))
+            .map(|window| PresentationForeground {
+                token: window.token.clone(),
+                minimized: window.facts.minimized,
+                maximized: window.facts.maximized,
+                fullscreen: window.facts.captionless_fullscreen,
+                host_hidden: window.facts.cloaked,
+                hidden_workspace: false,
+                frame: Some(window.visible),
             })
-            .float_frame = Some(*frame);
-    }
-    for (token, frame) in state.member_rects.iter() {
-        rows.entry(token.clone())
-            .or_insert_with(|| tiler_core::world_report::PresentationPagerFrame {
-                window: tiler_core::directional::WindowId(token.clone()),
-                live: None,
-                float_frame: None,
-                tile_frame: None,
-            })
-            .tile_frame = Some(*frame);
-    }
-    let foreground = state.presentation_foreground.as_ref();
-    tiler_core::world_report::PresentationIngress {
+    } else {
+        None
+    };
+    let foreground = state
+        .presentation_foreground
+        .as_ref()
+        .or(observed_foreground.as_ref());
+    PresentationIngressV4 {
         foreground: foreground
             .map(|facts| facts.token.clone())
             .unwrap_or_default(),
-        foreground_minimized: foreground.is_some_and(|facts| facts.minimized),
-        foreground_maximized: foreground.is_some_and(|facts| facts.maximized),
-        foreground_fullscreen: foreground.is_some_and(|facts| facts.fullscreen),
-        foreground_cloaked: foreground.is_some_and(|facts| facts.cloaked),
-        foreground_hidden_workspace: foreground.is_some_and(|facts| facts.hidden_workspace),
-        foreground_shell: foreground.is_some_and(|facts| facts.shell),
+        foreground_minimized: foreground.map(|facts| facts.minimized),
+        foreground_maximized: foreground.map(|facts| facts.maximized),
+        foreground_fullscreen: foreground.map(|facts| facts.fullscreen),
+        foreground_host_hidden: foreground.map(|facts| facts.host_hidden),
+        foreground_hidden_workspace: foreground.map(|facts| facts.hidden_workspace),
         foreground_frame: foreground.and_then(|facts| facts.frame),
-        border_enabled: state.presentation_border_enabled,
-        underlay_enabled: state.presentation_underlay_enabled,
-        border_gap_px: state.presentation_style.0,
-        border_width_px: state.presentation_style.1,
-        underlay_extension_px: state.presentation_style.2,
         chord_held: state.presentation_chord,
         move_window: state.presentation_move.clone(),
-        paused: state.presentation_paused,
         pager_order: order
             .into_iter()
             .map(tiler_core::directional::WindowId)
             .collect(),
-        pager_frames: rows.into_values().collect(),
+        pager_frames: frames.into_values().collect(),
+        witness: None,
+        foreground_out: None,
     }
 }
 
@@ -947,106 +1229,114 @@ pub(super) fn capture_world(
     }
 
     let mut screens: Vec<ScreenReport> = Vec::new();
+    let mut held_screens: Vec<HeldScreenRow> = Vec::new();
     let mut facts: Vec<WindowFact> = Vec::new();
     let mut closed_all: Vec<WindowId> = Vec::new();
     let mut held_members: Vec<String> = Vec::new();
     let mut inventory_complete = !enum_failed;
-    // An unreadable fact (rect `None`) holds its staged scope instead of
-    // authorizing geometry, never a silent absence: every withheld member
-    // below rides one. Minimized facts ride separately with no geometry.
+    // An unreadable fact (rect `None`, every native flag/state unknown)
+    // holds its staged scope instead of authorizing geometry, never a silent
+    // absence: every withheld member below rides one. Lifetime-bound
+    // identity (the key's pid, a proved executable, suppression presence)
+    // still rides: those are identity, not a frame read. Minimized facts
+    // ride separately with no geometry.
     macro_rules! unreadable_fact {
-        ($facts:expr, $held:expr, $complete:expr, $token:expr, $mapped:expr, $sticky:expr) => {{
-            $facts.push(WindowFact {
-                window: WindowId($token.to_owned()),
-                output: OutputId($mapped.clone()),
+        ($facts:expr, $held:expr, $complete:expr, $token:expr, $key:expr, $executable:expr, $owned:expr) => {{
+            $facts.push(window_fact(FactSeed {
+                token: $token.as_str(),
+                key: $key,
+                executable: $executable,
+                suppression_owned: $owned,
+                hints: None,
+                output: None,
                 rect: None,
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: $sticky,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: WindowSizeHints::none(),
-                minimized: false,
-                // No facade readback on the default path: unknown, never
-                // proof of absence.
-                observed_workspace: None,
-                native_workspace: None,
-            });
+                flags: None,
+                live: None,
+                host_hidden: None,
+                fullscreen: None,
+                maximized: None,
+                minimized: None,
+            }));
             $held.push($token.to_owned());
             $complete = false;
         }};
     }
     macro_rules! minimized_fact {
-        ($facts:expr, $token:expr, $mapped:expr, $sticky:expr) => {{
-            $facts.push(WindowFact {
-                window: WindowId($token.to_owned()),
-                output: OutputId($mapped.clone()),
+        ($facts:expr, $token:expr, $key:expr, $output:expr, $executable:expr, $hints:expr, $owned:expr) => {{
+            $facts.push(window_fact(FactSeed {
+                token: $token.as_str(),
+                key: $key,
+                executable: $executable,
+                suppression_owned: $owned,
+                hints: $hints,
+                output: $output,
                 rect: None,
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: $sticky,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: WindowSizeHints::none(),
-                minimized: true,
-                observed_workspace: None,
-                native_workspace: None,
-            });
+                flags: None,
+                live: None,
+                host_hidden: None,
+                fullscreen: None,
+                maximized: None,
+                minimized: Some(true),
+            }));
         }};
     }
-    if enum_failed {
-        // A failed enumeration proves nothing about any scope: every
-        // inventoried scope holds below and completeness clears, even for
-        // empty managed workspaces (which would otherwise read as a
-        // successful empty and authorize cleanup).
-    }
-
     // Screens ride the live monitor areas in native order plus the
     // mechanical device-to-wire map only. No rings/views/tiling/history:
-    // the core mints and owns its logical workspaces outright.
+    // the core mints and owns its logical workspaces outright, and derives
+    // physical gaps from the logical settings times the measured scale.
     for area in areas {
-        let mapped = state
-            .output_tokens
-            .get(&area.device)
-            .cloned()
-            .unwrap_or_else(|| "o?".to_owned());
-        let mapped_valid = mapped != "o?";
-        let inset_ok =
-            crate::tiling::tiling_domain_bounds_with(area.work, state.outer_gap).is_some();
-        let area_missing = !mapped_valid || !inset_ok;
-        if area_missing {
+        let Some(mapped) = state.output_tokens.get(&area.device).cloned() else {
+            // No live wire id: the row is unidentifiable, so it carries no
+            // screen row at all (never a fabricated id) and topology is
+            // unknown.
             inventory_complete = false;
+            continue;
+        };
+        if area.dpi == 0 {
+            // Unmeasured effective scale: hold the identifiable screen
+            // narrowly instead of carrying a fabricated scale.
+            let diagnostic = RowDiagnostic {
+                scope: AuthorityScope::Output(OutputId(mapped.clone())),
+                row: RowDiagnosticLane::Screen,
+                id: Some(mapped.clone()),
+                kind: RowDiagnosticKind::Unreadable,
+            };
+            held_screens.push(HeldScreenRow {
+                output: OutputId(mapped),
+                // Index in the *carried* screens array (unmapped devices
+                // never occupy a slot): the narrow-hold contract's ordinal.
+                ordinal: screens.len(),
+                diagnostic,
+            });
+            inventory_complete = false;
+            continue;
         }
-        let screen_complete = !area_missing && !enum_failed;
         screens.push(ScreenReport {
-            output: OutputId(mapped.clone()),
+            output: OutputId(mapped),
             full_rect: Some(area.full),
             work_area: Some(area.work),
-            gap: state.inner_gap,
-            outer_gap: state.outer_gap,
-            complete: screen_complete,
-            primary: areas.first().is_some_and(|a| a.device == area.device),
+            complete: !enum_failed,
+            // Effective per-monitor DPI measured at the enumeration seam:
+            // adapter units per logical pixel.
+            scale: f64::from(area.dpi) / 96.0,
+            // No physical-identity producer (QDC/SetupAPI EDID) on this
+            // route yet: explicit unknown, never fabricated strings.
+            identity: OutputIdentity::unknown(),
         });
     }
-    let screen_outputs: HashSet<String> = screens.iter().map(|s| s.output.0.clone()).collect();
-    let first_output: String = screens
-        .first()
-        .map(|s| s.output.0.clone())
-        .unwrap_or_else(|| "o?".to_owned());
+    // Every device the adapter knows a live wire id for, whether or not its
+    // scale was readable: close homing keys on the mapping, not the screen
+    // row's completeness.
+    let screen_outputs: HashSet<String> = areas
+        .iter()
+        .filter_map(|area| state.output_tokens.get(&area.device).cloned())
+        .collect();
     // Output affinity for one frame: live placement geometry, never a
-    // policy table. Unknown devices fall back to the first screen with
-    // incompleteness marked by the caller.
-    let affinity_of = |rect: &Rect| -> String {
+    // policy table. An unknown device (or one with no live wire id) has no
+    // affinity: `None`, never the first screen or a placeholder id.
+    let affinity_of = |rect: &Rect| -> Option<OutputId> {
         let device = super::directional_resolution::output_for_rect(areas, rect);
-        state
-            .output_tokens
-            .get(&device)
-            .cloned()
-            .unwrap_or_else(|| first_output.clone())
+        state.output_tokens.get(&device).cloned().map(OutputId)
     };
     // Seed the member-key universe from mechanical tables only: bound
     // members, hidden claims, minimized omissions, and retained rows. New
@@ -1066,18 +1356,19 @@ pub(super) fn capture_world(
     }
     if enum_failed {
         // A failed enumeration proves nothing: every bound lifetime rides
-        // unreadable with first-screen affinity; explicit queued closes
-        // still ride beside the hold. Bare absence never becomes a close.
+        // unreadable with unknown affinity; explicit queued closes still
+        // ride beside the hold. Bare absence never becomes a close.
         for key in &keys {
-            let sticky = state.sticky.contains_key(key);
             if let Some(token) = state.member_tokens.get(key) {
+                let owned = state.hidden_claims.contains_key(key);
                 unreadable_fact!(
                     facts,
                     held_members,
                     inventory_complete,
                     token,
-                    first_output,
-                    sticky
+                    key,
+                    bound_executable(state, key),
+                    owned
                 );
             } else {
                 inventory_complete = false;
@@ -1103,46 +1394,49 @@ pub(super) fn capture_world(
                 && bound != &window.token
             {
                 // Recycled lifetime under a stale number: hold, inherit
-                // nothing.
+                // nothing (no executable, no flags).
                 unreadable_fact!(
                     facts,
                     held_members,
                     inventory_complete,
                     bound,
-                    affinity_of(&window.visible),
-                    state.sticky.contains_key(&key)
+                    &key,
+                    None,
+                    state.hidden_claims.contains_key(&key)
                 );
                 continue;
             }
-            let hidden = state.hidden_claims.contains_key(&key);
+            let owned = state.hidden_claims.contains_key(&key);
             // Scope fence: stored identity for bound members (drift holds),
             // live identity for brand-new windows.
-            let exe_path: Option<String> = match state.member_identity.get(&key) {
+            let exe_path: &str = match state.member_identity.get(&key) {
                 Some(identity)
                     if identity.pid == key.pid && identity.process_creation == key.creation =>
                 {
-                    Some(identity.exe_path.clone())
+                    identity.exe_path.as_str()
                 }
                 Some(_) => {
+                    // Drifted identity: the row holds with no executable.
                     unreadable_fact!(
                         facts,
                         held_members,
                         inventory_complete,
                         token,
-                        affinity_of(&window.visible),
-                        state.sticky.contains_key(&key)
+                        &key,
+                        None,
+                        owned
                     );
                     continue;
                 }
-                None => Some(window.identity.exe_path.clone()),
+                None => window.identity.exe_path.as_str(),
             };
-            let exe_path = exe_path.unwrap_or_default();
-            if !crate::tiling::scope_allows(state.scope, &exe_path) {
+            if !crate::tiling::scope_allows(state.scope, exe_path) {
                 // Scoped inventory ignores foreign (out-of-scope,
                 // never-member) windows: they are not managed inventory
                 // and must not fence scoped commands. A bound member
                 // that drifts out of scope is still managed inventory,
-                // so it holds narrowly as unreadable.
+                // so it holds narrowly as unreadable (the identity still
+                // rides: it is read, only the frame is not).
                 if !state.member_tokens.contains_key(&key) {
                     continue;
                 }
@@ -1151,14 +1445,13 @@ pub(super) fn capture_world(
                     held_members,
                     inventory_complete,
                     token,
-                    affinity_of(&window.visible),
-                    state.sticky.contains_key(&key)
+                    &key,
+                    Some(exe_path),
+                    owned
                 );
                 continue;
             }
-            let sticky = state.sticky.contains_key(&key);
-            let (fixed_auto, fixed_suppress) = capture_fixed(state, &key);
-            if hidden {
+            if owned {
                 // Hidden lane dominates: the claim association must prove
                 // before any row, snapshot, or minimized entry.
                 let associated = state.hidden_claims.get(&key).is_some_and(|record| {
@@ -1176,8 +1469,9 @@ pub(super) fn capture_world(
                         held_members,
                         inventory_complete,
                         token,
-                        affinity_of(&window.visible),
-                        sticky
+                        &key,
+                        Some(exe_path),
+                        owned
                     );
                     continue;
                 }
@@ -1185,24 +1479,27 @@ pub(super) fn capture_world(
                     .hidden_claims
                     .get(&key)
                     .expect("associated claim exists");
+                let hints = state.hint_logged.get(&token).copied();
                 if record.iconic
                     || record.claim.show.minimized
                     || state.minimized_omitted.contains(&key)
                 {
-                    minimized_fact!(facts, token, affinity_of(&window.visible), sticky);
-                    continue;
-                }
-                if !capture_facts_rideable(&window.facts) {
-                    unreadable_fact!(
+                    minimized_fact!(
                         facts,
-                        held_members,
-                        inventory_complete,
                         token,
+                        &key,
                         affinity_of(&window.visible),
-                        sticky
+                        Some(exe_path),
+                        hints,
+                        owned
                     );
                     continue;
                 }
+                // The claim above proves this lifetime is intentionally
+                // suppressed: its native visibility is hidden by design,
+                // so the visible-row eligibility gate must not turn it
+                // unreadable. Keeping the row readable preserves its
+                // logical homing (and its workspace's scope) while away.
                 let floating = capture_floating(state, &key, true);
                 let snapshot = crate::native_guards::hidden_snapshot_rect(
                     floating,
@@ -1215,36 +1512,30 @@ pub(super) fn capture_world(
                         held_members,
                         inventory_complete,
                         token,
-                        affinity_of(&window.visible),
-                        sticky
+                        &key,
+                        Some(exe_path),
+                        owned
                     );
                     continue;
                 };
-                let mapped = affinity_of(&rect);
                 let maximized = window.facts.maximized || record.claim.show.maximized;
                 let fullscreen =
                     window.facts.captionless_fullscreen || state.born_fullscreen.contains(&key);
-                let hints = state
-                    .hint_logged
-                    .get(&token)
-                    .copied()
-                    .unwrap_or_else(WindowSizeHints::none);
-                facts.push(WindowFact {
-                    window: WindowId(token.clone()),
-                    output: OutputId(mapped),
-                    rect: Some(rect),
-                    floating,
-                    fit_excluded: floating || fullscreen || sticky || maximized,
-                    fullscreen,
-                    maximized,
-                    sticky,
-                    fixed_auto: fixed_auto && !fixed_suppress,
-                    fixed_suppress,
+                facts.push(window_fact(FactSeed {
+                    token: token.as_str(),
+                    key: &key,
+                    executable: Some(exe_path),
+                    suppression_owned: owned,
                     hints,
-                    minimized: false,
-                    observed_workspace: None,
-                    native_workspace: None,
-                });
+                    output: affinity_of(&rect),
+                    rect: Some(rect),
+                    flags: Some(&window.facts),
+                    live: None,
+                    host_hidden: None,
+                    fullscreen: Some(fullscreen),
+                    maximized: Some(maximized),
+                    minimized: Some(false),
+                }));
                 continue;
             }
             if !capture_facts_rideable(&window.facts) {
@@ -1253,37 +1544,27 @@ pub(super) fn capture_world(
                     held_members,
                     inventory_complete,
                     token,
-                    affinity_of(&window.visible),
-                    sticky
+                    &key,
+                    Some(exe_path),
+                    owned
                 );
                 continue;
             }
-            let floating = capture_floating(state, &key, false);
-            let mapped = affinity_of(&window.visible);
-            let hints = state
-                .hint_logged
-                .get(&token)
-                .copied()
-                .unwrap_or_else(WindowSizeHints::none);
-            facts.push(WindowFact {
-                window: WindowId(token.clone()),
-                output: OutputId(mapped),
+            facts.push(window_fact(FactSeed {
+                token: token.as_str(),
+                key: &key,
+                executable: Some(exe_path),
+                suppression_owned: owned,
+                hints: state.hint_logged.get(&token).copied(),
+                output: affinity_of(&window.visible),
                 rect: Some(window.visible),
-                floating,
-                fit_excluded: floating
-                    || sticky
-                    || window.facts.captionless_fullscreen
-                    || window.facts.maximized,
-                fullscreen: window.facts.captionless_fullscreen,
-                maximized: window.facts.maximized,
-                sticky,
-                fixed_auto: fixed_auto && !fixed_suppress,
-                fixed_suppress,
-                hints,
-                minimized: false,
-                observed_workspace: None,
-                native_workspace: None,
-            });
+                flags: Some(&window.facts),
+                live: None,
+                host_hidden: None,
+                fullscreen: Some(window.facts.captionless_fullscreen),
+                maximized: Some(window.facts.maximized),
+                minimized: Some(false),
+            }));
         }
         // Retained occupancy for bound members with no live row: overlay
         // slots ride their last-known allocation, frameless iconic omission
@@ -1303,64 +1584,63 @@ pub(super) fn capture_world(
             let Some(live_token) = state.member_tokens.get(key) else {
                 continue;
             };
+            let owned = state.hidden_claims.contains_key(key);
+            let executable = bound_executable(state, key);
             if *live_token != row.token {
                 unreadable_fact!(
                     facts,
                     held_members,
                     inventory_complete,
                     live_token,
-                    first_output.clone(),
-                    state.sticky.contains_key(key)
+                    key,
+                    executable,
+                    owned
                 );
                 continue;
             }
-            if state.hidden_claims.contains_key(key) {
+            if owned {
                 continue;
             }
-            let sticky = state.sticky.contains_key(key);
-            let (fixed_auto, fixed_suppress) = capture_fixed(state, key);
             if state.minimized_omitted.contains(key)
                 && row.rect.is_none()
                 && !row.maximized
                 && !row.fullscreen
             {
-                let mapped = state
-                    .member_rects
-                    .get(live_token)
-                    .map(affinity_of)
-                    .unwrap_or_else(|| first_output.clone());
-                minimized_fact!(facts, live_token, mapped, sticky);
+                minimized_fact!(
+                    facts,
+                    live_token,
+                    key,
+                    state
+                        .member_rects
+                        .get(live_token)
+                        .and_then(|rect| affinity_of(rect)),
+                    executable,
+                    state.hint_logged.get(live_token).copied(),
+                    owned
+                );
                 continue;
             }
             let Some(row_facts) = row.facts else {
-                let mapped = row
-                    .rect
-                    .as_ref()
-                    .map(affinity_of)
-                    .unwrap_or_else(|| first_output.clone());
                 unreadable_fact!(
                     facts,
                     held_members,
                     inventory_complete,
                     live_token,
-                    mapped,
-                    sticky
+                    key,
+                    executable,
+                    owned
                 );
                 continue;
             };
             if !capture_facts_rideable(&row_facts) {
-                let mapped = row
-                    .rect
-                    .as_ref()
-                    .map(affinity_of)
-                    .unwrap_or_else(|| first_output.clone());
                 unreadable_fact!(
                     facts,
                     held_members,
                     inventory_complete,
                     live_token,
-                    mapped,
-                    sticky
+                    key,
+                    executable,
+                    owned
                 );
                 continue;
             }
@@ -1372,23 +1652,18 @@ pub(super) fn capture_world(
                 _ => None,
             };
             let Some(rect) = rect else {
-                let mapped = row
-                    .rect
-                    .as_ref()
-                    .map(affinity_of)
-                    .unwrap_or_else(|| first_output.clone());
                 unreadable_fact!(
                     facts,
                     held_members,
                     inventory_complete,
                     live_token,
-                    mapped,
-                    sticky
+                    key,
+                    executable,
+                    owned
                 );
                 continue;
             };
             let floating = capture_floating(state, key, false);
-            let mapped = affinity_of(&rect);
             let hints = crate::tiling::retained_overlay_hint(
                 state.hint_logged.get(live_token).copied(),
                 true,
@@ -1397,22 +1672,24 @@ pub(super) fn capture_world(
                 state.born_fullscreen.contains(key),
                 true,
             );
-            facts.push(WindowFact {
-                window: WindowId(live_token.clone()),
-                output: OutputId(mapped),
+            // No fresh native read this tick: the recorded flags lane stays
+            // unknown rather than publishing a stale visibility/cloak
+            // snapshot as current.
+            facts.push(window_fact(FactSeed {
+                token: live_token.as_str(),
+                key,
+                executable,
+                suppression_owned: owned,
+                hints: Some(hints),
+                output: affinity_of(&rect),
                 rect: Some(rect),
-                floating,
-                fit_excluded: floating || sticky || row.fullscreen || row.maximized,
-                fullscreen: row.fullscreen,
-                maximized: row.maximized,
-                sticky,
-                fixed_auto: fixed_auto && !fixed_suppress,
-                fixed_suppress,
-                hints,
-                minimized: false,
-                observed_workspace: None,
-                native_workspace: None,
-            });
+                flags: None,
+                live: None,
+                host_hidden: None,
+                fullscreen: Some(row.fullscreen),
+                maximized: Some(row.maximized),
+                minimized: Some(false),
+            }));
         }
         // Hidden-claim members with no live row: snapshot or minimized lanes.
         // Orphaned claims (no member token) are not managed inventory:
@@ -1429,8 +1706,7 @@ pub(super) fn capture_world(
             let Some(live_token) = state.member_tokens.get(key) else {
                 continue;
             };
-            let sticky = state.sticky.contains_key(key);
-            let (fixed_auto, fixed_suppress) = capture_fixed(state, key);
+            let executable = bound_executable(state, key);
             let associated = crate::model::valid_claim_tag(&record.claim.tag)
                 && record.claim.hwnd == key.hwnd
                 && record.claim.process.pid == key.pid
@@ -1445,21 +1721,45 @@ pub(super) fn capture_world(
                     held_members,
                     inventory_complete,
                     live_token,
-                    first_output.clone(),
-                    sticky
+                    key,
+                    executable,
+                    true
                 );
                 continue;
             }
             if record.iconic || record.claim.show.minimized || state.minimized_omitted.contains(key)
             {
-                let mapped = state
-                    .member_rects
-                    .get(live_token)
-                    .map(affinity_of)
-                    .unwrap_or_else(|| first_output.clone());
-                minimized_fact!(facts, live_token, mapped, sticky);
+                minimized_fact!(
+                    facts,
+                    live_token,
+                    key,
+                    state
+                        .member_rects
+                        .get(live_token)
+                        .and_then(|rect| affinity_of(rect)),
+                    executable,
+                    state.hint_logged.get(live_token).copied(),
+                    true
+                );
                 continue;
             }
+            // T4: the durable claim proves project suppression, never host
+            // hiding. The lightweight live read is the only source of this
+            // row's shown state, DWM cloak, ownership, tool-window bit, and
+            // dialog kind; with no read the scope holds instead of
+            // fabricating a native verdict.
+            let Some(read) = state.hidden_reads.and_then(|reads| reads.get(key)) else {
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    live_token,
+                    key,
+                    executable,
+                    true
+                );
+                continue;
+            };
             let floating = capture_floating(state, key, true);
             let snapshot = crate::native_guards::hidden_snapshot_rect(
                 floating,
@@ -1472,12 +1772,12 @@ pub(super) fn capture_world(
                     held_members,
                     inventory_complete,
                     live_token,
-                    first_output.clone(),
-                    sticky
+                    key,
+                    executable,
+                    true
                 );
                 continue;
             };
-            let mapped = affinity_of(&rect);
             // Hidden fullscreen truth: born holds plus the retained overlay
             // flags for the same lifetime (a hidden ordinary fullscreen keeps
             // its pre-hide frame state through the retained row; the durable
@@ -1495,22 +1795,25 @@ pub(super) fn capture_world(
                 .get(live_token)
                 .copied()
                 .unwrap_or_else(WindowSizeHints::none);
-            facts.push(WindowFact {
-                window: WindowId(live_token.clone()),
-                output: OutputId(mapped),
+            // No live observed row this tick: the claim lane's lightweight
+            // live read carries the native shown state, cloak, ownership,
+            // tool-window bit, and dialog kind, while the preimage-proven
+            // overlays still ride.
+            facts.push(window_fact(FactSeed {
+                token: live_token.as_str(),
+                key,
+                executable,
+                suppression_owned: true,
+                hints: Some(hints),
+                output: affinity_of(&rect),
                 rect: Some(rect),
-                floating,
-                fit_excluded: floating || fullscreen || sticky || maximized,
-                fullscreen,
-                maximized,
-                sticky,
-                fixed_auto: fixed_auto && !fixed_suppress,
-                fixed_suppress,
-                hints,
-                minimized: false,
-                observed_workspace: None,
-                native_workspace: None,
-            });
+                flags: None,
+                live: Some(read),
+                host_hidden: None,
+                fullscreen: Some(fullscreen),
+                maximized: Some(maximized),
+                minimized: Some(false),
+            }));
         }
         // Iconic omission without any row minimizes with no frame.
         // Omission keys that never became members are not managed
@@ -1527,12 +1830,18 @@ pub(super) fn capture_world(
             let Some(live_token) = state.member_tokens.get(key) else {
                 continue;
             };
-            let mapped = state
-                .member_rects
-                .get(live_token)
-                .map(affinity_of)
-                .unwrap_or_else(|| first_output.clone());
-            minimized_fact!(facts, live_token, mapped, state.sticky.contains_key(key));
+            minimized_fact!(
+                facts,
+                live_token,
+                key,
+                state
+                    .member_rects
+                    .get(live_token)
+                    .and_then(|rect| affinity_of(rect)),
+                bound_executable(state, key),
+                state.hint_logged.get(live_token).copied(),
+                state.hidden_claims.contains_key(key)
+            );
         }
         // Bound members with no live, retained, hidden, or minimized row
         // hold as unreadable: a successful enumeration that omits a bound
@@ -1559,8 +1868,9 @@ pub(super) fn capture_world(
                 held_members,
                 inventory_complete,
                 live_token,
-                first_output.clone(),
-                state.sticky.contains_key(key)
+                key,
+                bound_executable(state, key),
+                state.hidden_claims.contains_key(key)
             );
         }
     }
@@ -1607,35 +1917,24 @@ pub(super) fn capture_world(
         .filter(|id| !unhomed_set.contains(id.0.as_str()))
         .collect();
 
-    // Topology from the same device order the owner syncs: live backing ids
-    // in native order, the current view, the live full output geometry
     // Full rectangles plus work areas are the hotplug placement facts
-    // (never a frame proxy) and the primary flag. `all_monitors` orders
-    // primary-first, so primary derives from the `areas.first()` device:
-    // managed output order may be reordered relative to the native list
-    // and must never decide it.
-    // Screens carry no native workspace vocabulary: FULL rectangles plus
-    // work areas only. The core mints and owns its logical workspaces.
+    // (never a frame proxy) and the host-designated primary flag.
+    // `all_monitors` orders primary-first, so primary derives from the
+    // `areas.first()` device: managed output order may be reordered
+    // relative to the native list and must never decide it.
+    let primary_output = areas
+        .first()
+        .and_then(|area| state.output_tokens.get(&area.device))
+        .cloned()
+        .map(OutputId);
     let inventory_complete = inventory_complete
         && !screens.is_empty()
         && !facts
             .iter()
-            .any(|fact| fact.rect.is_none() && !fact.minimized);
-    // Truthful applied receipts (never echoed desire): per-window logical
-    // homing only where fresh identity/visibility proves it, per-screen
-    // views only where exactly one non-sticky workspace shows members (or a
-    // memberless active shows provable emptiness). Unknown stays unknown so
-    // the core retains pending flights instead of settling on a guess. An
-    // empty workspace has no windows, so its view never proves here by
-    // echo; the actuation batch proves it by hiding every prior member.
-    let mut windows = facts;
-    super::world_native_receipts::attach_workspace_receipts(
-        state,
-        observed,
-        retained,
-        areas,
-        &mut windows,
-    );
+            .any(|fact| fact.rect.is_none() && fact.minimized != Some(true));
+    // Facts are the whole window lane: v4 has no adapter receipt or
+    // workspace projection to attach.
+    let windows = facts;
     // Neutral migration/control action context (core-owned policy):
     // the live foreground frame grounded to a live device and mapped to
     // wire, the adapter-retained cache mapped to wire, and the ordered
@@ -1671,44 +1970,49 @@ pub(super) fn capture_world(
         .cloned()
         .map(OutputId)
         .collect();
+    let presentation = presentation_ingress(state, Some(observed), retained, foreground_hwnd);
     CapturedWorld {
         screens,
+        held_screens,
         windows,
         closed,
-        observed_views: super::world_native_receipts::observed_view_receipts(
-            state, observed, areas,
-        ),
-        workspace_mode: crate::settings::startup_mode(state.settings_live.as_ref()),
-        equal_workspace_count: false,
-        inventory_complete,
+        // One foreground sample drives both fields: the presentation
+        // ingress already resolved the tick's observed row when no richer
+        // presentation facts were supplied.
+        focused_global: presentation.foreground.clone(),
+        // The caller's foreground read is the proof: `0` positively saw no
+        // foreground window (known, empty id); a nonzero handle is known
+        // only when this tick resolves it to a verified lifetime.
+        foreground_known: foreground_hwnd == 0 || !presentation.foreground.is_empty(),
+        // Snapshot-only capture: no event-coverage interval exists here.
+        focus_changes: None,
+        cursor: state.cursor,
+        // The hit resolves only when the cursor itself was sampled: the
+        // game lane and unreadable ticks carry no cursor and no hit.
+        cursor_hit: match (state.cursor, state.hit_hwnd) {
+            (Some(_), Some(hwnd)) => {
+                resolve_cursor_hit(hwnd, observed, retained, state.member_tokens, &|step| {
+                    let parent = crate::ffi::parent_of(step);
+                    if parent != 0 {
+                        parent
+                    } else {
+                        crate::ffi::owner_of(step)
+                    }
+                })
+            }
+            _ => None,
+        },
         gesture_barrier: !state.active.is_empty(),
         gesture: state.gesture.clone(),
-        focused_global: observed
-            .iter()
-            .find(|w| w.hwnd == foreground_hwnd)
-            .map(|w| w.token.clone())
-            .unwrap_or_default(),
         action_foreground,
         action_cached,
         action_outputs,
-        default_tiled: state
-            .settings_live
-            .as_ref()
-            .map(|live| live.settings.core.workspace.default_tiled)
-            .unwrap_or(true),
-        fixed_size_predicate: admission::fixed_predicate_for(state.settings_live.as_ref()),
-        born_maximized: if super::focus_actuation::born_maximized_keep_overlay_for(
-            state.settings_live.as_ref(),
-        ) {
-            tiler_core::born_maximized::BornMaximized::KeepMaximizedOverlay
-        } else {
-            tiler_core::born_maximized::BornMaximized::TileOnLaunch
-        },
-        migration_source_refill: state
-            .settings_live
-            .as_ref()
-            .map(|live| live.settings.core.migration_source_refill_mode())
-            .unwrap_or_default(),
+        primary_output,
+        inventory_complete,
+        dropped_stale_closed,
+        #[cfg(test)]
+        unhomed_closed,
+        held_members,
         switch_target: state
             .settings_live
             .as_ref()
@@ -1727,26 +2031,6 @@ pub(super) fn capture_world(
             .settings_live
             .as_ref()
             .is_some_and(|live| live.settings.core.cursor_warp),
-        cursor: state.cursor,
-        // The hit resolves only when the cursor itself was sampled: the
-        // game lane and unreadable ticks carry no cursor and no hit.
-        cursor_hit: match (state.cursor, state.hit_hwnd) {
-            (Some(_), Some(hwnd)) => {
-                resolve_cursor_hit(hwnd, observed, retained, state.member_tokens, &|step| {
-                    let parent = crate::ffi::parent_of(step);
-                    if parent != 0 {
-                        parent
-                    } else {
-                        crate::ffi::owner_of(step)
-                    }
-                })
-            }
-            _ => None,
-        },
-        dropped_stale_closed,
-        #[cfg(test)]
-        unhomed_closed,
-        held_members,
-        presentation: presentation_ingress(state, Some(observed), retained),
+        presentation,
     }
 }

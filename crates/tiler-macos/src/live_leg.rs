@@ -604,6 +604,7 @@ fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
             ] {
                 remove_known_leaf(&product_dir, leaf)?;
             }
+            remove_owned_intent_store(&product_dir)?;
             // Unknown product leaves are residue, never broad-deleted: the
             // removal refuses so the receipt is retained for audit.
             let mut unknown = Vec::new();
@@ -666,6 +667,61 @@ fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
     }
     std::fs::remove_dir(run_dir)
         .map_err(|e| format!("shutdown: owned run-dir removal refused ({e})"))
+}
+
+/// Remove the fixture-isolated intent store after the product has shut
+/// down. Only the product's store row and its atomic-write temp leaves are
+/// accepted; the directory and every file are symlink-guarded, and any
+/// other entry is residue rather than broad-deleted.
+fn remove_owned_intent_store(product_dir: &Path) -> Result<(), String> {
+    let store_dir = product_dir.join("intent-store");
+    match std::fs::symlink_metadata(&store_dir) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err("shutdown: owned intent-store is a symlink; refusing".to_owned());
+        }
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err("shutdown: owned intent-store is not a directory; refusing".to_owned());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("shutdown: intent-store metadata refused ({e})")),
+    }
+    let mut expected = Vec::new();
+    let mut unknown = Vec::new();
+    match std::fs::read_dir(&store_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let is_expected = (name.starts_with("intent-v1-") && name.ends_with(".json"))
+                    || (name.starts_with(".intent-v1-") && name.contains(".tmp."));
+                let meta = std::fs::symlink_metadata(entry.path())
+                    .map_err(|e| format!("shutdown: intent-store leaf metadata refused ({e})"))?;
+                if meta.file_type().is_symlink() {
+                    return Err(format!(
+                        "shutdown: owned intent-store leaf {name} is a symlink; refusing"
+                    ));
+                }
+                if !is_expected || !meta.is_file() {
+                    unknown.push(name);
+                } else {
+                    expected.push(entry.path());
+                }
+            }
+        }
+        Err(e) => return Err(format!("shutdown: intent-store unreadable ({e})")),
+    }
+    if !unknown.is_empty() {
+        return Err(format!(
+            "shutdown: owned intent-store holds unknown leaves ({}); residue retained, never broad-deleted",
+            unknown.join(",")
+        ));
+    }
+    for path in expected {
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("shutdown: intent-store leaf removal refused ({e})"))?;
+    }
+    std::fs::remove_dir(&store_dir)
+        .map_err(|e| format!("shutdown: intent-store removal refused ({e})"))
 }
 
 /// Remove one known owned leaf (symlink-guarded; absent is fine).
@@ -2257,6 +2313,11 @@ mod tests {
         ] {
             std::fs::write(product.join(leaf), "known\n").expect("leaf writes");
         }
+        let store = product.join("intent-store");
+        std::fs::create_dir(&store).expect("store dir creates");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        std::fs::write(store.join(".intent-v1-501-100021.json.tmp.7.1"), "temp\n")
+            .expect("temp writes");
         remove_owned_run_dir(&run).expect("known leaves remove");
         assert!(!run.exists());
         // An unknown leaf is residue, never broad-deleted: the removal
@@ -2278,6 +2339,56 @@ mod tests {
         #[cfg(unix)]
         {
             let err = remove_owned_run_dir(&run).unwrap_err();
+            assert!(err.contains("symlink"), "unexpected: {err}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn intent_store_cleanup_takes_only_expected_leaves() {
+        // The isolated store is a known product leaf once the product has
+        // stopped. Only the product row and its atomic-write temp are
+        // removed; any other entry retains the whole store as residue.
+        let dir = test_dir("intent-store");
+        let product = dir.join("product");
+        let store = product.join("intent-store");
+        std::fs::create_dir_all(&store).expect("store dir creates");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        std::fs::write(store.join(".intent-v1-501-100021.json.tmp.7.1"), "temp\n")
+            .expect("temp writes");
+        remove_owned_intent_store(&product).expect("expected store leaves remove");
+        assert!(!store.exists());
+
+        std::fs::create_dir(&store).expect("store dir creates");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        std::fs::write(store.join("foreign"), "unknown\n").expect("unknown writes");
+        let err = remove_owned_intent_store(&product).unwrap_err();
+        assert!(err.contains("unknown leaves"), "unexpected: {err}");
+        assert!(store.join("intent-v1-501-100021.json").exists());
+        assert!(store.join("foreign").exists());
+
+        std::fs::remove_file(store.join("foreign")).expect("unknown removes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn intent_store_cleanup_refuses_symlinked_store_or_leaf() {
+        let dir = test_dir("intent-store-link");
+        let product = dir.join("product");
+        std::fs::create_dir_all(&product).expect("product dir creates");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/tmp", product.join("intent-store"))
+                .expect("store symlink creates");
+            let err = remove_owned_intent_store(&product).unwrap_err();
+            assert!(err.contains("symlink"), "unexpected: {err}");
+            std::fs::remove_file(product.join("intent-store")).expect("store symlink removes");
+
+            let store = product.join("intent-store");
+            std::fs::create_dir(&store).expect("store dir creates");
+            std::os::unix::fs::symlink("/tmp", store.join("intent-v1-501-100021.json"))
+                .expect("leaf symlink creates");
+            let err = remove_owned_intent_store(&product).unwrap_err();
             assert!(err.contains("symlink"), "unexpected: {err}");
         }
         let _ = std::fs::remove_dir_all(&dir);

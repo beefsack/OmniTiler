@@ -28,9 +28,9 @@ fn tuning_for(modifier: ProbeModifier, key_code: u32, shift: bool, alt: bool) ->
 }
 
 #[test]
-fn catalogue_is_exactly_focus_move_resize_float_orientation_maximize() {
+fn catalogue_is_exactly_focus_move_resize_float_orientation_maximize_and_workspace_toggle() {
     let catalogue = tile_catalogue();
-    assert_eq!(catalogue.len(), 35);
+    assert_eq!(catalogue.len(), 36);
     let focus: Vec<_> = catalogue
         .iter()
         .filter(|b| matches!(b.action, InputSemanticAction::FocusStep { .. }))
@@ -71,6 +71,10 @@ fn catalogue_is_exactly_focus_move_resize_float_orientation_maximize() {
         .iter()
         .filter(|b| matches!(b.action, InputSemanticAction::ToggleMaximize))
         .collect();
+    let workspace_toggles: Vec<_> = catalogue
+        .iter()
+        .filter(|b| matches!(b.action, InputSemanticAction::ToggleWorkspaceTiling))
+        .collect();
     assert_eq!(focus.len(), 8);
     assert_eq!(moves.len(), 8);
     assert_eq!(grows.len(), 8);
@@ -78,8 +82,10 @@ fn catalogue_is_exactly_focus_move_resize_float_orientation_maximize() {
     assert_eq!(floats.len(), 1);
     assert_eq!(orientations.len(), 1);
     assert_eq!(maximizes.len(), 1);
+    assert_eq!(workspace_toggles.len(), 1);
     // Focus chords carry neither arm; move carries Shift; grow carries Alt;
-    // shrink carries both; float, orientation, and maximize are bare.
+    // shrink carries both; float, orientation, maximize, and the workspace
+    // toggle are bare.
     assert!(focus.iter().all(|b| !b.shift && !b.alt));
     assert!(moves.iter().all(|b| b.shift && !b.alt));
     assert!(grows.iter().all(|b| !b.shift && b.alt));
@@ -90,14 +96,18 @@ fn catalogue_is_exactly_focus_move_resize_float_orientation_maximize() {
     assert!(!orientations[0].shift && !orientations[0].alt);
     assert_eq!(maximizes[0].key_code, KEY_M);
     assert!(!maximizes[0].shift && !maximizes[0].alt);
-    // Exact chord set: HJKL plus four arrows on all four arms, plus G/O/M.
+    assert_eq!(workspace_toggles[0].key_code, KEY_Y);
+    assert!(!workspace_toggles[0].shift);
+    assert!(!workspace_toggles[0].alt);
+    assert!(!workspace_toggles[0].aux);
+    // Exact chord set: HJKL plus four arrows on all four arms, plus G/O/M/Y.
     let mut keys: Vec<(u32, bool, bool)> = catalogue
         .iter()
         .map(|b| (b.key_code, b.shift, b.alt))
         .collect();
     keys.sort_unstable();
     keys.dedup();
-    assert_eq!(keys.len(), 35, "catalogue chords must be unique");
+    assert_eq!(keys.len(), 36, "catalogue chords must be unique");
     for key in [
         KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_DOWN, KEY_UP, KEY_RIGHT,
     ] {
@@ -133,7 +143,8 @@ fn catalogue_is_exactly_focus_move_resize_float_orientation_maximize() {
                 | InputSemanticAction::ResizeStep { direction, .. } => direction,
                 InputSemanticAction::ToggleFloat
                 | InputSemanticAction::ToggleOrientation
-                | InputSemanticAction::ToggleMaximize => InputDirection::Left,
+                | InputSemanticAction::ToggleMaximize
+                | InputSemanticAction::ToggleWorkspaceTiling => InputDirection::Left,
                 // The basic catalogue holds no workspace or drag actions.
                 InputSemanticAction::WorkspaceSelect { .. }
                 | InputSemanticAction::IndicatorSelectWorkspace { .. }
@@ -580,15 +591,38 @@ fn fresh_guard_reinstall_reuses_the_exact_same_chords() {
     let first = tap_specs_for(ProbeModifier::Ctrl, &catalogue);
     let replay = tap_specs_for(ProbeModifier::Ctrl, &catalogue);
     assert_eq!(first, replay);
-    assert_eq!(first.len(), 35);
-    // Compatible keeps the shifted move arrows armed (31 chords): a product
+    assert_eq!(first.len(), 36);
+    // Compatible keeps the shifted move arrows armed (32 chords): a product
     // recreation under Compatible replays that same reduced set.
     use crate::input_policy::{InputPreset, effective_bindings};
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &catalogue);
-    assert_eq!(compatible.len(), 31);
+    assert_eq!(compatible.len(), 32);
     let replay = tap_specs_for(ProbeModifier::Ctrl, &compatible);
-    assert_eq!(replay.len(), 31);
+    assert_eq!(replay.len(), 32);
     assert_eq!(tap_specs_for(ProbeModifier::Ctrl, &compatible), replay);
+}
+
+#[test]
+fn workspace_tiling_toggle_catalogue_is_one_bare_ctrl_role_y_chord() {
+    // Exactly one toggle binding: bare Y under the configured Ctrl role,
+    // no Shift/Alt/aux arms, and no select categorization (it rides the
+    // basic eligibility gate like the other toggles).
+    let catalogue = tile_catalogue();
+    assert_eq!(catalogue.len(), 36);
+    let rows: Vec<_> = catalogue.iter().filter(|b| b.key_code == KEY_Y).collect();
+    assert_eq!(rows.len(), 1, "one Y chord");
+    assert!(!rows[0].shift);
+    assert!(!rows[0].alt);
+    assert!(!rows[0].aux);
+    assert_eq!(rows[0].action, InputSemanticAction::ToggleWorkspaceTiling);
+    let specs = tap_specs_for(ProbeModifier::Ctrl, &catalogue);
+    let (want, mask) = cg_flag_bits(ProbeModifier::Ctrl);
+    let y_specs: Vec<_> = specs.iter().filter(|s| s.key_code == KEY_Y).collect();
+    assert_eq!(y_specs.len(), 1, "one tap spec for Y");
+    assert_eq!(y_specs[0].want_code, i64::from(KEY_Y));
+    assert_eq!(y_specs[0].want_flags, want);
+    assert_eq!(y_specs[0].flags_mask, mask);
+    assert!(!y_specs[0].select, "the toggle is not a select");
 }
 
 #[test]
@@ -607,7 +641,7 @@ fn tap_specs_carry_select_category_per_action() {
     product.extend(crate::workspace_select::bindings());
     product.extend(crate::workspace_send::bindings());
     let specs = tap_specs_for(ProbeModifier::Ctrl, &product);
-    assert_eq!(specs.len(), 64);
+    assert_eq!(specs.len(), 65);
     assert_eq!(specs.iter().filter(|s| s.select).count(), 19);
     for (spec, binding) in specs.iter().zip(product.iter()) {
         assert_eq!(spec.select, is_armed_select(&binding.action));

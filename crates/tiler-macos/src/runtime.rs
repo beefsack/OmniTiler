@@ -348,6 +348,7 @@ impl Runtime {
                 last_workspace_desires: Vec::new(),
                 last_native_creations: Vec::new(),
                 last_core_generation: String::new(),
+                indicator_revision: 0,
                 presentation_style: crate::active_border::PresentationStylePx::default(),
             }));
             let inbox = Arc::new(Inbox::new(config.engine_queue_depth.max(1)));
@@ -412,6 +413,7 @@ impl Runtime {
             last_workspace_desires: Vec::new(),
             last_native_creations: Vec::new(),
             last_core_generation: String::new(),
+            indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }));
         emit(&shared, 0, 0, 0, "runtime", "starting", 0);
@@ -1966,6 +1968,14 @@ impl RuntimeHandle {
     /// content through these rows with a current-reply live lookup.
     pub fn last_pager_bindings(&self) -> Vec<crate::pager::PagerWorkspaceBinding> {
         lock_shared(&self.shared).last_pager_bindings.clone()
+    }
+
+    /// Monotonic indicator revision of applied replies whose workspace
+    /// desires or pager presentation changed: the menu-bar change trigger
+    /// so a toggle reply repaints the checkmark before any topology or
+    /// observation tick moves.
+    pub fn indicator_revision(&self) -> u64 {
+        lock_shared(&self.shared).indicator_revision
     }
 
     /// One coherent indicator snapshot: the last applied reply

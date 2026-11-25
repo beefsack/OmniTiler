@@ -1012,10 +1012,10 @@ fn feedback_kinds_and_outcomes_reconcile_engine_world() {
 
 #[test]
 fn tile_bindings_cover_basic_plus_selects_plus_sends() {
-    // Product tap table: 35 basic + 19 armed selects + 10 armed numbered
-    // send-follows (64). Duplicate-free under every usable Meta/preset;
+    // Product tap table: 36 basic + 19 armed selects + 10 armed numbered
+    // send-follows (65). Duplicate-free under every usable Meta/preset;
     // Compatible under Ctrl leaves the 10 numbered selects plus the 4
-    // unshifted arrow basics to macOS (50 = 31 basic + 9 aux selects + 10
+    // unshifted arrow basics to macOS (51 = 32 basic + 9 aux selects + 10
     // sends).
     use crate::config::ProbeModifier;
     use crate::input_policy::{InputPreset, effective_bindings};
@@ -1026,18 +1026,18 @@ fn tile_bindings_cover_basic_plus_selects_plus_sends() {
         out.extend(bindings());
         out
     }
-    assert_eq!(tile_catalogue().len(), 35);
+    assert_eq!(tile_catalogue().len(), 36);
     assert_eq!(crate::workspace_select::bindings().len(), 19);
     assert_eq!(
         bindings().len(),
         10,
         "product arms 10 numbered send-follows"
     );
-    assert_eq!(product().len(), 64);
-    assert_eq!(crate::tile::product_catalogue().len(), 64);
+    assert_eq!(product().len(), 65);
+    assert_eq!(crate::tile::product_catalogue().len(), 65);
     for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
         let authentic = effective_bindings(InputPreset::Authentic, modifier, &product());
-        assert_eq!(authentic.len(), 64, "{modifier:?}");
+        assert_eq!(authentic.len(), 65, "{modifier:?}");
         let config = crate::runtime_types::RuntimeConfig {
             modifier,
             tile_bindings: Some(authentic),
@@ -1046,7 +1046,7 @@ fn tile_bindings_cover_basic_plus_selects_plus_sends() {
         assert!(config.validate().is_ok(), "{modifier:?}");
     }
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &product());
-    assert_eq!(compatible.len(), 50, "31 basic + 9 aux selects + 10 sends");
+    assert_eq!(compatible.len(), 51, "32 basic + 9 aux selects + 10 sends");
     assert_eq!(
         compatible
             .iter()

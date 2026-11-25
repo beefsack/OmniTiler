@@ -4,12 +4,26 @@ use super::{RenderFrameHealth, TileLoop};
 /// Shared proof-style owner harness (no HWNDs, hooks, or live effects).
 /// `pub(super)` so the R-MOV-03 live-adoption test reuses it directly.
 pub(super) fn test_state() -> TileLoop {
+    use tiler_core::connection::ApplicationIdentity;
     use tiler_core::ids::{GenerationId, OwnerId};
     let owner = OwnerId::parse("tiler-windows").expect("owner");
     let generation = GenerationId::parse("rmax03-adapter").expect("generation");
+    // Fixture windows are owned by the test process. A real own-pid
+    // handshake would exclude every one of them as own-process, so bind a
+    // synthetic owner identity instead (the core still sees the fixtures as
+    // foreign clients).
+    let identity = ApplicationIdentity {
+        app_id: None,
+        executable: Some("c:\\tiler-test.exe".to_owned()),
+        process_id: Some("1".to_owned()),
+    };
     TileLoop {
-        world: super::world_owner::WorldOwner::bootstrap_ids(owner.as_str(), generation.as_str())
-            .expect("world owner bootstrap"),
+        world: super::world_owner::WorldOwner::bootstrap_ids_with_identity(
+            owner.as_str(),
+            generation.as_str(),
+            identity,
+        )
+        .expect("world owner bootstrap"),
         tokens: crate::tiling::TokenMap::default(),
         stable: std::collections::HashMap::new(),
         managed: std::collections::HashSet::new(),

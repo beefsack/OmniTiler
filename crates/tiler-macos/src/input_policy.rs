@@ -4,8 +4,9 @@
 //!
 //! The tap is the sole product interception route over the
 //! shared basic tiling catalogue ([`crate::native_input::tile_catalogue`]:
-//! 35 chords: focus 8, move 8, float 1, grow 8, shrink 8,
-//! orientation 1, maximize 1; Ctrl-role modifier defaulting to Ctrl).
+//! 36 chords: focus 8, move 8, float 1, grow 8, shrink 8,
+//! orientation 1, maximize 1, workspace-toggle 1; Ctrl-role modifier
+//! defaulting to Ctrl).
 //!
 //! Presets mirror the Windows `Preset::Authentic` / `Preset::Compatible`
 //! contract ([`apply semantics`]: Authentic keeps every supported chord,
@@ -61,18 +62,19 @@ pub const KEY_L: u32 = 0x25;
 pub const KEY_G: u32 = 0x05;
 pub const KEY_O: u32 = 0x1F;
 pub const KEY_M: u32 = 0x2E;
+pub const KEY_Y: u32 = 0x10;
 pub const KEY_LEFT: u32 = 0x7B;
 pub const KEY_RIGHT: u32 = 0x7C;
 pub const KEY_DOWN: u32 = 0x7D;
 pub const KEY_UP: u32 = 0x7E;
 
-/// The exact basic key set: HJKL letters, four arrows, G, O, and M. No
+/// The exact basic key set: HJKL letters, four arrows, G, O, M, and Y. No
 /// digits: the basic catalogue can never swallow native Ctrl+digits on its
 /// own — numbered chords live only in the workspace catalogue
 /// ([`crate::workspace_input`]), where Compatible drops the conflicting
 /// unshifted Ctrl+digit selects via [`conflict_reason_for`].
-const BASIC_KEYCODES: [u32; 11] = [
-    KEY_H, KEY_J, KEY_K, KEY_L, KEY_G, KEY_O, KEY_M, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP,
+const BASIC_KEYCODES: [u32; 12] = [
+    KEY_H, KEY_J, KEY_K, KEY_L, KEY_G, KEY_O, KEY_M, KEY_Y, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP,
 ];
 
 /// Arrow keycodes: the Mission Control Ctrl+arrow conflict surface.
@@ -221,7 +223,7 @@ pub fn effective_bindings(
     }
 }
 
-/// True only for keycodes in the supported basic set (letters/arrows/G/O).
+/// True only for keycodes in the supported basic set (letters/arrows/G/O/M/Y).
 /// Guards against speculative workspace/digit bindings entering a preset.
 #[must_use]
 pub fn is_basic_keycode(key_code: u32) -> bool {
@@ -346,13 +348,14 @@ mod tests {
         let effective =
             effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &bindings());
         // 8 focus + 8 move chords on letters, float, orientation, maximize,
-        // all 16 Alt-arm resize chords (`Ctrl+Alt+arrows` are distinct
-        // effective chords with no established holder), plus the 4 shifted
-        // no-Alt arrow move chords (no established holder for the shifted
-        // moves either); only the 4 unshifted no-Alt arrow chords pass
-        // through. Authentic 35, Compatible 31.
-        assert_eq!(bindings().len(), 35);
-        assert_eq!(effective.len(), 31);
+        // the workspace toggle, all 16 Alt-arm resize chords
+        // (`Ctrl+Alt+arrows` are distinct effective chords with no
+        // established holder), plus the 4 shifted no-Alt arrow move chords
+        // (no established holder for the shifted moves either); only the 4
+        // unshifted no-Alt arrow chords pass through. Authentic 36,
+        // Compatible 32.
+        assert_eq!(bindings().len(), 36);
+        assert_eq!(effective.len(), 32);
         for key in [KEY_H, KEY_J, KEY_K, KEY_L, KEY_G, KEY_O, KEY_M] {
             assert!(
                 effective
@@ -438,7 +441,7 @@ mod tests {
 
     #[test]
     fn effective_sets_hold_no_workspace_or_effect_bindings() {
-        // Supported actions only: focus/move steps and the three toggles. No digits
+        // Supported actions only: focus/move steps and the four toggles. No digits
         // (native Ctrl+digits never swallowed), no foreign keycodes.
         for preset in [InputPreset::Authentic, InputPreset::Compatible] {
             for modifier in [
@@ -463,6 +466,7 @@ mod tests {
                             | InputSemanticAction::ToggleFloat
                             | InputSemanticAction::ToggleOrientation
                             | InputSemanticAction::ToggleMaximize
+                            | InputSemanticAction::ToggleWorkspaceTiling
                     ));
                 }
             }
@@ -566,6 +570,37 @@ mod tests {
     }
 
     #[test]
+    fn workspace_tiling_toggle_ctrl_y_stays_armed_under_compatible() {
+        // Ctrl+Y has no repo-established native holder (the conflict table
+        // only leaves unshifted Ctrl arrows/digits to macOS), so the
+        // neutral current-workspace toggle stays armed under both presets
+        // for every Meta.
+        for modifier in [
+            ProbeModifier::Ctrl,
+            ProbeModifier::Meta,
+            ProbeModifier::Alt,
+            ProbeModifier::Shift,
+        ] {
+            assert_eq!(
+                conflict_reason_for(KEY_Y, false, false, modifier),
+                None,
+                "{modifier:?}: no established holder"
+            );
+            for preset in [InputPreset::Authentic, InputPreset::Compatible] {
+                let effective = effective_bindings(preset, modifier, &bindings());
+                assert!(
+                    effective.iter().any(|b| b.key_code == KEY_Y
+                        && !b.shift
+                        && !b.alt
+                        && !b.aux
+                        && matches!(b.action, InputSemanticAction::ToggleWorkspaceTiling)),
+                    "{preset:?}/{modifier:?}: Ctrl-role+Y stays armed"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn basic_keycodes_cover_letters_arrows_float_orientation_and_maximize() {
         for key in [KEY_H, KEY_J, KEY_K, KEY_L] {
             assert!(is_basic_keycode(key));
@@ -576,6 +611,7 @@ mod tests {
         assert!(is_basic_keycode(KEY_G));
         assert!(is_basic_keycode(KEY_O));
         assert!(is_basic_keycode(KEY_M));
+        assert!(is_basic_keycode(KEY_Y));
         assert!(!is_basic_keycode(0x00));
         assert!(!is_basic_keycode(0x12));
     }

@@ -1,6 +1,263 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+// ---------------------------------------------------------------------------
+// v4 world connection: genuine handshake plus revisioned raw settings.
+//
+// Windows keeps its own in-process connection primitive (there is no
+// `world_connection` module): the typed request is built from native truth
+// here and handed directly to [`WorldEngine::handshake`] and
+// [`WorldEngine::handle_settings`] (no in-process JSON encode/route/decode
+// round trip). Reports keep the checked admission route
+// (`handle_report_checked`) elsewhere. The core-minted generation binds the
+// adapter [`WorldSequencer`](super::world_sequencer::WorldSequencer);
+// reports and later settings gate on that bound generation. The engine is
+// owned by the sequencer: no second engine owner exists.
+// ---------------------------------------------------------------------------
+
+use tiler_core::connection::{
+    ApplicationIdentity, FactName, HandshakeRequest, HostCapabilities, NativeSelectorScope,
+    RawSettingValue, SettingsDiagnostic, SettingsReply, SettingsRequest, SettingsStatus,
+};
+use tiler_core::world_engine::WorldEngine;
+
+/// Windows host capabilities: the exact port-notes values for this slice.
+///
+/// - `host_owned: false`: Windows owns no native workspace domains.
+/// - `equal_count: false`, `birth_clear: false`,
+///   `shared_native_roster: false`: no native workspaces, no automatic birth
+///   clears, no shared native roster.
+/// - `native_selector_scope: PerOutput`: each output carries its own view;
+///   Windows has no native selector, so no cross-output selector scope is
+///   claimed.
+/// - `window_suppression: true`: the product hide/restore lane exists.
+/// - `maximize: true`, `fullscreen: true`: native actuators exist for each.
+/// - `above: false`: no persistent stacking actuator exists yet; R14's
+///   `StateTarget`/R12 crash-safe preimage lane has not landed, so a
+///   truth-claiming window would have no honest topmost actuation or
+///   recovery. Flip to `true` when that task proves both.
+/// - `warp: false`: no retained cursor warp exists yet; C3 is deferred
+///   behind Tasks 1-4, so `cursorWarp=true` is reported as
+///   `unsupported-capability` instead of claiming an actuator. Flip to
+///   `true` when the retained-warp lane lands.
+/// - `native_sticky: false`: no native sticky mechanism.
+/// - `tiled_float_transfer: false`: no professed cross-output float remap.
+/// - `unavailable_facts` is the precise not-yet-produced catalog set in
+///   [`FactName`] order: `managed`, `acceptsInput`, `activationInhibited`,
+///   `transient`, `modal`, `resizable`, `above`, `below`, `owner`, `parent`,
+///   `role`, `appId`, `title`, `activationPolicy`, `layer`, `privileged`,
+///   and `class`. The remaining four lanes (`toolWindow`, `owned`,
+///   `executable`, `processId`) are the exact capture-emitted producer set;
+///   an available fact may still be `None` when a single read is honestly
+///   unknown, so availability is a producer claim, never a value claim.
+///   `executable`/`processId` also stay available because [`own_identity`]
+///   supplies both (the support-consistency gate). `privileged` is not
+///   emitted (observe hardcodes `false` as a projected negative) and
+///   `class` is read but not carried, so neither may be declared available.
+#[must_use]
+pub(super) fn windows_capabilities() -> HostCapabilities {
+    HostCapabilities {
+        host_owned: false,
+        equal_count: false,
+        shared_native_roster: false,
+        birth_clear: false,
+        native_selector_scope: NativeSelectorScope::PerOutput,
+        window_suppression: true,
+        maximize: true,
+        fullscreen: true,
+        native_sticky: false,
+        above: false,
+        warp: false,
+        tiled_float_transfer: false,
+        unavailable_facts: vec![
+            FactName::Privileged,
+            FactName::Managed,
+            FactName::AcceptsInput,
+            FactName::ActivationInhibited,
+            FactName::Transient,
+            FactName::Modal,
+            FactName::Resizable,
+            FactName::Above,
+            FactName::Below,
+            FactName::Owner,
+            FactName::Parent,
+            FactName::Role,
+            FactName::AppId,
+            FactName::Class,
+            FactName::Title,
+            FactName::ActivationPolicy,
+            FactName::Layer,
+        ],
+    }
+}
+
+/// Own process identity from native truth only.
+///
+/// - `app_id`: `None` (Windows has no bundle identity source; no support
+///   coupling exists for `appId`).
+/// - `executable`: the own executable path, normalized by slash replacement
+///   plus ASCII lowercase (the same identity rule as
+///   [`crate::lifecycle`]'s path equality); `None` when the identity read
+///   fails, which refuses the handshake instead of claiming support.
+/// - `process_id`: the own pid as a decimal string.
+fn own_identity() -> Option<ApplicationIdentity> {
+    let own = crate::native::current_identity().ok()?;
+    Some(ApplicationIdentity {
+        app_id: None,
+        executable: Some(own.exe_path.replace('/', "\\").to_ascii_lowercase()),
+        process_id: Some(own.pid.to_string()),
+    })
+}
+
+/// Typed handshake request for one adapter incarnation. `None` when own
+/// identity cannot be read: a handshake that cannot prove its own executable
+/// and pid refuses rather than declaring them unavailable while the window
+/// producer emits them.
+#[must_use]
+fn build_handshake_request(adapter: &str) -> Option<HandshakeRequest> {
+    Some(build_handshake_request_with_identity(
+        adapter,
+        own_identity()?,
+    ))
+}
+
+#[must_use]
+fn build_handshake_request_with_identity(
+    adapter: &str,
+    application_identity: ApplicationIdentity,
+) -> HandshakeRequest {
+    HandshakeRequest {
+        adapter: adapter.to_owned(),
+        request: "handshake-1".to_owned(),
+        application_identity,
+        capabilities: windows_capabilities(),
+    }
+}
+
+/// Settings request at one revision: the supplied raw acquisition values.
+/// Core validation/defaulting owns every key; the adapter never clamps or
+/// defaults core-owned values.
+#[must_use]
+fn build_settings_request(
+    adapter: &str,
+    generation: &str,
+    revision: u64,
+    values: Vec<(String, RawSettingValue)>,
+) -> SettingsRequest {
+    SettingsRequest {
+        adapter: adapter.to_owned(),
+        generation: generation.to_owned(),
+        request: format!("settings-{revision}"),
+        revision,
+        values,
+    }
+}
+
+/// Outcome of one genuine handshake plus its initial settings exchange.
+pub(super) struct ConnectOutcome {
+    /// Core-minted generation binding the adapter sequencer.
+    pub(super) generation: String,
+    /// Accepted core reply for the initial revision.
+    pub(super) settings: SettingsReply,
+}
+
+/// Run one revisioned settings exchange against `engine` through the typed
+/// [`WorldEngine::handle_settings`] entry (no in-process JSON round trip).
+/// Returns the core reply, or `None` when the request is unbound (foreign
+/// adapter/generation or malformed correlation). Never retries on a bound
+/// wait: the caller decides whether a later revision supersedes.
+#[must_use]
+pub(super) fn apply_settings_revision(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    generation: &str,
+    revision: u64,
+    values: &[(String, RawSettingValue)],
+) -> Option<SettingsReply> {
+    let request = build_settings_request(adapter, generation, revision, values.to_vec());
+    engine.handle_settings(&request)
+}
+
+/// Run one genuine handshake plus the initial (revision 1) settings exchange
+/// against `engine` with the supplied raw acquisition values. Returns the
+/// core-minted generation plus the settings reply on success, `None` when
+/// the handshake refuses (no generation minted, no state mutated), the
+/// settings exchange refuses, or any codec leg fails.
+pub(super) fn connect(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    values: &[(String, RawSettingValue)],
+) -> Option<ConnectOutcome> {
+    connect_with_handshake(engine, adapter, values, build_handshake_request(adapter)?)
+}
+
+/// Test-only connection with an explicit owner identity. Live windows are
+/// owned by the test process, so the real own-pid handshake would exclude
+/// every fixture as own-process; tests bind a synthetic owner instead.
+#[cfg(test)]
+pub(super) fn connect_with_identity(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    values: &[(String, RawSettingValue)],
+    application_identity: ApplicationIdentity,
+) -> Option<ConnectOutcome> {
+    connect_with_handshake(
+        engine,
+        adapter,
+        values,
+        build_handshake_request_with_identity(adapter, application_identity),
+    )
+}
+
+fn connect_with_handshake(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    values: &[(String, RawSettingValue)],
+    handshake_request: HandshakeRequest,
+) -> Option<ConnectOutcome> {
+    let handshake = engine.handshake(&handshake_request);
+    if handshake.kind.is_some() {
+        return None;
+    }
+    let generation = handshake.generation?;
+    let settings = apply_settings_revision(engine, adapter, &generation, 1, values)?;
+    if settings.status != SettingsStatus::Accepted {
+        return None;
+    }
+    Some(ConnectOutcome {
+        generation,
+        settings,
+    })
+}
+
+/// Wire token for a settings reply status (log shape).
+#[must_use]
+pub(super) fn settings_status_token(status: SettingsStatus) -> &'static str {
+    match status {
+        SettingsStatus::Accepted => "accepted",
+        SettingsStatus::Stale => "stale",
+        SettingsStatus::RevisionReused => "revision-reused",
+    }
+}
+
+/// Every settings diagnostic as `{key, kind}` rows (log shape). Callers log
+/// the whole list so a `restart-required`, `unknown-field`, or `missing`
+/// row is never silently dropped.
+#[must_use]
+pub(super) fn settings_diagnostics_json(
+    diagnostics: &[SettingsDiagnostic],
+) -> Vec<serde_json::Value> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            serde_json::json!({
+                "key": diagnostic.key,
+                "kind": diagnostic.kind.as_str(),
+            })
+        })
+        .collect()
+}
+
 /// Native foreground veto read: one fresh pass over the live foreground with
 /// exact desktop identity, fresh visibility, caption, DWM frame, and DWM
 /// cloak facts fed into the portable [`crate::native_guards::classify_foreground`] policy.
@@ -658,6 +915,53 @@ pub(super) fn apply_live_settings(
             }),
         );
     }
+    // Core policy follows the document through the bound connection. One
+    // full snapshot per revision; a refusal keeps the last good core state
+    // and is surfaced rather than silently ignored. Every diagnostic
+    // (key + kind, `restart-required` included) is logged so a stale/
+    // reused revision or unsupported key can never hide.
+    match state
+        .world
+        .apply_core_settings(&settings, &state.cli_overrides)
+    {
+        Some(reply) => {
+            let accepted = reply.status == SettingsStatus::Accepted;
+            if accepted {
+                lanes.push("core");
+                changed = true;
+            } else {
+                lanes.push("core-refused");
+            }
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "settings-core",
+                    "outcome": if accepted { "accepted" } else { "refused" },
+                    "scope": "live",
+                    "revision": reply.revision,
+                    "status": settings_status_token(reply.status),
+                    "diagnostics": settings_diagnostics_json(&reply.diagnostics),
+                }),
+            );
+        }
+        None => {
+            // Unbound correlation (foreign generation/adapter): nothing was
+            // accepted, so the last good core state stands. Surface the
+            // attempted file revision rather than dropping the refusal.
+            lanes.push("core-refused");
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "settings-core",
+                    "outcome": "refused",
+                    "scope": "live",
+                    "revision": revision,
+                    "status": "unbound",
+                    "diagnostics": [],
+                }),
+            );
+        }
+    }
     if let Some(live) = state.settings_live.as_mut() {
         let saved_scope = crate::settings::saved_mode(&settings);
         let status = if saved_scope == state.scope_adopted {
@@ -729,5 +1033,262 @@ pub(super) fn poll_live_settings(
             }
             false
         }
+    }
+}
+
+/// Startup/live settings-sync proof through the real typed connection.
+///
+/// These exercise the production handshake/settings entries (no codec round
+/// trip): `bootstrap_with_settings` accepts revision 1 exactly like the
+/// runtime startup, and later revisions ride `apply_settings_values`.
+#[cfg(test)]
+mod tiling_sync_tests {
+    use super::super::world_sequencer::WorldSequencer;
+    use crate::tiling::CliOverrides;
+    use tiler_core::connection::{
+        RawSettingValue, SettingsDiagnostic, SettingsDiagnosticKind, SettingsStatus,
+    };
+    use tiler_core::settings_catalog::{
+        FIELD_BORDER_WIDTH, FIELD_INNER_GAP, FIELD_OUTER_GAP, FIELD_UNDERLAY_EXTENSION,
+    };
+    use tiler_core::settings_state::EffectiveSetting;
+    use tiler_core::workspace_scope::{WORKSPACE_MODE_TOKENS, WorkspaceMode};
+
+    const ADAPTER: &str = "adapter-settings-sync";
+    const GENERATION: &str = "gen-settings-sync";
+
+    const ALL_WIRE_KEYS: [&str; 18] = [
+        "gap",
+        "outer",
+        "defaultTiled",
+        "mode",
+        "sameAxis",
+        "bornMaximized",
+        "predicate",
+        "refill",
+        "switchTarget",
+        "freshPlacement",
+        "focusFollowsCursor",
+        "cursorWarp",
+        "borderEnabled",
+        "underlayEnabled",
+        "borderWidth",
+        "borderGap",
+        "borderRadius",
+        "underlayExtension",
+    ];
+
+    fn bootstrap(values: &[(String, RawSettingValue)]) -> WorldSequencer {
+        WorldSequencer::bootstrap_with_settings(ADAPTER, GENERATION, values)
+            .expect("settings bootstrap")
+    }
+
+    fn value<'a>(values: &'a [(String, RawSettingValue)], key: &str) -> &'a RawSettingValue {
+        &values
+            .iter()
+            .find(|(candidate, _)| candidate == key)
+            .unwrap_or_else(|| panic!("wire key {key}"))
+            .1
+    }
+
+    fn snapshot(
+        settings: &crate::settings::Settings,
+        cli: &CliOverrides,
+    ) -> Vec<(String, RawSettingValue)> {
+        crate::settings::core_setting_values(settings, cli)
+    }
+
+    #[test]
+    fn all_core_wire_keys_accept_with_zero_diagnostics() {
+        let settings = crate::settings::Settings::default();
+        let cli = CliOverrides::default();
+        let values = snapshot(&settings, &cli);
+        assert_eq!(values.len(), 18);
+        for key in ALL_WIRE_KEYS {
+            value(&values, key);
+        }
+
+        // Startup revision 1 (production bootstrap) accepts the full
+        // snapshot with no diagnostics.
+        let mut seq = bootstrap(&values);
+        let initial = seq.take_initial_settings_reply().expect("initial reply");
+        assert_eq!(initial.revision, 1);
+        assert_eq!(initial.status, SettingsStatus::Accepted);
+        assert_eq!(initial.diagnostics, Vec::new());
+        assert_eq!(seq.settings_revision(), 2);
+
+        // The next revision accepts the same 18 keys with zero diagnostics.
+        let next = seq.apply_settings_values(&values).expect("settings reply");
+        assert_eq!(next.revision, 2);
+        assert_eq!(next.status, SettingsStatus::Accepted);
+        assert_eq!(next.diagnostics, Vec::new());
+        assert_eq!(seq.settings_revision(), 3);
+    }
+
+    #[test]
+    fn cli_overrides_win_in_startup_and_later_snapshots() {
+        let cli = CliOverrides {
+            inner_gap: Some(4),
+            outer_gap: Some(20),
+            border_width: Some(7.5),
+            underlay_extension: Some(3.5),
+            ..CliOverrides::default()
+        };
+        let mut file = crate::settings::Settings::default();
+        let values = snapshot(&file, &cli);
+        assert_eq!(value(&values, "gap"), &RawSettingValue::Number(4.0));
+        assert_eq!(value(&values, "outer"), &RawSettingValue::Number(20.0));
+        assert_eq!(value(&values, "borderWidth"), &RawSettingValue::Number(7.5));
+        assert_eq!(
+            value(&values, "underlayExtension"),
+            &RawSettingValue::Number(3.5)
+        );
+
+        let mut seq = bootstrap(&values);
+        let initial = seq.take_initial_settings_reply().expect("initial reply");
+        assert_eq!(initial.status, SettingsStatus::Accepted);
+        assert!(initial.diagnostics.is_empty());
+        let settings = seq.engine_ref().settings();
+        assert_eq!(
+            settings.effective[FIELD_INNER_GAP],
+            EffectiveSetting::Int(4)
+        );
+        assert_eq!(
+            settings.effective[FIELD_OUTER_GAP],
+            EffectiveSetting::Int(20)
+        );
+        assert_eq!(
+            settings.effective[FIELD_BORDER_WIDTH],
+            EffectiveSetting::Float(7.5)
+        );
+        assert_eq!(
+            settings.effective[FIELD_UNDERLAY_EXTENSION],
+            EffectiveSetting::Float(3.5)
+        );
+
+        // A later file snapshot that edits the same keys underneath the CLI
+        // switches must still send (and accept) the CLI values.
+        file.core.inner_gap = 12;
+        file.core.outer_gap = 13;
+        file.core.border.width = 2.0;
+        file.core.underlay.extension = 1.0;
+        let next_values = snapshot(&file, &cli);
+        assert_eq!(value(&next_values, "gap"), &RawSettingValue::Number(4.0));
+        assert_eq!(value(&next_values, "outer"), &RawSettingValue::Number(20.0));
+        assert_eq!(
+            value(&next_values, "borderWidth"),
+            &RawSettingValue::Number(7.5)
+        );
+        assert_eq!(
+            value(&next_values, "underlayExtension"),
+            &RawSettingValue::Number(3.5)
+        );
+        let reply = seq
+            .apply_settings_values(&next_values)
+            .expect("settings reply");
+        assert_eq!(reply.status, SettingsStatus::Accepted);
+        assert!(reply.diagnostics.is_empty());
+        let settings = seq.engine_ref().settings();
+        assert_eq!(
+            settings.effective[FIELD_INNER_GAP],
+            EffectiveSetting::Int(4)
+        );
+        assert_eq!(
+            settings.effective[FIELD_OUTER_GAP],
+            EffectiveSetting::Int(20)
+        );
+        assert_eq!(
+            settings.effective[FIELD_BORDER_WIDTH],
+            EffectiveSetting::Float(7.5)
+        );
+    }
+
+    #[test]
+    fn refused_revisions_do_not_advance() {
+        let settings = crate::settings::Settings::default();
+        let cli = CliOverrides::default();
+        let values = snapshot(&settings, &cli);
+        let mut seq = bootstrap(&values);
+        assert_eq!(seq.settings_revision(), 2);
+
+        // Older revision: Stale, no advance and no state mutation.
+        let stale = seq
+            .apply_settings_at_for_test(0, &values)
+            .expect("settings reply");
+        assert_eq!(stale.status, SettingsStatus::Stale);
+        assert_eq!(seq.settings_revision(), 2);
+
+        // Equal revision with different content: RevisionReused, no advance.
+        let mut different = values.clone();
+        different
+            .iter_mut()
+            .find(|(key, _)| key == "gap")
+            .expect("gap key")
+            .1 = RawSettingValue::Number(9.0);
+        let reused = seq
+            .apply_settings_at_for_test(1, &different)
+            .expect("settings reply");
+        assert_eq!(reused.status, SettingsStatus::RevisionReused);
+        assert_eq!(seq.settings_revision(), 2);
+
+        // The live path continues from the untouched revision.
+        let live = seq.apply_settings_values(&values).expect("settings reply");
+        assert_eq!(live.revision, 2);
+        assert_eq!(live.status, SettingsStatus::Accepted);
+        assert_eq!(seq.settings_revision(), 3);
+    }
+
+    #[test]
+    fn restart_only_mode_change_reports_restart_required() {
+        let mut settings = crate::settings::Settings::default();
+        let cli = CliOverrides::default();
+        let startup = snapshot(&settings, &cli);
+        let mut seq = bootstrap(&startup);
+        let initial = seq.take_initial_settings_reply().expect("initial reply");
+        assert_eq!(initial.status, SettingsStatus::Accepted);
+        assert!(initial.diagnostics.is_empty());
+        assert_eq!(
+            seq.engine_ref().settings().workspace_mode,
+            WorkspaceMode::PerOutputLocal
+        );
+
+        settings.core.workspace.mode = WORKSPACE_MODE_TOKENS[2].to_owned();
+        let changed = snapshot(&settings, &cli);
+        let reply = seq.apply_settings_values(&changed).expect("settings reply");
+        assert_eq!(reply.revision, 2);
+        assert_eq!(reply.status, SettingsStatus::Accepted);
+        assert_eq!(
+            reply.diagnostics,
+            vec![SettingsDiagnostic {
+                key: "mode".to_owned(),
+                kind: SettingsDiagnosticKind::RestartRequired,
+            }]
+        );
+        // Restart-only request is retained but the effective mode is unchanged.
+        assert_eq!(
+            seq.engine_ref().settings().workspace_mode,
+            WorkspaceMode::PerOutputLocal
+        );
+    }
+
+    #[test]
+    fn startup_mode_shared_adopts_at_revision_one() {
+        let mut settings = crate::settings::Settings::default();
+        settings.core.workspace.mode = WORKSPACE_MODE_TOKENS[2].to_owned();
+        let cli = CliOverrides::default();
+        let values = snapshot(&settings, &cli);
+        let mut seq = bootstrap(&values);
+        let initial = seq.take_initial_settings_reply().expect("initial reply");
+        assert_eq!(initial.revision, 1);
+        assert_eq!(initial.status, SettingsStatus::Accepted);
+        assert!(
+            initial.diagnostics.is_empty(),
+            "shared adopts with no diagnostics, got {:?}",
+            initial.diagnostics
+        );
+        assert_eq!(
+            seq.engine_ref().settings().workspace_mode,
+            WorkspaceMode::Shared
+        );
     }
 }

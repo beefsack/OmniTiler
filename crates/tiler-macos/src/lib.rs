@@ -27,7 +27,6 @@
 
 pub mod active_border;
 pub mod ax;
-pub mod ax_destroyed_probe;
 pub mod ax_session;
 pub mod border_runtime;
 pub mod border_session;
@@ -54,11 +53,14 @@ pub mod drag_native;
 pub mod drag_session;
 pub mod engine;
 pub mod ffi;
+mod fixture_corrupt_store;
 pub mod fixture_frame;
 pub mod fixture_gate;
 mod fixture_hover;
 pub mod fixture_leg;
+mod fixture_maximize;
 pub mod fixture_menu;
+mod fixture_owned_space;
 pub mod fixture_post;
 pub mod fixture_sample;
 pub mod fixture_zoom;

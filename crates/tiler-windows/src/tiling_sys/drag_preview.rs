@@ -179,18 +179,10 @@ pub(super) fn refresh_drag_preview(
     );
     // Source fence on the correlated result (START bound): a stale result
     // after Finish, drift, or a mover swap never renders.
-    let Some((rect, next_prior)) = reply
-        .as_ref()
-        .and_then(|reply| match &reply.command_result {
-            Some(tiler_core::world_report::CommandResult::DragPreview {
-                rect,
-                hover,
-                source,
-                ..
-            }) if source == &source_key => Some((*rect, hover.clone())),
-            _ => None,
-        })
-    else {
+    let Some((rect, next_prior)) = reply.as_ref().and_then(|reply| {
+        let preview = reply.drag_preview.as_ref()?;
+        (&preview.source == &source_key).then(|| (preview.rect, preview.hover.clone()))
+    }) else {
         if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
             bound.hover_prior = None;
         }

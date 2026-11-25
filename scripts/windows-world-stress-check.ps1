@@ -52,7 +52,7 @@ foreach ($fn in @(
     "Wait-StressLog", "Wait-StressFreshApply", "Wait-StressDispatch", "Wait-StressDispatchOrdered",
     "Invoke-StressCli", "Wait-StressRequestFile",
     "Wait-StressHwnd", "Wait-StressAdmitted", "Wait-StressDeparted",
-    "Invoke-StressFocus", "Get-StressGeometry", "Get-StressRing",
+    "Invoke-StressFocus", "Get-StressRing",
     "Initialize-StressTopology", "Refresh-StressRing",
     "Invoke-StressCheckpoint", "Wait-StressReady", "Wait-StressPager", "Invoke-StressCleanup",
     "Test-StressStalePager", "Test-StressBootstrapLayoutKind",
@@ -64,7 +64,7 @@ foreach ($fn in @(
   )) {
   if ($src -notmatch ("function " + $fn)) { throw "missing function $fn" }
 }
-Write-Output "required functions present=67"
+Write-Output "required functions present=66"
 
 # Required seams are matched against comment-stripped code: real call-site
 # literals, not prose. Freshness uses accepted/command-consumed (duplicate
@@ -77,7 +77,7 @@ foreach ($must in @("scope-exe tiler-live-fixture.exe", '"workspace", "--select"
     '"workspace", "--relative"', '"directional", "--focus"', '"directional", "--move"',
     "--inner-gap 0", "--outer-gap 0",
     "tile --user-start", "member-admitted", "desired_windows_omitted",
-    "clear_holds_omitted", "focus_dispatch_omitted", "inflight_events_omitted",
+    "focus_dispatch_omitted", "inflight_events_omitted",
     "foreground_meta_omitted", "visibility_posts_omitted",
     "desired_geometry_omitted", "geometry_status", "desired_transfers",
     '"accepted"', '"command-consumed"', '"duplicate"', '"dispatched"',

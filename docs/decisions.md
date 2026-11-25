@@ -71,6 +71,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
   - **TD5 (MX8 distribution):** reject Mac App Store (sandbox incompatible with AX/event-tap/Tier 2); use Developer ID signing + Apple notarization for DMG and Homebrew Cask; 0.1 update channel is Homebrew Cask + GitHub Releases DMG only (no in-app updater in 0.1).
   - **TD6 (macOS 15 floor):** fix the R2 dual-surface bugs offline and retain the macOS 15 support floor with the recorded unverified risk (optional Apple Silicon macOS 15 VM validation at RC).
   - **TD7 (D4 store slot):** confirm `~/Library/Application Support/OmniTiler/intent-v1-<uid>-<asid>.json` (`0700` dir, `0600` file, `O_NOFOLLOW`, atomic replace).
+- Windows v4 port direction (T1–T7: revert `9a98994d` core hidden-target hack and fix `SW_HIDE` live capture, keep `AlreadyAtTarget`, fail-closed `row_on_current_view`, truthful incremental `above`/`warp` capabilities, direct typed connection calls, and C3 warp deferral) remains tentative for later review ([Windows](decisions/windows.md#tentative-v4-port-direction)).
 
 ## Topics
 

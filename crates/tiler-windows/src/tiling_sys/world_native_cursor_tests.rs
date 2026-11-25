@@ -53,11 +53,13 @@ fn fixture_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
             device: DEV1.to_owned(),
             work: rect(0, 0, 800, 560),
             full: rect(0, 0, 800, 600),
+            dpi: 96,
         },
         super::super::MonitorArea {
             device: DEV2.to_owned(),
             work: rect(800, 0, 800, 560),
             full: rect(800, 0, 800, 600),
+            dpi: 96,
         },
     ];
     let fulls = vec![rect(0, 0, 800, 600), rect(800, 0, 800, 600)];
@@ -113,7 +115,7 @@ fn set_calls_for(hwnd: u64) -> usize {
     S_SET_CALLS.with(|m| m.borrow().iter().filter(|(h, _)| *h == hwnd).count())
 }
 
-fn view_of(reply: &WorldReply, output: &str) -> Option<String> {
+fn view_of(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -151,6 +153,34 @@ fn apply_targeting(env: &mut Env, case: &serde_json::Value) {
         .expect("fresh_placement")
         .to_owned();
     env.state.settings_live = Some(crate::settings::LiveSettings::fresh(settings, None));
+}
+
+fn apply_core_targeting(owner: &mut WorldOwner, case: &serde_json::Value) {
+    // v4 carries settings out of band (never in the report): push the
+    // fixture's policy through the genuine revisioned exchange.
+    assert!(
+        owner.apply_test_settings(&[
+            (
+                "switchTarget",
+                tiler_core::connection::RawSettingValue::String(
+                    case["settings"]["switch_target"]
+                        .as_str()
+                        .expect("switch_target")
+                        .to_owned(),
+                ),
+            ),
+            (
+                "freshPlacement",
+                tiler_core::connection::RawSettingValue::String(
+                    case["settings"]["fresh_placement"]
+                        .as_str()
+                        .expect("fresh_placement")
+                        .to_owned(),
+                ),
+            ),
+        ]),
+        "fixture settings revision is accepted"
+    );
 }
 
 fn seed_ticks(
@@ -226,6 +256,7 @@ fn shared_fresh_cases_route_against_affinity_and_settle() {
         let by_id: std::collections::HashMap<String, WindowKey> = keys.iter().cloned().collect();
         admit_scene(&mut env, &scene, &keys);
         let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+        apply_core_targeting(&mut owner, case);
         seed_ticks(&mut env, &mut owner, &areas, &fulls, &by_id, case);
         let cursor = cursor_of(case);
         let focus_hwnd = by_id[case["focus"].as_str().expect("focus")].hwnd;
@@ -435,6 +466,7 @@ fn shared_fresh_cases_cover_foreground_steal_and_loss() {
                 keys.iter().cloned().collect();
             admit_scene(&mut env, &scene, &keys);
             let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+            apply_core_targeting(&mut owner, case);
             seed_ticks(&mut env, &mut owner, &areas, &fulls, &by_id, case);
             let baseline_frames = live_frames();
             let baseline_views = env.state.applied_views.clone();
@@ -607,6 +639,7 @@ fn shared_switch_and_send_cases_resolve_per_fixture() {
         let by_id: std::collections::HashMap<String, WindowKey> = keys.iter().cloned().collect();
         admit_scene(&mut env, &scene, &keys);
         let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+        apply_core_targeting(&mut owner, case);
         seed_ticks(&mut env, &mut owner, &areas, &fulls, &by_id, case);
         let cursor = cursor_of(case);
         let focus_hwnd = by_id[case["focus"].as_str().expect("focus")].hwnd;
@@ -693,7 +726,9 @@ fn shared_switch_and_send_cases_resolve_per_fixture() {
                     moving_prims(),
                     by_id[mover].hwnd,
                     Some(WorldCommand::SendNumbered {
-                        window: WindowId(mover.to_owned()),
+                        window: tiler_core::directional::WindowSubject::Window(WindowId(
+                            mover.to_owned(),
+                        )),
                         source: tiler_core::world_report::SendSource::Explicit(OutputId(
                             wire.clone(),
                         )),

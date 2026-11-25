@@ -12,7 +12,7 @@
 //! owner exists at any point.
 //!
 //! Native binding/claim/identity/lifetime caches stay adapter-mechanical;
-//! the last applied [`WorldReply`](tiler_core::world_report::WorldReply) is a
+//! the last applied [`WorldReplyV4`](tiler_core::world_report::WorldReplyV4) is a
 //! read-only presentation projection, never a second policy.
 //!
 //! Durable restart: this carrier persists no logical rings. Every report
@@ -23,12 +23,10 @@
 //! and the visible-membership lifetime tags), which capture consumes as
 //! ordinary facts/lanes on the first observation.
 //!
-//! T2 staged refusal (production): an affected tiled-source cross-output
-//! Window transfer whose staged reply floats the mover refuses as
-//! `float-no-remap` with the source world unchanged. The check reads only
-//! functional decline facts (report-time tiled source, cross-output Window
-//! transfer under the command operation id, floating staged row); it never
-//! branches on `FloatOrigin`.
+//! v4 core owns cross-output capacity handling: an exhausted target holds
+//! its scope (`ConstraintClamp`) instead of floating a transferred row, so
+//! production delivery runs the report once through the sequenced engine
+//! with no adapter transfer-remap gate.
 //!
 //! Borrow split: every dispatch entry takes the field-input seam
 //! (`OwnerInputs`), never `&TileLoop`, so the runtime can hold
@@ -40,7 +38,7 @@ use super::world_sequencer::{AckOutcome, AckReceipt, DispatchError, WorldSequenc
 use super::{MonitorArea, ObservedWindow, RetainedRow};
 use std::collections::{BTreeMap, HashMap};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{WorldCommand, WorldReply, WorldReport};
+use tiler_core::world_report::{WorldCommand, WorldReplyV4, WorldReportV4};
 
 /// Single runtime world policy owner: bootstraps and sequences online.
 /// All production lifecycle/history/tiling/scope/select/send/migration
@@ -49,7 +47,7 @@ use tiler_core::world_report::{WorldCommand, WorldReply, WorldReport};
 pub(super) struct WorldOwner {
     seq: WorldSequencer,
     diff: HostDiff,
-    last_reply: Option<WorldReply>,
+    last_reply: Option<WorldReplyV4>,
     /// Bounded accepted trace-proof row for the current `last_reply`
     /// (TRACE-ONLY): the exact `world-apply` projection built from the
     /// accepted reply plus its dispatched report at accept time, even when
@@ -72,18 +70,54 @@ pub(super) type CoreProjections = (
 );
 
 impl WorldOwner {
-    /// Authenticated bootstrap from explicit id strings (for struct-literal
-    /// construction sites where the owner state does not exist yet).
+    /// Test/offline bootstrap from explicit id strings (for struct-literal
+    /// construction sites where the owner state does not exist yet). Keeps
+    /// the historical empty initial settings snapshot; production startup
+    /// uses [`WorldOwner::bootstrap_ids_with_settings`].
+    #[cfg(test)]
     pub(super) fn bootstrap_ids(owner: &str, generation: &str) -> Option<Self> {
-        let seq = WorldSequencer::bootstrap(owner, generation)?;
+        Self::bootstrap_ids_with_settings(owner, generation, &[])
+    }
+
+    /// Production bootstrap with the validated initial raw settings snapshot
+    /// (explicit CLI switches already applied) so restart-only `mode` and
+    /// every other core key adopt at revision 1.
+    pub(super) fn bootstrap_ids_with_settings(
+        owner: &str,
+        generation: &str,
+        values: &[(String, tiler_core::connection::RawSettingValue)],
+    ) -> Option<Self> {
+        Some(Self::from_sequencer(
+            WorldSequencer::bootstrap_with_settings(owner, generation, values)?,
+            owner,
+            generation,
+        ))
+    }
+
+    /// Test-only bootstrap whose handshake declares a synthetic owner
+    /// identity; live fixture windows remain owned by the test process.
+    #[cfg(test)]
+    pub(super) fn bootstrap_ids_with_identity(
+        owner: &str,
+        generation: &str,
+        identity: tiler_core::connection::ApplicationIdentity,
+    ) -> Option<Self> {
+        Some(Self::from_sequencer(
+            WorldSequencer::bootstrap_with_identity(owner, generation, identity)?,
+            owner,
+            generation,
+        ))
+    }
+
+    fn from_sequencer(seq: WorldSequencer, owner: &str, generation: &str) -> Self {
         let diff = HostDiff::new(owner, generation);
-        Some(Self {
+        Self {
             seq,
             diff,
             last_reply: None,
             last_proof: None,
             has_accepted: false,
-        })
+        }
     }
 
     #[cfg(test)]
@@ -95,6 +129,39 @@ impl WorldOwner {
     /// routing: rings/views/members/homing; never a second policy).
     pub(super) fn engine(&self) -> &WorldEngine {
         self.seq.engine_ref()
+    }
+
+    /// Push the validated settings document into core policy through the
+    /// bound connection. One full snapshot per revision; explicit startup
+    /// CLI switches override the saved base. Returns the core reply
+    /// (status + every diagnostic) so the caller can log acceptance,
+    /// refusal, stale/reused revisions, and `restart-required`; `None` when
+    /// the connection is unbound. Refusal leaves the last accepted core
+    /// state untouched.
+    pub(super) fn apply_core_settings(
+        &mut self,
+        settings: &crate::settings::Settings,
+        cli: &crate::tiling::CliOverrides,
+    ) -> Option<tiler_core::connection::SettingsReply> {
+        let values = crate::settings::core_setting_values(settings, cli);
+        self.seq.apply_settings_values(&values)
+    }
+
+    /// Take the retained initial (revision 1) settings reply for startup
+    /// logging. `None` once already taken.
+    pub(super) fn take_initial_settings_reply(
+        &mut self,
+    ) -> Option<tiler_core::connection::SettingsReply> {
+        self.seq.take_initial_settings_reply()
+    }
+
+    /// Test-only live-settings revision through the bound connection.
+    #[cfg(test)]
+    pub(super) fn apply_test_settings(
+        &mut self,
+        values: &[(&str, tiler_core::connection::RawSettingValue)],
+    ) -> bool {
+        self.seq.apply_test_settings(values)
     }
 
     /// Owned core projections for one diff pass (homing, rings, views).
@@ -128,7 +195,7 @@ impl WorldOwner {
 
     /// Record one applied core revision on the diff gate (host results never
     /// move this watermark).
-    pub(super) fn note_diff_applied(&mut self, reply: &WorldReply) {
+    pub(super) fn note_diff_applied(&mut self, reply: &WorldReplyV4) {
         self.diff.gate.note_applied(reply);
     }
 
@@ -177,25 +244,24 @@ impl WorldOwner {
 
     /// Run one diff pass for an accepted reply. Returns stats; attempted
     /// writes append mechanical rows to `frame_out`, `member_out`,
-    /// `view_out`, and `clear_out` for the next report (each stamped with
+    /// `view_out` for the next report (each stamped with
     /// `attempt_ms`).
     /// No verdicts are produced: the core derives every completion from
-    /// the raw attempts plus staged observation. Eight inputs are the
+    /// the raw attempts plus staged observation. The arguments are the
     /// disjoint pass products; bundling would hide the borrow split the
     /// tick relies on.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_accepted(
         &mut self,
-        reply: &WorldReply,
+        reply: &WorldReplyV4,
         fresh: &FreshHost,
         ops: &mut dyn super::world_diff::NativeOps,
         frame_out: &mut Vec<tiler_core::world_report::FrameAttempt>,
         member_out: &mut Vec<tiler_core::world_report::MemberAttempt>,
         view_out: &mut Vec<tiler_core::world_report::ViewAttempt>,
-        clear_out: &mut Vec<tiler_core::world_report::ClearAttempt>,
         attempt_ms: u64,
     ) -> super::world_diff::ApplyStats {
-        apply_world_reply(
+        let stats = apply_world_reply(
             &mut self.diff,
             reply,
             fresh,
@@ -203,13 +269,24 @@ impl WorldOwner {
             frame_out,
             member_out,
             view_out,
-            clear_out,
             attempt_ms,
-        )
+        );
+        for attempt in self.diff.take_visibility_attempts() {
+            self.seq.note_visibility_attempt(attempt);
+        }
+        stats
     }
 
-    pub(super) fn last_reply(&self) -> Option<&WorldReply> {
+    pub(super) fn last_reply(&self) -> Option<&WorldReplyV4> {
         self.last_reply.as_ref()
+    }
+
+    /// Correlated result of the most recent delivered report command: the
+    /// sequencer-owned settlement row for that command sequence. `None`
+    /// when no command executed (observation tick, duplicate,
+    /// already-consumed, or rejected).
+    pub(super) fn last_command_result(&self) -> Option<&tiler_core::world_report::CommandResult> {
+        self.seq.last_command_result()
     }
 
     /// Borrow the bounded accepted trace-proof row for the current
@@ -247,9 +324,11 @@ impl WorldOwner {
         self.seq.note_view_attempt(attempt);
     }
 
-    /// Stage one raw maximize-clear attempt for the next report.
-    pub(super) fn note_clear_attempt(&mut self, attempt: tiler_core::world_report::ClearAttempt) {
-        self.seq.note_clear_attempt(attempt);
+    /// Host-owned workspace domains capability (see
+    /// [`WorldSequencer::host_owned_workspace_domains`]).
+    #[must_use]
+    pub(super) fn host_owned_workspace_domains(&self) -> bool {
+        self.seq.host_owned_workspace_domains()
     }
 
     /// No durable restoration ingress exists.
@@ -265,7 +344,7 @@ impl WorldOwner {
         areas: &[MonitorArea],
         foreground_hwnd: u64,
         monotonic_ms: u64,
-    ) -> Result<WorldReport, DispatchError> {
+    ) -> Result<WorldReportV4, DispatchError> {
         self.seq.try_dispatch(
             inputs,
             observed,
@@ -289,7 +368,7 @@ impl WorldOwner {
         foreground_hwnd: u64,
         monotonic_ms: u64,
         command: WorldCommand,
-    ) -> Result<WorldReport, DispatchError> {
+    ) -> Result<WorldReportV4, DispatchError> {
         self.seq.try_dispatch_with_command(
             inputs,
             observed,
@@ -301,12 +380,9 @@ impl WorldOwner {
         )
     }
 
-    /// Production staged delivery for affected commands (T2): single
-    /// evaluation through the sequencer-owned path (tiled-source cross-output
-    /// Window transfer whose staged row floats refuses as `float-no-remap`
-    /// with the source world unchanged). Unaffected commands and
-    /// `CommandConsumed` run the direct path. Never reads `FloatOrigin`.
-    pub(super) fn deliver_production(&mut self, report: &WorldReport) -> WorldOutcome {
+    /// Production delivery: one report through the sequenced engine. v4
+    /// core owns clamped targets; the adapter adds no transfer-remap gate.
+    pub(super) fn deliver_production(&mut self, report: &WorldReportV4) -> WorldOutcome {
         let outcome = self.seq.deliver_production(report);
         // Refresh after every core delivery, before native code can pump.
         // Diagnostic reads only; neither value controls core or actuation.
@@ -324,7 +400,7 @@ impl WorldOwner {
     /// outcome plus pruned close tokens for the caller ledger.
     pub(super) fn ack(
         &mut self,
-        reply: &WorldReply,
+        reply: &WorldReplyV4,
         pending: &mut BTreeMap<String, super::PendingClosed>,
     ) -> (AckOutcome, Vec<String>) {
         let outcome = self.seq.ack(reply);
@@ -344,7 +420,7 @@ impl WorldOwner {
 
     fn apply_receipt(
         &mut self,
-        reply: &WorldReply,
+        reply: &WorldReplyV4,
         _receipt: &AckReceipt,
         _pending: &BTreeMap<String, super::PendingClosed>,
     ) {

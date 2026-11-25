@@ -411,8 +411,8 @@ function New-CleanApply([int]$Tick, [int]$Rev, [string]$Delivery) {
   return @{
     event = "world-apply"; tick = $Tick; delivery = $Delivery; revision = $Rev
     command_result = "ok"; geometry_status = "paired"; desired_geometry_omitted = 0
-    members_omitted = 0; views_omitted = 0; frames_omitted = 0; clears_omitted = 0
-    clear_holds_omitted = 0; desired_operations_omitted = 0; operation_settled_omitted = 0
+    members_omitted = 0; views_omitted = 0; frames_omitted = 0
+    desired_operations_omitted = 0; operation_settled_omitted = 0
     focus_effects_omitted = 0; focus_dispatch_omitted = 0; inflight_events_omitted = 0
     foreground_meta_omitted = 0; visibility_posts_omitted = 0
     desired_windows_omitted = 0; desired_outputs_omitted = 0; desired_workspaces_omitted = 0
@@ -454,7 +454,7 @@ $m = 0
 Expect-Throw { Wait-StressFreshApply $logPath ([ref]$m) 15 2 "omitted" } "omitted" "nonzero-omission"
 
 $corrupt = New-CleanApply 15 9 "accepted"
-$corrupt.Remove("clear_holds_omitted")
+$corrupt.Remove("foreground_meta_omitted")
 Write-MockLog @(($corrupt | ConvertTo-Json -Depth 8 -Compress))
 $m = 0
 Expect-Throw { Wait-StressFreshApply $logPath ([ref]$m) 15 2 "missing" } "missing" "missing-omission-field"
@@ -640,7 +640,7 @@ function New-LoopApply([int]$Tick, [int]$Rev) {
   })
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true; gap = 0; outer_gap = 0 })
+  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
   return $base
 }
 function New-LoopPager([int]$Rev) {
@@ -1547,7 +1547,7 @@ function New-HiddenLoopApply([int]$Tick, [int]$Rev) {
   )
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true; gap = 0; outer_gap = 0 })
+  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
   return $base
 }
 function New-HiddenLoopPager([int]$Rev, [int]$RawW) {
@@ -2000,7 +2000,7 @@ function New-BsApply([int]$Tick, [int]$Rev, [int]$Ax, [int]$Bx) {
   $base.desired_windows = @((New-BsRow "tok-a" $Ax), (New-BsRow "tok-b" $Bx))
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true; gap = 0; outer_gap = 0 })
+  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
   return $base
 }
 function New-BsPager([int]$Rev, [int]$Ax, [int]$Bx, [string]$FocusTok) {

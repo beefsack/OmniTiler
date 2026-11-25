@@ -2,7 +2,7 @@
 //! In-process adapter sequencing boundary for the runtime world owner.
 //!
 //! Assembles the
-//! typed [`WorldReport`](tiler_core::world_report::WorldReport) envelope from
+//! typed [`WorldReportV4`](tiler_core::world_report::WorldReportV4) envelope from
 //! the accepted source-first [`capture_world`](super::world_capture::capture_world)
 //! pieces and sequences it through the real [`WorldEngine`](tiler_core::world_engine::WorldEngine)
 //! via the single shared [`WorldEngine::new`](tiler_core::world_engine::WorldEngine::new)
@@ -22,8 +22,8 @@
 //!   an accepted current acknowledgement arrives, so `is_dirty` sees the
 //!   outstanding flight observation until the actual ack. No retries, no
 //!   polling; dirtiness is only readiness for event-driven catch-up.
-//! - Dirty means an outstanding OBSERVATION, CLOSE, FRAME, MEMBER, VIEW,
-//!   or CLEAR obligation, never the watermark alone: an accepted report
+//! - Dirty means an outstanding OBSERVATION, CLOSE, FRAME, MEMBER, or VIEW
+//!   obligation, never the watermark alone: an accepted report
 //!   whose watermark is current still stays dirty while newer raw attempts
 //!   or an absent-domain close remains queued, with no extra native
 //!   invalidation required to notice.
@@ -70,15 +70,14 @@ use super::{MonitorArea, ObservedWindow, PendingClosed, RetainedRow};
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
+use tiler_core::connection::{RawSettingValue, SettingsReply, SettingsStatus};
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ClearAttempt, FrameAttempt, MemberAttempt, ScreenView, ViewAttempt, WORLD_CONTRACT_VERSION,
-    WorldCommand, WorldReply, WorldReport,
+    BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FrameAttempt,
+    MemberAttempt, PresentationRowV4, ViewAttempt, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4,
+    WorldCommand, WorldReplyV4, WorldReportV4,
 };
-
-/// Product owner identity carried on every sequenced report.
-const WINDOWS_OWNER: &str = "tiler-windows";
 
 /// One outstanding sequenced report: the exact facts the core incorporation
 /// acknowledgement must settle. Closes are snapshots of what the
@@ -97,7 +96,7 @@ struct SequencerFlight {
     delivered_frames: Vec<FrameAttempt>,
     delivered_members: Vec<MemberAttempt>,
     delivered_views: Vec<ViewAttempt>,
-    delivered_clears: Vec<ClearAttempt>,
+    delivered_visibility: Vec<VisibilityAttempt>,
 }
 
 /// Exact incorporation receipt for the native owner to prune against. Close
@@ -117,7 +116,6 @@ pub(super) struct AckReceipt {
     pub(super) frames_acked: Vec<String>,
     pub(super) members_acked: Vec<(String, String)>,
     pub(super) views_acked: Vec<String>,
-    pub(super) clears_acked: Vec<(String, String)>,
 }
 
 /// Outcome of offering one core reply to the sequencer.
@@ -160,6 +158,15 @@ pub(super) struct WorldSequencer {
     adapter_incarnation: String,
     core_generation: String,
     engine: WorldEngine,
+    /// Last settings revision accepted by the core (connect applies 1).
+    settings_revision: u64,
+    /// Last accepted raw settings snapshot. Replayed at revision 1 on a
+    /// generation reset so restart-only values (mode) adopt under the fresh
+    /// generation instead of reverting to handshake defaults.
+    last_settings_values: Vec<(String, RawSettingValue)>,
+    /// Initial (revision 1) settings reply from bootstrap, retained until the
+    /// runtime logs its status and diagnostics. `None` once taken.
+    initial_settings_reply: Option<SettingsReply>,
     current_obs: u64,
     obs_dirty: bool,
     next_request_seq: u64,
@@ -179,10 +186,16 @@ pub(super) struct WorldSequencer {
     /// Latest-wins raw view attempts per owning view phase, drained into
     /// the next report (same ack semantics as members).
     pending_views: BTreeMap<String, ViewAttempt>,
-    /// Latest-wins raw maximize-clear attempts per operation window,
-    /// drained into the next report (same ack semantics as members).
-    pending_clears: BTreeMap<(String, String), ClearAttempt>,
-    last_desired: Option<WorldReply>,
+    /// Latest-wins visibility readbacks per window lifetime, drained into
+    /// the next report (same ack semantics as frames).
+    pending_visibility: BTreeMap<String, VisibilityAttempt>,
+    last_desired: Option<WorldReplyV4>,
+    /// Last delivery's per-command settlement rows, index-aligned with the
+    /// commands the core executed (inline command first, then any queued
+    /// batch). Retained for correlated command results; the reply carries no
+    /// `command_result` in v4.
+    last_settlements: Vec<BatchSettlement>,
+    last_command_seq: Option<u64>,
     last_accepted_obs: u64,
     last_accepted_rev: u64,
     last_accepted_req: String,
@@ -191,19 +204,84 @@ pub(super) struct WorldSequencer {
 }
 
 impl WorldSequencer {
-    /// Authenticated bootstrap: binds the explicit adapter/core identities
+    /// Test/offline bootstrap: binds the explicit adapter/core identities
     /// and constructs the shared engine. `None` on any malformed
     /// identity. The first full observation is immediately dirty; readiness
     /// arrives with the first applied acknowledgement.
+    ///
+    /// This entry keeps the historical empty initial snapshot (core
+    /// defaults plus `Missing` diagnostics) for offline fixtures. Production
+    /// startup uses [`WorldSequencer::bootstrap_with_settings`] so
+    /// restart-only `mode` and every other core key adopt at revision 1.
+    #[cfg(test)]
     #[must_use]
     pub(super) fn bootstrap(adapter_incarnation: &str, core_generation: &str) -> Option<Self> {
+        Self::bootstrap_inner(adapter_incarnation, core_generation, &[], None)
+    }
+
+    /// Production bootstrap with the validated initial raw settings snapshot
+    /// (explicit CLI switches already applied): the genuine handshake binds
+    /// the generation and revision 1 accepts the full snapshot, so
+    /// restart-only keys adopt at startup rather than latching handshake
+    /// defaults until a later revision core would refuse. The accepted reply
+    /// (status + diagnostics) is retained for the caller to log.
+    #[must_use]
+    pub(super) fn bootstrap_with_settings(
+        adapter_incarnation: &str,
+        core_generation: &str,
+        values: &[(String, RawSettingValue)],
+    ) -> Option<Self> {
+        Self::bootstrap_inner(adapter_incarnation, core_generation, values, None)
+    }
+
+    /// Test-only bootstrap with an explicit owner identity, so fixtures owned
+    /// by the test process are not excluded as own-process windows.
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn bootstrap_with_identity(
+        adapter_incarnation: &str,
+        core_generation: &str,
+        identity: tiler_core::connection::ApplicationIdentity,
+    ) -> Option<Self> {
+        Self::bootstrap_inner(adapter_incarnation, core_generation, &[], Some(identity))
+    }
+
+    fn bootstrap_inner(
+        adapter_incarnation: &str,
+        core_generation: &str,
+        values: &[(String, RawSettingValue)],
+        #[allow(unused_variables)] identity: Option<tiler_core::connection::ApplicationIdentity>,
+    ) -> Option<Self> {
         OwnerId::parse(adapter_incarnation)?;
         GenerationId::parse(core_generation)?;
-        let engine = WorldEngine::new(core_generation)?;
+        let mut engine = WorldEngine::new(core_generation)?;
+        // v4 binds through the genuine connection path: one handshake plus
+        // the initial revisioned settings exchange. The core mints the
+        // generation; a fresh engine's first connection mints exactly the
+        // seed, so a different generation is an identity mismatch and
+        // refuses bootstrap (no second engine owner is ever created).
+        #[cfg(test)]
+        let outcome = match identity {
+            Some(identity) => super::settings::connect_with_identity(
+                &mut engine,
+                adapter_incarnation,
+                values,
+                identity,
+            )?,
+            None => super::settings::connect(&mut engine, adapter_incarnation, values)?,
+        };
+        #[cfg(not(test))]
+        let outcome = super::settings::connect(&mut engine, adapter_incarnation, values)?;
+        if outcome.generation != core_generation {
+            return None;
+        }
         Some(Self {
             adapter_incarnation: adapter_incarnation.to_owned(),
             core_generation: core_generation.to_owned(),
             engine,
+            settings_revision: 2,
+            last_settings_values: values.to_vec(),
+            initial_settings_reply: Some(outcome.settings),
             current_obs: 0,
             obs_dirty: true,
             next_request_seq: 1,
@@ -212,8 +290,10 @@ impl WorldSequencer {
             pending_frames: BTreeMap::new(),
             pending_members: BTreeMap::new(),
             pending_views: BTreeMap::new(),
-            pending_clears: BTreeMap::new(),
+            pending_visibility: BTreeMap::new(),
             last_desired: None,
+            last_settlements: Vec::new(),
+            last_command_seq: None,
             last_accepted_obs: 0,
             last_accepted_rev: 0,
             last_accepted_req: String::new(),
@@ -222,13 +302,132 @@ impl WorldSequencer {
         })
     }
 
-    /// Discovery reply: generation/capabilities with `ready=false` and no
-    /// applicable desired state, straight from the bound engine.
+    /// Apply one full raw catalog snapshot at the next revision through the
+    /// genuine typed connection route. Accepted revisions advance and become
+    /// the reset replay snapshot; stale/reused refusals keep both the last
+    /// good state and revision. Returns the core reply (including every
+    /// diagnostic), or `None` when the request was unbound.
+    pub(super) fn apply_settings_values(
+        &mut self,
+        values: &[(String, RawSettingValue)],
+    ) -> Option<SettingsReply> {
+        let revision = self.settings_revision;
+        let reply = self.apply_settings_at(revision, values)?;
+        if reply.status == SettingsStatus::Accepted {
+            self.settings_revision += 1;
+            self.last_settings_values = values.to_vec();
+        }
+        Some(reply)
+    }
+
+    /// One typed settings exchange at an explicit revision. Shared by the
+    /// monotonic live path and the stale/reused proof seam; only an
+    /// `Accepted` reply advances owner state (see `apply_settings_values`).
+    fn apply_settings_at(
+        &mut self,
+        revision: u64,
+        values: &[(String, RawSettingValue)],
+    ) -> Option<SettingsReply> {
+        super::settings::apply_settings_revision(
+            &mut self.engine,
+            &self.adapter_incarnation,
+            &self.core_generation,
+            revision,
+            values,
+        )
+    }
+
+    /// Test-only explicit-revision exchange for refused-revision proof
+    /// (older revision -> `Stale`, equal revision with different content ->
+    /// `RevisionReused`). Never advances the live revision: callers observe
+    /// `settings_revision` unchanged.
+    #[cfg(test)]
+    pub(super) fn apply_settings_at_for_test(
+        &mut self,
+        revision: u64,
+        values: &[(String, RawSettingValue)],
+    ) -> Option<SettingsReply> {
+        self.apply_settings_at(revision, values)
+    }
+
+    /// Take the retained initial (revision 1) settings reply for logging.
+    /// `None` until bootstrap succeeds and once already taken.
+    pub(super) fn take_initial_settings_reply(&mut self) -> Option<SettingsReply> {
+        self.initial_settings_reply.take()
+    }
+
+    /// Last revision accepted by the core (2 immediately after bootstrap).
     #[must_use]
     #[cfg(test)]
-    pub(super) fn bootstrap_reply(&self, request_id: &str) -> WorldReply {
-        self.engine
-            .bootstrap_reply(&self.adapter_incarnation, request_id)
+    pub(super) fn settings_revision(&self) -> u64 {
+        self.settings_revision
+    }
+
+    /// Test-only live-settings revision: apply the supplied raw catalog
+    /// values through the genuine connection route so offline fixtures drive
+    /// core policy (switch target, fresh placement) that v4 carries out of
+    /// band instead of in the report.
+    #[cfg(test)]
+    pub(super) fn apply_test_settings(
+        &mut self,
+        values: &[(&str, tiler_core::connection::RawSettingValue)],
+    ) -> bool {
+        let values = values
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect::<Vec<_>>();
+        self.apply_settings_values(&values)
+            .is_some_and(|reply| reply.status == SettingsStatus::Accepted)
+    }
+
+    /// Discovery reply for offline tests: the bound generation with
+    /// `ready=false` and no applicable desired state. The production
+    /// discovery answer is the handshake reply; this keeps the offline
+    /// sequencer tests able to prove pre-readiness without a second engine
+    /// owner or a fabricated desired snapshot.
+    #[must_use]
+    #[cfg(test)]
+    pub(super) fn bootstrap_reply(&self, request_id: &str) -> WorldReplyV4 {
+        WorldReplyV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
+            adapter_incarnation: self.adapter_incarnation.clone(),
+            core_generation: self.core_generation.clone(),
+            request_id: request_id.to_owned(),
+            based_on_observation_seq: 0,
+            state_revision: 0,
+            ready: false,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            windows: Vec::new(),
+            transfers: Vec::new(),
+            focus_request: None,
+            drag_preview: None,
+            gesture_settled: None,
+            operation_settled: Vec::new(),
+            native_creations: Vec::new(),
+            cursor_warp: None,
+            presentation: tiler_core::world_report::WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 0,
+                suspended_output: None,
+                border: tiler_core::world_report::BorderPresentationV4 {
+                    visible: false,
+                    reason: None,
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: Default::default(),
+                pager: Vec::new(),
+            },
+            intent_desired: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
+        }
     }
 
     /// Synchronous invalidation: advance the CURRENT watermark before any
@@ -258,6 +457,16 @@ impl WorldSequencer {
         );
     }
 
+    /// Host-owned workspace domains (native desktops author views). Windows
+    /// binds app-owned logical workspaces, so native view attempts are not a
+    /// supported evidence lane and must never ride a report.
+    #[must_use]
+    pub(super) fn host_owned_workspace_domains(&self) -> bool {
+        self.engine
+            .capabilities()
+            .is_some_and(|caps| caps.host_owned)
+    }
+
     /// Stage one raw view attempt for the next report, replacing any entry
     /// for the same owning view phase (same ack semantics as frames).
     pub(super) fn note_view_attempt(&mut self, attempt: ViewAttempt) {
@@ -265,14 +474,11 @@ impl WorldSequencer {
             .insert(attempt.operation_id.clone(), attempt);
     }
 
-    /// Stage one raw maximize-clear attempt for the next report, replacing
-    /// any entry for the same operation window (same ack semantics as
-    /// members).
-    pub(super) fn note_clear_attempt(&mut self, attempt: ClearAttempt) {
-        self.pending_clears.insert(
-            (attempt.operation_id.clone(), attempt.window.0.clone()),
-            attempt,
-        );
+    /// Stage one raw visibility attempt for the next report, replacing any
+    /// entry for the same window lifetime (same ack semantics as frames).
+    pub(super) fn note_visibility_attempt(&mut self, attempt: VisibilityAttempt) {
+        self.pending_visibility
+            .insert(attempt.window.0.clone(), attempt);
     }
 
     /// Closes the current capture still obliges: every carried close plus
@@ -293,8 +499,8 @@ impl WorldSequencer {
         out.into_iter().collect()
     }
 
-    /// Dirty means an outstanding OBSERVATION, CLOSE, FRAME,
-    /// MEMBER, VIEW, or CLEAR obligation. Event-driven catch-up wants the next
+    /// Dirty means an outstanding OBSERVATION, CLOSE, FRAME, MEMBER, VIEW,
+    /// or STATE/VISIBILITY obligation. Event-driven catch-up wants the next
     /// trigger while any holds; nothing here polls or spins.
     #[must_use]
     #[cfg(test)]
@@ -303,19 +509,24 @@ impl WorldSequencer {
             || !self.pending_frames.is_empty()
             || !self.pending_members.is_empty()
             || !self.pending_views.is_empty()
-            || !self.pending_clears.is_empty()
+            || !self.pending_visibility.is_empty()
             || !self.outstanding_closes(captured).is_empty()
     }
 
-    /// Typed envelope over accepted capture pieces. Core size/validation
-    /// gates stay core-side via [`WorldEngine::handle_report`]; the adapter
+    /// Typed v4 envelope over accepted capture pieces. Core size/validation
+    /// gates stay core-side via the checked admission route; the adapter
     /// never pre-empts them and never encodes JSON transport.
     ///
-    /// View echoes are the adapter's observed applied logical views
-    /// (facade readback), never the sequencer's desired cache: in the
-    /// absence of an observation the report carries empty (unknown) views
-    /// and the core retains the pending flight. Copying the last desired
-    /// views back as proof would self-echo desire as observation.
+    /// The report carries no settings or capability projection in v4: the
+    /// engine's bound connection state owns both, and the handshake/settings
+    /// route set them once. Windows has no native domains, state setter lane,
+    /// focus-feedback producer, intent storage, or renderer; visibility
+    /// attempts ride only target-matching apply readbacks. Capture holds unreadable
+    /// per-output scale inside `held_screens`; failing window facts stay
+    /// inside `windows` with `rect: None` plus an incomplete inventory, so
+    /// `held_windows` is empty. No restoration ingress exists: every report
+    /// is a fresh-observation report and the core mints rings/views from the
+    /// live screens.
     #[must_use]
     pub(super) fn assemble(
         &mut self,
@@ -324,27 +535,25 @@ impl WorldSequencer {
         command_seq: Option<u64>,
         command: Option<WorldCommand>,
         monotonic_ms: u64,
-    ) -> WorldReport {
+    ) -> WorldReportV4 {
         let frames: Vec<FrameAttempt> = self.pending_frames.values().cloned().collect();
         let mut member_attempts: Vec<MemberAttempt> =
             self.pending_members.values().cloned().collect();
         member_attempts
             .sort_by(|a, b| (&a.operation_id, &a.window.0).cmp(&(&b.operation_id, &b.window.0)));
-        let mut view_attempts: Vec<ViewAttempt> = self.pending_views.values().cloned().collect();
+        let mut view_attempts: Vec<ViewAttempt> = if self.host_owned_workspace_domains() {
+            self.pending_views.values().cloned().collect()
+        } else {
+            // Native-free views settle from the frozen selection binding;
+            // the echo/attempt lane is unsupported evidence here and would
+            // be rejected as native-without-capability.
+            Vec::new()
+        };
         view_attempts.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
-        let mut clear_attempts: Vec<ClearAttempt> = self.pending_clears.values().cloned().collect();
-        clear_attempts
-            .sort_by(|a, b| (&a.operation_id, &a.window.0).cmp(&(&b.operation_id, &b.window.0)));
-        // Observed applied views from capture (unknown when the facade has
-        // no readback); never the last desired snapshot.
-        let views: Vec<ScreenView> = captured.observed_views.clone();
-        // No restoration ingress exists: every report is a fresh-observation
-        // report and the core mints rings/views from the live screens.
-        // Restart truth rides the native marker/recovery lanes, which
-        // capture consumes as ordinary facts/lanes on the first observation.
-        WorldReport {
-            contract_version: WORLD_CONTRACT_VERSION,
-            owner: WINDOWS_OWNER.to_owned(),
+        let visibility_attempts: Vec<VisibilityAttempt> =
+            self.pending_visibility.values().cloned().collect();
+        WorldReportV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: self.adapter_incarnation.clone(),
             core_generation: self.core_generation.clone(),
             observation_seq: self.current_obs,
@@ -353,31 +562,21 @@ impl WorldSequencer {
             command_seq,
             command,
             screens: captured.screens.clone(),
+            held_screens: captured.held_screens.clone(),
             windows: captured.windows.clone(),
-            views,
+            held_windows: Vec::new(),
             closed: captured.closed.clone(),
-            workspace_mode: captured.workspace_mode,
-            host_owned_workspace_domains: false,
-            equal_workspace_count: captured.equal_workspace_count,
-            // The Windows adapter never opts into automatic birth clears:
-            // the retained admission preamble owns the birth route and the
-            // core must not mint a second autonomous lane beside it.
-            birth_clear: false,
             native: Vec::new(),
-            fixed_size_predicate: captured.fixed_size_predicate,
-            migration_source_refill: captured.migration_source_refill,
-            born_maximized: captured.born_maximized,
-            switch_target: captured.switch_target,
-            fresh_placement: captured.fresh_placement,
-            focus_follows_cursor: captured.focus_follows_cursor,
-            cursor_warp: captured.cursor_warp,
+            held_native: Vec::new(),
             cursor: captured.cursor,
             cursor_hit: captured.cursor_hit.clone(),
+            focused_global: captured.focused_global.clone(),
+            foreground_known: captured.foreground_known,
+            focus_changes: captured.focus_changes.clone(),
             action_foreground: captured.action_foreground.clone(),
             action_cached: captured.action_cached.clone(),
             action_outputs: captured.action_outputs.clone(),
-            default_tiled: captured.default_tiled,
-            focused_global: captured.focused_global.clone(),
+            primary_output: captured.primary_output.clone(),
             inventory_complete: captured.inventory_complete,
             gesture_barrier: captured.gesture_barrier,
             gesture: captured.gesture.clone(),
@@ -385,9 +584,14 @@ impl WorldSequencer {
             frames,
             member_attempts,
             view_attempts,
-            clear_attempts,
             creation_attempts: Vec::new(),
-            presentation: captured.presentation.clone(),
+            held_attempts: Vec::new(),
+            state_attempts: Vec::new(),
+            visibility_attempts,
+            focus_feedback: Vec::new(),
+            presentation: PresentationRowV4::Valid(captured.presentation.clone()),
+            intent_records: Vec::new(),
+            renderer_input: None,
         }
     }
 
@@ -413,7 +617,7 @@ impl WorldSequencer {
         foreground_hwnd: u64,
         monotonic_ms: u64,
         command: Option<WorldCommand>,
-    ) -> Result<WorldReport, DispatchError> {
+    ) -> Result<WorldReportV4, DispatchError> {
         if self.flight.is_some() {
             return Err(DispatchError::Busy);
         }
@@ -461,7 +665,7 @@ impl WorldSequencer {
             delivered_frames: report.frames.clone(),
             delivered_members: report.member_attempts.clone(),
             delivered_views: report.view_attempts.clone(),
-            delivered_clears: report.clear_attempts.clone(),
+            delivered_visibility: report.visibility_attempts.clone(),
         });
         self.next_request_seq += 1;
         if command_seq.is_some() {
@@ -474,15 +678,34 @@ impl WorldSequencer {
     /// In-process delivery into the sequenced engine (the offline stand-in
     /// for the transport round trip). Core gates -- size, validation,
     /// generation, freshness, command consumption -- run here, unmodified.
-    pub(super) fn deliver(&mut self, report: &WorldReport) -> WorldOutcome {
-        tiler_protocol::world_admission::handle_report_checked(&mut self.engine, report, &[]).0
+    /// The v4 reply carries no command result: the per-command settlement is
+    /// retained from the returned dispositions.
+    pub(super) fn deliver(&mut self, report: &WorldReportV4) -> WorldOutcome {
+        let transition =
+            tiler_protocol::world_admission::handle_report_checked(&mut self.engine, report, &[]);
+        self.last_command_seq = report.command_seq;
+        self.last_settlements = Self::settlements(&transition.dispositions);
+        transition.outcome
+    }
+
+    /// Correlated result for the inline report command: v4 executes the
+    /// inline command first, so its settlement is the first executed row.
+    /// `None` when the command was not executed (observation-only,
+    /// already-consumed, or a rejected report).
+    #[must_use]
+    pub(super) fn last_command_result(&self) -> Option<&CommandResult> {
+        let seq = self.last_command_seq?;
+        self.last_settlements
+            .iter()
+            .find(|row| row.seq == seq)
+            .and_then(|row| row.result.as_ref())
     }
 
     /// Offer one core reply: acknowledge exactly the delivered facts the core
     /// incorporated, apply desired state only when current, schedule
     /// observation-only catch-up otherwise. Mismatched bindings never consume
     /// the flight.
-    pub(super) fn ack(&mut self, reply: &WorldReply) -> AckOutcome {
+    pub(super) fn ack(&mut self, reply: &WorldReplyV4) -> AckOutcome {
         let Some(flight) = self.flight.clone() else {
             return AckOutcome::Ignored {
                 reason: "no-flight",
@@ -526,7 +749,6 @@ impl WorldSequencer {
                 frames_acked: Vec::new(),
                 members_acked: Vec::new(),
                 views_acked: Vec::new(),
-                clears_acked: Vec::new(),
             });
         }
         let revision_new = !self.has_accepted || reply.state_revision > self.last_accepted_rev;
@@ -610,6 +832,10 @@ impl WorldSequencer {
     /// side-effect-free no-ops (`false`). Native lifetime/close facts are
     /// untouched: the owner is not mutably reachable here. Old arbitrary
     /// replies cannot reset: only this call changes the bound generation.
+    /// The last accepted raw settings snapshot is replayed at revision 1
+    /// under the fresh generation (restart-only `mode` re-adopts instead of
+    /// reverting to handshake defaults), and its reply is retained for
+    /// logging.
     /// (No caller yet: the 2b owner cutover drives resets on identity
     /// rotation. Retained as the sole reset path, never a second one.)
     #[allow(dead_code)]
@@ -617,17 +843,33 @@ impl WorldSequencer {
         if core_generation == self.core_generation {
             return false;
         }
-        let Some(engine) = WorldEngine::new(core_generation) else {
+        let Some(mut engine) = WorldEngine::new(core_generation) else {
             return false;
         };
+        // A rebuilt engine is unbound: it must repeat the genuine v4
+        // handshake/settings connection before accepting any report. A
+        // refused connection leaves the old generation fully intact.
+        let values = self.last_settings_values.clone();
+        let Some(connected) =
+            super::settings::connect(&mut engine, &self.adapter_incarnation, &values)
+        else {
+            return false;
+        };
+        if connected.generation != core_generation {
+            return false;
+        }
         self.engine = engine;
         self.core_generation = core_generation.to_owned();
+        self.settings_revision = 2;
+        self.initial_settings_reply = Some(connected.settings);
         self.flight = None;
         self.pending_frames.clear();
         self.pending_members.clear();
         self.pending_views.clear();
-        self.pending_clears.clear();
+        self.pending_visibility.clear();
         self.last_desired = None;
+        self.last_settlements.clear();
+        self.last_command_seq = None;
         self.has_accepted = false;
         self.last_accepted_obs = 0;
         self.last_accepted_rev = 0;
@@ -685,16 +927,13 @@ impl WorldSequencer {
                 views_acked.push(delivered.operation_id.clone());
             }
         }
-        let mut clears_acked = Vec::new();
-        for delivered in &flight.delivered_clears {
-            let key = (delivered.operation_id.clone(), delivered.window.0.clone());
+        for delivered in &flight.delivered_visibility {
             if self
-                .pending_clears
-                .get(&key)
+                .pending_visibility
+                .get(&delivered.window.0)
                 .is_some_and(|pending| pending == delivered)
             {
-                self.pending_clears.remove(&key);
-                clears_acked.push(key);
+                self.pending_visibility.remove(&delivered.window.0);
             }
         }
         AckReceipt {
@@ -705,7 +944,6 @@ impl WorldSequencer {
             frames_acked,
             members_acked,
             views_acked,
-            clears_acked,
         }
     }
 
@@ -810,7 +1048,7 @@ impl WorldSequencer {
         foreground_hwnd: u64,
         monotonic_ms: u64,
         command: WorldCommand,
-    ) -> Result<WorldReport, DispatchError> {
+    ) -> Result<WorldReportV4, DispatchError> {
         self.try_dispatch(
             inputs,
             observed,
@@ -822,121 +1060,47 @@ impl WorldSequencer {
         )
     }
 
-    /// Evaluate one report on a cloned engine candidate without adopting.
-    /// Returns the outcome plus the evaluated candidate: the caller adopts
-    /// the candidate exactly once via [`WorldSequencer::adopt_or_deliver`]
-    /// (accepted/consumed/duplicate), never re-running the report.
-    /// Rejection preserves the committed engine.
-    #[must_use]
-    pub(super) fn deliver_staged_candidate(
-        &self,
-        report: &WorldReport,
-    ) -> (WorldOutcome, WorldEngine) {
-        let mut candidate = self.engine.clone();
-        let outcome =
-            tiler_protocol::world_admission::handle_report_checked(&mut candidate, report, &[]).0;
-        (outcome, candidate)
-    }
-
-    /// Adopt a previously staged candidate outcome when it is not a
-    /// rejection. Single evaluation: the candidate already ran the report,
-    /// so no second `deliver` runs here. Rejection preserves the committed
-    /// engine; accepted/consumed/duplicate adopt the candidate exactly once.
-    pub(super) fn adopt_or_deliver(&mut self, staged: (WorldOutcome, WorldEngine)) -> WorldOutcome {
-        let (outcome, candidate) = staged;
-        match outcome {
-            WorldOutcome::Rejected { .. } => outcome,
-            _ => {
-                self.engine = candidate;
-                outcome
-            }
-        }
-    }
-
-    /// Production staged delivery (T2): an affected tiled-source cross-output
-    /// Window transfer whose staged row floats refuses as `float-no-remap`
-    /// with the committed world unchanged. Single evaluation: the exact
-    /// report runs once on a cloned candidate; accepted/consumed/duplicate
-    /// adopt the candidate, rejection preserves the committed engine.
-    /// Unaffected commands run the direct path. Never reads `FloatOrigin`.
-    pub(super) fn deliver_production(&mut self, report: &WorldReport) -> WorldOutcome {
-        let Some(mover) = Self::staged_mover(report) else {
-            return self.deliver(report);
-        };
-        let (staged, candidate) = self.deliver_staged_candidate(report);
-        let declined = matches!(
-            &staged,
-            WorldOutcome::Accepted(reply) if Self::staged_declines(&mover, report, reply)
-        );
-        if declined {
-            return WorldOutcome::Rejected {
-                kind: "float-no-remap",
-                message: "cross-output capacity float without remap",
-            };
-        }
-        self.adopt_or_deliver((staged, candidate))
-    }
-
-    /// Affected mover for staging, bounded to the T2 scope: direct output
-    /// sends, directional sends and moves, plus the equivalent Operation
-    /// SendToOutput / cross-output Move. Every other command kind runs the
-    /// direct path with no staging; no claim is made here about whether
-    /// those other routes can cross outputs.
-    fn staged_mover(report: &WorldReport) -> Option<String> {
-        match &report.command {
-            Some(WorldCommand::Send { window, .. })
-            | Some(WorldCommand::SendDirectional { window, .. })
-            | Some(WorldCommand::MoveDirectional { window, .. }) => Some(window.0.clone()),
-            Some(WorldCommand::Operation(command)) => match command {
-                tiler_core::boundary::CoreCommand::SendToOutput { window, .. } => {
-                    Some(window.clone())
-                }
-                tiler_core::boundary::CoreCommand::Move {
-                    window,
-                    cross_output_transfer,
-                    ..
-                } if *cross_output_transfer => Some(window.clone()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Functional decline facts only for the pinned mover: report-time tiled
-    /// source, cross-output Window transfer under `op-<command_seq>`,
-    /// floating staged row. Same-output transfers never decline. Never reads
-    /// `float_origin`.
-    fn staged_declines(mover: &str, report: &WorldReport, reply: &WorldReply) -> bool {
-        let Some(source) = report.windows.iter().find(|fact| fact.window.0 == mover) else {
-            return false;
-        };
-        if source.floating {
-            return false;
-        }
-        let Some(seq) = report.command_seq else {
-            return false;
-        };
-        let operation_id = format!("op-{seq}");
-        let Some(transfer) = reply.transfers.iter().find(|target| {
-            matches!(
-                &target.kind,
-                tiler_core::world_report::TransferKind::Window(window) if window.0 == mover
-            )
-        }) else {
-            return false;
-        };
-        if transfer.target_output == source.output || transfer.operation_id != operation_id {
-            return false;
-        }
-        reply
-            .windows
+    /// Translate sequence-keyed dispositions into the settlement rows the
+    /// adapter retains. `Refused` settles as `CommandResult::Rejected` (the
+    /// failed command), `Executed(None)` settles ready with no result, and
+    /// `AlreadyConsumed`/`NotRun` never executed so they retain no row.
+    fn settlements(dispositions: &[BatchDisposition]) -> Vec<BatchSettlement> {
+        dispositions
             .iter()
-            .any(|row| row.lifetime.0 == mover && row.floating)
+            .filter_map(|settled| {
+                let result = match &settled.disposition {
+                    CommandDisposition::Executed(result) => result.clone(),
+                    CommandDisposition::Refused(kind) => {
+                        Some(CommandResult::Rejected { kind: *kind })
+                    }
+                    CommandDisposition::AlreadyConsumed | CommandDisposition::NotRun => None,
+                };
+                if matches!(
+                    settled.disposition,
+                    CommandDisposition::AlreadyConsumed | CommandDisposition::NotRun
+                ) {
+                    None
+                } else {
+                    Some(BatchSettlement {
+                        seq: settled.seq,
+                        result,
+                    })
+                }
+            })
+            .collect()
+    }
+
+    /// Production delivery: run one report through the sequenced engine and
+    /// retain its command settlement. v4 core owns cross-output capacity
+    /// handling (a clamped target holds the scope instead of floating a
+    /// transferred row), so no adapter-side transfer remap gate exists.
+    pub(super) fn deliver_production(&mut self, report: &WorldReportV4) -> WorldOutcome {
+        self.deliver(report)
     }
 
     #[must_use]
     #[cfg(test)]
-    pub(super) fn last_desired(&self) -> Option<&WorldReply> {
+    pub(super) fn last_desired(&self) -> Option<&WorldReplyV4> {
         self.last_desired.as_ref()
     }
 
@@ -968,34 +1132,5 @@ impl WorldSequencer {
     #[cfg(test)]
     pub(super) fn last_accepted_req(&self) -> &str {
         &self.last_accepted_req
-    }
-}
-
-/// Offline T2 staged delivery (test-only proof; never runtime).
-///
-/// Thin branch-indicator wrapper over the production
-/// [`WorldSequencer::deliver_production`] path: returns the production
-/// outcome plus whether the affected-command branch ran. No second staging
-/// route exists; the production path owns the single evaluation.
-#[cfg(test)]
-#[allow(dead_code)]
-impl WorldSequencer {
-    pub(super) fn deliver_staged(&mut self, report: &WorldReport) -> (WorldOutcome, bool) {
-        let staged = Self::staged_mover(report).is_some();
-        (self.deliver_production(report), staged)
-    }
-
-    /// Test-only read proof: retained-engine revision, transfers, and full
-    /// engine debug (session snapshots included) for before/after compare.
-    pub(super) fn test_revision(&self) -> u64 {
-        self.engine.state_revision()
-    }
-
-    pub(super) fn test_retained(&self) -> Vec<tiler_core::world_report::TransferTarget> {
-        self.engine.retained_transfers()
-    }
-
-    pub(super) fn test_engine_debug(&self) -> String {
-        format!("{:?}", self.engine)
     }
 }

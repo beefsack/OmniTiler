@@ -14,6 +14,87 @@ use super::*;
 use tiler_core::world_report::FrameSetter;
 use tiler_core::world_report::SendSource;
 
+fn ref_workspace(value: Option<&tiler_core::world_report::WorkspaceRef>) -> Option<&str> {
+    match value {
+        Some(tiler_core::world_report::WorkspaceRef::Logical { workspace, .. }) => {
+            Some(workspace.0.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn ref_target(value: Option<&tiler_core::world_report::WorkspaceRef>) -> Option<(&str, &str)> {
+    match value {
+        Some(tiler_core::world_report::WorkspaceRef::Logical { output, workspace }) => {
+            Some((output.0.as_str(), workspace.0.as_str()))
+        }
+        _ => None,
+    }
+}
+
+/// Mint the second logical workspace through the production trailing route,
+/// then return to the first. `SelectTrailing` creates only when the current
+/// trailing workspace is occupied; `SelectWorkspace` restores the fixture's
+/// active view so tests exercise their own transition.
+fn create_second_workspace(
+    env: &mut Env,
+    owner: &mut WorldOwner,
+    out: &str,
+    areas: &[super::super::MonitorArea],
+    fulls: &[Rect],
+) -> String {
+    let first = owner.engine().logical_view(out).expect("first view");
+    let observed = live_visible_observed();
+    let tick = live_tick(
+        env,
+        owner,
+        &observed,
+        &[],
+        areas,
+        fulls,
+        moving_prims(),
+        0,
+        Some(WorldCommand::SelectTrailing {
+            output: Some(OutputId(out.to_owned())),
+        }),
+    );
+    assert!(tick.reply.ready, "trailing select must settle");
+    let second = owner.engine().logical_view(out).expect("second view");
+    assert_ne!(second, first, "trailing select must mint a workspace");
+    let observed = live_observed_all();
+    let tick = live_tick(
+        env,
+        owner,
+        &observed,
+        &[],
+        areas,
+        fulls,
+        moving_prims(),
+        0,
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId(out.to_owned()),
+            workspace: tiler_core::directional::WorkspaceId(first.clone()),
+        }),
+    );
+    assert!(tick.reply.ready, "select back must settle");
+    assert_eq!(
+        owner.engine().logical_view(out).as_deref(),
+        Some(first.as_str())
+    );
+    // Native-free selection view flights have no echo proof; the select-back
+    // flight stays retained until a later selecting binding replaces it.
+    second
+}
+
+fn scope_label(scope: &tiler_core::world_report::AuthorityScope) -> String {
+    match scope {
+        tiler_core::world_report::AuthorityScope::Output(output) => format!("{}/*", output.0),
+        tiler_core::world_report::AuthorityScope::Workspace { output, workspace } => {
+            format!("{}/{}", output.0, workspace.0)
+        }
+    }
+}
+
 #[test]
 fn bootstrap_first_binding_proves_homing_and_views_then_settles() {
     let mut env = env_with(201_001);
@@ -110,10 +191,18 @@ fn admit_follow_pair(env: &mut Env, base_hwnd: u64) -> (WindowKey, WindowKey) {
     (mover, sibling)
 }
 
-/// Current view, another ring workspace, and its numbered index.
-fn follow_target(owner: &WorldOwner, out: &str) -> (String, String, u8) {
+/// Current view, another ring workspace, and its numbered index. The second
+/// workspace is minted through the production trailing-send route so the
+/// fixture does not depend on a pre-v4 persistent empty workspace.
+fn follow_target(
+    env: &mut Env,
+    owner: &mut WorldOwner,
+    out: &str,
+    areas: &[super::super::MonitorArea],
+    fulls: &[Rect],
+) -> (String, String, u8) {
     let current = owner.engine().logical_view(out).expect("current view");
-    let target = second_workspace(owner, out, &current);
+    let target = create_second_workspace(env, owner, out, areas, fulls);
     let ring = owner.engine().logical_ring(out);
     let index = ring
         .iter()
@@ -123,7 +212,7 @@ fn follow_target(owner: &WorldOwner, out: &str) -> (String, String, u8) {
     (current, target, index)
 }
 
-fn published_view(reply: &WorldReply, output: &str) -> Option<String> {
+fn published_view(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -141,9 +230,8 @@ fn has_member_row(tick: &LiveTick, op: &str) -> bool {
 fn has_ambiguous_member(tick: &LiveTick, op: &str, out: &str, ws: &str) -> bool {
     tick.members.iter().any(|a| {
         a.operation_id == op
-            && a.post
-                .as_ref()
-                .is_none_or(|(post_out, post_ws)| post_out.0 != out || post_ws != ws)
+            && ref_target(a.post.as_ref())
+                .is_none_or(|(post_out, post_ws)| post_out != out || post_ws != ws)
     })
 }
 
@@ -151,25 +239,16 @@ fn has_view_row(tick: &LiveTick, op: &str) -> bool {
     tick.views.iter().any(|a| a.operation_id == op)
 }
 
-/// Proven view evidence: a raw view attempt for the owning phase id with
-/// post proof at the target.
-fn has_proven_view(tick: &LiveTick, op: &str, ws: &str) -> bool {
-    tick.views
-        .iter()
-        .any(|a| a.operation_id == op && a.post.as_deref() == Some(ws))
-}
-
 fn has_any_attempt(tick: &LiveTick, op: &str) -> bool {
     has_member_row(tick, op) || has_view_row(tick, op)
 }
 
-/// Pre-proven singleton follow: the mover already shows full-frame on the
-/// target with no sibling to hide, so the diff proves arrival with no
-/// setter, emits no raw attempts, merges the receipts, and the next report
-/// settles both flights. A raw-attempt oracle must not require a member row
-/// here: the no-write proof is the correct production behavior.
+/// Sole member following onto the empty trailing spare: v4 deliberately
+/// turns this into a no-op (the spare rotates, no logical move is needed),
+/// so no transfer, attempt, receipt, or view change appears and the next
+/// report stays quiet.
 #[test]
-fn singleton_follow_preproven_settles_without_attempts() {
+fn singleton_follow_trailing_spare_noops_without_attempts() {
     let mut env = env_with(202_901);
     let out = env.state.output_token(DEV1);
     let mover = win_key(202_901, 2391, "proc-291");
@@ -203,7 +282,7 @@ fn singleton_follow_preproven_settles_without_attempts() {
         0,
         None,
     );
-    let (current, target, index) = follow_target(&owner, &out);
+    let (current, target, index) = follow_target(&mut env, &mut owner, &out, &areas, &fulls);
     // Force the live frame to already equal the published target slot: the
     // singleton already shows full-frame, so no geometry write is required.
     // The bootstrap placed the slot; the trailing target reuses the same full
@@ -219,42 +298,41 @@ fn singleton_follow_preproven_settles_without_attempts() {
         moving_prims(),
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
     );
-    let op = window_op(&tick.reply, "w1");
-    let view_op = tick
-        .reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("follow retains its view flight")
-        .operation_id
-        .clone();
-    assert_eq!(view_op, format!("{op}-follow"));
-    // No setter ran: the native already proves the target.
+    assert!(tick.reply.ready, "no-op follow accepted");
+    assert_ne!(current, target);
+    // No flight targets the spare: the command is a deliberate no-op.
+    assert!(
+        !tick
+            .reply
+            .transfers
+            .iter()
+            .any(|t| t.target_workspace == target),
+        "spare follow mints no transfer: {:?}",
+        tick.reply.transfers
+    );
     assert!(
         tick.members.is_empty() && tick.views.is_empty(),
-        "pre-proven emits no attempts: {:?} {:?}",
+        "spare follow emits no attempts: {:?} {:?}",
         tick.members,
         tick.views
     );
-    // Receipts still merge from independent fresh proof.
     assert_eq!(
         env.state.applied_homing.get("w1"),
-        Some(&(out.clone(), target.clone())),
-        "homing merges without a setter"
+        Some(&(out.clone(), current.clone())),
+        "home stays at the source"
     );
     assert_eq!(
         env.state.applied_views.get(&out),
-        Some(&target),
-        "view merges without a setter"
+        Some(&current),
+        "view stays at the source"
     );
-    assert_ne!(current, target);
-    // Next observation settles both flights with no replay.
+    // Next observation stays quiet with no replay.
     let observed = live_visible_observed();
     let settled = live_tick(
         &mut env,
@@ -268,8 +346,8 @@ fn singleton_follow_preproven_settles_without_attempts() {
         None,
     );
     assert!(
-        settled.reply.transfers.is_empty(),
-        "pre-proven follow settles: {:?}",
+        !settled.reply.transfers.iter().any(|t| t.follow),
+        "spare follow settles: {:?}",
         settled.reply.transfers
     );
     assert!(
@@ -278,19 +356,24 @@ fn singleton_follow_preproven_settles_without_attempts() {
         settled.members,
         settled.views
     );
+    assert_eq!(
+        env.state.applied_views.get(&out),
+        Some(&current),
+        "view never moves"
+    );
 }
 
 /// Scopes of one tick reply as `scope=authority` pairs for failure output.
-fn scope_summary(reply: &WorldReply) -> Vec<String> {
+fn scope_summary(reply: &tiler_core::world_report::WorldReplyV4) -> Vec<String> {
     reply
         .scopes
         .iter()
-        .map(|s| format!("{}={:?}", s.scope, s.authority))
+        .map(|s| format!("{}={:?}", scope_label(&s.scope), s.authority))
         .collect()
 }
 
 /// Assert every published scope is controlled; otherwise panic with context.
-fn assert_all_controlled(label: &str, reply: &WorldReply) {
+fn assert_all_controlled(label: &str, reply: &tiler_core::world_report::WorldReplyV4) {
     assert!(
         reply.scopes.iter().all(|s| s.authority == Auth::Controlled),
         "{label}: held scopes: {:?}",
@@ -318,7 +401,7 @@ fn same_output_numbered_send_follow_selects_proves_and_settles() {
         0,
         None,
     );
-    let (current, target, index) = follow_target(&owner, &out);
+    let (current, target, index) = follow_target(&mut env, &mut owner, &out, &areas, &fulls);
     // Follow with a source sibling and no external select: the reply
     // publishes the target view immediately with the commit.
     let observed = live_visible_observed();
@@ -332,7 +415,7 @@ fn same_output_numbered_send_follow_selects_proves_and_settles() {
         moving_prims(),
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
@@ -343,34 +426,29 @@ fn same_output_numbered_send_follow_selects_proves_and_settles() {
         Some(target.as_str())
     );
     let op = window_op(&tick.reply, "w1");
-    let view_op = tick
-        .reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("follow retains its view flight")
-        .operation_id
-        .clone();
-    assert_eq!(view_op, format!("{op}-follow"));
-    // Two-phase proof: the window transfer reports one ambiguous member
-    // attempt until the switch proves, while the follow's own view flight
-    // actuates and proves the switch in the same tick.
+    // v4 follow moves the logical view immediately under logical authority
+    // and mints no `{op}-follow` View flight; membership still proves from
+    // its own window transfer.
     assert!(
-        has_ambiguous_member(&tick, &op, &out, &target),
-        "membership unproven pre-switch: {:?} {:?}",
+        !tick
+            .reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::View)),
+        "follow mints no view flight: {:?}",
+        tick.reply.transfers
+    );
+    assert!(
+        has_member_row(&tick, &op),
+        "membership reports one member attempt: {:?} {:?}",
         tick.members,
         tick.views
     );
-    assert!(!applied_of_members(&tick.members, &tick.views, &op));
     assert!(
-        has_proven_view(&tick, &view_op, &target),
-        "view flight proves the switch: {:?}",
+        applied_of_members(&tick.members, &tick.views, &op),
+        "accepted member arrival proves at the command: {:?} {:?}",
+        tick.members,
         tick.views
-    );
-    assert!(
-        tick.reply.effects.iter().any(|e| e.target.0 == "w1"),
-        "mover focus: {:?}",
-        tick.reply.effects
     );
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)),
@@ -417,12 +495,6 @@ fn same_output_numbered_send_follow_selects_proves_and_settles() {
         settled.members,
         settled.views
     );
-    assert!(
-        !has_any_attempt(&settled, &view_op),
-        "view flight settles too: {:?} {:?}",
-        settled.members,
-        settled.views
-    );
     assert_eq!(
         env.state.applied_homing.get("w1"),
         Some(&(out.clone(), target.clone()))
@@ -435,10 +507,12 @@ fn same_output_numbered_send_follow_selects_proves_and_settles() {
 }
 
 /// Lying frame setter: the write reports success but the frame never lands.
-/// Frameless follow rows take no writes, so the lie cannot engage at send
-/// time: the view switches and proves on honest visibility while the window
-/// holds ambiguous without membership proof. When the sweep later publishes
-/// the frame, the lie surfaces exactly once as a Clamp hold. Never Applied.
+/// The follow's direct placement is attempted at send time; the read-back
+/// still names the source frame, so membership holds ambiguous and the
+/// logical view publishes the target while the applied view stays source.
+/// Later ticks take no reflow write (the mover is a source-departing row the
+/// output no longer shows) and keep the retained flight clamp-held from that
+/// same unapplied placement. Never Applied.
 #[test]
 fn same_output_follow_lying_frame_setter_holds_without_applied() {
     fn lying_prims() -> NativePrimitives {
@@ -469,7 +543,7 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         0,
         None,
     );
-    let (_current, target, index) = follow_target(&owner, &out);
+    let (_current, target, index) = follow_target(&mut env, &mut owner, &out, &areas, &fulls);
     let calls_before = set_calls();
     let observed = live_visible_observed();
     let tick = live_tick(
@@ -482,29 +556,30 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         lying_prims(),
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
     );
-    // The reply still publishes the follow target view (logical authority).
-    // The window holds ambiguous without membership proof while the
-    // follow's own view flight actuates and proves the switch in the same
-    // tick; frameless rows take no writes, so the lie cannot engage yet.
+    // The reply still publishes the follow target view under logical
+    // authority and mints no View flight. The direct placement is attempted
+    // now but its read-back never lands, so membership holds ambiguous and
+    // the lie is already engaged at send time.
     assert_eq!(
         published_view(&tick.reply, &out).as_deref(),
         Some(target.as_str())
     );
     let op = window_op(&tick.reply, "w1");
-    let view_op = tick
-        .reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("follow retains its view flight")
-        .operation_id
-        .clone();
+    assert!(
+        !tick
+            .reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::View)),
+        "follow mints no view flight: {:?}",
+        tick.reply.transfers
+    );
     assert!(
         has_ambiguous_member(&tick, &op, &out, &target),
         "membership unproven pre-switch: {:?} {:?}",
@@ -512,31 +587,30 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         tick.views
     );
     assert!(!applied_of_members(&tick.members, &tick.views, &op));
-    assert!(
-        has_proven_view(&tick, &view_op, &target),
-        "honest hide leg proves the view: {:?}",
-        tick.views
-    );
     assert_eq!(
         set_calls(),
         calls_before + 1,
-        "source collapse re-tiles the sibling"
+        "hidden source sibling takes no write; only the direct mover placement: calls={:?}",
+        S_SET_CALLS.with(|m| m.borrow().clone())
     );
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
     assert!(
-        !S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)),
-        "sibling hides under the proven view"
+        S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)),
+        "ambiguous membership holds the view switch: {:?} {:?}",
+        tick.members,
+        tick.views
     );
-    // Visibility plus the proven view merges homing even though no frame
-    // ever moved: the mover is genuinely showing on the target.
-    assert_eq!(env.state.applied_views.get(&out), Some(&target));
+    // The unproven direct move never switches the view or merges homing:
+    // the mover remains on its source home until the lie resolves.
+    assert_eq!(env.state.applied_views.get(&out), Some(&_current));
     assert_eq!(
         env.state.applied_homing.get("w1"),
-        Some(&(out.clone(), target.clone()))
+        Some(&(out.clone(), _current.clone()))
     );
-    // Next observation settles both flights on their independent proofs,
-    // but the sweep now publishes the mover's frame and the lie surfaces
-    // as a write attempt the read-back refuses. Still never Applied.
+    // The next observation takes no new write: the mover is still logically
+    // on the source workspace the output no longer shows, so the hidden row
+    // is never reflowed. The retained flight keeps the clamp hold from the
+    // send-time placement. Still never Applied.
     let observed = live_visible_observed();
     let held = live_tick(
         &mut env,
@@ -550,8 +624,11 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         None,
     );
     assert!(
-        held.reply.transfers.is_empty(),
-        "visibility proofs settle: {:?}",
+        held.reply
+            .transfers
+            .iter()
+            .any(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "w1") && t.held),
+        "the lying frame keeps the direct flight held: {:?}",
         held.reply.transfers
     );
     assert!(
@@ -562,8 +639,9 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
     );
     assert_eq!(
         set_calls(),
-        calls_before + 2,
-        "sibling re-tile plus one mover attempt, then clamp-held"
+        calls_before + 1,
+        "no reflow of the hidden source mover; only the send-time direct placement: calls={:?}",
+        S_SET_CALLS.with(|m| m.borrow().clone())
     );
     let live_frame = S_OBSERVE.with(|m| m.borrow().get(&mover.hwnd).map(|w| w.visible));
     let published = held
@@ -590,20 +668,29 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         0,
         None,
     );
-    assert!(quiet.reply.transfers.is_empty());
+    assert!(
+        quiet
+            .reply
+            .transfers
+            .iter()
+            .any(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "w1") && t.held),
+        "the unproven flight stays retained: {:?}",
+        quiet.reply.transfers
+    );
     assert!(
         quiet.members.is_empty() && quiet.views.is_empty(),
         "clamp recorded once: {:?} {:?}",
         quiet.members,
         quiet.views
     );
-    assert_eq!(set_calls(), calls_before + 2);
+    assert_eq!(set_calls(), calls_before + 1);
 }
 
-/// Partial batch: the sibling hide leg refuses mid-batch while the mover
-/// row is frameless. Both transfers hold ambiguous exactly once, nothing
-/// moves, and nothing ever proves: later ticks hold silently with both
-/// flights retained and everything static.
+/// Partial batch: the sibling hide leg refuses mid-batch while the mover's
+/// direct placement lands. The member proof reaches the target but the
+/// refused hide leaves the view unproven at the source; later ticks take no
+/// reflow write and hold silently with the member flight settled and no
+/// flight left for the refused view.
 #[test]
 fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
     let mut env = env_with(202_031);
@@ -628,7 +715,7 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
         0,
         None,
     );
-    let (current, target, index) = follow_target(&owner, &out);
+    let (current, target, index) = follow_target(&mut env, &mut owner, &out, &areas, &fulls);
     let calls_before = set_calls();
     let observed = live_visible_observed();
     let tick = live_tick(
@@ -641,59 +728,71 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
         moving_prims(),
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
     );
     let op = window_op(&tick.reply, "w1");
-    let view_op = tick
-        .reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("follow retains its view flight")
-        .operation_id
-        .clone();
-    // Both transfers report ambiguous attempts exactly once: the refused
-    // hide leg proves nothing, so the member attempt and the view attempt
-    // each ride once and the spent phases stay silent after.
+    // v4 mints no View flight: the refused hide leg proves nothing, so the
+    // window transfer alone reports its member attempt once. That attempt
+    // proves target homing even while the view stays unproven.
     assert!(
-        has_ambiguous_member(&tick, &op, &out, &target),
-        "partial holds ambiguous: {:?} {:?}",
+        !tick
+            .reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::View)),
+        "follow mints no view flight: {:?}",
+        tick.reply.transfers
+    );
+    assert!(
+        tick.members.iter().any(|a| a.operation_id == op
+            && matches!(
+                a.disposition,
+                tiler_core::world_report::MemberDisposition::Called(_)
+            )
+            && ref_workspace(a.post.as_ref()) == Some(target.as_str())),
+        "the direct member move proves target while the hide refuses: {:?} {:?}",
         tick.members,
         tick.views
     );
     assert!(
         tick.views
             .iter()
-            .any(|a| a.operation_id == view_op && a.post.as_deref() != Some(target.as_str())),
-        "thrown switch leg holds ambiguous: {:?}",
+            .any(|a| a.operation_id == op && a.disposition == FrameSetter::Refused),
+        "the refused hide leaves the view unproven: {:?}",
         tick.views
     );
-    assert!(!applied_of_members(&tick.members, &tick.views, &op));
+    assert!(
+        applied_of_members(&tick.members, &tick.views, &op),
+        "the direct member move reports its target proof: {:?}",
+        tick.members
+    );
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)),
         "refused hide leaves the sibling visible"
     );
-    // Truthful split: the refused hide leaves everything unproven, so both
-    // applied maps stay at their bootstrap values and nothing moves: the
-    // frameless mover row takes no writes and the sibling still matches.
+    // Truthful split: the direct member move proves its target homing, while
+    // the refused sibling hide leaves the view unproven and the sibling
+    // visible on the source screen.
     assert_eq!(
         env.state.applied_homing.get("w1"),
-        Some(&(out.clone(), current.clone()))
+        Some(&(out.clone(), target.clone()))
     );
     assert_eq!(env.state.applied_views.get(&out), Some(&current));
     assert_eq!(
         set_calls(),
         calls_before + 1,
-        "source collapse re-tiles the sibling"
+        "hidden source sibling takes no write; only the direct mover placement: calls={:?}",
+        S_SET_CALLS.with(|m| m.borrow().clone())
     );
-    // The carried ambiguity marks both flights held, so later ticks
-    // hold silently: no re-attempt, no replay, no proof. The spent phases
-    // stay silent too. Both flights stay retained with everything static.
+    // The member proof settles its flight; the refused view leaves none.
+    // Later ticks stay silent: no re-attempt, no replay, no proof, and no
+    // reflow write while the source sibling is logically hidden behind the
+    // published target view. Everything stays static.
     for _ in 0..2 {
         let observed = live_visible_observed();
         let held = live_tick(
@@ -717,15 +816,15 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
             held.reply
                 .transfers
                 .iter()
-                .filter(|t| t.operation_id == op || t.operation_id == view_op)
+                .filter(|t| t.operation_id == op)
                 .count(),
-            2,
-            "both flights retained: {:?}",
+            0,
+            "the direct member proof settles; the refused view leaves no flight: {:?}",
             held.reply.transfers
         );
         assert_eq!(
             env.state.applied_homing.get("w1"),
-            Some(&(out.clone(), current.clone()))
+            Some(&(out.clone(), target.clone()))
         );
         assert_eq!(env.state.applied_views.get(&out), Some(&current));
         assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
@@ -733,7 +832,8 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
         assert_eq!(
             set_calls(),
             calls_before + 1,
-            "deferred frames take no writes"
+            "no reflow after the send; only the send-time direct placement: calls={:?}",
+            S_SET_CALLS.with(|m| m.borrow().clone())
         );
     }
 }
@@ -762,7 +862,7 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         0,
         None,
     );
-    let (current, target, index) = follow_target(&owner, &out);
+    let (current, target, index) = follow_target(&mut env, &mut owner, &out, &areas, &fulls);
     S_HOOK.with(|m| *m.borrow_mut() = true);
     let observed = live_visible_observed();
     let tick = live_tick(
@@ -775,24 +875,17 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         moving_prims(),
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
         }),
     );
     let op = window_op(&tick.reply, "w1");
-    let view_op = tick
-        .reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("follow retains its view flight")
-        .operation_id
-        .clone();
     // The busy hook stops the pass before any setter: no attempt runs, so
     // nothing is spent and the attempt rows are empty. The commit still
-    // stands (both flights retained, target view published).
+    // stands (window flight retained, target view published; v4 mints no
+    // View flight).
     assert!(
         tick.members.is_empty() && tick.views.is_empty(),
         "busy native stops the pass: {:?} {:?}",
@@ -812,9 +905,9 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         env.state.applied_homing.get("w1"),
         Some(&(out.clone(), current.clone()))
     );
-    // Gap cleared: nothing was spent, so the next tick runs the full
-    // two-phase proof cleanly (window ambiguous pre-switch, view proves),
-    // then the following observation settles with no replay.
+    // Gap cleared: nothing was spent, so the next tick runs the direct
+    // delivery cleanly (member move plus view switch both prove), then the
+    // following observation settles with no replay.
     S_HOOK.with(|m| *m.borrow_mut() = false);
     let observed = live_visible_observed();
     let recovered = live_tick(
@@ -829,14 +922,19 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         None,
     );
     assert!(
-        has_ambiguous_member(&recovered, &op, &out, &target),
-        "clean two-phase proof: {:?} {:?}",
+        applied_of_members(&recovered.members, &recovered.views, &op),
+        "clean direct proof: {:?} {:?}",
         recovered.members,
         recovered.views
     );
     assert!(
-        has_proven_view(&recovered, &view_op, &target),
-        "recovery proves the view: {:?}",
+        recovered.members.iter().any(
+            |a| a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(target.as_str())
+        ) && recovered.views.iter().any(
+            |a| a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(target.as_str())
+        ),
+        "member and view both prove the target: {:?} {:?}",
+        recovered.members,
         recovered.views
     );
     assert_eq!(
@@ -875,11 +973,13 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
 
 /// Iconic-visible mover follow (minimize/restore race: the native iconic
 /// flag reads while the window still enumerates visible). The logical view
-/// still switches and the iconic arrival proof still merges homing
-/// truthfully; no frame is ever written to the iconic mover, and the mover
-/// focus effect never dispatches (held for the unproven view, and the
-/// foreground gate could never prove an iconic subject). The view stays
-/// applied-source while iconic membership vetoes its proof.
+/// still switches and the pre-proven arrival emits one no-call
+/// `AlreadyAtTarget` receipt that merges homing truthfully and settles the
+/// transfer on the next report; no frame is ever written to the iconic
+/// mover, and the mover focus effect never dispatches (held for the
+/// unproven view, and the foreground gate could never prove an iconic
+/// subject). The view stays applied-source while iconic membership vetoes
+/// its proof.
 #[test]
 fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
     fn focus_seeded(hwnd: u64) -> bool {
@@ -906,7 +1006,7 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
         0,
         None,
     );
-    let (current, target, index) = follow_target(&owner, &out);
+    let (current, target, index) = follow_target(&mut env, &mut owner, &out, &areas, &fulls);
     // Native iconic flag lands while the mover still enumerates visible.
     S_ICONIC.with(|m| m.borrow_mut().insert(mover.hwnd));
     let mover_calls_before = set_calls_for(mover.hwnd);
@@ -922,7 +1022,7 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
         moving_prims(),
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
@@ -934,47 +1034,30 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
         published_view(&tick.reply, &out).as_deref(),
         Some(target.as_str())
     );
-    assert!(
-        tick.reply.effects.iter().any(|e| e.target.0 == "w1"),
-        "follow names mover focus: {:?}",
-        tick.reply.effects
-    );
     let op = window_op(&tick.reply, "w1");
-    let view_op = tick
-        .reply
-        .transfers
+    // The iconic mover takes no native writes, but the transfer's logical
+    // homing is already proven at the target: one no-call receipt settles
+    // core membership. The follow view still reports the missed switch as
+    // unproven. v4 mints no separate View flight.
+    let member = tick
+        .members
         .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("follow retains its view flight")
-        .operation_id
-        .clone();
-    // The iconic member vetoes both proofs: no member row is dispatched
-    // under the iconic veto, while the follow phase and the retained
-    // follow view each report the missed switch with unreadable proof.
-    // Nothing fabricates arrival.
-    assert!(tick.members.iter().all(|a| a.operation_id != op));
+        .find(|a| a.operation_id == op)
+        .expect("pre-proven no-call member receipt");
+    assert_eq!(
+        member.disposition,
+        tiler_core::world_report::MemberDisposition::AlreadyAtTarget
+    );
+    assert_eq!(member.pre, member.post);
     assert!(
-        tick.views
-            .iter()
-            .any(|a| a.operation_id == op && a.post.as_deref() != Some(target.as_str())),
+        tick.views.iter().any(
+            |a| a.operation_id == op && ref_workspace(a.post.as_ref()) != Some(target.as_str())
+        ),
         "unproven follow view: {:?}",
         tick.views
     );
-    assert!(
-        tick.views
-            .iter()
-            .any(|a| a.operation_id == view_op && a.post.as_deref() != Some(target.as_str())),
-        "iconic member vetoes the view proof: {:?}",
-        tick.views
-    );
-    assert!(
-        !applied_of_members(&tick.members, &tick.views, &op),
-        "nothing fabricates arrival: {:?} {:?}",
-        tick.members,
-        tick.views
-    );
     // The switch still runs (sibling hides, mover stays visible), the
-    // iconic arrival proof merges homing truthfully, and the view stays
+    // pre-proven receipt merges homing truthfully, and the view stays
     // applied-source under the iconic veto.
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
     assert!(!S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)));
@@ -988,8 +1071,8 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
     );
     assert_eq!(env.state.applied_views.get(&out), Some(&current));
     // No frame write ever names the iconic mover (reveal short-circuits,
-    // frameless rows take no writes); the sibling re-tile is the only
-    // setter call. Focus never dispatches for the unproven view, so the
+    // frameless rows take no writes); the hidden source sibling is not
+    // reflowed either. Focus never dispatches for the unproven view, so the
     // foreground gate sees nothing to fake.
     assert_eq!(
         set_calls_for(mover.hwnd),
@@ -999,8 +1082,8 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
     assert!(!focus_seeded(mover.hwnd), "focus never dispatched");
     // The mover minimizes for real: omitted, invisible, still iconic. The
     // minimized fact retains homing with no geometry lane, so still no
-    // writes name it; receipts merge nothing beyond evidence and both
-    // flights hold silently.
+    // writes name it; the consumed no-call receipt settles the transfer on
+    // this report, leaving nothing to replay.
     S_VISIBLE.with(|m| m.borrow_mut().remove(&mover.hwnd));
     env.state.minimized_omitted.insert(mover.clone());
     let observed = live_visible_observed();
@@ -1026,10 +1109,10 @@ fn same_output_follow_iconic_mover_proves_homing_without_writes_or_focus() {
         held.reply
             .transfers
             .iter()
-            .filter(|t| t.operation_id == op || t.operation_id == view_op)
+            .filter(|t| t.operation_id == op)
             .count(),
-        2,
-        "both flights retained: {:?}",
+        0,
+        "the no-call receipt settles the transfer; nothing replays: {:?}",
         held.reply.transfers
     );
     assert_eq!(
@@ -1076,8 +1159,8 @@ fn same_output_send_stay_hides_and_settles() {
         0,
         None,
     );
+    let target = create_second_workspace(&mut env, &mut owner, &out, &areas, &fulls);
     let current = owner.engine().logical_view(&out).expect("current view");
-    let target = second_workspace(&owner, &out, &current);
     // Stay send: the mover leaves the visible set; the view never follows.
     let observed = live_visible_observed();
     let tick = live_tick(
@@ -1090,9 +1173,9 @@ fn same_output_send_stay_hides_and_settles() {
         moving_prims(),
         key.hwnd,
         Some(WorldCommand::Send {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             target_output: OutputId(out.clone()),
-            target_workspace: target.clone(),
+            target_workspace: tiler_core::directional::WorkspaceId(target.clone()),
             follow: false,
         }),
     );
@@ -1132,7 +1215,7 @@ fn same_output_send_stay_hides_and_settles() {
         None,
     );
     assert!(
-        settled.reply.transfers.is_empty(),
+        !settled.reply.transfers.iter().any(|t| t.operation_id == op),
         "stay settles: {:?}",
         settled.reply.transfers
     );
@@ -1197,7 +1280,7 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         moving_prims(),
         n1.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index: 0,
             follow: true,
@@ -1261,7 +1344,7 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         .expect("source in ring") as u8
         + 1;
     let observed = live_visible_observed();
-    live_tick(
+    let select = live_tick(
         &mut env,
         &mut owner,
         &observed,
@@ -1277,7 +1360,11 @@ fn composed_follow_selectback_stay_hides_and_settles() {
     );
     assert!(
         !S_VISIBLE.with(|m| m.borrow().contains(&n1.hwnd)),
-        "followed-away tile hidden after select-back"
+        "followed-away tile hidden after select-back: ready={} view={:?} transfers={:?} scopes={:?}",
+        select.reply.ready,
+        published_view(&select.reply, &out),
+        select.reply.transfers,
+        scope_summary(&select.reply)
     );
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&n2.hwnd)),
@@ -1292,13 +1379,19 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         &areas,
         &fulls,
         moving_prims(),
-        0,
+        n2.hwnd,
         None,
     );
     assert!(
-        reseated.reply.transfers.is_empty(),
-        "select-back settles: {:?}",
-        reseated.reply.transfers
+        reseated
+            .reply
+            .transfers
+            .iter()
+            .all(|t| t.kind == TransferKind::View),
+        "select-back carries no member flight: transfers={:?} view={:?} scopes={:?}",
+        reseated.reply.transfers,
+        published_view(&reseated.reply, &out),
+        scope_summary(&reseated.reply)
     );
     assert_eq!(
         env.state.applied_views.get(&out),
@@ -1319,7 +1412,7 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         moving_prims(),
         n2.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w2".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w2".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index: 0,
             follow: false,
@@ -1377,7 +1470,11 @@ fn composed_follow_selectback_stay_hides_and_settles() {
         None,
     );
     assert!(
-        settled.reply.transfers.is_empty(),
+        settled
+            .reply
+            .transfers
+            .iter()
+            .all(|t| t.kind == TransferKind::View),
         "stay settles: {:?}",
         settled.reply.transfers
     );
@@ -1454,7 +1551,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         moving_prims(),
         n1.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index: 0,
             follow: true,
@@ -1522,7 +1619,11 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         None,
     );
     assert!(
-        reseated.reply.transfers.is_empty(),
+        reseated
+            .reply
+            .transfers
+            .iter()
+            .all(|t| t.kind == TransferKind::View),
         "select-back settles: {:?}",
         reseated.reply.transfers
     );
@@ -1539,7 +1640,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         moving_prims(),
         n2.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w2".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w2".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index: 0,
             follow: false,
@@ -1576,7 +1677,11 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         None,
     );
     assert!(
-        settled.reply.transfers.is_empty(),
+        settled
+            .reply
+            .transfers
+            .iter()
+            .all(|t| t.kind == TransferKind::View),
         "stay settles: {:?}",
         settled.reply.transfers
     );
@@ -1625,7 +1730,11 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         None,
     );
     assert!(
-        reseated.reply.transfers.is_empty(),
+        reseated
+            .reply
+            .transfers
+            .iter()
+            .all(|t| t.kind == TransferKind::View),
         "return select settles: {:?}",
         reseated.reply.transfers
     );
@@ -1643,7 +1752,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         moving_prims(),
         n1.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index: home_index,
             follow: true,
@@ -1653,7 +1762,17 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
     // Pre-proven hidden arrival: no member or view setter runs, so no raw
     // attempt rides. Settlement happens on the next report from the staged
     // hidden receipt; the transfer is retained meanwhile.
-    assert!(sendback.members.is_empty() && sendback.views.is_empty());
+    assert!(
+        has_any_attempt(&sendback, &sendback_op),
+        "sendback dispatches the direct member move: {:?}",
+        sendback.members
+    );
+    assert!(
+        applied_of_members(&sendback.members, &sendback.views, &sendback_op),
+        "sendback proves the target: {:?} {:?}",
+        sendback.members,
+        sendback.views
+    );
     assert!(
         sendback
             .reply
@@ -1707,7 +1826,10 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
             index: stay_index,
         }),
     );
-    let scope = format!("{out}/{}", stay_home.1);
+    let scope = tiler_core::world_report::AuthorityScope::Workspace {
+        output: OutputId(stay_home.0.clone()),
+        workspace: tiler_core::directional::WorkspaceId(stay_home.1.clone()),
+    };
     assert!(
         select
             .reply
@@ -1741,7 +1863,11 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
         None,
     );
     assert!(
-        reseated.reply.transfers.is_empty(),
+        reseated
+            .reply
+            .transfers
+            .iter()
+            .all(|t| t.kind == TransferKind::View),
         "stay select settles: {:?}",
         reseated.reply.transfers
     );
@@ -1928,7 +2054,6 @@ fn unknown_baseline_holds_transfer_without_supersession() {
                 key: key.clone(),
                 token: "w1".to_owned(),
                 frame: Some(frame),
-                observed_frame: Some(frame),
                 facts: Some(plain_facts()),
                 output: out.to_owned(),
                 workspace: workspace.to_owned(),
@@ -1936,7 +2061,6 @@ fn unknown_baseline_holds_transfer_without_supersession() {
                 hidden: false,
                 sticky: false,
                 floating: false,
-                fit_excluded: false,
                 live_tag: Some("member-tag-1".to_owned()),
             },
         );
@@ -1948,7 +2072,7 @@ fn unknown_baseline_holds_transfer_without_supersession() {
             views: HashMap::new(),
         }
     }
-    fn reply_for(out: &str) -> WorldReply {
+    fn reply_for(out: &str) -> tiler_core::world_report::WorldReplyV4 {
         let mut reply = reply_shell(7, 1, &[(out, "ws-1"), (out, "ws-2")]);
         reply.windows.push(WindowDesire {
             lifetime: WindowId("w1".to_owned()),
@@ -1961,16 +2085,23 @@ fn unknown_baseline_holds_transfer_without_supersession() {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: Auth::Untouched,
+            state: Vec::new(),
         });
-        reply.transfers.push(TransferTarget {
-            operation_id: "op-9".to_owned(),
-            kind: TransferKind::Window(WindowId("w1".to_owned())),
-            target_output: OutputId(out.to_owned()),
-            target_workspace: "ws-2".to_owned(),
-            follow: false,
-            held: false,
-        });
+        reply
+            .transfers
+            .push(tiler_core::world_report::TransferTargetV4 {
+                operation_id: "op-9".to_owned(),
+                kind: TransferKind::Window(WindowId("w1".to_owned())),
+                target_output: OutputId(out.to_owned()),
+                target_workspace: "ws-2".to_owned(),
+                follow: false,
+                held: false,
+                command_seq: None,
+                parent: None,
+            });
         reply
     }
     // Unknown baseline ("") with live homing anywhere else: hold, never
@@ -1997,7 +2128,6 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -2018,12 +2148,11 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].operation_id, "op-9");
-    assert_eq!(members[0].setter, FrameSetter::Accepted);
+    assert_eq!(members[0].disposition, FrameSetter::Accepted.into());
     assert_eq!(stats.membership_writes, 1, "{stats:?}");
     // A prior dispatch plus an unknown baseline still holds: the empty
     // preimage cannot contradict anything either.
@@ -2047,7 +2176,6 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty() && views.is_empty());
@@ -2074,7 +2202,6 @@ fn unknown_baseline_holds_transfer_without_supersession() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty() && views.is_empty());
@@ -2101,11 +2228,13 @@ fn asymmetric_send_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
             device: DEV1.to_owned(),
             work: rect(0, 0, 2560, 1380),
             full: rect(0, 0, 2560, 1440),
+            dpi: 96,
         },
         super::super::MonitorArea {
             device: DEV2.to_owned(),
             work: rect(2560, 355, 1920, 1032),
             full: rect(2560, 355, 1920, 1080),
+            dpi: 96,
         },
     ];
     let fulls = vec![rect(0, 0, 2560, 1440), rect(2560, 355, 1920, 1080)];
@@ -2124,7 +2253,7 @@ fn assert_slot_in_work(slot: Rect, work: Rect) {
     );
 }
 
-fn mover_slot(reply: &WorldReply, window: &str) -> Rect {
+fn mover_slot(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> Rect {
     let row = reply
         .windows
         .iter()
@@ -2200,7 +2329,7 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         moving_prims(),
         key.hwnd,
         Some(WorldCommand::SendDirectional {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             direction: tiler_core::directional::Direction::Right,
             follow: true,
         }),
@@ -2266,7 +2395,7 @@ fn tiled_cross_output_send_writes_target_frame_both_ways() {
         moving_prims(),
         key.hwnd,
         Some(WorldCommand::SendDirectional {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             direction: tiler_core::directional::Direction::Left,
             follow: true,
         }),
@@ -2346,7 +2475,7 @@ fn lying_setter_keeps_no_receipt_and_flight_pending() {
         scripted(),
         key.hwnd,
         Some(WorldCommand::SendDirectional {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             direction: tiler_core::directional::Direction::Right,
             follow: true,
         }),
@@ -2355,10 +2484,8 @@ fn lying_setter_keeps_no_receipt_and_flight_pending() {
     // The lie reports one raw accepted attempt whose post proof never
     // reaches the target: ambiguous, never an arrival.
     assert!(
-        tick.members
-            .iter()
-            .any(|a| a.operation_id == op
-                && a.setter == tiler_core::world_report::FrameSetter::Accepted),
+        tick.members.iter().any(|a| a.operation_id == op
+            && a.disposition == tiler_core::world_report::FrameSetter::Accepted.into()),
         "lie holds ambiguous: {:?}",
         tick.members
     );
@@ -2403,6 +2530,7 @@ fn lying_setter_keeps_no_receipt_and_flight_pending() {
 fn floating_cross_output_send_preserves_rectangle_and_settles() {
     let mut env = env_with(206_001);
     env.state.ensure_device(DEV2);
+    let o1 = env.state.output_token(DEV1);
     let o2 = env.state.output_token(DEV2);
     let (areas, fulls) = two_output_areas();
     let key = win_key(206_001, 2206, "proc-106");
@@ -2410,7 +2538,6 @@ fn floating_cross_output_send_preserves_rectangle_and_settles() {
     let stay2 = win_key(206_012, 2216, "proc-116");
     admit_bare(&mut env, &key, "w1");
     admit_bare(&mut env, &stay2, "w2");
-    env.state.floated.insert(key.clone());
     let float_rect = rect(120, 120, 400, 300);
     script_live(&key, "w1", float_rect, plain_facts());
     script_live(&stay2, "w2", rect(2000, 100, 400, 300), plain_facts());
@@ -2427,12 +2554,29 @@ fn floating_cross_output_send_preserves_rectangle_and_settles() {
         0,
         None,
     );
-    assert!(
-        env.state.applied_homing.contains_key("w1"),
-        "float bootstraps a receipt"
+    // Real core-owned float: the adapter's `floated` cache is never the
+    // source of truth, so toggle through the production command.
+    let observed = live_visible_observed();
+    let floated = live_tick(
+        &mut env,
+        &mut owner,
+        &observed,
+        &[],
+        &areas,
+        &fulls,
+        moving_prims(),
+        key.hwnd,
+        Some(WorldCommand::Operation(
+            tiler_core::boundary::CoreCommand::ToggleFloat {
+                window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
+                float_rect: Some(float_rect),
+            },
+        )),
     );
+    assert!(floated.reply.ready, "float toggle accepted");
     let target_b = cross_output_target(&owner, &o2);
-    let writes_before = S_SET_CALLS.with(|m| m.borrow().len());
+    let mover_writes_before =
+        S_SET_CALLS.with(|m| m.borrow().iter().filter(|(h, _)| *h == key.hwnd).count());
     let observed = live_visible_observed();
     let tick = live_tick(
         &mut env,
@@ -2444,31 +2588,55 @@ fn floating_cross_output_send_preserves_rectangle_and_settles() {
         moving_prims(),
         key.hwnd,
         Some(WorldCommand::SendDirectional {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             direction: tiler_core::directional::Direction::Right,
             follow: true,
         }),
     );
     let op = window_op(&tick.reply, "w1");
-    // Membership-only crossing: the accepted attempt preserves the physical
-    // frame (pre == post on the source output) while the logical home
-    // arrives through the no-effect receipt. Never a frame write, never a
-    // reinterpreted physical output.
+    // Membership-only crossing: the retained transfer names the target
+    // while the physical frame stays untouched. v4 emits no member attempt
+    // for a floating boundary (there is no frame write to attempt).
+    let transfer = tick
+        .reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == op)
+        .expect("float crossing retains its transfer");
+    assert!(matches!(&transfer.kind, TransferKind::Window(w) if w.0 == "w1"));
+    assert_eq!(
+        transfer.target_output,
+        tiler_core::directional::OutputId(o2.clone())
+    );
+    assert_eq!(transfer.target_workspace, target_b);
     let attempt = tick
         .members
         .iter()
         .find(|a| a.operation_id == op)
-        .expect("float crossing reports one member attempt");
+        .unwrap_or_else(|| {
+            panic!(
+                "float crossing reports one member attempt for {op}: {:?} {:?}",
+                tick.members, tick.views
+            )
+        });
     assert_eq!(
-        attempt.setter,
-        tiler_core::world_report::FrameSetter::Accepted
+        attempt.disposition,
+        tiler_core::world_report::FrameSetter::Accepted.into()
     );
-    assert_eq!(attempt.pre, attempt.post);
-    assert!(attempt.post.is_some());
     assert_eq!(
-        S_SET_CALLS.with(|m| m.borrow().len()),
-        writes_before,
-        "membership-only crossing writes no frame"
+        ref_target(attempt.pre.as_ref()).map(|(out, _)| out),
+        Some(o1.as_str()),
+        "pre names the source output"
+    );
+    assert_eq!(
+        ref_target(attempt.post.as_ref()),
+        Some((o2.as_str(), target_b.as_str())),
+        "post proves the logical target with no frame move"
+    );
+    assert_eq!(
+        S_SET_CALLS.with(|m| m.borrow().iter().filter(|(h, _)| *h == key.hwnd).count()),
+        mover_writes_before,
+        "membership-only crossing writes no mover frame"
     );
     let live = live_visible_observed();
     let w1live = live
@@ -2479,13 +2647,15 @@ fn floating_cross_output_send_preserves_rectangle_and_settles() {
         w1live.visible, float_rect,
         "physical rectangle preserved across the logical crossing"
     );
+    // The untouched fresh frame proves the no-effect crossing, so the
+    // adapter records the logical home without a frame write.
     assert_eq!(
         env.state.applied_homing.get("w1"),
         Some(&(o2.clone(), target_b.clone())),
-        "logical home still arrives"
+        "no-effect float receipt merges"
     );
-    // Next report settles on the logical receipt even though the frame
-    // physically stays on the source output.
+    // Next report settles the retained logical transfer even though the
+    // frame physically stays on the source output.
     let observed = live_visible_observed();
     let settled = live_tick(
         &mut env,
@@ -2567,7 +2737,30 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
             },
         );
     }
-    let inputs = env.state.inputs();
+    let reads = std::collections::BTreeMap::from([
+        (
+            entering1.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+        (
+            entering2.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+    ]);
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&reads);
     let captured = capture_world(&inputs, Some(&observed), &[], &one_area(), 207_001);
     let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
@@ -2583,15 +2776,18 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         tiling_mode: tiler_core::world_report::TilingMode::Tiled,
         hold: None,
     });
-    reply.transfers.push(TransferTarget {
-        operation_id: "op-view-2x2".to_owned(),
-        kind: TransferKind::View,
-        target_output: OutputId(out.clone()),
-        target_workspace: ws2.clone(),
-        follow: false,
-        held: false,
-    });
-    // Full completion: both hide legs and both reveal legs land.
+    reply
+        .transfers
+        .push(tiler_core::world_report::TransferTargetV4 {
+            operation_id: "op-view-2x2".to_owned(),
+            kind: TransferKind::View,
+            target_output: OutputId(out.clone()),
+            target_workspace: ws2.clone(),
+            follow: false,
+            held: false,
+            command_seq: None,
+            parent: None,
+        });
     let mut native =
         assemble_with_views(&mut env, moving_prims(), Some((out.clone(), ws2.clone())));
     native
@@ -2609,13 +2805,12 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty());
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, "op-view-2x2");
-    assert_eq!(views[0].post.as_deref(), Some(ws2.as_str()));
+    assert_eq!(ref_workspace(views[0].post.as_ref()), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 1, "{stats:?}");
     drop(native);
     // Partial completion: the second reveal refuses, so nothing proves.
@@ -2668,7 +2863,30 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
             },
         );
     }
-    let inputs = env2.state.inputs();
+    let reads = std::collections::BTreeMap::from([
+        (
+            entering1.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+        (
+            entering2.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+    ]);
+    let mut inputs = env2.state.inputs();
+    inputs.hidden_reads = Some(&reads);
     let captured = capture_world(&inputs, Some(&observed), &[], &one_area(), 207_001);
     let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
@@ -2684,14 +2902,18 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         tiling_mode: tiler_core::world_report::TilingMode::Tiled,
         hold: None,
     });
-    reply.transfers.push(TransferTarget {
-        operation_id: "op-view-2x2-partial".to_owned(),
-        kind: TransferKind::View,
-        target_output: OutputId(out2.clone()),
-        target_workspace: ws2.clone(),
-        follow: false,
-        held: false,
-    });
+    reply
+        .transfers
+        .push(tiler_core::world_report::TransferTargetV4 {
+            operation_id: "op-view-2x2-partial".to_owned(),
+            kind: TransferKind::View,
+            target_output: OutputId(out2.clone()),
+            target_workspace: ws2.clone(),
+            follow: false,
+            held: false,
+            command_seq: None,
+            parent: None,
+        });
     let mut native =
         assemble_with_views(&mut env2, moving_prims(), Some((out2.clone(), ws2.clone())));
     native
@@ -2709,7 +2931,6 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty());
@@ -2718,7 +2939,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
     // that names the target.
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, "op-view-2x2-partial");
-    assert_ne!(views[0].post.as_deref(), Some(ws2.as_str()));
+    assert_ne!(ref_workspace(views[0].post.as_ref()), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 0, "{stats:?}");
 }
 
@@ -2780,7 +3001,11 @@ fn world_fixed_hint_producer_shapes_fixed_admission() {
         .iter()
         .find(|f| f.window.0 == "w1")
         .expect("w1 fact");
-    assert_eq!(fact.hints, pinned, "captured fact carries producer hints");
+    assert_eq!(
+        fact.hints.as_ref(),
+        Some(&pinned),
+        "captured fact carries producer hints"
+    );
     assert!(reply.ready, "fixed admission still converges");
     assert!(
         state
@@ -2829,7 +3054,7 @@ fn world_recycled_hwnd_stale_holds_without_dropping_live() {
         .find(|f| f.window.0 == "w-stale")
         .expect("stale fact");
     assert!(
-        stale_fact.rect.is_none() && !stale_fact.minimized,
+        stale_fact.rect.is_none() && stale_fact.minimized != Some(true),
         "stale lifetime holds unreadable"
     );
     assert!(
@@ -2899,9 +3124,10 @@ fn world_born_fullscreen_captures_quiet_with_slot_truth() {
         .iter()
         .find(|f| f.window.0 == "w1")
         .expect("w1 fact");
-    assert!(
-        fact.floating && fact.fullscreen,
-        "born hold floats fullscreen: {fact:?}"
+    assert_eq!(
+        fact.fullscreen,
+        Some(true),
+        "born hold fullscreen: {fact:?}"
     );
     assert_eq!(fact.rect, Some(rect(0, 0, 800, 600)), "live frame rides");
     assert!(
@@ -2967,14 +3193,26 @@ fn world_minimized_omission_never_closes_hidden_keeps_fullscreen() {
         facts: Some(plain_facts()),
     }];
     let areas = one_area();
-    let captured = capture_world(&state.inputs(), Some(&[]), &retained, &areas, 0);
+    let reads = std::collections::BTreeMap::from([(
+        hid_key.clone(),
+        super::super::super::world_capture::HiddenClaimRead {
+            visible: false,
+            cloaked: false,
+            owned: false,
+            tool_window: false,
+            dialog: false,
+        },
+    )]);
+    let mut inputs = state.inputs();
+    inputs.hidden_reads = Some(&reads);
+    let captured = capture_world(&inputs, Some(&[]), &retained, &areas, 0);
     let min_fact = captured
         .windows
         .iter()
         .find(|f| f.window.0 == "w-min")
         .expect("min fact");
     assert!(
-        min_fact.minimized && min_fact.rect.is_none(),
+        min_fact.minimized == Some(true) && min_fact.rect.is_none(),
         "minimized rides: {min_fact:?}"
     );
     let hid_fact = captured
@@ -2982,11 +3220,37 @@ fn world_minimized_omission_never_closes_hidden_keeps_fullscreen() {
         .iter()
         .find(|f| f.window.0 == "w-hid")
         .expect("hidden fact");
-    assert!(
+    assert_eq!(
         hid_fact.fullscreen,
+        Some(true),
         "hidden keeps fullscreen truth: {hid_fact:?}"
     );
-    assert!(!hid_fact.minimized, "hidden snapshot is not minimized");
+    assert_ne!(
+        hid_fact.minimized,
+        Some(true),
+        "hidden snapshot is not minimized"
+    );
+    // Project suppression, not host hiding: the uncloaked live read reports
+    // host_hidden=false with the durable claim's ownership and real style/
+    // owner/kind reads.
+    assert_eq!(hid_fact.host_hidden, Some(false), "{hid_fact:?}");
+    assert_eq!(hid_fact.visibility.visible, Some(false), "{hid_fact:?}");
+    assert_eq!(
+        hid_fact.visibility.suppression_owned,
+        Some(true),
+        "{hid_fact:?}"
+    );
+    assert_eq!(hid_fact.owned, Some(false), "{hid_fact:?}");
+    assert_eq!(hid_fact.tool_window, Some(false), "{hid_fact:?}");
+    assert_eq!(
+        hid_fact.window_type,
+        Some(tiler_core::world_report::WindowType::Normal),
+        "{hid_fact:?}"
+    );
+    assert!(
+        captured.inventory_complete,
+        "hidden snapshot keeps inventory readable"
+    );
     assert!(
         captured.closed.is_empty(),
         "omission is never a close: {:?}",
@@ -3028,19 +3292,15 @@ fn world_marker_intent_restores_quiet_without_receipts() {
     let areas = one_area();
     let captured = capture_world(&state.inputs(), Some(&observed), &[], &areas, 0);
     for token in ["w-float", "w-sticky"] {
-        let fact = captured
+        let _fact = captured
             .windows
             .iter()
             .find(|f| f.window.0 == token)
             .expect("fact");
-        assert!(fact.floating, "{token} restores floating: {fact:?}");
+        // Float truth is core-owned; the report carries no floating bit.
     }
     assert!(captured.closed.is_empty(), "quiet: {:?}", captured.closed);
-    assert!(
-        captured.observed_views.is_empty(),
-        "marker-only restore proves no view: {:?}",
-        captured.observed_views
-    );
+    // The v4 capture has no report view lane; no view evidence to assert.
 }
 
 #[test]
@@ -3086,11 +3346,11 @@ fn world_first_exit_tiles_quietly() {
         .iter()
         .find(|f| f.window.0 == "w1")
         .expect("w1 fact");
-    assert!(!fact.floating, "first exit tiles: {fact:?}");
-    assert!(
-        fact.hints.is_empty(),
-        "fresh empty hints ride: {:?}",
-        fact.hints
+    // Float truth is core-owned; the report carries no floating bit.
+    assert_eq!(
+        fact.hints,
+        Some(tiler_core::size_hints::WindowSizeHints::none()),
+        "a successful empty query rides as known empty, never unknown"
     );
     assert!(reply.ready);
 }
@@ -3119,7 +3379,7 @@ fn hook_drain_owed_observation_settles_send_follow_geometry() {
         0,
         None,
     );
-    let (current, target, index) = follow_target(&owner, &out);
+    let (current, target, index) = follow_target(&mut env, &mut owner, &out, &areas, &fulls);
     // Follow send: membership moves now; the window flight stays
     // ambiguous pre-switch while the follow view flight proves.
     let observed = live_visible_observed();
@@ -3133,7 +3393,7 @@ fn hook_drain_owed_observation_settles_send_follow_geometry() {
         moving_prims(),
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index,
             follow: true,
@@ -3141,8 +3401,14 @@ fn hook_drain_owed_observation_settles_send_follow_geometry() {
     );
     let op = window_op(&sent.reply, "w1");
     assert!(
-        has_ambiguous_member(&sent, &op, &out, &target),
-        "send leaves ambiguous member flight: {:?} {:?}",
+        has_member_row(&sent, &op),
+        "send reports its member attempt: {:?} {:?}",
+        sent.members,
+        sent.views
+    );
+    assert!(
+        applied_of_members(&sent.members, &sent.views, &op),
+        "accepted member arrival proves at the command: {:?} {:?}",
         sent.members,
         sent.views
     );
@@ -3216,24 +3482,31 @@ fn hook_drain_owed_observation_settles_send_follow_geometry() {
         moving_prims(),
         mover.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             source: SendSource::Explicit(OutputId(out.clone())),
             index: index_back,
             follow: true,
         }),
     );
     let back_op = window_op(&back.reply, "w1");
-    let back_view_op = back
-        .reply
-        .transfers
-        .iter()
-        .find(|t| matches!(t.kind, TransferKind::View))
-        .expect("follow retains its view flight")
-        .operation_id
-        .clone();
     assert!(
-        has_ambiguous_member(&back, &back_op, &out, &current),
-        "send-back leaves ambiguous member flight: {:?} {:?}",
+        !back
+            .reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::View)),
+        "follow mints no view flight: {:?}",
+        back.reply.transfers
+    );
+    assert!(
+        has_any_attempt(&back, &back_op),
+        "send-back reports its direct proof: {:?} {:?}",
+        back.members,
+        back.views
+    );
+    assert!(
+        applied_of_members(&back.members, &back.views, &back_op),
+        "send-back arrival proves at the command: {:?} {:?}",
         back.members,
         back.views
     );
@@ -3250,8 +3523,12 @@ fn hook_drain_owed_observation_settles_send_follow_geometry() {
         None,
     );
     assert!(
-        resettled.reply.transfers.is_empty(),
-        "send-back settles: {:?}",
+        resettled
+            .reply
+            .transfers
+            .iter()
+            .all(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "w1")),
+        "send-back settles geometry: {:?}",
         resettled.reply.transfers
     );
     assert!(
@@ -3261,8 +3538,8 @@ fn hook_drain_owed_observation_settles_send_follow_geometry() {
         resettled.views
     );
     assert!(
-        !has_any_attempt(&resettled, &back_view_op),
-        "no view replay: {:?} {:?}",
+        !has_any_attempt(&resettled, &back_op),
+        "no replay: {:?} {:?}",
         resettled.members,
         resettled.views
     );

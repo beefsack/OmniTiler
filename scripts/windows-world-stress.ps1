@@ -391,8 +391,8 @@ function Test-StressApplyClean($Event, [string]$Tag) {
   # omission. Source: apply_diag_value in
   # crates/tiler-windows/src/tiling_sys/world_tick.rs. A missing field is a
   # refusal, never a pass.
-  foreach ($f in @("members_omitted", "views_omitted", "frames_omitted", "clears_omitted",
-      "clear_holds_omitted", "desired_operations_omitted", "operation_settled_omitted",
+  foreach ($f in @("members_omitted", "views_omitted", "frames_omitted",
+      "desired_operations_omitted", "operation_settled_omitted",
       "focus_effects_omitted", "focus_dispatch_omitted", "inflight_events_omitted",
       "foreground_meta_omitted", "visibility_posts_omitted", "desired_windows_omitted",
       "desired_outputs_omitted", "desired_workspaces_omitted", "held_scopes_omitted",
@@ -473,29 +473,39 @@ function Compare-StressCheckpoint($Expected, $Actual) {
     if ("$($row.out)" -ne "$($Actual.NativeOut)") { Fail-Ws "$id out $($row.out) != $($Actual.NativeOut)" }
     $tile = $Expected.Tiles[$id]
     if ($null -eq $tile) { Fail-Ws "no normalized tile for $id" }
-    foreach ($f in @("allocation", "effective_frame")) {
-      $r = Get-StressRowField $row $f
-      if ($null -eq $r) { Fail-Ws "$id $f missing" }
-      if ([int]$r.x -ne [int]$tile[0] -or [int]$r.y -ne [int]$tile[1] -or
-          [int]$r.w -ne [int]$tile[2] -or [int]$r.h -ne [int]$tile[3]) {
-        Fail-Ws "$id $f [$($r.x),$($r.y),$($r.w),$($r.h)] != tile [$($tile -join ',')]"
+    $shownHere = ($Expected.Homing[$id] -eq $Expected.View)
+    if ($shownHere) {
+      foreach ($f in @("allocation", "effective_frame")) {
+        $r = Get-StressRowField $row $f
+        if ($null -eq $r) { Fail-Ws "$id $f missing" }
+        if ([int]$r.x -ne [int]$tile[0] -or [int]$r.y -ne [int]$tile[1] -or
+            [int]$r.w -ne [int]$tile[2] -or [int]$r.h -ne [int]$tile[3]) {
+          Fail-Ws "$id $f [$($r.x),$($r.y),$($r.w),$($r.h)] != tile [$($tile -join ',')]"
+        }
+      }
+      $hv = Get-StressRowField $row "frame_hold"
+      if ($null -ne $hv -and "$hv" -ne "") { Fail-Ws "$id frame_hold present" }
+      if ("$($row.frame_authority)" -ne "controlled") { Fail-Ws "$id frame authority not controlled" }
+    } else {
+      # Hidden members are retained with a minimized hold and no managed
+      # geometry; their native outer is proven against the pager raw below.
+      foreach ($f in @("allocation", "effective_frame")) {
+        if ($null -ne (Get-StressRowField $row $f)) { Fail-Ws "$id $f present while hidden" }
+      }
+      if ("$($row.frame_authority)" -ne "hold" -or "$($row.frame_hold)" -ne "minimized") {
+        Fail-Ws "$id hidden frame hold $($row.frame_authority)/$($row.frame_hold) != hold/minimized"
       }
     }
-    foreach ($h in @("frame_hold", "membership_hold")) {
-      $hv = Get-StressRowField $row $h
-      if ($null -ne $hv -and "$hv" -ne "") { Fail-Ws "$id $h present" }
-    }
+    $hv = Get-StressRowField $row "membership_hold"
+    if ($null -ne $hv -and "$hv" -ne "") { Fail-Ws "$id membership_hold present" }
     if ($row.floating -ne $false) { Fail-Ws "$id floating" }
     if ($null -ne $row.float_origin -and "$($row.float_origin)" -ne "") { Fail-Ws "$id float origin" }
     if ("$($row.frame_op)" -ne "" -or "$($row.clear_op)" -ne "") { Fail-Ws "$id pending op" }
-    if ("$($row.frame_authority)" -ne "controlled" -or "$($row.membership_authority)" -ne "controlled") {
-      Fail-Ws "$id authority not controlled"
-    }
+    if ("$($row.membership_authority)" -ne "controlled") { Fail-Ws "$id membership authority not controlled" }
     $fr = $Actual.Frames[$id]
     if ($null -eq $fr -or $null -eq $fr.outer -or $null -eq $fr.visible) { Fail-Ws "no native frame for $id" }
     if (-not $fr.alive) { Fail-Ws "$id not alive" }
     if (-not $fr.ok_outer) { Fail-Ws "$id outer unreadable" }
-    $shownHere = ($Expected.Homing[$id] -eq $Expected.View)
     if ($shownHere) {
       if ([int]$fr.outer[0] -ne [int]$tile[0] -or [int]$fr.outer[1] -ne [int]$tile[1] -or
           [int]$fr.outer[2] -ne ([int]$tile[0] + [int]$tile[2]) -or
@@ -829,9 +839,10 @@ function Set-StressCaseSettings([string]$SettingsPath, $Case) {
   # Bounded pre-start settings configuration from supported product fields
   # only (crates/tiler-windows/src/settings/schema.rs): tiled-only cases
   # need default_tiled=true, the group-with-neighbor product default made
-  # explicit for move-directional, and per-output-local scope. Gaps ride the
-  # explicit tile CLI switches instead. Everything else (including absent
-  # fields) stays untouched; the preimage restores exact bytes afterwards.
+  # explicit for move-directional, per-output-local scope, and zero gaps.
+  # v4 reads gaps from the settings document, never the legacy tile CLI
+  # switches. Everything else (including absent fields) stays untouched;
+  # the preimage restores exact bytes afterwards.
   $raw = Get-Content -LiteralPath $SettingsPath -Raw
   try { $doc = $raw | ConvertFrom-Json } catch { Fail-Ws "refuse: live settings do not parse as JSON" }
   if ($null -eq $doc.revision) { Fail-Ws "refuse: live settings carry no revision" }
@@ -849,6 +860,12 @@ function Set-StressCaseSettings([string]$SettingsPath, $Case) {
   if ("$($doc.core.workspace.mode)" -ne "per-output-local") {
     $doc.core.workspace | Add-Member -NotePropertyName "mode" -NotePropertyValue "per-output-local" -Force
     $null = $changed.Add("workspace.mode=per-output-local")
+  }
+  foreach ($gp in @(@("inner_gap", "core.inner_gap=0"), @("outer_gap", "core.outer_gap=0"))) {
+    if ([int]$doc.core.($gp[0]) -ne 0) {
+      $doc.core | Add-Member -NotePropertyName $gp[0] -NotePropertyValue 0 -Force
+      $null = $changed.Add($gp[1])
+    }
   }
   if ($changed.Count -gt 0) {
     ($doc | ConvertTo-Json -Depth 20 -Compress) | Set-Content -LiteralPath $SettingsPath -Encoding utf8NoBOM
@@ -1453,25 +1470,6 @@ function Invoke-StressFocus([string]$FixtureExe, [string]$Socket, [string]$Nonce
   Fail-Ws "focus acquisition failed for $Id (no fallback input; aborting)"
 }
 
-function Get-StressGeometry($ApplyEvent, [string]$NativeOut) {
-  $rows = @($ApplyEvent.desired_geometry)
-  if ($NativeOut -ne "") {
-    $rows = @($rows | Where-Object { "$($_.output)" -eq "$NativeOut" })
-  } else {
-    $rows = @($rows | Where-Object { $_.primary -eq $true })
-  }
-  foreach ($row in $rows) {
-    if ($null -ne $row.work -and $row.complete -eq $true) {
-      $full = @([int]$row.work.x, [int]$row.work.y, [int]$row.work.w, [int]$row.work.h)
-      if ($null -ne $row.full) {
-        $full = @([int]$row.full.x, [int]$row.full.y, [int]$row.full.w, [int]$row.full.h)
-      }
-      return @{ output = "$($row.output)"; work = @([int]$row.work.x, [int]$row.work.y, [int]$row.work.w, [int]$row.work.h); full = $full }
-    }
-  }
-  return $null
-}
-
 function Get-StressRing($ApplyEvent, [string]$NativeOut) {
   $ordered = @($ApplyEvent.desired_workspaces | Where-Object { "$($_.output)" -eq "$NativeOut" } | Sort-Object { [int]$_.order })
   if ($ordered.Count -lt 2) { Fail-Ws "ring has fewer than 2 workspaces" }
@@ -1507,11 +1505,12 @@ function Initialize-StressTopology($LogPath, [ref]$Mark, $Case, $TokOf, $Bootstr
       Fail-Ws "topology-init roster timeout: $($got -join ',') != $($want -join ',')"
     }
   }
+  # The case contract is single-screen: bind the host-designated primary
+  # output, never an unrelated secondary output.
   $geo = @($ev.desired_geometry | Where-Object { $_.primary -eq $true })
   if ($geo.Count -ne 1) { Fail-Ws "topology-init: want 1 primary geometry row" }
   $g = $geo[0]
   if ($g.complete -ne $true) { Fail-Ws "topology-init: primary geometry incomplete" }
-  if ([int]$g.gap -ne 0 -or [int]$g.outer_gap -ne 0) { Fail-Ws "topology-init: gaps not zero" }
   $nativeOut = "$($g.output)"
   $work = @([int]$g.work.x, [int]$g.work.y, [int]$g.work.w, [int]$g.work.h)
   $full = @([int]$g.work.x, [int]$g.work.y, [int]$g.work.w, [int]$g.work.h)

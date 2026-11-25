@@ -433,11 +433,18 @@ pub(super) fn refresh_world_hints(
 ) {
     let hint_cx = HintCx::new();
     let now = hint_now();
-    let sync = |state: &mut TileLoop, token: &str, hints: WindowSizeHints| {
-        if hints.is_empty() {
-            state.hint_logged.remove(token);
-        } else {
+    let sync = |state: &mut TileLoop, token: &str, hints: WindowSizeHints, outcome: HintOutcome| {
+        if !hints.is_empty() {
             state.hint_logged.insert(token.to_owned(), hints);
+        } else if outcome == HintOutcome::NoHint {
+            // A successful query with no usable constraint is truthful
+            // empty, distinct from unknown: presence carries the empty
+            // value so v4 capture can publish `Some(none())`.
+            state
+                .hint_logged
+                .insert(token.to_owned(), WindowSizeHints::none());
+        } else {
+            state.hint_logged.remove(token);
         }
     };
     for window in observed {
@@ -446,19 +453,23 @@ pub(super) fn refresh_world_hints(
             pid: window.identity.pid,
             creation: window.identity.process_creation.clone(),
         };
-        let Some(bound) = state.member_tokens.get(&key).cloned() else {
-            continue;
-        };
-        if bound != window.token {
-            continue;
-        }
+        // Query every observed row, not only already-bound members: v4
+        // captures hints on the same observation that admits a newcomer, so
+        // the first desired row can carry truthful `Some(none())` when the
+        // native query proves no usable constraint. Bound members keep
+        // their stable token; newcomers carry the observed token.
+        let token = state
+            .member_tokens
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| window.token.clone());
         let fresh = if hint_cx.over_budget() {
             FreshHint::unperformed(HintOutcome::Budget)
         } else {
             min_hint_for(window, &hint_cx)
         };
-        let (hints, _) = fresh_member_hint(state, &key, &bound, fresh, now);
-        sync(state, &bound, hints);
+        let (hints, outcome) = fresh_member_hint(state, &key, &token, fresh, now);
+        sync(state, &token, hints, outcome);
     }
     for (key, record) in state.hidden_claims.clone() {
         let Some(token) = state.member_tokens.get(&key).cloned() else {
@@ -471,8 +482,8 @@ pub(super) fn refresh_world_hints(
             continue;
         }
         let fresh = hidden_hint_for(state, &key, &hint_cx);
-        let (hints, _) = fresh_member_hint(state, &key, &token, fresh, now);
-        sync(state, &token, hints);
+        let (hints, outcome) = fresh_member_hint(state, &key, &token, fresh, now);
+        sync(state, &token, hints, outcome);
     }
     for row in retained {
         let key = &row.key;
@@ -487,10 +498,12 @@ pub(super) fn refresh_world_hints(
             continue;
         }
         let fresh = hidden_hint_for(state, key, &hint_cx);
-        let (hints, _) = fresh_member_hint(state, key, &row.token, fresh, now);
-        sync(state, &row.token, hints);
+        let (hints, outcome) = fresh_member_hint(state, key, &row.token, fresh, now);
+        sync(state, &row.token, hints, outcome);
     }
-    let live: HashSet<String> = state.member_tokens.values().cloned().collect();
+    let mut live: HashSet<String> = state.member_tokens.values().cloned().collect();
+    live.extend(observed.iter().map(|window| window.token.clone()));
+    live.extend(retained.iter().map(|row| row.token.clone()));
     state.hint_logged.retain(|token, _| live.contains(token));
     state
         .hint_last_good

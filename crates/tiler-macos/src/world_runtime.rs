@@ -137,6 +137,21 @@ pub(crate) struct CursorSample {
     pub hit: Option<WindowId>,
 }
 
+/// Adapter-owned deferred reveal for one explicit float placement that was
+/// withheld while the lifetime was natively fullscreen. Shared core keeps
+/// ordinary float rows `Untouched` (and the placement token unspent), so
+/// the adapter must remember the durable target itself and reveal it once
+/// after the overlay clears — never while fullscreen (D5: no writes to a
+/// fullscreen subject). The operation token is the core one-shot placement
+/// token; `target` is always the core-published durable frame, never the
+/// fullscreen pose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingFullscreenFloatPlacement {
+    pub(crate) operation: String,
+    pub(crate) target: Rect,
+    pub(crate) generation: u64,
+}
+
 /// Engine-thread-owned world session: the retained [`WorldEngine`], the
 /// adapter-side [`WorldSequencer`], pending attempt feedback, and the
 /// completion-correlation maps. None of this is shared: submitters reach
@@ -170,6 +185,13 @@ pub(crate) struct WorldSession {
     /// Explicit float-placement tokens already written once (exactly-once
     /// geometry under `frame_operation`).
     spent_frame_ops: BTreeSet<String>,
+    /// Adapter-owned deferred reveals for explicit float placements
+    /// withheld while the lifetime was natively fullscreen, keyed by
+    /// runtime window id. Ordinary float rows arrive `Untouched` from
+    /// shared core, so the adapter remembers the durable target and writes
+    /// it exactly once after the overlay clears (never while fullscreen).
+    pub(crate) pending_fullscreen_float_placements:
+        BTreeMap<String, PendingFullscreenFloatPlacement>,
     /// One bounded staged close-focus feedback row: the first correlated
     /// raw row since the previous dispatch. First-wins (later rows drop
     /// until drained); drained once into the next dispatched report with
@@ -283,6 +305,7 @@ impl WorldSession {
                 pending_frames: BTreeMap::new(),
                 pending_writes: BTreeMap::new(),
                 spent_frame_ops: BTreeSet::new(),
+                pending_fullscreen_float_placements: BTreeMap::new(),
                 pending_close_feedback: None,
                 coverage_gap: false,
                 pending_closes: BTreeSet::new(),
@@ -327,6 +350,7 @@ impl WorldSession {
             pending_frames: BTreeMap::new(),
             pending_writes: BTreeMap::new(),
             spent_frame_ops: BTreeSet::new(),
+            pending_fullscreen_float_placements: BTreeMap::new(),
             pending_close_feedback: None,
             coverage_gap: false,
             pending_closes: BTreeSet::new(),
@@ -575,12 +599,10 @@ impl WorldSession {
         }
         for win in unverifiable {
             if self.intent_unverifiable.insert(win.clone()) {
-                // Static, bounded wording: the canonical window id is the
-                // only variable text, and only the first occurrence per
+                // Static, bounded wording: one pid per line, never the
+                // native window id, and only the first occurrence per
                 // window speaks.
-                eprintln!(
-                    "intent-store: intent binding unverifiable for window {win}; row not persisted"
-                );
+                eprintln!("{}", intent_unverifiable_diagnostic(&win));
             }
         }
         if changes.is_empty() {
@@ -974,6 +996,18 @@ impl WorldSession {
 fn canonical_intent_identity(win: &str) -> Option<(u32, u32)> {
     let (pid, wid) = parse_window_id(win)?;
     (pid > 1 && wid > 0 && window_id(pid, wid) == win).then_some((pid, wid))
+}
+
+/// Normal-level diagnostic for one unverifiable intent binding. R15 permits
+/// the process identity but not the native window handle, so the canonical
+/// `<pid>_<wid>` id is reduced to its pid; malformed input names no subject.
+fn intent_unverifiable_diagnostic(win: &str) -> String {
+    match canonical_intent_identity(win) {
+        Some((pid, _)) => {
+            format!("intent-store: intent binding unverifiable for pid {pid}; row not persisted")
+        }
+        None => "intent-store: intent binding unverifiable; row not persisted".to_owned(),
+    }
 }
 
 /// Minimized lifetimes for one report, in stable order.
@@ -1756,5 +1790,24 @@ mod tests {
         )
         .expect("synthetic report builds");
         assert!(second.focus_feedback.is_empty());
+    }
+
+    #[test]
+    fn unverifiable_intent_diagnostic_redacts_native_window_id() {
+        // R15: normal-level diagnostics may name the pid, never the native
+        // window handle. A malformed id names no subject at all.
+        let line = intent_unverifiable_diagnostic("4242_100021");
+        assert!(line.contains("pid 4242"), "pid rides: {line}");
+        assert!(!line.contains("100021"), "raw wid must not leak: {line}");
+        assert!(
+            !line.contains("4242_100021"),
+            "canonical id must not leak: {line}"
+        );
+        let malformed = intent_unverifiable_diagnostic("not-a-window");
+        assert!(!malformed.contains("not-a-window"), "{malformed}");
+        assert_eq!(
+            malformed,
+            "intent-store: intent binding unverifiable; row not persisted"
+        );
     }
 }

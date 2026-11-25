@@ -8,8 +8,9 @@
 //! the configured [`ProbeModifier`] (default Ctrl; pass `--ctrl meta` for
 //! the Cmd chord space), the float toggle on `G` (Windows `Win+G` / KDE
 //! `Meta+G` parity), the parent orientation toggle on `O` (Windows
-//! `Win+O` / KDE `Meta+O` parity), and maximize on `M` (Windows `Win+M`
-//! / KDE `Meta+M` parity):
+//! `Win+O` / KDE `Meta+O` parity), maximize on `M` (Windows `Win+M`
+//! / KDE `Meta+M` parity), and the neutral current-workspace tiling toggle
+//! on `Y` (Windows `Win+Y` / KDE `Meta+Y` parity):
 //!
 //! - focus: `<Mod>+H/J/K/L` and `<Mod>+arrows` (8 chords);
 //! - move: `<Mod>+Shift+H/J/K/L` and `<Mod>+Shift+arrows` (8 chords);
@@ -18,7 +19,8 @@
 //! - shrink: `<Mod>+Alt+Shift+H/J/K/L` and `<Mod>+Alt+Shift+arrows`
 //!   (8 chords, inwards);
 //! - orientation: `<Mod>+O` (1 chord);
-//! - maximize: `<Mod>+M` (1 chord).
+//! - maximize: `<Mod>+M` (1 chord);
+//! - workspace toggle: `<Mod>+Y` (1 chord, current workspace only).
 //!
 //! Matching is exact everywhere (extra modifiers fail; Caps/Fn bits sit
 //! outside the mask per the existing matcher contract). Key codes are Mac
@@ -28,11 +30,13 @@
 //! mirrors the Windows/KDE defaults chord-for-chord but lives here because
 //! no shared pure catalogue exists in `tiler-core` — the Windows
 //! `binding_catalog` and the KDE `planShortcutCatalog` are each local too).
-//! Digits and workspace selects/sends, fullscreen, sticky, and
-//! workspace-tiling toggles stay out of THIS catalogue: numbered and
+//! Digits and workspace selects/sends, fullscreen, and sticky stay out of
+//! THIS catalogue: numbered and
 //! auxiliary workspace rows live in [`crate::workspace_input`] (defined and
 //! exactly matchable, but with no product execution yet, so never armed
-//! here), maximize maps to the core-owned composed route (no adapter
+//! here), the current-workspace tiling toggle maps to the neutral
+//! core-owned flip (no adapter mode cache or policy), maximize maps to the
+//! core-owned composed route (no adapter
 //! policy), and fullscreen/sticky need native state writes with no core
 //! command behind them (fullscreen windows stay untouched by ordinary
 //! tiling per the selected product rule).
@@ -80,7 +84,7 @@ use crate::input_policy::{
 /// product input-policy slice); re-exported here so the catalogue, matcher
 /// tables and existing tests keep resolving through this module.
 pub use crate::input_policy::{
-    KEY_DOWN, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_M, KEY_O, KEY_RIGHT, KEY_UP,
+    KEY_DOWN, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_M, KEY_O, KEY_RIGHT, KEY_UP, KEY_Y,
 };
 use crate::runtime::{InputDirection, InputSemanticAction};
 use crate::runtime_backend::{InputSource, InputSourceFactory, RawKeyEvent};
@@ -93,15 +97,16 @@ pub const CG_ALT_BIT: u64 = 0x0008_0000;
 
 /// The scoped-tile chord catalogue: 8 focus chords, 8 move
 /// chords (Shift arm), 8 grow chords (Alt arm, outwards), 8 shrink chords
-/// (Alt+Shift arm, inwards), the float toggle, the orientation toggle, and
-/// the maximize toggle. The Ctrl-role modifier applies at tuning time
+/// (Alt+Shift arm, inwards), the float toggle, the orientation toggle, the
+/// maximize toggle, and the neutral current-workspace tiling toggle. The
+/// Ctrl-role modifier applies at tuning time
 /// ([`tap_specs_for`]), so the table itself is modifier-free.
 /// Duplicate-free by construction; validated by
 /// [`RuntimeConfig::validate`]. No row carries the auxiliary workspace arm
 /// (workspace rows live in [`crate::workspace_input`]).
 #[must_use]
 pub fn tile_catalogue() -> Vec<TileBinding> {
-    let mut out = Vec::with_capacity(35);
+    let mut out = Vec::with_capacity(36);
     let focus = [
         (KEY_H, InputDirection::Left),
         (KEY_J, InputDirection::Down),
@@ -174,6 +179,13 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
         alt: false,
         aux: false,
         action: InputSemanticAction::ToggleMaximize,
+    });
+    out.push(TileBinding {
+        key_code: KEY_Y,
+        shift: false,
+        alt: false,
+        aux: false,
+        action: InputSemanticAction::ToggleWorkspaceTiling,
     });
     out
 }

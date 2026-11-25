@@ -161,12 +161,6 @@ const SOCKET_FOCUS_REQUEST_ID: &str = "fixture-harness-focus";
 /// Request id for the harness's own server-shutdown exchange.
 const SOCKET_SHUTDOWN_REQUEST_ID: &str = "fixture-harness-shutdown";
 
-/// Request ids for the bounded diagnostic's plain `set`/`get`/`list`
-/// exchanges (one connection per call, so constants stay unambiguous).
-const SOCKET_SET_REQUEST_ID: &str = "fixture-harness-set";
-const SOCKET_GET_MANY_REQUEST_ID: &str = "fixture-harness-get-many";
-const SOCKET_LIST_REQUEST_ID: &str = "fixture-harness-list";
-
 /// Spawn caller windows on a leg-owned fixture server: one nonce-gated
 /// `spawn` exchange with the exact fixture wire shape. The reply carries
 /// per-window entries for the caller to judge; a transport refusal fails
@@ -254,102 +248,6 @@ pub fn send_fixture_close(
     #[cfg(unix)]
     {
         socket_round_trip(socket_path, &request, SOCKET_CLOSE_REQUEST_ID)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (socket_path, request);
-        Err("socket: fixture transport is Unix-only".to_owned())
-    }
-}
-
-/// One nonce-gated `set` exchange with a plain JSON patch (the caller owns
-/// the patch shape; this only carries it). Used by bounded diagnostics that
-/// already hold the signed-fixture proof; the reply is returned for the
-/// caller to judge. Unix-only like every other fixture exchange.
-pub(crate) fn send_fixture_set_patch(
-    socket_path: &str,
-    nonce: &str,
-    ids: &[&str],
-    patch: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    if ids.is_empty() {
-        return Err("set: no caller ids; refusing an empty set".to_owned());
-    }
-    for id in ids {
-        if !caller_id_valid(id) {
-            return Err("set: caller id malformed; refusing".to_owned());
-        }
-    }
-    let request = serde_json::json!({
-        "v": 1,
-        "request_id": SOCKET_SET_REQUEST_ID,
-        "nonce": nonce,
-        "op": "set",
-        "ids": ids,
-        "patch": patch,
-    });
-    #[cfg(unix)]
-    {
-        socket_round_trip(socket_path, &request, SOCKET_SET_REQUEST_ID)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (socket_path, request);
-        Err("socket: fixture transport is Unix-only".to_owned())
-    }
-}
-
-/// One nonce-gated read-only `get` over several callers, returning the raw
-/// matched reply (snapshots with observed state included). Used by bounded
-/// diagnostics that confirm a host effect from the fixture's own observed
-/// fields. Unix-only like every other fixture exchange.
-pub(crate) fn send_fixture_get_many(
-    socket_path: &str,
-    nonce: &str,
-    ids: &[&str],
-) -> Result<serde_json::Value, String> {
-    if ids.is_empty() {
-        return Err("get: no caller ids; refusing an empty get".to_owned());
-    }
-    for id in ids {
-        if !caller_id_valid(id) {
-            return Err("get: caller id malformed; refusing".to_owned());
-        }
-    }
-    let request = serde_json::json!({
-        "v": 1,
-        "request_id": SOCKET_GET_MANY_REQUEST_ID,
-        "nonce": nonce,
-        "op": "get",
-        "ids": ids,
-    });
-    #[cfg(unix)]
-    {
-        socket_round_trip(socket_path, &request, SOCKET_GET_MANY_REQUEST_ID)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (socket_path, request);
-        Err("socket: fixture transport is Unix-only".to_owned())
-    }
-}
-
-/// One nonce-gated `list` exchange, returning the raw matched reply. The
-/// caller judges the id set (a bounded diagnostic requires an empty server
-/// before spawning its own windows). Unix-only like every other exchange.
-pub(crate) fn send_fixture_list(
-    socket_path: &str,
-    nonce: &str,
-) -> Result<serde_json::Value, String> {
-    let request = serde_json::json!({
-        "v": 1,
-        "request_id": SOCKET_LIST_REQUEST_ID,
-        "nonce": nonce,
-        "op": "list",
-    });
-    #[cfg(unix)]
-    {
-        socket_round_trip(socket_path, &request, SOCKET_LIST_REQUEST_ID)
     }
     #[cfg(not(unix))]
     {

@@ -364,13 +364,17 @@ impl WorldTransaction<'_> {
                                 message: MSG_MIGRATION,
                             };
                         };
+                        // Composed sticky authority, not the raw native
+                        // fact: on hosts without native sticky support the
+                        // fact is null and only core's retained intent
+                        // proves the all-desktop lifetime.
                         let sticky_windows: BTreeSet<WindowId> = self
                             .world
                             .staged
                             .facts
-                            .iter()
-                            .filter(|(_, fact)| fact.sticky != Some(false))
-                            .map(|(window, _)| window.clone())
+                            .keys()
+                            .filter(|window| self.derived_for(window).sticky)
+                            .cloned()
                             .collect();
                         let side_a = WorkspaceSwapSide {
                             source: src_a.clone(),
@@ -1012,6 +1016,13 @@ impl WorldTransaction<'_> {
         engine: &WorldTransaction<'_>,
         source: &DomainKey,
     ) -> bool {
+        // Without native sticky support, `None` is the ordinary composed
+        // value (the adapter has no sticky fact to read), so no member can
+        // be unknown-sticky. The unresolved-fact hold applies only where
+        // the host exposes the property and the read is genuinely missing.
+        if !engine.native_sticky_supported() {
+            return false;
+        }
         // Raw unknown sticky (missing fact or `None`) must reject actions
         // requiring proven non-sticky, never silently swap a partial
         // subset. Proven sticky stays out; proven non-sticky moves.
@@ -1042,9 +1053,10 @@ impl WorldTransaction<'_> {
         })
     }
 
-    /// Sticky facts stay out: they are adapter-owned all-desktop lifetimes,
-    /// never swapped member state. Sorted and deduplicated for deterministic
-    /// settlement.
+    /// Composed sticky windows stay out: they are all-desktop lifetimes,
+    /// whether the host reports the native fact or core retains the intent
+    /// (`derived_for(...).sticky`), never swapped member state. Sorted and
+    /// deduplicated for deterministic settlement.
     pub(crate) fn swap_source_members(
         engine: &WorldTransaction<'_>,
         source: &DomainKey,
@@ -1064,17 +1076,19 @@ impl WorldTransaction<'_> {
             }
             members.extend(domain.minimized.iter().cloned());
         }
-        members.retain(|window| {
-            !engine
-                .world
-                .staged
-                .facts
-                .get(window)
-                .is_some_and(|fact| fact.sticky != Some(false))
-        });
+        members.retain(|window| !engine.derived_for(window).sticky);
         members.sort();
         members.dedup();
         members
+    }
+
+    /// Whether the bound host exposes a native sticky fact. Without it,
+    /// `sticky: None` is the ordinary composed value rather than an
+    /// unresolved read.
+    fn native_sticky_supported(&self) -> bool {
+        self.connection
+            .capabilities()
+            .is_some_and(|capabilities| capabilities.native_sticky)
     }
 
     /// Whole-workspace migration through the logical rings plus the
@@ -1332,15 +1346,18 @@ impl WorldTransaction<'_> {
                 // adapter actuates each member exactly once under the
                 // stable transfer identity below, with truthful partial
                 // attempt reporting. Raw facts stay distinct; the derived
-                // lane decides hidden.
+                // lane decides hidden and composed sticky.
                 let mut members = outcome.members;
+                let native_sticky = self.native_sticky_supported();
                 for (window, homed) in &self.world.staged.homing {
                     // Unknown sticky never silently includes or omits: a
                     // homed hidden-lane lifetime without proven sticky
-                    // state refuses with no partial mutation.
+                    // state refuses with no partial mutation. Without a
+                    // native sticky fact, null is the ordinary value.
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
                         && self.derived_for(window).hidden
+                        && native_sticky
                         && self.world.staged.facts.get(window).is_some_and(|fact| {
                             fact.sticky != Some(true) && fact.sticky != Some(false)
                         })
@@ -1352,15 +1369,11 @@ impl WorldTransaction<'_> {
                     }
                 }
                 for (window, homed) in &self.world.staged.homing {
+                    let derived = self.derived_for(window);
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
-                        && self.derived_for(window).hidden
-                        && self
-                            .world
-                            .staged
-                            .facts
-                            .get(window)
-                            .is_some_and(|fact| fact.sticky == Some(false))
+                        && derived.hidden
+                        && !derived.sticky
                     {
                         members.push(window.clone());
                     }

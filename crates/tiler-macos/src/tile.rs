@@ -678,6 +678,48 @@ pub fn run_tile(request: TileRequest) -> Result<String, (i32, String)> {
     }
 }
 
+/// Drain queued toggle bindings against one render generation: the pure,
+/// AppKit-free half of [`native::IndicatorGuard::drain_toggles`]. Each
+/// queued click resolves through
+/// [`crate::workspace_indicator::toggle_click_action`]; an accepted
+/// submission counts exactly once (the caller supplies the guarded-lane
+/// submit as `submit`), and a generation-drifted one is discarded with the
+/// bounded static-token reason. Returns `(accepted, discarded)` so callers
+/// and tests observe the same verdicts the counters and logs report.
+#[cfg(any(target_os = "macos", test))]
+fn drain_toggle_clicks(
+    driver: &mut crate::workspace_indicator::IndicatorDriver,
+    rx: &std::sync::mpsc::Receiver<crate::workspace_indicator::IndicatorToggleClick>,
+    current_generation: u64,
+    submit: &mut dyn FnMut(crate::runtime_types::InputSemanticAction) -> bool,
+) -> (u64, u64) {
+    let mut accepted = 0;
+    let mut discarded = 0;
+    while let Ok(click) = rx.try_recv() {
+        match crate::workspace_indicator::toggle_click_action(
+            click.ui_generation,
+            current_generation,
+        ) {
+            Ok(action) => {
+                let submitted = submit(action);
+                if submitted {
+                    driver.toggle_submitted();
+                    accepted += 1;
+                }
+                eprintln!("tiler-macos dev indicator toggle submitted={submitted}");
+            }
+            Err(reason) => {
+                discarded += 1;
+                eprintln!(
+                    "tiler-macos dev indicator toggle discarded reason={}",
+                    crate::workspace_indicator::bound_click_discard_reason(&reason),
+                );
+            }
+        }
+    }
+    (accepted, discarded)
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) use native::IndicatorGuard;
 
@@ -1106,6 +1148,13 @@ mod native {
         options: crate::workspace_indicator::IndicatorOptions,
         tx: Option<std::sync::mpsc::SyncSender<crate::workspace_indicator::IndicatorClick>>,
         rx: Option<std::sync::mpsc::Receiver<crate::workspace_indicator::IndicatorClick>>,
+        /// Bounded toggle channel: the prepended menu item forwards its
+        /// render-time binding here; a full queue drops instead of
+        /// blocking the AppKit callback.
+        toggle_tx:
+            Option<std::sync::mpsc::SyncSender<crate::workspace_indicator::IndicatorToggleClick>>,
+        toggle_rx:
+            Option<std::sync::mpsc::Receiver<crate::workspace_indicator::IndicatorToggleClick>>,
         handle: Option<crate::ffi::WorkspaceIndicator>,
         icons: std::collections::HashMap<String, objc2::rc::Retained<objc2_app_kit::NSImage>>,
         driver: crate::workspace_indicator::IndicatorDriver,
@@ -1123,11 +1172,19 @@ mod native {
             } else {
                 (None, None)
             };
+            let (toggle_tx, toggle_rx) = if driver.armed() {
+                let (tx, rx) = std::sync::mpsc::sync_channel(16);
+                (Some(tx), Some(rx))
+            } else {
+                (None, None)
+            };
             Self {
                 mtm,
                 options,
                 tx,
                 rx,
+                toggle_tx,
+                toggle_rx,
                 handle: None,
                 icons: std::collections::HashMap::new(),
                 driver,
@@ -1138,18 +1195,22 @@ mod native {
             self.driver.armed()
         }
 
-        /// Whether a fresh revision/observation pair plus the live accent
-        /// needs a rebuild (edge trigger for the occupancy query and
-        /// frontmost read below: no engine round-trip and no extra reads
-        /// on a steady cadence; the accent rides so a resolved-colour
-        /// change repaints too).
+        /// Whether a fresh revision/observation pair, the live accent, or a
+        /// moved applied-reply indicator revision needs a rebuild (edge
+        /// trigger for the occupancy query and frontmost read below: no
+        /// engine round-trip and no extra reads on a steady cadence; the
+        /// accent rides so a resolved-colour change repaints too, and the
+        /// indicator revision repaints a toggle reply's checkmark before
+        /// any topology tick).
         fn needs_tick(
             &self,
             revision: u64,
             observations: u64,
             accent: Option<crate::active_border::SystemAccent>,
+            indicator_revision: u64,
         ) -> bool {
-            self.driver.needs_tick(revision, observations, accent)
+            self.driver
+                .needs_tick_with_revision(revision, observations, accent, indicator_revision)
         }
 
         fn updates(&self) -> u64 {
@@ -1178,6 +1239,9 @@ mod native {
         /// switching under an unsafe context).
         fn discard_clicks(&mut self) {
             if let Some(rx) = self.rx.as_ref() {
+                while rx.try_recv().is_ok() {}
+            }
+            if let Some(rx) = self.toggle_rx.as_ref() {
                 while rx.try_recv().is_ok() {}
             }
         }
@@ -1215,8 +1279,14 @@ mod native {
             core_generation: &str,
             highlight: &crate::pager_highlight::PagerHighlightStyle,
             accent: Option<crate::active_border::SystemAccent>,
+            indicator_revision: u64,
         ) -> bool {
-            if !self.driver.needs_tick(revision, observations, accent) {
+            if !self.driver.needs_tick_with_revision(
+                revision,
+                observations,
+                accent,
+                indicator_revision,
+            ) {
                 return false;
             }
             self.driver.note_core_generation(core_generation);
@@ -1268,6 +1338,7 @@ mod native {
                             ),
                             title: String::new(),
                             rows: Vec::new(),
+                            tiling: None,
                         }
                     } else {
                         let native_last = row.spaces.last().copied().unwrap_or(0);
@@ -1286,6 +1357,7 @@ mod native {
                                 hidden_reason: Some(reason),
                                 title: String::new(),
                                 rows: Vec::new(),
+                                tiling: None,
                             }
                         })
                     }
@@ -1295,6 +1367,7 @@ mod native {
                     hidden_reason: Some(reason),
                     title: String::new(),
                     rows: Vec::new(),
+                    tiling: None,
                 },
             };
             // Representative icons resolve here (main-thread bundle cache,
@@ -1356,13 +1429,14 @@ mod native {
                     (row.position, minis)
                 })
                 .collect();
-            match self.driver.apply(
+            match self.driver.apply_with_revision(
                 projection,
                 trailing.map(|(slot, occupancy, _)| (slot, occupancy)),
                 pager,
                 revision,
                 observations,
                 accent,
+                indicator_revision,
             ) {
                 crate::workspace_indicator::DriverApply::Applied(generation) => {
                     self.push_native(generation, revision, trailing, &icons);
@@ -1457,7 +1531,10 @@ mod native {
                 let Some(tx) = self.tx.clone() else {
                     return;
                 };
-                match crate::ffi::WorkspaceIndicator::create(self.mtm, "", tx) {
+                let Some(toggle_tx) = self.toggle_tx.clone() else {
+                    return;
+                };
+                match crate::ffi::WorkspaceIndicator::create(self.mtm, "", tx, toggle_tx) {
                     Ok(handle) => self.handle = Some(handle),
                     Err(reason) => {
                         eprintln!(
@@ -1485,7 +1562,13 @@ mod native {
                 generation,
                 revision,
             );
-            handle.rebuild(self.mtm, &rows);
+            handle.rebuild(
+                self.mtm,
+                &rows,
+                projection
+                    .tiling
+                    .map(|mode| mode == tiler_core::world_report::TilingMode::Tiled),
+            );
             let occupied = projection
                 .rows
                 .iter()
@@ -1622,6 +1705,41 @@ mod native {
                     }
                 }
             }
+        }
+
+        /// Drain queued current-workspace tiling-toggle bindings. Any queued
+        /// toggle is discarded when no render is cached or the cached render
+        /// is hidden (same rule as clicks: never toggle under a game or
+        /// pause). Otherwise the render-time generation is compared against
+        /// the current one and an accepted binding submits the neutral
+        /// [`crate::runtime_types::InputSemanticAction::ToggleWorkspaceTiling`]
+        /// through the guarded input lane — no position, SID, or ordinal is
+        /// consulted, so core resolves the mode at execution. Refusals and
+        /// dedup drops log bounded static tokens only.
+        fn drain_toggles(&mut self, runtime: &crate::runtime::RuntimeHandle) {
+            let Some(rx) = self.toggle_rx.as_ref() else {
+                return;
+            };
+            if self.driver.last().is_none() {
+                self.discard_clicks();
+                return;
+            }
+            if !self
+                .driver
+                .last()
+                .is_some_and(|projection| projection.visible)
+            {
+                self.discard_clicks();
+                return;
+            }
+            let current_generation = self.driver.generation();
+            let mut submit = |action: crate::runtime_types::InputSemanticAction| -> bool {
+                matches!(
+                    runtime.submit_input_action(action),
+                    crate::runtime::SubmitOutcome::Accepted
+                )
+            };
+            let _ = drain_toggle_clicks(&mut self.driver, rx, current_generation, &mut submit);
         }
 
         /// Verify one core-row click against the render plus the coherent
@@ -2899,7 +3017,13 @@ mod native {
                     {
                         let observations = handle.diagnostics().observations_published;
                         let accent = crate::ffi::border_system_accent();
-                        if indicator.needs_tick(live.revision, observations, accent) {
+                        let indicator_revision = handle.indicator_revision();
+                        if indicator.needs_tick(
+                            live.revision,
+                            observations,
+                            accent,
+                            indicator_revision,
+                        ) {
                             let report =
                                 handle.query_workspace_occupancy(Duration::from_millis(100));
                             let frontmost_pid = crate::ffi::frontmost_app()
@@ -2924,6 +3048,7 @@ mod native {
                                 &snapshot_generation,
                                 &request.pager_highlight,
                                 accent,
+                                indicator_revision,
                             );
                             // Change-only submit attribution under the latest
                             // publication (coalesced, never causal per-action
@@ -3456,6 +3581,7 @@ mod native {
                 && let Ok(row) = crate::workspace_select::user_row_from_rows(&live.rows, 0)
             {
                 indicator.drain_clicks(&row, live.revision, &handle);
+                indicator.drain_toggles(&handle);
             }
 
             // Discovery: running scoped apps bind launchDate/exe/bundle and
@@ -4172,6 +4298,7 @@ mod native {
                 last_workspace_desires: Vec::new(),
                 last_native_creations: Vec::new(),
                 last_core_generation: String::new(),
+                indicator_revision: 0,
                 presentation_style: crate::active_border::PresentationStylePx::default(),
             }));
             crate::runtime::RuntimeHandle {
@@ -5375,6 +5502,91 @@ mod tests {
                 }
             );
         }
+    }
+
+    fn toggle_drain_driver() -> crate::workspace_indicator::IndicatorDriver {
+        use crate::workspace_indicator::{IndicatorDriver, IndicatorMode, SpaceOccupancy};
+        let projection = crate::workspace_indicator::project_indicator(
+            &[1, 2],
+            1,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Empty,
+            &|_| None,
+        )
+        .expect("provable row projects");
+        let mut driver = IndicatorDriver::new(IndicatorMode::All);
+        assert_eq!(
+            driver.apply(projection, None, Vec::new(), 9, 0, None),
+            crate::workspace_indicator::DriverApply::Applied(1)
+        );
+        driver
+    }
+
+    #[test]
+    fn drain_toggle_clicks_counts_one_acceptance_per_click() {
+        use crate::workspace_indicator::IndicatorToggleClick;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = toggle_drain_driver();
+        tx.send(IndicatorToggleClick { ui_generation: 1 })
+            .expect("channel live");
+        let mut calls = 0;
+        let mut submit = |action: crate::runtime_types::InputSemanticAction| {
+            calls += 1;
+            assert_eq!(
+                action,
+                crate::runtime_types::InputSemanticAction::ToggleWorkspaceTiling
+            );
+            true
+        };
+        let generation = driver.generation();
+        let verdicts = super::drain_toggle_clicks(&mut driver, &rx, generation, &mut submit);
+        assert_eq!(verdicts, (1, 0), "one queued click, one acceptance");
+        assert_eq!(calls, 1, "the submit lane is touched exactly once");
+        assert_eq!(
+            driver.toggles(),
+            1,
+            "one accepted click must count exactly once (never double)"
+        );
+    }
+
+    #[test]
+    fn drain_toggle_clicks_counts_refused_submissions_as_neither() {
+        use crate::workspace_indicator::IndicatorToggleClick;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = toggle_drain_driver();
+        tx.send(IndicatorToggleClick { ui_generation: 1 })
+            .expect("channel live");
+        let mut calls = 0;
+        let mut submit = |_action: crate::runtime_types::InputSemanticAction| {
+            calls += 1;
+            false
+        };
+        let generation = driver.generation();
+        let verdicts = super::drain_toggle_clicks(&mut driver, &rx, generation, &mut submit);
+        assert_eq!(verdicts, (0, 0), "a refusal is neither accepted nor stale");
+        assert_eq!(calls, 1);
+        assert_eq!(driver.toggles(), 0);
+    }
+
+    #[test]
+    fn drain_toggle_clicks_discards_stale_generation_without_submitting() {
+        use crate::workspace_indicator::IndicatorToggleClick;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = toggle_drain_driver();
+        // Render generation is 1; a click rendered at 0 predates it.
+        tx.send(IndicatorToggleClick { ui_generation: 0 })
+            .expect("channel live");
+        let mut calls = 0;
+        let mut submit = |_action: crate::runtime_types::InputSemanticAction| {
+            calls += 1;
+            true
+        };
+        let generation = driver.generation();
+        let verdicts = super::drain_toggle_clicks(&mut driver, &rx, generation, &mut submit);
+        assert_eq!(verdicts, (0, 1), "stale clicks discard, never submit");
+        assert_eq!(calls, 0, "the submit lane is never touched");
+        assert_eq!(driver.toggles(), 0);
     }
 
     #[cfg(target_os = "macos")]

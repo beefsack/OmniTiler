@@ -196,7 +196,7 @@ fn operation_commands_cover_every_supported_tiling_action() {
         ),
         (InputSemanticAction::ToggleMaximize, OP_TOGGLE_MAXIMIZE),
     ] {
-        let (command, token) = operation_command(&action, &mut retained)
+        let (command, token) = operation_command(&action, &mut retained, None, &[])
             .unwrap_or_else(|| panic!("{action:?} has an operation route"));
         assert_eq!(token, op);
         assert!(
@@ -233,6 +233,54 @@ fn operation_commands_cover_every_supported_tiling_action() {
             other => panic!("{action:?} must carry the current-focus subject, got {other:?}"),
         }
     }
+    // Neutral current-workspace tiling toggle: the adapter resolves the
+    // focused window's retained NATIVE home and translates it through the
+    // published native→logical binding rows; the command names exactly
+    // that one domain and the core flips the retained mode at execution.
+    let mut toggle_retained = retained_with_window(4242, 7, &domain_key());
+    toggle_retained.observed_focus = Some(WindowId(window_id(4242, 7)));
+    let toggle_ctx = NativeContext {
+        revision: 9,
+        domains: vec![toggle_native_domain(11, true, true)],
+        skipped: Vec::new(),
+    };
+    let native_key = domain_key();
+    let bindings = [crate::pager::PagerWorkspaceBinding {
+        output: native_key.output.0.clone(),
+        workspace: "ws-11".to_owned(),
+        native: Some(native_key.workspace.0.clone()),
+    }];
+    let (command, token) = operation_command(
+        &InputSemanticAction::ToggleWorkspaceTiling,
+        &mut toggle_retained,
+        Some(&toggle_ctx),
+        &bindings,
+    )
+    .expect("workspace toggle has an operation route");
+    assert_eq!(token, OP_TOGGLE_WORKSPACE_TILING);
+    assert_eq!(
+        command,
+        tiler_core::world_report::WorldCommand::ToggleWorkspaceTiling {
+            output: native_key.output,
+            workspace: WorkspaceId("ws-11".to_owned()),
+        }
+    );
+    assert!(
+        tiler_core::world_report::valid_command(&command),
+        "toggle carries a valid world command"
+    );
+    // No binding row: honest refusal, never a native id or a substituted
+    // domain (the live topology still corroborates the home).
+    assert!(
+        operation_command(
+            &InputSemanticAction::ToggleWorkspaceTiling,
+            &mut toggle_retained,
+            Some(&toggle_ctx),
+            &[],
+        )
+        .is_none(),
+        "unbound native home never rides the operation route"
+    );
     // Workspace actions never ride the operation route (planner-owned
     // selects or refusals only).
     for action in [
@@ -244,9 +292,259 @@ fn operation_commands_cover_every_supported_tiling_action() {
         InputSemanticAction::WorkspacePrevious,
     ] {
         assert!(
-            operation_command(&action, &mut retained).is_none(),
+            operation_command(&action, &mut retained, None, &[]).is_none(),
             "{action:?} is never an operation"
         );
+    }
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_prefers_the_focused_homed_domain() {
+    // Focused native home wins over the topology fallback and translates
+    // through the published binding rows (native `space-N` -> core logical
+    // `ws-N`). The live topology must corroborate that home as current and
+    // readable; the first binding row names a different domain to prove it
+    // never leaks into the resolution.
+    let ctx = NativeContext {
+        revision: 9,
+        domains: vec![toggle_native_domain(11, true, true)],
+        skipped: Vec::new(),
+    };
+    let mut retained = retained_with_window(4242, 7, &domain_key());
+    retained.observed_focus = Some(WindowId(window_id(4242, 7)));
+    let bindings = [
+        crate::pager::PagerWorkspaceBinding {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-other".to_owned(),
+            native: Some("space-99".to_owned()),
+        },
+        crate::pager::PagerWorkspaceBinding {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-11".to_owned(),
+            native: Some("space-11".to_owned()),
+        },
+    ];
+    let command = toggle_workspace_tiling_command(&retained, Some(&ctx), &bindings)
+        .expect("focused current readable home resolves");
+    assert_eq!(
+        command,
+        tiler_core::world_report::WorldCommand::ToggleWorkspaceTiling {
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("ws-11".to_owned()),
+        }
+    );
+    assert!(tiler_core::world_report::valid_command(&command));
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_refuses_an_unbound_focused_home() {
+    // A focused window whose home is current and readable but has no
+    // binding row is an honest translation refusal: the resolver never
+    // falls through to another domain and never sends the native id.
+    let ctx = NativeContext {
+        revision: 9,
+        domains: vec![toggle_native_domain(11, true, true)],
+        skipped: Vec::new(),
+    };
+    let mut retained = retained_with_window(4242, 7, &domain_key());
+    retained.observed_focus = Some(WindowId(window_id(4242, 7)));
+    let command = toggle_workspace_tiling_command(&retained, Some(&ctx), &[]);
+    assert_eq!(command, None);
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_refuses_a_focused_home_without_context() {
+    // No live native topology: there is no current workspace to prove, so
+    // even a retained focused home and a matching binding row refuse.
+    let mut retained = retained_with_window(4242, 7, &domain_key());
+    retained.observed_focus = Some(WindowId(window_id(4242, 7)));
+    let bindings = [crate::pager::PagerWorkspaceBinding {
+        output: "macos-display-1".to_owned(),
+        workspace: "ws-11".to_owned(),
+        native: Some("space-11".to_owned()),
+    }];
+    assert_eq!(
+        toggle_workspace_tiling_command(&retained, None, &bindings),
+        None
+    );
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_refuses_a_hidden_focused_home() {
+    // The focused window's retained home survives a Space switch in
+    // `window_domains`, but the live topology reports it hidden: a
+    // stale/hidden home never toggles (and never borrows another current
+    // domain).
+    let ctx = NativeContext {
+        revision: 10,
+        domains: vec![
+            toggle_native_domain(11, false, true),
+            toggle_native_domain(12, true, true),
+        ],
+        skipped: Vec::new(),
+    };
+    let mut retained = retained_with_window(4242, 7, &domain_key());
+    retained.observed_focus = Some(WindowId(window_id(4242, 7)));
+    let bindings = [
+        crate::pager::PagerWorkspaceBinding {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-11".to_owned(),
+            native: Some("space-11".to_owned()),
+        },
+        crate::pager::PagerWorkspaceBinding {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-12".to_owned(),
+            native: Some("space-12".to_owned()),
+        },
+    ];
+    assert_eq!(
+        toggle_workspace_tiling_command(&retained, Some(&ctx), &bindings),
+        None,
+        "a stale/hidden focused home never toggles other workspace"
+    );
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_refuses_an_unhomed_focused_window() {
+    // A focused window with no retained homing is an honest refusal even
+    // when the topology offers exactly one current readable domain: the
+    // fallback applies only when NO window is focused.
+    let ctx = NativeContext {
+        revision: 9,
+        domains: vec![toggle_native_domain(11, true, true)],
+        skipped: Vec::new(),
+    };
+    let bindings = [crate::pager::PagerWorkspaceBinding {
+        output: "macos-display-1".to_owned(),
+        workspace: "ws-11".to_owned(),
+        native: Some("space-11".to_owned()),
+    }];
+    let retained = RetainedCore {
+        observed_focus: Some(WindowId(window_id(4242, 7))),
+        ..RetainedCore::default()
+    };
+    assert_eq!(
+        toggle_workspace_tiling_command(&retained, Some(&ctx), &bindings),
+        None,
+        "an unhomed focused window never borrows the current-domain fallback"
+    );
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_falls_back_to_the_unique_current_readable_domain() {
+    // No observed focus: exactly one current AND readable native domain
+    // resolves (hidden and unreadable rows never qualify), translated
+    // through the binding rows.
+    let ctx = NativeContext {
+        revision: 9,
+        domains: vec![
+            toggle_native_domain(11, true, true),
+            toggle_native_domain(12, false, true),
+            toggle_native_domain(13, true, false),
+        ],
+        skipped: Vec::new(),
+    };
+    let bindings = [crate::pager::PagerWorkspaceBinding {
+        output: "macos-display-1".to_owned(),
+        workspace: "ws-11".to_owned(),
+        native: Some("space-11".to_owned()),
+    }];
+    let command = toggle_workspace_tiling_command(&RetainedCore::default(), Some(&ctx), &bindings)
+        .expect("unique current readable domain resolves");
+    assert_eq!(
+        command,
+        tiler_core::world_report::WorldCommand::ToggleWorkspaceTiling {
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("ws-11".to_owned()),
+        }
+    );
+    assert!(tiler_core::world_report::valid_command(&command));
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_refuses_zero_current_readable_domains() {
+    let ctx = NativeContext {
+        revision: 9,
+        domains: vec![
+            toggle_native_domain(12, false, true),
+            toggle_native_domain(13, true, false),
+        ],
+        skipped: Vec::new(),
+    };
+    let bindings = [crate::pager::PagerWorkspaceBinding {
+        output: "macos-display-1".to_owned(),
+        workspace: "ws-12".to_owned(),
+        native: Some("space-12".to_owned()),
+    }];
+    assert_eq!(
+        toggle_workspace_tiling_command(&RetainedCore::default(), Some(&ctx), &bindings),
+        None
+    );
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_refuses_ambiguous_current_domains() {
+    let ctx = NativeContext {
+        revision: 9,
+        domains: vec![
+            toggle_native_domain(11, true, true),
+            toggle_native_domain(12, true, true),
+        ],
+        skipped: Vec::new(),
+    };
+    let bindings = [
+        crate::pager::PagerWorkspaceBinding {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-11".to_owned(),
+            native: Some("space-11".to_owned()),
+        },
+        crate::pager::PagerWorkspaceBinding {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-12".to_owned(),
+            native: Some("space-12".to_owned()),
+        },
+    ];
+    assert_eq!(
+        toggle_workspace_tiling_command(&RetainedCore::default(), Some(&ctx), &bindings),
+        None,
+        "two current readable domains never guess"
+    );
+}
+
+#[test]
+fn workspace_tiling_toggle_resolver_refuses_without_context_or_focus() {
+    let bindings = [crate::pager::PagerWorkspaceBinding {
+        output: "macos-display-1".to_owned(),
+        workspace: "ws-11".to_owned(),
+        native: Some("space-11".to_owned()),
+    }];
+    assert_eq!(
+        toggle_workspace_tiling_command(&RetainedCore::default(), None, &bindings),
+        None
+    );
+}
+
+fn toggle_native_domain(space: u64, current: bool, readable: bool) -> NativeDomain {
+    NativeDomain {
+        cg_id: 1,
+        uuid: None,
+        output: OutputId("macos-display-1".to_owned()),
+        workspace: WorkspaceId(format!("space-{space}")),
+        space,
+        current,
+        readable,
+        bounds: Rect {
+            x: 0,
+            y: 0,
+            w: 1440,
+            h: 900,
+        },
+        visible: Rect {
+            x: 0,
+            y: 25,
+            w: 1440,
+            h: 875,
+        },
     }
 }
 

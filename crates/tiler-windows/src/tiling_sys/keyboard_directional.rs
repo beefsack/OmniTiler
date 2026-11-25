@@ -289,17 +289,21 @@ pub(super) fn dispatch_directional_intent(
     // applied reply IS the outcome.
     let command = match intent.op {
         SnapOp::Focus => tiler_core::world_report::WorldCommand::FocusDirectional {
-            window: tiler_core::directional::WindowId(from.clone()),
+            window: tiler_core::world_report::FocusDirectionalSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
             direction: intent.direction,
         },
         SnapOp::Move => tiler_core::world_report::WorldCommand::MoveDirectional {
-            window: tiler_core::directional::WindowId(from.clone()),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
             direction: intent.direction,
             same_axis: same_axis_move_for(state.settings_live.as_ref()),
         },
     };
     let foreground = crate::ffi::foreground_window();
-    let reply = super::world_tick::run_world_command(
+    let world_outcome = super::world_tick::run_world_command(
         state,
         me,
         store,
@@ -327,9 +331,9 @@ pub(super) fn dispatch_directional_intent(
         target,
         rect,
         cause,
-    }) = reply
+    }) = world_outcome
         .as_ref()
-        .and_then(|reply| reply.command_result.clone())
+        .and_then(|outcome| outcome.result.clone())
     {
         use tiler_core::world_directional::DirectionalOutcome as O;
         match intent.op {
@@ -601,22 +605,23 @@ pub(super) fn dispatch_directional_intent(
         }
     }
     // No world-owned directional result: the tiled world outcome rides
-    // the snapshot, transfers, and the single spent focus effect from the
+    // the snapshot, transfers, and the retained focus request from the
     // world apply above. This seam verifies arrival and the foreground
     // for its snap chain and never actuates twice.
     let outcome: &'static str = match intent.op {
         SnapOp::Focus => {
-            let Some(target) = reply.as_ref().and_then(|reply| {
-                reply
-                    .effects
-                    .iter()
-                    .find(|effect| {
-                        effect.kind == tiler_core::world_report::EffectKind::Focus
-                            && effect.id.starts_with("fx-")
+            let Some(target) = world_outcome.as_ref().and_then(|outcome| {
+                outcome
+                    .reply
+                    .focus_request
+                    .as_ref()
+                    .filter(|request| {
+                        request.cause
+                            == tiler_core::world_report::FocusRequestCause::ExplicitCommand
                     })
-                    .map(|effect| effect.target.0.clone())
+                    .map(|request| request.target.0.clone())
             }) else {
-                // No explicit focus effect: the core planned no focus
+                // No explicit focus request: the core planned no focus
                 // change (local no-op or silent refusal).
                 state.snap_advance = None;
                 log_json_at(
@@ -637,7 +642,7 @@ pub(super) fn dispatch_directional_intent(
                 );
                 return;
             };
-            // The world apply already spent the single focus effect; verify
+            // The world apply already accepted the retained focus request; verify
             // the foreground for the snap chain, never actuate twice.
             if foreground_matches(state, &observed, &retained, &target) {
                 note_focus_advance(state, &observed, &retained, &target);
@@ -648,7 +653,7 @@ pub(super) fn dispatch_directional_intent(
             }
         }
         SnapOp::Move => {
-            let Some(reply) = reply.as_ref() else {
+            let Some(reply) = world_outcome.as_ref().map(|outcome| &outcome.reply) else {
                 state.snap_advance = None;
                 log_json_at(
                     log_path,
@@ -840,11 +845,11 @@ fn dispatch_directional_no_focus(
     // topology and the refusal/selection lattice, so the adapter never
     // branches here. The applied reply IS the outcome.
     let command = tiler_core::world_report::WorldCommand::FocusDirectional {
-        window: tiler_core::directional::WindowId(String::new()),
+        window: tiler_core::world_report::FocusDirectionalSubject::NoFocus,
         direction: intent.direction,
     };
     let foreground = crate::ffi::foreground_window();
-    let reply = super::world_tick::run_world_command(
+    let world_outcome = super::world_tick::run_world_command(
         state,
         me,
         store,
@@ -858,12 +863,13 @@ fn dispatch_directional_no_focus(
         super::observation::sample_cursor(),
     );
     // World-owned directional no-focus outcome. Refusals settle
-    // atomically with no writes; a focus change actuates through the
-    // single spent common effect inside the world apply above, and this
-    // seam only verifies the foreground for its snap chain.
-    if let Some(tiler_core::world_report::CommandResult::Directional { outcome, cause, .. }) = reply
-        .as_ref()
-        .and_then(|reply| reply.command_result.clone())
+    // atomically with no writes; a focus change rides the retained
+    // focus request from the world apply above, and this seam only
+    // verifies the foreground for its snap chain.
+    if let Some(tiler_core::world_report::CommandResult::Directional { outcome, cause, .. }) =
+        world_outcome
+            .as_ref()
+            .and_then(|outcome| outcome.result.clone())
     {
         state.snap_advance = None;
         let mut line = serde_json::json!({
@@ -883,21 +889,21 @@ fn dispatch_directional_no_focus(
         return;
     }
     // No world-owned directional result: the outcome rides the snapshot
-    // and the single spent focus effect from the world apply above. This
+    // and the retained focus request from the world apply above. This
     // seam verifies arrival and the foreground for its snap chain and
     // never actuates twice.
-    let target = reply.as_ref().and_then(|reply| {
-        reply
-            .effects
-            .iter()
-            .find(|effect| {
-                effect.kind == tiler_core::world_report::EffectKind::Focus
-                    && effect.id.starts_with("fx-")
+    let target = world_outcome.as_ref().and_then(|outcome| {
+        outcome
+            .reply
+            .focus_request
+            .as_ref()
+            .filter(|request| {
+                request.cause == tiler_core::world_report::FocusRequestCause::ExplicitCommand
             })
-            .map(|effect| effect.target.0.clone())
+            .map(|request| request.target.0.clone())
     });
     let Some(target) = target else {
-        // No explicit focus effect: the core planned no focus change
+        // No explicit focus request: the core planned no focus change
         // (no-op or silent refusal).
         state.snap_advance = None;
         log_json_at(
@@ -915,8 +921,8 @@ fn dispatch_directional_no_focus(
         );
         return;
     };
-    // The world apply already spent the single focus effect; verify the
-    // foreground for the snap chain, never actuate twice.
+    // The world apply already accepted the retained focus request; verify
+    // the foreground for the snap chain, never actuate twice.
     let outcome = if foreground_matches(state, &observed, &retained, &target) {
         note_focus_advance(state, &observed, &retained, &target);
         "focus-ok"

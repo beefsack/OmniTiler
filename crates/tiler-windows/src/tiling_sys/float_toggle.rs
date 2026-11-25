@@ -238,7 +238,9 @@ pub(super) fn apply_float_from_tiled(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: from.to_owned(),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.to_owned()),
+            ),
             float_rect: Some(effective),
         }),
         super::observation::sample_cursor(),
@@ -602,14 +604,16 @@ pub(super) fn apply_unfloat_to_tiled(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: from.to_owned(),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.to_owned()),
+            ),
             float_rect,
         }),
         super::observation::sample_cursor(),
     );
     let capacity_refloat = reply.as_ref().is_some_and(|reply| {
         matches!(
-            &reply.command_result,
+            &reply.result,
             Some(tiler_core::world_report::CommandResult::Float { no_space: true, .. })
         )
     });

@@ -7,6 +7,7 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
+use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::WindowsAndMessaging::{EnumChildWindows, EnumWindows};
 
 use super::hwnd_of;
@@ -45,9 +46,12 @@ pub fn enumerate_child_windows(hwnd: u64) -> Option<Vec<u64>> {
 
 const MONITORINFOF_PRIMARY: u32 = 1;
 
-/// One enumerated display: device key plus raw work/full bounds (the
-/// caller converts to its own rect type, skipping degenerate entries as
-/// before). `primary` marks the primary display; the returned order is
+/// One enumerated display: device key, raw work/full bounds (the caller
+/// converts to its own rect type, skipping degenerate entries as before),
+/// and the effective per-monitor DPI measured at the enumeration seam
+/// (`MDT_EFFECTIVE_DPI`, so a PMv2 caller gets the true per-output value).
+/// `dpi` is `0` when the query fails: unknown, never a plausible 96.
+/// `primary` marks the primary display; the returned order is
 /// primary-first, exactly as the previous inline callback produced.
 #[derive(Clone)]
 pub struct MonitorInfo {
@@ -55,6 +59,7 @@ pub struct MonitorInfo {
     pub work: RECT,
     pub full: RECT,
     pub primary: bool,
+    pub dpi: u32,
 }
 
 unsafe extern "system" fn monitor_enum_proc(
@@ -93,11 +98,22 @@ unsafe extern "system" fn monitor_enum_proc(
         device
     };
     let primary = info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0;
+    // Per-output effective DPI measured here, where the HMONITOR is live:
+    // 0 on refusal (unknown scale, never a guessed 96).
+    let mut dpi_x: u32 = 0;
+    let mut dpi_y: u32 = 0;
+    let dpi =
+        if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) } == 0 {
+            dpi_x
+        } else {
+            0
+        };
     let area = MonitorInfo {
         device,
         work,
         full,
         primary,
+        dpi,
     };
     if primary {
         out.insert(0, area);

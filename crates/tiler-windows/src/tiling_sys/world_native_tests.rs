@@ -10,12 +10,11 @@
 //! `Applied` outcome, while proven batches still settle.
 
 use super::super::rmax03_adapter_tests::test_state;
-use super::super::world_capture::capture_world;
+use super::super::world_capture::{HiddenClaimRead, capture_world};
 use super::super::world_diff::{
     FakeNative, FocusCallDiag, FreshHost, HostDiff, NativeOps, SelectionArrivalGrant,
     apply_world_reply,
 };
-use super::super::world_native_receipts::observed_view_receipts;
 use super::super::world_owner::WorldOwner;
 use super::super::world_sequencer::AckOutcome;
 use super::super::world_tick::merge_applied_transfers;
@@ -25,15 +24,23 @@ use crate::native_guards::WindowKey;
 use crate::storage::LedgerStore;
 use crate::tiling::{FrameInsets, ObservedTarget, WindowFacts};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
-    EffectKind, OneShotEffect, ScopeAuthority as Auth, ScopeStatus, TransferKind, TransferTarget,
-    WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand, WorldReply,
+    ScopeAuthority as Auth, ScopeStatus, TransferKind, WORLD_CONTRACT_VERSION, WindowDesire,
+    WorldCommand,
 };
+fn ref_workspace(value: Option<&tiler_core::world_report::WorkspaceRef>) -> Option<&str> {
+    match value {
+        Some(tiler_core::world_report::WorkspaceRef::Logical { workspace, .. }) => {
+            Some(workspace.0.as_str())
+        }
+        _ => None,
+    }
+}
 
 const ADAPTER: &str = "adapter-1";
 const GENERATION: &str = "gen-1";
@@ -167,6 +174,13 @@ thread_local! {
     /// fail closed). Reset per test.
     static S_SYSTEM_SHELL: RefCell<Option<String>> = const { RefCell::new(None) };
     static S_VISIBLE: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    /// Scripted lightweight claim reads (`IsWindowVisible`'s dynamic shown
+    /// state is taken from `S_VISIBLE`; the remaining fields are the
+    /// window's real style/owner/class read, scripted by `script_live`).
+    /// Independent of `S_OBSERVE`: a frame read can fail while the claim
+    /// read still succeeds, exactly like the production lane.
+    static S_HIDDEN_READ: RefCell<HashMap<u64, HiddenClaimRead>> =
+        RefCell::new(HashMap::new());
     static S_ICONIC: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
     static S_SET_OK: RefCell<HashMap<u64, bool>> = RefCell::new(HashMap::new());
     static S_SET_CALLS: RefCell<Vec<(u64, Rect)>> = const { RefCell::new(Vec::new()) };
@@ -229,6 +243,7 @@ thread_local! {
 
 fn reset_script() {
     S_OBSERVE.with(|m| m.borrow_mut().clear());
+    S_HIDDEN_READ.with(|m| m.borrow_mut().clear());
     S_PID.with(|m| m.borrow_mut().clear());
     S_SHELL.with(|m| *m.borrow_mut() = 0);
     S_SHELL_SEQ.with(|m| m.borrow_mut().clear());
@@ -571,6 +586,7 @@ fn assemble_with_views<'e>(
         device: DEV1.to_owned(),
         work: rect(0, 0, 1920, 1040),
         full: rect(0, 0, 1920, 1080),
+        dpi: 96,
     }];
     LiveNative::assemble(
         &env.me,
@@ -605,14 +621,33 @@ fn script_live(key: &WindowKey, token: &str, vis: Rect, facts: WindowFacts) {
         m.borrow_mut()
             .insert(key.hwnd, observed_for(key, token, vis, facts))
     });
+    // The claim lane's lightweight read is its own native read: it survives a
+    // later frame-read failure (`S_OBSERVE` removal), so script it here.
+    S_HIDDEN_READ.with(|m| {
+        m.borrow_mut().insert(
+            key.hwnd,
+            HiddenClaimRead {
+                visible: false,
+                cloaked: facts.cloaked,
+                owned: facts.owned,
+                tool_window: facts.tool_window,
+                dialog: facts.dialog,
+            },
+        )
+    });
     S_PID.with(|m| m.borrow_mut().insert(key.hwnd, key.pid));
     S_VISIBLE.with(|m| m.borrow_mut().insert(key.hwnd));
     S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
     S_IDENT.with(|m| m.borrow_mut().insert(key.hwnd, identity_of(key)));
+    S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
 }
 
-fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
-    WorldReply {
+fn reply_shell(
+    obs: u64,
+    rev: u64,
+    scopes: &[(&str, &str)],
+) -> tiler_core::world_report::WorldReplyV4 {
+    tiler_core::world_report::WorldReplyV4 {
         contract_version: WORLD_CONTRACT_VERSION,
         adapter_incarnation: ADAPTER.to_owned(),
         core_generation: GENERATION.to_owned(),
@@ -624,7 +659,10 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         scopes: scopes
             .iter()
             .map(|(out, ws)| ScopeStatus {
-                scope: format!("{out}/{ws}"),
+                scope: tiler_core::world_report::AuthorityScope::Workspace {
+                    output: tiler_core::directional::OutputId(out.to_string()),
+                    workspace: tiler_core::directional::WorkspaceId(ws.to_string()),
+                },
                 authority: Auth::Controlled,
             })
             .collect(),
@@ -632,13 +670,31 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         outputs: Vec::new(),
         windows: Vec::new(),
         transfers: Vec::new(),
-        effects: Vec::new(),
-        command_result: None,
+        focus_request: None,
+        drag_preview: None,
         gesture_settled: None,
         operation_settled: Vec::new(),
         native_creations: Vec::new(),
         cursor_warp: None,
-        presentation: tiler_core::world_presentation::WorldPresentation::default(),
+        presentation: tiler_core::world_report::WorldPresentationV4 {
+            foreground: String::new(),
+            rev: 0,
+            suspended_output: None,
+            border: tiler_core::world_report::BorderPresentationV4 {
+                visible: false,
+                reason: Some(tiler_core::world_report::BorderHideReasonV4::NoTarget),
+                subject: None,
+                outsets: None,
+                width: None,
+                radius: None,
+                witness: None,
+            },
+            underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
+            pager: Vec::new(),
+        },
+        intent_desired: Vec::new(),
+        switch_settled: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }
 
@@ -654,12 +710,17 @@ fn float_row(out: &str, ws: &str, token: &str, target: Rect, op: &str) -> Window
         floating: true,
         float_origin: None,
         frame_operation: Some(op.to_owned()),
-        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: Auth::Untouched,
+        state: Vec::new(),
     }
 }
 
 fn convert(env: &Env, observed: &[super::super::ObservedWindow]) -> (HostDiff, FreshHost) {
-    let inputs = env.state.inputs();
+    let hidden_reads = scripted_hidden_reads(&env.state, observed);
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&hidden_reads);
     let captured = capture_world(&inputs, Some(observed), &[], &one_area(), 1001);
     assert!(captured.inventory_complete);
     let fresh = FreshHost::from_sources(&inputs, observed, &[], &captured);
@@ -673,6 +734,7 @@ fn one_area() -> Vec<super::super::MonitorArea> {
         device: DEV1.to_owned(),
         work: rect(0, 0, 1920, 1040),
         full: rect(0, 0, 1920, 1080),
+        dpi: 96,
     }]
 }
 
@@ -705,7 +767,6 @@ fn production_setter_lie_reports_raw_attempt_without_verdict() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(attempts.len(), 1, "{attempts:?}");
@@ -713,11 +774,14 @@ fn production_setter_lie_reports_raw_attempt_without_verdict() {
     assert_eq!(attempt.window.0, "w1");
     assert_eq!(attempt.target, rect(100, 100, 400, 300));
     assert_eq!(
-        attempt.setter,
+        attempt.disposition,
         tiler_core::world_report::FrameSetter::Accepted
     );
-    assert_eq!(attempt.operation_id.as_deref(), Some("op-1"));
-    assert_eq!(attempt.prewrite, Some(frozen));
+    assert!(matches!(
+        &attempt.purpose,
+        tiler_core::world_report::FramePurpose::FloatPlacement { operation_id, prewrite: Some(p) }
+            if operation_id == "op-1" && *p == frozen
+    ));
     assert_eq!(attempt.readback, Some(frozen));
     assert_eq!(stats.geometry_writes, 1);
     assert!(stats.held > 0);
@@ -753,17 +817,19 @@ fn production_explicit_refusal_reports_raw_attempt_without_verdict() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(attempts.len(), 1, "{attempts:?}");
     let attempt = &attempts[0];
     assert_eq!(
-        attempt.setter,
+        attempt.disposition,
         tiler_core::world_report::FrameSetter::Refused
     );
-    assert_eq!(attempt.operation_id.as_deref(), Some("op-1"));
-    assert_eq!(attempt.prewrite, Some(frozen));
+    assert!(matches!(
+        &attempt.purpose,
+        tiler_core::world_report::FramePurpose::FloatPlacement { operation_id, prewrite: Some(p) }
+            if operation_id == "op-1" && *p == frozen
+    ));
     assert_eq!(attempt.readback, Some(frozen));
 }
 
@@ -796,7 +862,6 @@ fn production_identity_drift_holds_without_receipt() {
         &reply,
         &fresh,
         &mut native,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -834,7 +899,6 @@ fn production_racing_invalidation_stops_before_any_setter() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     // Racing input stops the pass before the first setter: no writes and
@@ -861,14 +925,18 @@ fn production_ambiguous_view_arms_at_most_once() {
         1,
         &[(out.as_str(), ws.as_str()), (out.as_str(), ws2.as_str())],
     );
-    reply.transfers.push(TransferTarget {
-        operation_id: "op-view-1".to_owned(),
-        kind: TransferKind::View,
-        target_output: OutputId(out.clone()),
-        target_workspace: ws2.clone(),
-        follow: false,
-        held: false,
-    });
+    reply
+        .transfers
+        .push(tiler_core::world_report::TransferTargetV4 {
+            operation_id: "op-view-1".to_owned(),
+            kind: TransferKind::View,
+            target_output: OutputId(out.clone()),
+            target_workspace: ws2.clone(),
+            follow: false,
+            held: false,
+            command_seq: None,
+            parent: None,
+        });
     // Uncertain hide leg: the first attempt is ambiguous ...
     S_ADMIT.with(|m| {
         m.borrow_mut()
@@ -893,7 +961,6 @@ fn production_ambiguous_view_arms_at_most_once() {
         &mut Vec::new(),
         &mut first_members,
         &mut first_views,
-        &mut Vec::new(),
         0,
     );
     assert_eq!(first_stats.held, 1);
@@ -903,7 +970,7 @@ fn production_ambiguous_view_arms_at_most_once() {
     assert_eq!(first_views.len(), 1);
     assert_eq!(first_views[0].operation_id, "op-view-1");
     assert_eq!(
-        first_views[0].setter,
+        first_views[0].disposition,
         tiler_core::world_report::FrameSetter::Threw
     );
     assert_eq!(S_ADMIT_CALLS.with(|m| m.borrow().len()), 1);
@@ -924,7 +991,6 @@ fn production_ambiguous_view_arms_at_most_once() {
         &mut Vec::new(),
         &mut second_members,
         &mut second_views,
-        &mut Vec::new(),
         0,
     );
     assert!(second_stats.held > 0);
@@ -1015,7 +1081,6 @@ fn production_fullscreen_foreground_vetoes_frame_write() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(members.is_empty() && views.is_empty());
@@ -1041,14 +1106,18 @@ fn memberless_migration_actuates_views_without_members() {
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = 7;
     let mut reply = reply_shell(7, 1, &[(out.as_str(), ws2.as_str())]);
-    reply.transfers.push(TransferTarget {
-        operation_id: "op-m1".to_owned(),
-        kind: TransferKind::Migration,
-        target_output: OutputId(out.clone()),
-        target_workspace: ws2.clone(),
-        follow: false,
-        held: false,
-    });
+    reply
+        .transfers
+        .push(tiler_core::world_report::TransferTargetV4 {
+            operation_id: "op-m1".to_owned(),
+            kind: TransferKind::Migration,
+            target_output: OutputId(out.clone()),
+            target_workspace: ws2.clone(),
+            follow: false,
+            held: false,
+            command_seq: None,
+            parent: None,
+        });
     let mut members = Vec::new();
     let mut views = Vec::new();
     let stats = apply_world_reply(
@@ -1059,7 +1128,6 @@ fn memberless_migration_actuates_views_without_members() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     // A memberless migration and refill... (no members anywhere: the
@@ -1069,294 +1137,9 @@ fn memberless_migration_actuates_views_without_members() {
     assert!(members.is_empty());
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, "op-m1");
-    assert_eq!(views[0].post.as_deref(), Some(ws2.as_str()));
+    assert_eq!(ref_workspace(views[0].post.as_ref()), Some(ws2.as_str()));
     assert_eq!(stats.view_writes, 1, "{stats:?}");
     assert!(!stats.stopped_mid_apply);
-}
-
-#[test]
-fn receipts_withhold_ambiguous_views_and_drifted_homing() {
-    reset_script();
-    let mut state = test_state();
-    state.ensure_device(DEV1);
-    let ws = "ws1".to_owned();
-    let ws2 = "ws2".to_owned();
-    let k1 = win_key(109_001, 2011, "proc-11");
-    let k2 = win_key(109_002, 2012, "proc-12");
-    for (key, token) in [(&k1, "w1"), (&k2, "w2")] {
-        state.member_tokens.insert(key.clone(), token.to_owned());
-        state
-            .member_tags
-            .insert(key.clone(), "member-tag-1".to_owned());
-        state.member_identity.insert(key.clone(), identity_of(key));
-    }
-    // w1 visible on ws, w2 drifted onto ws2's homing record but observed on
-    // ws: two visible workspaces prove no view, and only w1 proves homing.
-    let out = state.output_token(DEV1);
-    state
-        .applied_homing
-        .insert("w1".to_owned(), (out.clone(), ws.clone()));
-    state
-        .applied_homing
-        .insert("w2".to_owned(), (out.clone(), ws2.clone()));
-    let observed = vec![
-        observed_for(&k1, "w1", rect(0, 0, 800, 600), plain_facts()),
-        observed_for(&k2, "w2", rect(0, 610, 800, 400), plain_facts()),
-    ];
-    let retained = Vec::new();
-    let areas = one_area();
-    let inputs = state.inputs();
-    let captured = capture_world(&inputs, Some(&observed), &retained, &areas, 109_001);
-    // Two non-sticky workspaces show members: no view receipt either way.
-    assert!(
-        captured.observed_views.is_empty(),
-        "{:?}",
-        captured.observed_views
-    );
-    let w2 = captured
-        .windows
-        .iter()
-        .find(|f| f.window.0 == "w2")
-        .expect("w2 fact");
-    assert_eq!(w2.observed_workspace.as_deref(), Some(ws2.as_str()));
-    let views = observed_view_receipts(&inputs, &observed, &areas);
-    assert!(views.is_empty());
-}
-
-/// Membership receipts ride the fresh visible-membership stamp only: a
-/// nonempty proof-only helper token proves nothing, and a missing or
-/// mismatched stamp holds unknown. The generic empty-helper happy path
-/// (stamped member lane, empty proof lane) still proves.
-#[test]
-fn receipts_require_member_stamp_never_helper_tag() {
-    fn rig(
-        member_tag: Option<String>,
-        helper_tag: &str,
-    ) -> (Option<String>, Vec<tiler_core::world_report::ScreenView>) {
-        reset_script();
-        let mut state = test_state();
-        state.ensure_device(DEV1);
-        let ws = "ws1".to_owned();
-        let key = win_key(109_011, 2013, "proc-13");
-        state.member_tokens.insert(key.clone(), "w1".to_owned());
-        state
-            .member_tags
-            .insert(key.clone(), "member-tag-1".to_owned());
-        state.member_identity.insert(key.clone(), identity_of(&key));
-        let out = state.output_token(DEV1);
-        state
-            .applied_homing
-            .insert("w1".to_owned(), (out.clone(), ws.clone()));
-        state.applied_views.insert(out, ws.clone());
-        let mut row = observed_for(&key, "w1", rect(0, 0, 800, 600), plain_facts());
-        row.identity.tag = helper_tag.to_owned();
-        row.member_tag = member_tag;
-        let areas = one_area();
-        let inputs = state.inputs();
-        let captured = capture_world(
-            &inputs,
-            Some(std::slice::from_ref(&row)),
-            &[],
-            &areas,
-            109_011,
-        );
-        let views = observed_view_receipts(&inputs, std::slice::from_ref(&row), &areas);
-        let workspace = captured
-            .windows
-            .iter()
-            .find(|f| f.window.0 == "w1")
-            .expect("w1 fact")
-            .observed_workspace
-            .clone();
-        (workspace, views)
-    }
-    // Generic happy path: empty helper tag, stamped member lane.
-    let (workspace, views) = rig(Some("member-tag-1".to_owned()), "");
-    assert_eq!(workspace.as_deref(), Some("ws1"));
-    assert_eq!(views.len(), 1, "{views:?}");
-    assert_eq!(views[0].view, "ws1");
-    // Nonempty helper token with no member stamp proves nothing.
-    let (workspace, views) = rig(None, "helper-1");
-    assert_eq!(workspace, None);
-    assert!(views.is_empty(), "{views:?}");
-    // Mismatched member stamp holds unknown.
-    let (workspace, views) = rig(Some("stale-tag".to_owned()), "");
-    assert_eq!(workspace, None);
-    assert!(views.is_empty(), "{views:?}");
-    // Missing member stamp holds unknown even with a helper token present.
-    let (workspace, views) = rig(None, "");
-    assert_eq!(workspace, None);
-    assert!(views.is_empty(), "{views:?}");
-}
-
-/// Empty-refill view receipts with hidden homing: a memberless applied
-/// view still carrying hidden homing proves only through the same fresh
-/// claim association the membership receipts require, with zero managed
-/// presence on the output. Rig: one member homed on the output's other
-/// workspace, applied view naming the fresh refill, plus caller-supplied
-/// observed rows (the hidden member itself never enumerates).
-fn empty_refill_views(
-    claim: Option<WindowIdentity>,
-    member_tag: Option<&str>,
-    minimized_omitted: bool,
-    observed_extra: Vec<super::super::ObservedWindow>,
-) -> Vec<tiler_core::world_report::ScreenView> {
-    reset_script();
-    let mut state = test_state();
-    state.ensure_device(DEV1);
-    let refill = "ws-9".to_owned();
-    let other = "ws-3".to_owned();
-    let key = win_key(109_021, 2021, "proc-14");
-    state.member_tokens.insert(key.clone(), "w1".to_owned());
-    if let Some(tag) = member_tag {
-        state.member_tags.insert(key.clone(), tag.to_owned());
-    }
-    state.member_identity.insert(key.clone(), identity_of(&key));
-    if minimized_omitted {
-        state.minimized_omitted.insert(key.clone());
-    }
-    let out = state.output_token(DEV1);
-    state
-        .applied_homing
-        .insert("w1".to_owned(), (out.clone(), other.clone()));
-    state.applied_views.insert(out, refill.clone());
-    if let Some(claim) = claim {
-        state.hidden_claims.insert(
-            key.clone(),
-            super::super::HiddenRecord {
-                claim,
-                iconic: false,
-            },
-        );
-    }
-    let areas = one_area();
-    let inputs = state.inputs();
-    observed_view_receipts(&inputs, &observed_extra, &areas)
-}
-
-#[test]
-fn empty_refill_receipt_proves_with_associated_hidden_homing() {
-    let key = win_key(109_021, 2021, "proc-14");
-    let views = empty_refill_views(
-        Some(valid_claim(key.hwnd, &identity_of(&key))),
-        Some("member-tag-1"),
-        false,
-        Vec::new(),
-    );
-    assert_eq!(views.len(), 1, "{views:?}");
-    assert_eq!(views[0].view, "ws-9");
-}
-
-#[test]
-fn empty_refill_receipt_withholds_on_malformed_claim_tag() {
-    // `script_claim` tags ("nonce-<hwnd>") fail `valid_claim_tag`: a bare
-    // hide-ledger entry never proves deliberate hiding.
-    let key = win_key(109_021, 2021, "proc-14");
-    let views = empty_refill_views(
-        Some(script_claim(key.hwnd, &identity_of(&key))),
-        Some("member-tag-1"),
-        false,
-        Vec::new(),
-    );
-    assert!(views.is_empty(), "{views:?}");
-}
-
-#[test]
-fn empty_refill_receipt_withholds_on_claim_identity_mismatch() {
-    // Claim bound to another lifetime (wrong HWND/PID/creation): stale
-    // association proves nothing about this member.
-    let other = win_key(109_099, 2099, "proc-99");
-    let views = empty_refill_views(
-        Some(valid_claim(other.hwnd, &identity_of(&other))),
-        Some("member-tag-1"),
-        false,
-        Vec::new(),
-    );
-    assert!(views.is_empty(), "{views:?}");
-}
-
-#[test]
-fn empty_refill_receipt_withholds_without_member_tag() {
-    let key = win_key(109_021, 2021, "proc-14");
-    let views = empty_refill_views(
-        Some(valid_claim(key.hwnd, &identity_of(&key))),
-        None,
-        false,
-        Vec::new(),
-    );
-    assert!(views.is_empty(), "{views:?}");
-}
-
-#[test]
-fn empty_refill_receipt_withholds_on_drifted_hidden_window() {
-    // The hidden member enumerates live (external reveal or HWND drift):
-    // continued invisibility fails, so the empty screen proves nothing.
-    // The drift row carries a stale stamp so it cannot enter the visible
-    // set; only the drift check withholds.
-    let key = win_key(109_021, 2021, "proc-14");
-    let mut drifted = observed_for(&key, "w1", rect(0, 0, 800, 600), plain_facts());
-    drifted.member_tag = None;
-    let views = empty_refill_views(
-        Some(valid_claim(key.hwnd, &identity_of(&key))),
-        Some("member-tag-1"),
-        false,
-        vec![drifted],
-    );
-    assert!(views.is_empty(), "{views:?}");
-}
-
-#[test]
-fn empty_refill_receipt_withholds_on_visible_capable_homing() {
-    // Homing with no hidden claim at all: the member could be visibly
-    // showing its workspace, so the refill view stays unknown.
-    let views = empty_refill_views(None, Some("member-tag-1"), false, Vec::new());
-    assert!(views.is_empty(), "{views:?}");
-}
-
-#[test]
-fn empty_refill_receipt_withholds_on_minimized_homing() {
-    // Minimized homing is not hidden-claim hiding: without the fresh
-    // claim association the refill view stays unknown, preserving the
-    // existing minimized semantics.
-    let views = empty_refill_views(None, Some("member-tag-1"), true, Vec::new());
-    assert!(views.is_empty(), "{views:?}");
-}
-
-#[test]
-fn empty_refill_receipt_ignores_minimized_foreign_presence() {
-    // Minimized rows never count as on-output presence (matching the
-    // visible set): a minimized foreign window does not fence the proof.
-    let fkey = win_key(109_031, 2031, "proc-15");
-    let mut row = observed_for(&fkey, "fx", rect(0, 0, 800, 600), plain_facts());
-    row.facts.minimized = true;
-    let key = win_key(109_021, 2021, "proc-14");
-    let views = empty_refill_views(
-        Some(valid_claim(key.hwnd, &identity_of(&key))),
-        Some("member-tag-1"),
-        false,
-        vec![row],
-    );
-    assert_eq!(views.len(), 1, "{views:?}");
-    assert_eq!(views[0].view, "ws-9");
-}
-
-#[test]
-fn empty_refill_receipt_ignores_foreign_visible_presence() {
-    // Scoped inventory ignores foreign never-member windows (capture
-    // never admits them): a raw foreign window visibly on the output
-    // never fences the managed empty-screen proof, so a legitimately
-    // scoped-empty output cannot pin flights on foreign absence.
-    let fkey = win_key(109_031, 2031, "proc-15");
-    let row = observed_for(&fkey, "fx", rect(0, 0, 800, 600), plain_facts());
-    let key = win_key(109_021, 2021, "proc-14");
-    let views = empty_refill_views(
-        Some(valid_claim(key.hwnd, &identity_of(&key))),
-        Some("member-tag-1"),
-        false,
-        vec![row],
-    );
-    assert_eq!(views.len(), 1, "{views:?}");
-    assert_eq!(views[0].view, "ws-9");
 }
 
 #[test]
@@ -2527,7 +2310,10 @@ fn receipt_updates_never_echo_unproven_desire() {
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: Auth::Untouched,
+        state: Vec::new(),
     });
     reply.outputs.push(tiler_core::world_report::OutputDesire {
         output: OutputId(out.clone()),
@@ -2585,7 +2371,10 @@ fn receipt_updates_store_only_visibility_proven_arrival() {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: Auth::Untouched,
+            state: Vec::new(),
         });
     }
     reply.outputs.push(tiler_core::world_report::OutputDesire {
@@ -2606,49 +2395,6 @@ fn receipt_updates_store_only_visibility_proven_arrival() {
         "entering reveal proves: {homing:?}"
     );
     assert_eq!(views.get(&out), Some(&ws2), "proven view stores: {views:?}");
-}
-
-#[test]
-fn capture_withholds_cross_output_visible_echo() {
-    // Retained receipt names o2/ws9 but the live frame sits on o1: plain
-    // visibility never proves cross-output arrival.
-    reset_script();
-    let mut state = test_state();
-    state.ensure_device(DEV1);
-    let out = state.output_token(DEV1);
-    let key = win_key(116_001, 2161, "proc-81");
-    state.member_tokens.insert(key.clone(), "w1".to_owned());
-    state
-        .member_tags
-        .insert(key.clone(), "member-tag-1".to_owned());
-    state.member_identity.insert(key.clone(), identity_of(&key));
-    state
-        .applied_homing
-        .insert("w1".to_owned(), ("o2".to_owned(), "ws9".to_owned()));
-    state
-        .applied_views
-        .insert("o2".to_owned(), "ws9".to_owned());
-    let observed = vec![observed_for(
-        &key,
-        "w1",
-        rect(0, 0, 800, 600),
-        plain_facts(),
-    )];
-    let areas = one_area();
-    let inputs = state.inputs();
-    let captured = capture_world(&inputs, Some(&observed), &[], &areas, 116_001);
-    let w1 = captured
-        .windows
-        .iter()
-        .find(|f| f.window.0 == "w1")
-        .expect("w1 fact");
-    assert_eq!(w1.observed_workspace, None, "cross-output echo: {w1:?}");
-    assert!(
-        captured.observed_views.is_empty(),
-        "wrong-output view receipt: {:?}",
-        captured.observed_views
-    );
-    let _ = out;
 }
 
 // ---------------------------------------------------------------------------
@@ -2740,6 +2486,26 @@ fn moving_prims() -> NativePrimitives {
     prims
 }
 
+/// Every admitted live row, with hidden-claim windows reported as hidden
+/// facts. Production enumeration reads hidden managed windows through
+/// their verified hide claims; omitting them would make their workspace
+/// unreadable and hold a return view switch.
+fn live_observed_all() -> Vec<super::super::ObservedWindow> {
+    let visible: HashSet<u64> = S_VISIBLE.with(|m| m.borrow().clone());
+    let mut out: Vec<super::super::ObservedWindow> = S_OBSERVE.with(|m| {
+        m.borrow()
+            .values()
+            .cloned()
+            .map(|mut row| {
+                row.facts.visible = visible.contains(&row.hwnd);
+                row
+            })
+            .collect()
+    });
+    out.sort_by_key(|w| w.hwnd);
+    out
+}
+
 /// Currently visible live observations (hidden-claim windows read
 /// invisible, so they ride no observed row, like the real enumeration).
 fn live_visible_observed() -> Vec<super::super::ObservedWindow> {
@@ -2755,6 +2521,52 @@ fn live_visible_observed() -> Vec<super::super::ObservedWindow> {
     out
 }
 
+/// Fresh lightweight live reads for every project-suppressed claim without a
+/// live observed row, derived from the same scripted native maps the
+/// production tick reads natively: shown state from `S_VISIBLE`, cloak and
+/// style/owner/class facts from the scripted observation. A claim with no
+/// scripted observation yields no read, so capture holds it exactly like a
+/// failed production read.
+fn scripted_hidden_reads(
+    state: &super::super::TileLoop,
+    observed: &[super::super::ObservedWindow],
+) -> BTreeMap<WindowKey, HiddenClaimRead> {
+    let observed_keys: HashSet<WindowKey> = observed
+        .iter()
+        .map(|w| WindowKey {
+            hwnd: w.hwnd,
+            pid: w.identity.pid,
+            creation: w.identity.process_creation.clone(),
+        })
+        .collect();
+    let visible: HashSet<u64> = S_VISIBLE.with(|m| m.borrow().clone());
+    state
+        .hidden_claims
+        .keys()
+        .filter(|key| !observed_keys.contains(*key))
+        .filter_map(|key| {
+            // The observed row, when present, already carries the same
+            // native facts; otherwise the claim read scripted by
+            // `script_live` survives an observation-only failure.
+            let read = match S_OBSERVE.with(|m| m.borrow().get(&key.hwnd).map(|w| w.facts)) {
+                Some(facts) => HiddenClaimRead {
+                    visible: visible.contains(&key.hwnd),
+                    cloaked: facts.cloaked,
+                    owned: facts.owned,
+                    tool_window: facts.tool_window,
+                    dialog: facts.dialog,
+                },
+                None => {
+                    let mut read = S_HIDDEN_READ.with(|m| m.borrow().get(&key.hwnd).copied())?;
+                    read.visible = visible.contains(&key.hwnd);
+                    read
+                }
+            };
+            Some((key.clone(), read))
+        })
+        .collect()
+}
+
 /// Mechanical admission only: stable token, identity, and lifetime tag.
 /// Plants no applied receipts (the first tick must prove them).
 fn admit_bare(env: &mut Env, key: &WindowKey, token: &str) {
@@ -2767,10 +2579,17 @@ fn admit_bare(env: &mut Env, key: &WindowKey, token: &str) {
     env.state
         .member_identity
         .insert(key.clone(), identity_of(key));
+    // The production hint pass records known-empty for a successful
+    // no-hint read. Fixtures seed that same truth instead of leaving the
+    // window unreadable.
+    env.state.hint_logged.insert(
+        token.to_owned(),
+        tiler_core::size_hints::WindowSizeHints::none(),
+    );
 }
 
 struct LiveTick {
-    reply: WorldReply,
+    reply: tiler_core::world_report::WorldReplyV4,
     members: Vec<tiler_core::world_report::MemberAttempt>,
     views: Vec<tiler_core::world_report::ViewAttempt>,
     /// Sequencer delivery of the produced reply (`accepted`, `duplicate`,
@@ -2837,6 +2656,18 @@ fn live_tick_cursor(
     command: Option<WorldCommand>,
     cursor: Option<(i32, i32)>,
 ) -> LiveTick {
+    // Production fidelity: the enumeration seam refreshes native z-order
+    // before capture. Without it a fixture that adds a window after the
+    // first tick keeps the stale order and the newcomer never reaches the
+    // report.
+    env.state.last_native_order = observed
+        .iter()
+        .map(|row| WindowKey {
+            hwnd: row.hwnd,
+            pid: row.identity.pid,
+            creation: row.identity.process_creation.clone(),
+        })
+        .collect();
     // Production fidelity: snapshot last-known frames before dispatch so
     // hidden members keep riding snapshot rectangles (readable domains),
     // exactly like `run_observation_tick`/`run_world_command`.
@@ -2845,8 +2676,28 @@ fn live_tick_cursor(
     // One deterministic monotonic sample for this tick: the report
     // observation time and the stamp for any frame attempt below.
     let tick_ms = live_tick_ms();
+    let hidden_reads = scripted_hidden_reads(&env.state, observed);
     let mut inputs = env.state.inputs();
     inputs.cursor = cursor;
+    inputs.hidden_reads = Some(&hidden_reads);
+    // Production fidelity: the command tick normalizes its foreground read
+    // before capture. The scripted observation already carries the same
+    // facts, so bind the token directly instead of re-reading native state.
+    inputs.presentation_foreground =
+        observed
+            .iter()
+            .find(|row| row.hwnd == foreground)
+            .map(
+                |row| crate::tiling_sys::world_capture::PresentationForeground {
+                    token: row.token.clone(),
+                    minimized: row.facts.minimized,
+                    maximized: row.facts.maximized,
+                    fullscreen: row.facts.captionless_fullscreen,
+                    host_hidden: row.facts.cloaked,
+                    hidden_workspace: false,
+                    frame: Some(row.visible),
+                },
+            );
     let report = match command {
         None => owner
             .try_dispatch_observation(
@@ -2878,6 +2729,7 @@ fn live_tick_cursor(
     };
     let mut inputs = env.state.inputs();
     inputs.cursor = cursor;
+    inputs.hidden_reads = Some(&hidden_reads);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = owner.core_projections();
@@ -2919,7 +2771,6 @@ fn live_tick_cursor(
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
-    let mut clear_attempts = Vec::new();
     let _stats = owner.apply_accepted(
         &reply,
         &fresh,
@@ -2927,7 +2778,6 @@ fn live_tick_cursor(
         &mut frame_attempts,
         &mut member_attempts,
         &mut view_attempts,
-        &mut clear_attempts,
         tick_ms,
     );
     let (mut proven_h, mut proven_v) = native.receipt_updates(&reply);
@@ -2985,15 +2835,13 @@ fn applied_of_members(
 ) -> bool {
     members.iter().any(|a| {
         a.operation_id == op
-            && a.post
-                .as_ref()
-                .is_some_and(|(out, ws)| out == &a.target_output && ws == &a.target_workspace)
-    }) || views
-        .iter()
-        .any(|a| a.operation_id == op && a.post.as_deref() == Some(a.target_workspace.as_str()))
+            && ref_workspace(a.post.as_ref()).is_some_and(|ws| ws == a.target_workspace)
+    }) || views.iter().any(|a| {
+        a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(a.target_workspace.as_str())
+    })
 }
 
-fn window_op(reply: &WorldReply, window: &str) -> String {
+fn window_op(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> String {
     reply
         .transfers
         .iter()
@@ -3020,11 +2868,13 @@ fn two_output_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
             device: DEV1.to_owned(),
             work: rect(0, 0, 1920, 1040),
             full: rect(0, 0, 1920, 1080),
+            dpi: 96,
         },
         super::super::MonitorArea {
             device: DEV2.to_owned(),
             work: rect(1920, 0, 1920, 1040),
             full: rect(1920, 0, 1920, 1080),
+            dpi: 96,
         },
     ];
     let fulls = vec![rect(0, 0, 1920, 1080), rect(1920, 0, 1920, 1080)];
@@ -3090,6 +2940,7 @@ fn seed_test_areas() -> Vec<super::super::MonitorArea> {
         device: DEV1.to_owned(),
         work: rect(0, 0, 1920, 1040),
         full: rect(0, 0, 1920, 1080),
+        dpi: 96,
     }]
 }
 
@@ -3129,7 +2980,10 @@ fn drain_seeds(state: &mut super::super::TileLoop, seeds: Vec<(WindowKey, Rect)>
 }
 
 fn hidden_fact_rect(env: &Env, areas: &[super::super::MonitorArea]) -> Rect {
-    let staged = capture_world(&env.state.inputs(), Some(&[]), &[], areas, 0);
+    let hidden_reads = scripted_hidden_reads(&env.state, &[]);
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&hidden_reads);
+    let staged = capture_world(&inputs, Some(&[]), &[], areas, 0);
     staged
         .windows
         .iter()
@@ -4202,17 +4056,21 @@ fn selection_return_past_desktop_foreground_dispatches_setter() {
     )];
     let (mut diff, fresh) = convert(&env, &observed);
     let mut reply = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
-    reply.effects.push(OneShotEffect {
+    reply.focus_request = Some(tiler_core::world_report::FocusRequest {
         id: "fx-7".to_owned(),
-        kind: EffectKind::Focus,
         target: WindowId("w6".to_owned()),
         issued_revision: 1,
+        cause: tiler_core::world_report::FocusRequestCause::ExplicitCommand,
+        output: CoreOutputId(out.clone()),
+        workspace: ws.clone(),
+        cmd_seq: Some(7),
+        after_shown: None,
     });
     // Authority binding through the production mint: the exact accepted
     // select command, its sequence, and this reply's own explicit effect.
     let command = WorldCommand::SelectWorkspace {
         output: CoreOutputId(out.clone()),
-        workspace: ws.clone(),
+        workspace: tiler_core::directional::WorkspaceId(ws.clone()),
     };
     let grant = SelectionArrivalGrant::for_accepted(Some(&command), Some(7), &reply, "accepted");
     assert!(grant.is_some(), "select must mint the arrival grant");
@@ -4224,7 +4082,6 @@ fn selection_return_past_desktop_foreground_dispatches_setter() {
         &reply,
         &fresh,
         &mut native,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -4292,22 +4149,30 @@ fn script_healthy_desktop(desktop: &WindowKey) {
 }
 
 /// Arrival reply carrying one core-shaped explicit focus effect.
-fn fx_reply(out: &str, ws: &str, id: &str, target: &str) -> WorldReply {
+fn fx_reply(out: &str, ws: &str, id: &str, target: &str) -> tiler_core::world_report::WorldReplyV4 {
     let mut reply = reply_shell(7, 1, &[(out, ws)]);
-    reply.effects.push(OneShotEffect {
+    reply.focus_request = Some(tiler_core::world_report::FocusRequest {
         id: id.to_owned(),
-        kind: EffectKind::Focus,
         target: WindowId(target.to_owned()),
         issued_revision: 1,
+        cause: tiler_core::world_report::FocusRequestCause::ExplicitCommand,
+        output: OutputId(out.to_owned()),
+        workspace: ws.to_owned(),
+        cmd_seq: Some(7),
+        after_shown: None,
     });
     reply
 }
 
 /// Production grant mint for one accepted select reply.
-fn select_grant(out: &str, ws: &str, reply: &WorldReply) -> Option<SelectionArrivalGrant> {
+fn select_grant(
+    out: &str,
+    ws: &str,
+    reply: &tiler_core::world_report::WorldReplyV4,
+) -> Option<SelectionArrivalGrant> {
     let command = WorldCommand::SelectWorkspace {
         output: OutputId(out.to_owned()),
-        workspace: ws.to_owned(),
+        workspace: tiler_core::directional::WorkspaceId(ws.to_owned()),
     };
     // Handcrafted replies in this file mint `fx-7`: the sequence must name
     // it exactly, or no explicit effect matches and nothing mints.
@@ -5305,7 +5170,6 @@ fn observation_only_desktop_focus_loss_dispatches_nothing() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert!(stats.focus_dispatch.is_empty());
@@ -5327,7 +5191,7 @@ fn selection_grant_binds_exact_accepted_select_focus_effects() {
     let selects = [
         WorldCommand::SelectWorkspace {
             output: OutputId(out.clone()),
-            workspace: ws.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws.clone()),
         },
         WorldCommand::SelectNumbered {
             output: Some(OutputId(out.clone())),
@@ -5348,27 +5212,29 @@ fn selection_grant_binds_exact_accepted_select_focus_effects() {
     }
     let non_selects = [
         WorldCommand::Focus {
-            window: CoreWindowId("w6".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(CoreWindowId("w6".to_owned())),
             direction: Some(tiler_core::directional::Direction::Left),
         },
         WorldCommand::FocusDirectional {
-            window: CoreWindowId("w6".to_owned()),
+            window: tiler_core::world_report::FocusDirectionalSubject::Window(CoreWindowId(
+                "w6".to_owned(),
+            )),
             direction: tiler_core::directional::Direction::Left,
         },
         WorldCommand::Send {
-            window: CoreWindowId("w6".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(CoreWindowId("w6".to_owned())),
             target_output: OutputId(out.clone()),
-            target_workspace: ws.clone(),
+            target_workspace: tiler_core::directional::WorkspaceId(ws.clone()),
             follow: true,
         },
         WorldCommand::SwitchView {
             output: OutputId(out.clone()),
-            workspace: ws.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws.clone()),
         },
         WorldCommand::MigrateWorkspace {
             source_output: OutputId("out-2".to_owned()),
             target_output: OutputId(out.clone()),
-            workspace: ws.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws.clone()),
         },
     ];
     for command in &non_selects {
@@ -5413,22 +5279,35 @@ fn selection_grant_binds_exact_accepted_select_focus_effects() {
     assert!(
         SelectionArrivalGrant::for_accepted(Some(select), Some(7), &bare, "accepted").is_none()
     );
-    // Automatic admission and cursor-follow effects sharing a select reply
+    // Automatic admission and cursor-follow requests sharing a select reply
     // never mint: only the command's explicit outcome binds.
-    let mut mixed = reply.clone();
-    for (id, target) in [("af-w6", "w6"), ("ffc-w6", "w6")] {
-        mixed.effects.push(OneShotEffect {
+    for (id, cause) in [
+        (
+            "af-w6",
+            tiler_core::world_report::FocusRequestCause::AutomaticAdmission,
+        ),
+        (
+            "ffc-w6",
+            tiler_core::world_report::FocusRequestCause::FocusFollowsCursor,
+        ),
+    ] {
+        let mut mixed = reply.clone();
+        mixed.focus_request = Some(tiler_core::world_report::FocusRequest {
             id: id.to_owned(),
-            kind: EffectKind::Focus,
-            target: WindowId(target.to_owned()),
+            target: WindowId("w6".to_owned()),
             issued_revision: 1,
+            cause,
+            output: OutputId(out.clone()),
+            workspace: ws.clone(),
+            cmd_seq: None,
+            after_shown: None,
         });
+        assert!(
+            SelectionArrivalGrant::for_accepted(Some(select), Some(7), &mixed, "accepted")
+                .is_none(),
+            "non-explicit focus never binds: {id}"
+        );
     }
-    let grant = SelectionArrivalGrant::for_accepted(Some(select), Some(7), &mixed, "accepted")
-        .expect("explicit effect still mints beside automatic ones");
-    assert!(grant.allows("fx-7", "w6"));
-    assert!(!grant.allows("af-w6", "w6"), "admission intent never binds");
-    assert!(!grant.allows("ffc-w6", "w6"), "cursor-follow never binds");
 }
 
 #[path = "world_native_composition_tests.rs"]

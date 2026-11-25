@@ -616,10 +616,10 @@ fn preset_matrix_all_metas() {
     // Metas refuse validation exactly like the basic catalogue (arm
     // collapse), never silently.
     let basic = tile_catalogue();
-    assert_eq!(basic.len(), 35);
+    assert_eq!(basic.len(), 36);
     for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
         let authentic = effective_bindings(InputPreset::Authentic, modifier, &combined());
-        assert_eq!(authentic.len(), 80, "{modifier:?}");
+        assert_eq!(authentic.len(), 81, "{modifier:?}");
         let config = crate::runtime_types::RuntimeConfig {
             modifier,
             tile_bindings: Some(authentic),
@@ -627,11 +627,11 @@ fn preset_matrix_all_metas() {
         };
         assert!(config.validate().is_ok(), "{modifier:?}");
     }
-    // Compatible under Ctrl: 80 minus the 4 unshifted arrows minus the 10
+    // Compatible under Ctrl: 81 minus the 4 unshifted arrows minus the 10
     // unshifted digit selects. Shifted digit sends, every aux row, and the
     // output rows stay armed (no established holder).
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &combined());
-    assert_eq!(compatible.len(), 66);
+    assert_eq!(compatible.len(), 67);
     assert!(
         compatible
             .iter()
@@ -671,7 +671,7 @@ fn preset_matrix_all_metas() {
     assert!(config.validate().is_ok());
     // Compatible under Meta: no established holders, full set.
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Meta, &combined());
-    assert_eq!(compatible.len(), 80);
+    assert_eq!(compatible.len(), 81);
     let config = crate::runtime_types::RuntimeConfig {
         modifier: ProbeModifier::Meta,
         tile_bindings: Some(compatible),
@@ -956,10 +956,10 @@ fn numbered_index_validates_0_to_9() {
 
 #[test]
 fn product_select_matrix_is_duplicate_free_with_exact_arms() {
-    // Product tap table: 35 basic chords plus the 19 armed selects plus
-    // the 10 armed numbered send-follows (64). Duplicate-free under every
+    // Product tap table: 36 basic chords plus the 19 armed selects plus
+    // the 10 armed numbered send-follows (65). Duplicate-free under every
     // usable Meta/preset; Compatible under Ctrl leaves the 10 numbered
-    // selects plus the 4 unshifted arrow basics to macOS (50 = 31 basic +
+    // selects plus the 4 unshifted arrow basics to macOS (51 = 32 basic +
     // 9 aux selects + 10 sends), the numbers still switching natively via
     // Switch to Desktop N. Alt/Shift Metas collapse arms and refuse
     // validation rather than arming a colliding tap.
@@ -969,13 +969,13 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
         out.extend(crate::workspace_send::bindings());
         out
     }
-    assert_eq!(tile_catalogue().len(), 35);
+    assert_eq!(tile_catalogue().len(), 36);
     assert_eq!(crate::workspace_select::bindings().len(), 19);
     assert_eq!(crate::workspace_send::bindings().len(), 10);
-    assert_eq!(product().len(), 64);
+    assert_eq!(product().len(), 65);
     for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
         let authentic = effective_bindings(InputPreset::Authentic, modifier, &product());
-        assert_eq!(authentic.len(), 64, "{modifier:?}");
+        assert_eq!(authentic.len(), 65, "{modifier:?}");
         let config = crate::runtime_types::RuntimeConfig {
             modifier,
             tile_bindings: Some(authentic),
@@ -984,7 +984,7 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
         assert!(config.validate().is_ok(), "{modifier:?}");
     }
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &product());
-    assert_eq!(compatible.len(), 50, "31 basic + 9 aux selects + 10 sends");
+    assert_eq!(compatible.len(), 51, "32 basic + 9 aux selects + 10 sends");
     assert!(
         compatible
             .iter()
@@ -1026,6 +1026,7 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
                                 | InputSemanticAction::ToggleFloat
                                 | InputSemanticAction::ToggleOrientation
                                 | InputSemanticAction::ToggleMaximize
+                                | InputSemanticAction::ToggleWorkspaceTiling
                         )
                 }),
                 "{preset:?}/{modifier:?}"
@@ -1087,7 +1088,7 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
     };
     assert!(config.validate().is_ok());
     let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Meta, &product());
-    assert_eq!(compatible.len(), 64);
+    assert_eq!(compatible.len(), 65);
     for modifier in [ProbeModifier::Alt, ProbeModifier::Shift] {
         for preset in [InputPreset::Authentic, InputPreset::Compatible] {
             let config = crate::runtime_types::RuntimeConfig {

@@ -1234,12 +1234,17 @@ run after the port:
   and before slice 3, and before any core change.
 - M3: D4 (2026-11-24) selects an adapter-owned atomic store with live-lifetime
   verification, pre-admission import, desired-versus-durable reconciliation and
-  recoverable hold; numeric launch-date stability, store adoption and re-login
-  namespace rejection still need native proof. No store adoption is established
-  by finite CG ID churn experiments.
-- M4's product route is decided, not reopened here; shared implementation and
-  native restore/clear/send/restart outcomes remain unproved. M5 causal creation,
-  M6 retirement consumer and M2 lifetime continuity still need native proof.
+  recoverable hold; store adoption and orderly-restart persistence are proved on
+  the signed fixture (2026-11-24), and malformed-store startup degrades cleanly
+  (2026-11-25). Numeric launch-date stability, write-failure recovery, and
+  re-login namespace rejection remain. No store adoption is established by
+  finite CG ID churn experiments.
+- M4's product route is decided, not reopened here; native apply/restore is
+  proved on the signed fixture (2026-11-24). Physical Ctrl+M delivery, paint,
+  native Zoom/drift interaction, external move/resize clear, fullscreen
+  replacement, send/output/work-area changes and restart-to-base remain.
+  M5 causal creation, M6 retirement consumer and M2 lifetime continuity still
+  need native proof.
 - M8 target-display/Space arrival, M9 connector normalization and identical-monitor
   reconnect/re-login stability remain unknown; multi-display integration stays
   [parked](../decisions/macos.md#drag-and-drop) unless its scope is revisited.

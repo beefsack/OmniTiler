@@ -1094,6 +1094,10 @@ mod live {
                 &snapshot_generation,
                 &crate::pager_highlight::PagerHighlightStyle::default(),
                 ffi::border_system_accent(),
+                self.runtime
+                    .as_ref()
+                    .map(|handle| handle.indicator_revision())
+                    .unwrap_or(0),
             );
             pump(LEG_SETTLE_MS);
             let generation = self

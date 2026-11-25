@@ -19,7 +19,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use tiler_core::directional::WindowId;
+use tiler_core::boundary::CoreCommand;
+use tiler_core::directional::{WindowId, WindowSubject};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIngress, GestureSettled};
 use tiler_core::world_engine::WorldOutcome;
@@ -67,6 +68,8 @@ fn reply_token(op: &'static str, outcome: &'static str) -> &'static str {
         ("toggle-orientation", "consumed") => "toggle-orientation-consumed",
         ("toggle-maximize", "accepted") => "toggle-maximize-accepted",
         ("toggle-maximize", "consumed") => "toggle-maximize-consumed",
+        ("toggle-workspace-tiling", "accepted") => "toggle-workspace-tiling-accepted",
+        ("toggle-workspace-tiling", "consumed") => "toggle-workspace-tiling-consumed",
         ("drag-drop", "accepted") => "drag-drop-accepted",
         ("drag-drop", "consumed") => "drag-drop-consumed",
         ("select", "accepted") => "select-accepted",
@@ -102,6 +105,209 @@ fn is_retained_fullscreen(retained: &RetainedCore, window: &str) -> bool {
         .get(&pid)
         .and_then(|app| app.windows.iter().find(|w| w.wid == wid))
         .is_some_and(|w| w.fullscreen)
+}
+
+/// Record-only half of the deferred fullscreen-float lane: an applied
+/// `ToggleFloat` reply under retained fullscreen stages the pending
+/// placement for later reveal. Used by the normal consume path and by the
+/// post-accept early returns (`intent-write-held`, stale observation) where
+/// core already applied the command but no frame may be emitted.
+fn record_deferred_fullscreen_float_placement(
+    session: &mut WorldSession,
+    retained: &RetainedCore,
+    reply: &WorldReplyV4,
+    ticket_command: Option<&WorldCommand>,
+    ticket_command_seq: Option<u64>,
+) {
+    // Only a ToggleFloat command applied by this report may create a
+    // deferral. A floating row under fullscreen that arrived on an
+    // observation-only reply (a normally floated window entering
+    // fullscreen) must never be mistaken for an under-overlay toggle, so
+    // token presence alone is not enough. Only the production adapter shape
+    // (implicit current-focus subject) qualifies.
+    let toggled_float = matches!(
+        ticket_command,
+        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }))
+    );
+    // Correlation: the reply may also carry other floating lifetimes under
+    // retained fullscreen with older outstanding placement tokens (e.g. a
+    // normally floated window on another fullscreen display). Only the row
+    // whose placement token was minted for this exact command may be
+    // recorded.
+    if toggled_float {
+        let expected_operation = ticket_command_seq.map(command_operation_id);
+        for row in &reply.windows {
+            let placed_by_this_command = ticket_command_seq.is_some_and(|seq| {
+                row.command_seq == Some(seq)
+                    || expected_operation.as_deref() == row.frame_operation.as_deref()
+            });
+            if !placed_by_this_command
+                || !row.floating
+                || !is_retained_fullscreen(retained, &row.lifetime.0)
+            {
+                continue;
+            }
+            let (Some(operation), Some(target)) =
+                (row.frame_operation.clone(), row.effective_frame)
+            else {
+                continue;
+            };
+            let Some((pid, _)) = parse_window_id(&row.lifetime.0) else {
+                continue;
+            };
+            let Some(app) = retained.apps.get(&pid) else {
+                continue;
+            };
+            session.pending_fullscreen_float_placements.insert(
+                row.lifetime.0.clone(),
+                crate::world_runtime::PendingFullscreenFloatPlacement {
+                    operation,
+                    target,
+                    generation: app.generation,
+                },
+            );
+        }
+    }
+}
+
+/// Adapter-owned deferred reveal for one explicit float placement withheld
+/// behind a retained native fullscreen overlay (D5: no writes, token
+/// spends, or native state for a fullscreen subject). Shared core keeps
+/// ordinary float rows `Untouched` and never spends their placement token,
+/// so the adapter records the durable target on the withheld reply and
+/// writes it exactly once on a later applied reply after the overlay
+/// clears. The target is always the core-published durable frame, never
+/// the fullscreen pose.
+#[allow(clippy::too_many_arguments)]
+fn stage_deferred_fullscreen_float_reveals(
+    session: &mut WorldSession,
+    retained: &RetainedCore,
+    reply: &WorldReplyV4,
+    current: &BTreeSet<(String, String)>,
+    ticket_command: Option<&WorldCommand>,
+    ticket_command_seq: Option<u64>,
+    frames: &mut Vec<(String, Rect)>,
+    frame_ops: &mut Vec<(String, String)>,
+) {
+    record_deferred_fullscreen_float_placement(
+        session,
+        retained,
+        reply,
+        ticket_command,
+        ticket_command_seq,
+    );
+    if session.pending_fullscreen_float_placements.is_empty() {
+        return;
+    }
+    // Reveal phase: each remembered placement either stays pending (still
+    // withheld) or settles exactly once, never repeating a matching frame.
+    let pending = std::mem::take(&mut session.pending_fullscreen_float_placements);
+    for (window, stored) in pending {
+        let Some((pid, wid)) = parse_window_id(&window) else {
+            continue;
+        };
+        let Some(app) = retained.apps.get(&pid) else {
+            continue;
+        };
+        if app.generation != stored.generation {
+            continue;
+        }
+        // Lifetime clear: the adapter prunes closed lifetimes from the app's
+        // observed windows, the minimized lifetimes, and the authoritative
+        // roster; a lifetime retained in none of them is gone (the v4 reply
+        // carries no close lane, so retained truth is the close signal).
+        let lifetime_retained = app.windows.iter().any(|observed| observed.wid == wid)
+            || retained.minimized.contains_key(&window)
+            || app.roster.contains_key(&wid);
+        if !lifetime_retained {
+            continue;
+        }
+        let row = reply.windows.iter().find(|row| row.lifetime.0 == window);
+        let Some(row) = row else {
+            session
+                .pending_fullscreen_float_placements
+                .insert(window, stored);
+            continue;
+        };
+        if row
+            .frame_operation
+            .as_deref()
+            .is_some_and(|operation| operation != stored.operation)
+        {
+            // Another placement token supersedes this one.
+            continue;
+        }
+        // Held/unreadable and minimized/host-hidden rows are republished by
+        // core as non-floating `Hold(..)` rows (no effective frame). Those
+        // withhold the placement like any veto; they must NOT be mistaken
+        // for a real re-tile and clear the record. A scope hold withholds
+        // every geometry write in the normal lane for the same reason.
+        let row_hold = row.frame_authority.hold_reason().is_some();
+        let scope_hold = reply.scopes.iter().any(|scope| {
+            scope.authority.hold_reason().is_some()
+                && scope.scope.covers_workspace(&row.output, &row.workspace)
+        });
+        let minimized_veto = retained
+            .minimized
+            .get(&window)
+            .is_some_and(|record| record.minimized || record.host_hidden || record.sticky);
+        let roster_veto = app
+            .roster
+            .get(&wid)
+            .is_some_and(|entry| entry.minimized_meta || entry.hidden_meta);
+        if row_hold || scope_hold || minimized_veto || roster_veto {
+            session
+                .pending_fullscreen_float_placements
+                .insert(window, stored);
+            continue;
+        }
+        // Only a hold-free non-floating row is a real re-tile that
+        // supersedes the deferred placement.
+        if !row.floating {
+            continue;
+        }
+        if is_retained_fullscreen(retained, &window)
+            || !current.contains(&(row.output.0.clone(), row.workspace.clone()))
+        {
+            session
+                .pending_fullscreen_float_placements
+                .insert(window, stored);
+            continue;
+        }
+        let observed = app.windows.iter().find(|observed| observed.wid == wid);
+        if observed.is_some_and(|observed| {
+            Rect {
+                x: observed.x,
+                y: observed.y,
+                w: observed.w,
+                h: observed.h,
+            } == stored.target
+        }) {
+            // Already at the durable placement: never repeat a matching
+            // frame.
+            continue;
+        }
+        if frames.iter().any(|(staged, _)| staged == &window) {
+            // The normal lane already staged this lifetime (a Controlled
+            // composed row): never write twice.
+            continue;
+        }
+        match row.frame_operation.as_deref() {
+            Some(operation) => {
+                let target = row.effective_frame.unwrap_or(stored.target);
+                if session.spend_frame_op(operation) {
+                    frame_ops.push((window.clone(), operation.to_owned()));
+                    frames.push((window, target));
+                }
+            }
+            // Adapter-owned one-shot reveal: the core no longer carries the
+            // token, so write the remembered durable target once.
+            None => frames.push((window, stored.target)),
+        }
+    }
 }
 
 /// Canonical property-attempt lane order for one typed report: rows grouped
@@ -506,6 +712,11 @@ pub(crate) fn dispatch_gesture_report(
     match outcome {
         WorldOutcome::Accepted(reply) => match session.sequencer().accept_reply(&reply) {
             ReplyVerdict::Applied(applied) => {
+                // Core already processed `report.closed`: drain accepted
+                // closes before any early return, so they never re-send.
+                for id in &report.closed {
+                    session.pending_closes.remove(id);
+                }
                 session.mark_intent_admitted(&report.intent_records);
                 if intent_write_hold(session, &applied) {
                     count_token(shared, &format!("{op}-refused-intent-write-held"));
@@ -597,6 +808,11 @@ pub(crate) fn dispatch_gesture_report(
         },
         WorldOutcome::CommandConsumed(reply) => match session.sequencer().accept_reply(&reply) {
             ReplyVerdict::Applied(applied) => {
+                // Core already processed `report.closed`: drain accepted
+                // closes before any early return, so they never re-send.
+                for id in &report.closed {
+                    session.pending_closes.remove(id);
+                }
                 session.mark_intent_admitted(&report.intent_records);
                 if intent_write_hold(session, &applied) {
                     count_token(shared, &format!("{op}-refused-intent-write-held"));
@@ -944,6 +1160,13 @@ fn dispatch_ticket_inner(
             let accept_clock = crate::stage_timing::PhaseClock::start();
             match session.sequencer().accept_reply(&reply) {
                 ReplyVerdict::Applied(applied) => {
+                    // Core already processed `report.closed`: drain the
+                    // accepted closes first, so every early return below
+                    // (held intent write, emission refusal) never re-sends
+                    // them on the next report.
+                    for id in &report.closed {
+                        session.pending_closes.remove(id);
+                    }
                     session.mark_intent_admitted(&report.intent_records);
                     if intent_write_hold(session, &applied) {
                         count_token(shared, &format!("{op}-refused-intent-write-held"));
@@ -956,14 +1179,34 @@ fn dispatch_ticket_inner(
                             "intent-write-held",
                             0,
                         );
+                        // Core already applied the command; record a
+                        // deferred fullscreen float placement even though
+                        // this reply is emission-refused.
+                        record_deferred_fullscreen_float_placement(
+                            session,
+                            retained,
+                            &applied,
+                            ticket.command.as_ref(),
+                            ticket.command_seq,
+                        );
                         return DispatchVerdict::Refused {
                             token: "intent-write-held".to_owned(),
-                            select_operation: None,
+                            select_operation: select_operation.clone(),
                         };
                     }
                     let Some(()) = prove_coherent(
                         retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
                     ) else {
+                        // Core already applied the command; record a
+                        // deferred fullscreen float placement even though
+                        // emission is refused as stale.
+                        record_deferred_fullscreen_float_placement(
+                            session,
+                            retained,
+                            &applied,
+                            ticket.command.as_ref(),
+                            ticket.command_seq,
+                        );
                         // The accepted command (if any) already executed
                         // core-side, so a planner-owned select binds exactly
                         // as on a pre-accept stale refusal; when no honest
@@ -1036,9 +1279,6 @@ fn dispatch_ticket_inner(
                         // publication may be skipped entirely.
                         crate::stage_timing::note_publish(span.id);
                     }
-                    for id in &report.closed {
-                        session.pending_closes.remove(id);
-                    }
                     DispatchVerdict::Applied { select_operation }
                 }
                 ReplyVerdict::Refused { reason } => {
@@ -1093,6 +1333,13 @@ fn dispatch_ticket_inner(
             // like an accept (the sequencer applies it as observation).
             match session.sequencer().accept_reply(&reply) {
                 ReplyVerdict::Applied(applied) => {
+                    // Core already processed `report.closed`: drain the
+                    // accepted closes first, so every early return below
+                    // (held intent write, emission refusal) never re-sends
+                    // them on the next report.
+                    for id in &report.closed {
+                        session.pending_closes.remove(id);
+                    }
                     session.mark_intent_admitted(&report.intent_records);
                     if intent_write_hold(session, &applied) {
                         count_token(shared, &format!("{op}-refused-intent-write-held"));
@@ -1105,14 +1352,34 @@ fn dispatch_ticket_inner(
                             "intent-write-held",
                             0,
                         );
+                        // Core already applied the command; record a
+                        // deferred fullscreen float placement even though
+                        // this reply is emission-refused.
+                        record_deferred_fullscreen_float_placement(
+                            session,
+                            retained,
+                            &applied,
+                            ticket.command.as_ref(),
+                            ticket.command_seq,
+                        );
                         return DispatchVerdict::Refused {
                             token: "intent-write-held".to_owned(),
-                            select_operation: None,
+                            select_operation: select_operation.clone(),
                         };
                     }
                     let Some(()) = prove_coherent(
                         retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
                     ) else {
+                        // Core already applied the command; record a
+                        // deferred fullscreen float placement even though
+                        // emission is refused as stale.
+                        record_deferred_fullscreen_float_placement(
+                            session,
+                            retained,
+                            &applied,
+                            ticket.command.as_ref(),
+                            ticket.command_seq,
+                        );
                         // The accepted command (if any) already executed
                         // core-side, so a planner-owned select binds exactly
                         // as on a pre-accept stale refusal; when no honest
@@ -1159,9 +1426,6 @@ fn dispatch_ticket_inner(
                         seq,
                         ticket.request_seq,
                     );
-                    for id in &report.closed {
-                        session.pending_closes.remove(id);
-                    }
                     DispatchVerdict::Applied { select_operation }
                 }
                 ReplyVerdict::Refused { reason } => {
@@ -1769,8 +2033,8 @@ fn consume_world_reply(
     focus_capacity: usize,
     reply: &WorldReplyV4,
     native: &[tiler_core::world_report::NativeObservation],
-    _ticket_command: Option<&WorldCommand>,
-    _ticket_command_seq: Option<u64>,
+    ticket_command: Option<&WorldCommand>,
+    ticket_command_seq: Option<u64>,
     op: &'static str,
     outcome: &'static str,
     pid: u32,
@@ -2073,6 +2337,19 @@ fn consume_world_reply(
         }
         frames.push((row.lifetime.0.clone(), frame));
     }
+    // Deferred adapter reveal for explicit float placements withheld behind
+    // a retained fullscreen overlay (shared core keeps those rows
+    // `Untouched`, so the normal lane above cannot stage them).
+    stage_deferred_fullscreen_float_reveals(
+        session,
+        retained,
+        reply,
+        &current,
+        ticket_command,
+        ticket_command_seq,
+        &mut frames,
+        &mut frame_ops,
+    );
     // Applied-reply presentation publish: exactly the applied reply's
     // shapes ride shared state for the tile main thread, which renders
     // these shapes with liveness plus fresh native safety vetoes before
@@ -2125,11 +2402,21 @@ fn consume_world_reply(
     };
     {
         let mut guard = lock_shared(shared);
+        // Compute the change facts BEFORE overwriting: a toggle reply
+        // carries a changed current-workspace tiling mode (a desire row),
+        // and a pager move changes the presentation. Either advances the
+        // monotonic indicator revision so the menu-bar checkmark repaints
+        // on this reply alone (an identical duplicate leaves it steady).
+        let desires_changed = guard.last_workspace_desires != reply.workspaces;
+        let pager_changed = guard.last_presentation.pager != reply.presentation.pager;
         guard.last_presentation = reply.presentation.clone();
         guard.last_pager_bindings = pager_bindings;
         guard.last_workspace_desires = reply.workspaces.clone();
         guard.last_core_generation = reply.core_generation.clone();
         guard.last_geometry_key = Some(geometry_key);
+        if desires_changed || pager_changed {
+            guard.indicator_revision = guard.indicator_revision.wrapping_add(1);
+        }
     }
     emit_world_frames(
         session,
@@ -5544,6 +5831,161 @@ mod tests {
         }
     }
 
+    /// P6-2 (CommandConsumed + emission refusal): a replayed command whose
+    /// sequence is at/below core's command high-watermark reconciles as
+    /// `CommandConsumed`. Core already processed the report's closes when the
+    /// reply is accepted, so the drain must run before the post-accept
+    /// emission gate refuses the stale reply — otherwise the next report
+    /// re-sends a close core already processed.
+    #[test]
+    fn consumed_stale_reply_drains_accepted_closes_before_refusal() {
+        use tiler_core::world_report::WorldCommand;
+
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let ctx = mock_space_context(false);
+        lock_shared(&shared).native_context = Some(Arc::clone(&ctx));
+        lock_shared(&shared)
+            .native_cell
+            .store(Some(Arc::clone(&ctx)));
+        // Focus stays on a surviving window; a second roster window is the
+        // accepted close target, so the replay report stays shape-valid with
+        // both windows homed to the live current Space.
+        let mut retained = close_retained(9, Some(close_target(9)), true);
+        retained
+            .apps
+            .get_mut(&CLOSE_PID)
+            .expect("retained app")
+            .roster
+            .insert(7, close_roster_entry(7));
+        for wid in [9u32, 7] {
+            retained.window_domains.insert(
+                format!("{CLOSE_PID}_{wid}"),
+                tiler_core::session::DomainKey {
+                    output: output(),
+                    workspace: tiler_core::directional::WorkspaceId("space-7".to_owned()),
+                },
+            );
+        }
+        let inbox = Arc::new(Inbox::new(16));
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        // Save-free core-resolved selection: the point is only the command
+        // high-watermark and the close drain ordering, never an intent save.
+        let command = WorldCommand::SelectNumbered {
+            output: Some(output()),
+            index: 1,
+        };
+        // First real dispatch executes the command core-side and records its
+        // sequence as the command high-watermark.
+        let first = session
+            .sequencer()
+            .try_begin_request(Some(command.clone()))
+            .expect("first flight opens");
+        let consumed_seq = first
+            .command_seq
+            .expect("a fresh command claims its sequence");
+        match dispatch_ticket(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            DispatchContext::Native(Arc::clone(&ctx)),
+            Vec::new(),
+            first,
+            None,
+            false,
+            false,
+            crate::world_command_map::OP_SELECT,
+            0,
+            0,
+            0,
+        ) {
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("the first selection dispatch must apply, got {other:?}"),
+        }
+        assert!(
+            !session
+                .sequencer()
+                .last_reply()
+                .expect("applied reply")
+                .command_consumed,
+            "the first dispatch really executed the command"
+        );
+
+        // Fresh flight identity carrying the earlier consumed sequence:
+        // core classifies the inline command as already consumed.
+        crate::runtime::lock_shared(&shared).clock.invalidate();
+        let mut replay = session
+            .sequencer()
+            .try_begin_request(Some(command))
+            .expect("replay flight opens");
+        replay.command_seq = Some(consumed_seq);
+        // Core processes this close on the replay; the post-accept watermark
+        // move then refuses the reply at the emission gate.
+        session.pending_closes.insert(close_target(7));
+        let hook: crate::runtime_shared::PostAcceptHook = Arc::new({
+            let shared = Arc::clone(&shared);
+            move || {
+                crate::runtime::lock_shared(&shared).clock.invalidate();
+            }
+        });
+        lock_shared(&shared)
+            .post_accept_hook
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .replace(hook);
+        let verdict = dispatch_ticket(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            DispatchContext::Native(Arc::clone(&ctx)),
+            Vec::new(),
+            replay,
+            None,
+            false,
+            false,
+            crate::world_command_map::OP_SELECT,
+            0,
+            0,
+            0,
+        );
+        lock_shared(&shared)
+            .post_accept_hook
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        match verdict {
+            DispatchVerdict::Refused {
+                token,
+                select_operation,
+            } => {
+                assert_eq!(token, "stale-observation");
+                assert!(
+                    select_operation.is_none(),
+                    "a non-select lane binds no operation identity"
+                );
+            }
+            other => panic!("the consumed stale reply must refuse at emission, got {other:?}"),
+        }
+        assert!(
+            session
+                .sequencer()
+                .last_reply()
+                .expect("the applied consumed reply is retained")
+                .command_consumed,
+            "the replay really was WorldOutcome::CommandConsumed"
+        );
+        assert!(
+            session.pending_closes.is_empty(),
+            "the accepted close drains before the emission refusal"
+        );
+    }
+
     #[test]
     fn v2_command_shapes_carry_no_native_workspace() {
         use tiler_core::directional::WindowId;
@@ -5654,6 +6096,7 @@ mod tests {
             last_workspace_desires: Vec::new(),
             last_native_creations: Vec::new(),
             last_core_generation: String::new(),
+            indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }
@@ -9446,6 +9889,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn indicator_revision_advances_on_changed_desires_and_holds_on_duplicates() {
+        use tiler_core::world_report::{TilingMode, WorkspaceDesire, workspace_authority_scope};
+        let shared = focus_shared();
+        let mut session = focus_session();
+        let mut retained = RetainedCore::default();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                "select",
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        let reply = |tiling: TilingMode| {
+            let out = output();
+            let mut reply = empty_reply();
+            reply.workspaces = vec![WorkspaceDesire {
+                id: "ws-a".to_owned(),
+                output: out.clone(),
+                native_binding: Some("space-3".to_owned()),
+                scope: workspace_authority_scope(&out, "ws-a"),
+                order: 0,
+                tiling_mode: tiling,
+                existence: true,
+                hold: None,
+                trailing: false,
+            }];
+            reply
+        };
+        assert_eq!(
+            lock_shared(&shared).indicator_revision,
+            0,
+            "no applied reply has published yet"
+        );
+        // First applied reply publishes desires: advances once.
+        dispatch(&mut session, &mut retained, &reply(TilingMode::Tiled));
+        assert_eq!(lock_shared(&shared).indicator_revision, 1);
+        // Identical duplicate (same desires, same pager): steady.
+        dispatch(&mut session, &mut retained, &reply(TilingMode::Tiled));
+        assert_eq!(
+            lock_shared(&shared).indicator_revision,
+            1,
+            "identical applied replies never rebump the indicator revision"
+        );
+        // A toggle reply flips the retained planner mode: advances again.
+        dispatch(&mut session, &mut retained, &reply(TilingMode::Floating));
+        assert_eq!(lock_shared(&shared).indicator_revision, 2);
+    }
+
     fn stable_held_row(
         window: &str,
         output: &str,
@@ -12951,6 +13458,2046 @@ mod tests {
         assert!(
             lock_shared(&shared).close_focus_current.is_none(),
             "null publication retires the adapter epoch"
+        );
+    }
+
+    // -- Fullscreen float toggle on the v4 world path (offline) ------------
+
+    /// The core regression's fixture shape: an 800x600 work area and two
+    /// windows under one live PID. Window ids parse as `<pid>_<wid>` so the
+    /// adapter's frame staging resolves the live app slot.
+    const FF_PID: u32 = 4242;
+    const FF_SIBLING: &str = "4242_7";
+    const FF_SUBJECT: &str = "4242_8";
+
+    fn ff_rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    fn ff_screen() -> tiler_core::world_report::ScreenReport {
+        use tiler_core::directional::OutputId;
+        tiler_core::world_report::ScreenReport {
+            output: OutputId("out-a".to_owned()),
+            full_rect: Some(ff_rect(0, 0, 800, 600)),
+            work_area: Some(ff_rect(0, 0, 800, 600)),
+            complete: true,
+            scale: 1.0,
+            identity: tiler_core::world_report::OutputIdentity::unknown(),
+        }
+    }
+
+    fn ff_fact(window: &str, x: i32) -> tiler_core::world_report::WindowFact {
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::world_report::{
+            ActivationPolicy, NativeWorkspaceFact, VisibilityFact, WindowType,
+        };
+        tiler_core::world_report::WindowFact {
+            window: WindowId(window.to_owned()),
+            output: Some(OutputId("out-a".to_owned())),
+            rect: Some(ff_rect(x, 0, 40, 90)),
+            fullscreen: Some(false),
+            maximized: Some(false),
+            sticky: Some(false),
+            hints: Some(tiler_core::size_hints::WindowSizeHints::none()),
+            minimized: Some(false),
+            native_workspace: NativeWorkspaceFact::Omitted,
+            host_hidden: Some(false),
+            privileged: Some(false),
+            managed: Some(true),
+            accepts_input: Some(true),
+            activation_inhibited: Some(false),
+            tool_window: Some(false),
+            owned: Some(false),
+            transient: Some(false),
+            modal: Some(false),
+            resizable: Some(true),
+            above: Some(false),
+            below: Some(false),
+            owner: None,
+            parent: None,
+            role: None,
+            app_id: None,
+            executable: Some("synthetic.exe".to_owned()),
+            process_id: Some("foreign-pid".to_owned()),
+            class: Some("Synthetic".to_owned()),
+            title: None,
+            window_type: Some(WindowType::Normal),
+            activation_policy: Some(ActivationPolicy::Regular),
+            layer: Some(0),
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: VisibilityFact {
+                visible: Some(true),
+                suppression_owned: None,
+            },
+        }
+    }
+
+    fn ff_report(
+        seq: u64,
+        windows: Vec<tiler_core::world_report::WindowFact>,
+        focused: &str,
+        command_seq: Option<u64>,
+        command: Option<tiler_core::world_report::WorldCommand>,
+    ) -> tiler_core::world_report::WorldReportV4 {
+        use tiler_core::world_report::{
+            PresentationIngressV4, PresentationRowV4, WORLD_CONTRACT_VERSION_V4, WorldReportV4,
+        };
+        WorldReportV4 {
+            contract_version: WORLD_CONTRACT_VERSION_V4,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            observation_seq: seq,
+            request_seq: seq,
+            request_id: format!("req-{seq}"),
+            command_seq,
+            command,
+            screens: vec![ff_screen()],
+            held_screens: Vec::new(),
+            windows,
+            held_windows: Vec::new(),
+            closed: Vec::new(),
+            native: Vec::new(),
+            held_native: Vec::new(),
+            cursor: None,
+            cursor_hit: None,
+            focused_global: focused.to_owned(),
+            foreground_known: true,
+            focus_changes: None,
+            action_foreground: None,
+            action_cached: None,
+            action_outputs: Vec::new(),
+            primary_output: None,
+            inventory_complete: true,
+            gesture_barrier: false,
+            gesture: None,
+            monotonic_ms: 0,
+            frames: Vec::new(),
+            member_attempts: Vec::new(),
+            view_attempts: Vec::new(),
+            visibility_attempts: Vec::new(),
+            creation_attempts: Vec::new(),
+            held_attempts: Vec::new(),
+            state_attempts: Vec::new(),
+            focus_feedback: Vec::new(),
+            presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
+            intent_records: Vec::new(),
+            renderer_input: None,
+        }
+    }
+
+    fn ff_engine() -> tiler_core::world_engine::WorldEngine {
+        use tiler_core::connection::{HostCapabilities, RawSettingValue};
+        tiler_core::world_engine::WorldEngine::new_test_bound_with_initial_settings(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                // Fixtures carry native sticky and maximize facts; the lane
+                // under test is the native route.
+                native_sticky: true,
+                maximize: true,
+                ..Default::default()
+            },
+            vec![("outer".to_owned(), RawSettingValue::Number(0.0))],
+        )
+        .expect("generation")
+    }
+
+    fn ff_accepted(
+        engine: &mut tiler_core::world_engine::WorldEngine,
+        report: &tiler_core::world_report::WorldReportV4,
+    ) -> tiler_core::world_report::WorldReplyV4 {
+        match tiler_protocol::world_admission::handle_report_checked(engine, report, &[]).outcome {
+            tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted, got {other:?}"),
+        }
+    }
+
+    /// The ToggleFloat command exactly as production sources it: the
+    /// adapter's semantic-action map (implicit `CurrentFocus` subject, no
+    /// explicit float rect).
+    fn ff_toggle_float_command() -> (tiler_core::world_report::WorldCommand, &'static str) {
+        let mut retained = RetainedCore {
+            observed_focus: Some(tiler_core::directional::WindowId(FF_SUBJECT.to_owned())),
+            ..Default::default()
+        };
+        crate::world_command_map::operation_command(
+            &crate::runtime_types::InputSemanticAction::ToggleFloat,
+            &mut retained,
+            None,
+            &[],
+        )
+        .expect("ToggleFloat maps to a world command")
+    }
+
+    /// One real reply row by lifetime.
+    fn ff_row<'a>(
+        reply: &'a tiler_core::world_report::WorldReplyV4,
+        window: &str,
+    ) -> &'a tiler_core::world_report::WindowDesire {
+        reply
+            .windows
+            .iter()
+            .find(|row| row.lifetime.0 == window)
+            .unwrap_or_else(|| panic!("missing row {window}"))
+    }
+
+    /// Adapter-observed native truth for the fixture PID: both windows
+    /// homed on out-a, tiled, subject not yet fullscreen.
+    fn ff_retained() -> RetainedCore {
+        use crate::runtime_core::RetainedApp;
+        use tiler_core::directional::WindowId;
+        let observed = |wid: u32, x: i32, fullscreen: bool| {
+            let (w, h) = if fullscreen { (800, 600) } else { (40, 90) };
+            crate::runtime_types::ObservedWindow {
+                wid,
+                x,
+                y: 0,
+                w,
+                h,
+                floating: false,
+                fullscreen,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+            }
+        };
+        RetainedCore {
+            apps: BTreeMap::from([(
+                FF_PID,
+                RetainedApp {
+                    generation: 1,
+                    seq_last: 0,
+                    cmd_counter: 0,
+                    windows: vec![observed(7, 0, false), observed(8, 100, false)],
+                    focused_wid: Some(7),
+                    roster: BTreeMap::new(),
+                    roster_incomplete: false,
+                    roster_cause: String::new(),
+                },
+            )]),
+            observed_focus: Some(WindowId(FF_SIBLING.to_owned())),
+            observed_focus_known: true,
+            ..Default::default()
+        }
+    }
+
+    /// One live readable user Space matching the fixture screen (`out-a`).
+    fn ff_native_context() -> Arc<crate::runtime_types::NativeContext> {
+        use tiler_core::directional::{OutputId, WorkspaceId};
+        Arc::new(crate::runtime_types::NativeContext {
+            revision: 9,
+            domains: vec![crate::runtime_types::NativeDomain {
+                cg_id: 1,
+                uuid: None,
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId("ws-a".to_owned()),
+                space: 1,
+                current: true,
+                readable: true,
+                bounds: ff_rect(0, 0, 800, 600),
+                visible: ff_rect(0, 0, 800, 600),
+            }],
+            skipped: Vec::new(),
+        })
+    }
+
+    /// Home the fixture windows on the context Space and give both the
+    /// realistic ordinary macOS raw facts (role/subrole/layer/...) the core
+    /// needs to classify them as managed tiles rather than held unknowns.
+    fn ff_home_windows(retained: &mut RetainedCore, ctx: &crate::runtime_types::NativeContext) {
+        use crate::runtime_core::RosterEntry;
+        use tiler_core::session::DomainKey;
+        let home = DomainKey {
+            output: ctx.domains[0].output.clone(),
+            workspace: ctx.domains[0].workspace.clone(),
+        };
+        for window in [FF_SIBLING, FF_SUBJECT] {
+            retained
+                .window_domains
+                .insert(window.to_owned(), home.clone());
+        }
+        let app = retained.apps.get_mut(&FF_PID).expect("fixture app");
+        for wid in [7u32, 8] {
+            app.roster.insert(
+                wid,
+                RosterEntry {
+                    observed: None,
+                    spaces: Vec::new(),
+                    fullscreen_meta: false,
+                    minimized_meta: false,
+                    hidden_meta: false,
+                    excluded: None,
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                },
+            );
+        }
+    }
+
+    /// Flip the adapter-observed native fullscreen truth for the subject
+    /// (truth only: the core owns all fullscreen policy).
+    fn ff_set_subject_fullscreen(retained: &mut RetainedCore, fullscreen: bool) {
+        let Some(app) = retained.apps.get_mut(&FF_PID) else {
+            panic!("fixture app");
+        };
+        let subject = app
+            .windows
+            .iter_mut()
+            .find(|window| window.wid == 8)
+            .expect("fixture subject");
+        subject.fullscreen = fullscreen;
+        (subject.x, subject.y, subject.w, subject.h) = if fullscreen {
+            (0, 0, 800, 600)
+        } else {
+            (100, 0, 40, 90)
+        };
+    }
+
+    /// Set the adapter-observed native frame for the subject.
+    fn ff_set_subject_observed(retained: &mut RetainedCore, frame: Rect) {
+        let Some(app) = retained.apps.get_mut(&FF_PID) else {
+            panic!("fixture app");
+        };
+        let subject = app
+            .windows
+            .iter_mut()
+            .find(|window| window.wid == 8)
+            .expect("fixture subject");
+        (subject.x, subject.y, subject.w, subject.h) = (frame.x, frame.y, frame.w, frame.h);
+    }
+
+    /// Install/clear one authoritative roster row for the subject so the
+    /// reveal veto can be exercised without inventing native state.
+    fn ff_set_roster_minimized(retained: &mut RetainedCore, minimized: bool) {
+        use crate::runtime_core::RosterEntry;
+        let Some(app) = retained.apps.get_mut(&FF_PID) else {
+            panic!("fixture app");
+        };
+        app.roster.insert(
+            8,
+            RosterEntry {
+                observed: None,
+                spaces: Vec::new(),
+                fullscreen_meta: false,
+                minimized_meta: minimized,
+                hidden_meta: false,
+                excluded: None,
+                role: None,
+                subrole: None,
+                modal: None,
+                resizable: None,
+                layer: None,
+                app_id: None,
+                activation_policy: None,
+            },
+        );
+    }
+
+    /// Prune the subject lifetime from adapter retained truth (explicit
+    /// close: gone from observed windows, minimized records, and roster).
+    fn ff_forget_subject(retained: &mut RetainedCore) {
+        let Some(app) = retained.apps.get_mut(&FF_PID) else {
+            panic!("fixture app");
+        };
+        app.windows.retain(|window| window.wid != 8);
+        app.roster.remove(&8);
+        retained.minimized.remove(FF_SUBJECT);
+    }
+
+    /// Adapter observables: frames staged, overlay-withheld rows, focus
+    /// dispatches, and published native-creation desires.
+    fn ff_counters(shared: &Arc<Mutex<Shared>>) -> (u64, u64, u64, usize) {
+        let guard = lock_shared(shared);
+        (
+            guard.diagnostics.frames_emitted,
+            guard.diagnostics.frames_overlay_skipped,
+            guard.diagnostics.focus_dispatched,
+            guard.last_native_creations.len(),
+        )
+    }
+
+    /// Rows the adapter's emission gate would stage for one reply: current
+    /// scope, `Controlled` frame authority, and an effective frame (the
+    /// frame-operation token is spent only after this filter).
+    fn ff_gated_rows(
+        reply: &tiler_core::world_report::WorldReplyV4,
+    ) -> Vec<&tiler_core::world_report::WindowDesire> {
+        let current: Vec<(String, String)> = reply
+            .outputs
+            .iter()
+            .filter_map(|out| {
+                out.logical_view
+                    .as_ref()
+                    .map(|view| (out.output.0.clone(), view.clone()))
+            })
+            .collect();
+        reply
+            .windows
+            .iter()
+            .filter(|row| {
+                row.frame_authority == tiler_core::world_report::ScopeAuthority::Controlled
+                    && row.effective_frame.is_some()
+                    && current.contains(&(row.output.0.clone(), row.workspace.clone()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fullscreen_toggle_float_under_fullscreen_stages_no_subject_frames() {
+        // Real ENGINE (handle_report_checked, tiler-core) plus the real
+        // `consume_world_reply`, with the ToggleFloat command sourced from
+        // the production adapter map (implicit CurrentFocus subject). On a
+        // focused fullscreen subject the first toggle floats it beneath the
+        // retained overlay: no tile allocation, sibling reflow, and the
+        // adapter stages nothing for the subject (no frame write, no focus,
+        // no native creation/state). The second toggle re-tiles invisibly.
+        let (command, token) = ff_toggle_float_command();
+        assert_eq!(token, "toggle-float", "production op token");
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4,
+                        ticket: Option<(&WorldCommand, u64)>| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                ticket.map(|(command, _)| command),
+                ticket.map(|(_, seq)| seq),
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        let area = |r: Rect| i64::from(r.w) * i64::from(r.h);
+        let fallback = ff_rect(160, 120, 480, 360);
+        let fullscreen_frame = ff_rect(0, 0, 800, 600);
+        let mut engine = ff_engine();
+        let seed = ff_accepted(
+            &mut engine,
+            &ff_report(
+                1,
+                vec![ff_fact(FF_SIBLING, 0), ff_fact(FF_SUBJECT, 100)],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        assert_eq!(
+            ff_row(&seed, FF_SUBJECT).frame_authority,
+            tiler_core::world_report::ScopeAuthority::Controlled,
+            "seed tiles the subject: {:?}",
+            seed.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &seed, None);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "seed stages both tiles: {after:?} vs {before:?}"
+        );
+        assert_eq!(after.1, before.1, "no retained overlay at seed time");
+        assert_eq!(after.2, before.2, "seed dispatches no focus");
+        assert_eq!(after.3, 0, "seed publishes no native creation");
+        let sibling_seed = ff_row(&seed, FF_SIBLING)
+            .allocation
+            .expect("seed sibling tile");
+
+        // Native truth catches up: the subject is fullscreen and focused.
+        ff_set_subject_fullscreen(&mut retained, true);
+        retained.observed_focus = Some(WindowId(FF_SUBJECT.to_owned()));
+        retained.observed_focus_known = true;
+
+        let mut subject_full = ff_fact(FF_SUBJECT, 100);
+        subject_full.fullscreen = Some(true);
+        subject_full.rect = Some(fullscreen_frame);
+        let mut first = ff_accepted(
+            &mut engine,
+            &ff_report(
+                2,
+                vec![ff_fact(FF_SIBLING, 0), subject_full],
+                FF_SUBJECT,
+                Some(2),
+                Some(command.clone()),
+            ),
+        );
+        let subject = ff_row(&first, FF_SUBJECT);
+        assert!(subject.floating, "subject floats: {subject:?}");
+        assert_eq!(
+            subject.allocation, None,
+            "floated subject holds no tile allocation: {subject:?}"
+        );
+        assert_eq!(
+            subject.effective_frame,
+            Some(fallback),
+            "durable centered-60% fallback, never the fullscreen frame: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "no float frame write to a fullscreen subject: {subject:?}"
+        );
+        assert_eq!(
+            subject.membership_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "no membership write to the fullscreen subject: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_operation.as_deref(),
+            Some("op-2"),
+            "one-shot placement token rides the row without write authority: {subject:?}"
+        );
+        assert!(
+            subject.state.is_empty(),
+            "no native state desire for the subject: {subject:?}"
+        );
+        assert_eq!(
+            subject.visibility, None,
+            "no visibility write for the subject: {subject:?}"
+        );
+        let sibling = ff_row(&first, FF_SIBLING);
+        assert_eq!(
+            sibling.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Controlled,
+            "sibling reflow is Controlled: {sibling:?}"
+        );
+        let sibling_alloc = sibling.allocation.expect("sibling tile");
+        assert!(
+            area(sibling_alloc) > area(sibling_seed),
+            "sibling expands into the freed tile: {sibling_alloc:?} vs {sibling_seed:?}"
+        );
+        assert_eq!(
+            (sibling_alloc.w, sibling_alloc.h),
+            (800, 600),
+            "sibling takes the full domain: {sibling_alloc:?}"
+        );
+        assert!(
+            first.native_creations.is_empty(),
+            "no native creation for the subject: {:?}",
+            first.native_creations
+        );
+        assert!(
+            first.focus_request.is_none(),
+            "float toggle mints no focus request: {:?}",
+            first.focus_request
+        );
+        // Correlation regression: the same reply also carries an unrelated
+        // floating lifetime under retained fullscreen with an older
+        // placement token. Only the row minted for this command (op-2 /
+        // command_seq 2) may be recorded; the older token must stay unspent
+        // and schedule no reveal.
+        let unrelated_fallback = ff_rect(200, 150, 300, 200);
+        let mut unrelated = ff_row(&first, FF_SUBJECT).clone();
+        unrelated.lifetime = WindowId("4242_9".to_owned());
+        unrelated.frame_operation = Some("op-1".to_owned());
+        unrelated.command_seq = Some(1);
+        unrelated.effective_frame = Some(unrelated_fallback);
+        first.windows.push(unrelated);
+        {
+            let app = retained.apps.get_mut(&FF_PID).expect("fixture app");
+            app.windows.push(crate::runtime_types::ObservedWindow {
+                wid: 9,
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+                floating: true,
+                fullscreen: true,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+            });
+        }
+        let gated = ff_gated_rows(&first);
+        assert_eq!(
+            gated
+                .iter()
+                .map(|row| row.lifetime.0.as_str())
+                .collect::<Vec<_>>(),
+            vec![FF_SIBLING],
+            "only the sibling row is emission-eligible: {gated:?}"
+        );
+
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &first, Some((&command, 2)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "only the sibling's Controlled frame stages: {after:?} vs {before:?}"
+        );
+        assert_eq!(
+            after.1 - before.1,
+            2,
+            "the subject and the unrelated floating fullscreen row are both \
+             overlay-withheld: {after:?} vs {before:?}"
+        );
+        assert_eq!(after.2, before.2, "no focus dispatched for the subject");
+        assert_eq!(after.3, 0, "no native creation published");
+        assert!(
+            lock_focus(&focus_queue).is_empty(),
+            "focus outbox stays empty"
+        );
+        assert_eq!(
+            session.pending_fullscreen_float_placements.get(FF_SUBJECT),
+            Some(&crate::world_runtime::PendingFullscreenFloatPlacement {
+                operation: "op-2".to_owned(),
+                target: fallback,
+                generation: 1,
+            }),
+            "the withheld placement is recorded (token unspent) with the durable target: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        assert_eq!(
+            session.pending_fullscreen_float_placements.len(),
+            1,
+            "only the toggled subject gets a deferral: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        assert!(
+            !session
+                .pending_fullscreen_float_placements
+                .contains_key("4242_9"),
+            "the unrelated floating fullscreen row is never captured: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        assert!(
+            session.spend_frame_op("op-1"),
+            "the unrelated row's older token stays unspent (no reveal scheduled)"
+        );
+
+        // Second toggle: re-tile beneath the still-retained fullscreen
+        // overlay. Allocation returns, no effective frame, no token.
+        let mut subject_float_full = ff_fact(FF_SUBJECT, 100);
+        subject_float_full.transient = Some(true);
+        subject_float_full.fullscreen = Some(true);
+        subject_float_full.rect = Some(fullscreen_frame);
+        let second = ff_accepted(
+            &mut engine,
+            &ff_report(
+                3,
+                vec![ff_fact(FF_SIBLING, 0), subject_float_full],
+                FF_SUBJECT,
+                Some(3),
+                Some(command.clone()),
+            ),
+        );
+        let subject = ff_row(&second, FF_SUBJECT);
+        assert!(!subject.floating, "subject re-tiles: {subject:?}");
+        let retiled = subject
+            .allocation
+            .expect("subject holds a tile again invisibly");
+        assert_eq!(
+            (retiled.x, retiled.y, retiled.w, retiled.h),
+            (404, 0, 396, 600),
+            "the invisible re-tile reserves the ordinary tile: {subject:?}"
+        );
+        assert_eq!(
+            subject.effective_frame, None,
+            "invisible re-tile under the overlay: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "no frame write to the retained fullscreen subject: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_operation, None,
+            "no placement token for a tiled row: {subject:?}"
+        );
+        let sibling = ff_row(&second, FF_SIBLING);
+        let sibling_shrunk = sibling.allocation.expect("sibling tile");
+        assert!(
+            area(sibling_shrunk) < area(sibling_alloc),
+            "sibling shrinks once the subject re-tiles: {sibling_shrunk:?} vs {sibling_alloc:?}"
+        );
+        assert_eq!(
+            gated_names(&second),
+            vec![FF_SIBLING],
+            "subject re-tile has no frame authority: {:?}",
+            second.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &second, Some((&command, 3)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "invisible re-tile stages only the sibling: {after:?} vs {before:?}"
+        );
+        assert_eq!(
+            after.1 - before.1,
+            1,
+            "the invisible subject row is overlay-withheld: {after:?} vs {before:?}"
+        );
+        assert_eq!(after.2, before.2, "no focus dispatched for the subject");
+        assert_eq!(after.3, 0, "no native creation published");
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "the re-tile supersedes the deferred placement: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+    }
+
+    fn gated_names(reply: &tiler_core::world_report::WorldReplyV4) -> Vec<&str> {
+        ff_gated_rows(reply)
+            .iter()
+            .map(|row| row.lifetime.0.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn fullscreen_toggle_float_exit_without_command_reveals_base_state() {
+        // Both actual native exits of the fullscreen float toggle, with no
+        // command: the shared core reveals the base state. Float base: the
+        // row keeps the durable fallback with `Untouched` authority, so the
+        // adapter's deferred lane writes the withheld placement exactly once
+        // after the overlay clears (never from the fullscreen pose); tile
+        // base: the row is a Controlled tiled allocation and the normal lane
+        // stages it. No fullscreen frame is ever adopted as float placement.
+        let (command, token) = ff_toggle_float_command();
+        let fallback = ff_rect(160, 120, 480, 360);
+        let fullscreen_frame = ff_rect(0, 0, 800, 600);
+        let setup = |full_toggles: u64| {
+            // Fresh engine, live adapter app, retained observation truth.
+            let shared = focus_shared();
+            live_focus_app(&shared, FF_PID, 1);
+            let mut session = focus_session();
+            let mut retained = ff_retained();
+            let focus_queue = Arc::new(Mutex::new(Vec::new()));
+            let mut engine = ff_engine();
+            let seed = ff_accepted(
+                &mut engine,
+                &ff_report(
+                    1,
+                    vec![ff_fact(FF_SIBLING, 0), ff_fact(FF_SUBJECT, 100)],
+                    FF_SIBLING,
+                    None,
+                    None,
+                ),
+            );
+            let dispatch = |session: &mut WorldSession,
+                            retained: &mut RetainedCore,
+                            reply: &tiler_core::world_report::WorldReplyV4,
+                            ticket: Option<(&WorldCommand, u64)>| {
+                consume_world_reply(
+                    session,
+                    retained,
+                    &shared,
+                    &focus_queue,
+                    16,
+                    reply,
+                    &[],
+                    ticket.map(|(command, _)| command),
+                    ticket.map(|(_, seq)| seq),
+                    token,
+                    "accepted",
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+            };
+            dispatch(&mut session, &mut retained, &seed, None);
+            ff_set_subject_fullscreen(&mut retained, true);
+            retained.observed_focus = Some(WindowId(FF_SUBJECT.to_owned()));
+            retained.observed_focus_known = true;
+            let mut subject_full = ff_fact(FF_SUBJECT, 100);
+            subject_full.fullscreen = Some(true);
+            subject_full.rect = Some(fullscreen_frame);
+            let first = ff_accepted(
+                &mut engine,
+                &ff_report(
+                    2,
+                    vec![ff_fact(FF_SIBLING, 0), subject_full],
+                    FF_SUBJECT,
+                    Some(2),
+                    Some(command.clone()),
+                ),
+            );
+            dispatch(&mut session, &mut retained, &first, Some((&command, 2)));
+            for seq in 3..(3 + full_toggles.saturating_sub(1)) {
+                let mut float_full = ff_fact(FF_SUBJECT, 100);
+                float_full.transient = Some(true);
+                float_full.fullscreen = Some(true);
+                float_full.rect = Some(fullscreen_frame);
+                let reply = ff_accepted(
+                    &mut engine,
+                    &ff_report(
+                        seq,
+                        vec![ff_fact(FF_SIBLING, 0), float_full],
+                        FF_SUBJECT,
+                        Some(seq),
+                        Some(command.clone()),
+                    ),
+                );
+                dispatch(&mut session, &mut retained, &reply, Some((&command, seq)));
+            }
+            (shared, session, retained, focus_queue, engine)
+        };
+
+        // Leg 1: single toggle, then the overlay clears with no command and
+        // the native frame still reports the full-screen pose (the pose the
+        // deferred reveal has to replace).
+        let (shared, mut session, mut retained, focus_queue, mut engine) = setup(1);
+        assert_eq!(
+            session
+                .pending_fullscreen_float_placements
+                .get(FF_SUBJECT)
+                .map(|pending| (pending.operation.as_str(), pending.target)),
+            Some(("op-2", fallback)),
+            "the toggle records the withheld placement: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        ff_set_subject_fullscreen(&mut retained, false);
+        ff_set_subject_observed(&mut retained, fullscreen_frame);
+        let mut exited = ff_fact(FF_SUBJECT, 100);
+        exited.transient = Some(true);
+        exited.rect = Some(fullscreen_frame);
+        let reply = ff_accepted(
+            &mut engine,
+            &ff_report(
+                3,
+                vec![ff_fact(FF_SIBLING, 0), exited],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        let subject = ff_row(&reply, FF_SUBJECT);
+        assert!(subject.floating, "exit keeps the float: {subject:?}");
+        assert_eq!(subject.allocation, None, "still no tile: {subject:?}");
+        assert_eq!(
+            subject.effective_frame,
+            Some(fallback),
+            "exit keeps the durable fallback: {subject:?}"
+        );
+        assert_ne!(
+            subject.effective_frame,
+            Some(fullscreen_frame),
+            "the fullscreen frame is never adopted as float placement: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "the float reveal row carries no frame authority: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_operation.as_deref(),
+            Some("op-2"),
+            "the needed placement token stays retained: {subject:?}"
+        );
+        assert_eq!(
+            gated_names(&reply),
+            vec![FF_SIBLING],
+            "only the sibling row is emission-eligible on float exit: {:?}",
+            reply.windows
+        );
+        assert!(
+            reply.focus_request.is_none() && reply.native_creations.is_empty(),
+            "float exit mints no focus/native creation: {reply:?}"
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &reply);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "float exit stages the sibling reflow plus the deferred subject reveal: \
+             {after:?} vs {before:?}"
+        );
+        assert_eq!(
+            after.1, before.1,
+            "no retained overlay after the exit: {after:?} vs {before:?}"
+        );
+        assert_eq!(after.2, before.2, "float exit dispatches no focus");
+        assert_eq!(after.3, 0, "float exit publishes no native creation");
+        assert!(
+            !session.spend_frame_op("op-2"),
+            "the deferred reveal spent the core placement token"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "the reveal settles the pending record: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        assert!(
+            lock_focus(&focus_queue).is_empty(),
+            "focus outbox stays empty"
+        );
+        // The adapter publishes the same reveal as plan truth (what the
+        // presentation renders).
+        let desired = lock_shared(&shared).last_desired.clone();
+        assert!(
+            desired.iter().any(|frame| frame.window == FF_SUBJECT
+                && (frame.x, frame.y, frame.w, frame.h)
+                    == (fallback.x, fallback.y, fallback.w, fallback.h)),
+            "plan truth reveals the float at the fallback: {desired:?}"
+        );
+
+        // Leg 2: double toggle, then the overlay clears with no command and
+        // a plain tiled observation: both rows re-tile and the adapter
+        // stages both reveal writes.
+        let (shared, mut session, mut retained, focus_queue, mut engine) = setup(2);
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "the re-tile left no deferred placement: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        ff_set_subject_fullscreen(&mut retained, false);
+        let reply = ff_accepted(
+            &mut engine,
+            &ff_report(
+                4,
+                vec![ff_fact(FF_SIBLING, 0), ff_fact(FF_SUBJECT, 100)],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        let subject = ff_row(&reply, FF_SUBJECT);
+        assert!(!subject.floating, "exit stays tiled: {subject:?}");
+        let subject_alloc = subject.allocation.expect("tiled after exit");
+        assert_eq!(
+            subject.effective_frame,
+            Some(subject_alloc),
+            "tiled frame rides the allocation: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Controlled,
+            "tile reveal carries frame authority: {subject:?}"
+        );
+        assert_ne!(
+            subject_alloc, fullscreen_frame,
+            "exit never keeps the fullscreen frame: {subject:?}"
+        );
+        let sibling_alloc = ff_row(&reply, FF_SIBLING)
+            .allocation
+            .expect("sibling tile after exit");
+        assert_eq!(
+            (
+                sibling_alloc.x,
+                sibling_alloc.y,
+                sibling_alloc.w,
+                sibling_alloc.h
+            ),
+            (0, 0, 396, 600),
+            "sibling reveal tile: {sibling_alloc:?}"
+        );
+        assert!(
+            sibling_alloc.x + sibling_alloc.w <= subject_alloc.x,
+            "both tiles share the domain without overlap: {sibling_alloc:?} {subject_alloc:?}"
+        );
+        assert_eq!(
+            (
+                subject_alloc.x,
+                subject_alloc.y,
+                subject_alloc.w,
+                subject_alloc.h
+            ),
+            (404, 0, 396, 600),
+            "tile reveal is the tiled allocation, not the float placement: {subject:?}"
+        );
+        assert_ne!(
+            subject_alloc, fallback,
+            "tile reveal never reuses the float placement: {subject:?}"
+        );
+        assert_eq!(
+            gated_names(&reply),
+            vec![FF_SIBLING, FF_SUBJECT],
+            "both tiled rows are emission-eligible on tile exit: {:?}",
+            reply.windows
+        );
+        assert!(
+            reply.focus_request.is_none() && reply.native_creations.is_empty(),
+            "tile exit mints no focus/native creation: {reply:?}"
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &reply);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "tile exit stages both reveal writes: {after:?} vs {before:?}"
+        );
+        assert_eq!(
+            after.1, before.1,
+            "no retained overlay after the exit: {after:?} vs {before:?}"
+        );
+        assert_eq!(after.2, before.2, "tile exit dispatches no focus");
+        assert_eq!(after.3, 0, "tile exit publishes no native creation");
+        assert!(
+            lock_focus(&focus_queue).is_empty(),
+            "focus outbox stays empty"
+        );
+    }
+
+    /// One fresh single-toggle fixture handle bundle for the deferred-reveal
+    /// legs (seed + first fullscreen float toggle already dispatched).
+    struct FfFixture {
+        shared: Arc<Mutex<Shared>>,
+        session: WorldSession,
+        retained: RetainedCore,
+        focus_queue: Arc<Mutex<Vec<super::FocusRequest>>>,
+        engine: tiler_core::world_engine::WorldEngine,
+    }
+
+    /// Fresh single-toggle fixture: seed, first fullscreen float toggle, and
+    /// the adapter dispatch closure shared by the deferred-reveal legs.
+    fn ff_fullscreen_float_fixture() -> FfFixture {
+        let (command, token) = ff_toggle_float_command();
+        let fullscreen_frame = ff_rect(0, 0, 800, 600);
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = ff_engine();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4,
+                        ticket: Option<(&WorldCommand, u64)>| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                ticket.map(|(command, _)| command),
+                ticket.map(|(_, seq)| seq),
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        let seed = ff_accepted(
+            &mut engine,
+            &ff_report(
+                1,
+                vec![ff_fact(FF_SIBLING, 0), ff_fact(FF_SUBJECT, 100)],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &seed, None);
+        ff_set_subject_fullscreen(&mut retained, true);
+        retained.observed_focus = Some(WindowId(FF_SUBJECT.to_owned()));
+        retained.observed_focus_known = true;
+        let mut subject_full = ff_fact(FF_SUBJECT, 100);
+        subject_full.fullscreen = Some(true);
+        subject_full.rect = Some(fullscreen_frame);
+        let first = ff_accepted(
+            &mut engine,
+            &ff_report(
+                2,
+                vec![ff_fact(FF_SIBLING, 0), subject_full],
+                FF_SUBJECT,
+                Some(2),
+                Some(command.clone()),
+            ),
+        );
+        dispatch(&mut session, &mut retained, &first, Some((&command, 2)));
+        FfFixture {
+            shared,
+            session,
+            retained,
+            focus_queue,
+            engine,
+        }
+    }
+
+    #[test]
+    fn fullscreen_toggle_float_deferred_reveal_echo_veto_and_close() {
+        // The deferred placement writes once, never repeats a matching
+        // frame, is vetoed by retained native minimized truth, and clears
+        // when the lifetime leaves adapter truth.
+        let fallback = ff_rect(160, 120, 480, 360);
+        let fullscreen_frame = ff_rect(0, 0, 800, 600);
+        let (_, token) = ff_toggle_float_command();
+
+        // Leg A: after the reveal, a settled echo at the placement stages no
+        // repeat subject write.
+        let FfFixture {
+            shared,
+            mut session,
+            mut retained,
+            focus_queue,
+            mut engine,
+        } = ff_fullscreen_float_fixture();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        ff_set_subject_fullscreen(&mut retained, false);
+        ff_set_subject_observed(&mut retained, fullscreen_frame);
+        let mut exited = ff_fact(FF_SUBJECT, 100);
+        exited.transient = Some(true);
+        exited.rect = Some(fullscreen_frame);
+        let reveal = ff_accepted(
+            &mut engine,
+            &ff_report(
+                3,
+                vec![ff_fact(FF_SIBLING, 0), exited],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &reveal);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the reveal stages the sibling plus the deferred subject:              {after:?} vs {before:?}"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "the reveal clears the record: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        // Echo: the subject now observes the placement, no command.
+        ff_set_subject_observed(&mut retained, fallback);
+        let mut echo = ff_fact(FF_SUBJECT, 100);
+        echo.transient = Some(true);
+        echo.rect = Some(fallback);
+        let echo_reply = ff_accepted(
+            &mut engine,
+            &ff_report(
+                4,
+                vec![ff_fact(FF_SIBLING, 0), echo],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        assert!(
+            ff_row(&echo_reply, FF_SUBJECT).floating,
+            "echo keeps the float: {:?}",
+            echo_reply.windows
+        );
+        let echo_subject = ff_row(&echo_reply, FF_SUBJECT);
+        assert_eq!(
+            echo_subject.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "echo row carries no frame authority: {echo_subject:?}"
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &echo_reply);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "a matching placement never repeats a subject write: {after:?} vs {before:?}"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "echo leaves no pending record: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+
+        // Leg B: retained native minimized truth vetoes the reveal until it
+        // clears; then exactly one write lands.
+        let FfFixture {
+            shared,
+            mut session,
+            mut retained,
+            focus_queue,
+            mut engine,
+        } = ff_fullscreen_float_fixture();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        ff_set_subject_fullscreen(&mut retained, false);
+        ff_set_subject_observed(&mut retained, fullscreen_frame);
+        ff_set_roster_minimized(&mut retained, true);
+        let mut exited = ff_fact(FF_SUBJECT, 100);
+        exited.transient = Some(true);
+        exited.rect = Some(fullscreen_frame);
+        let mut vetoed = ff_accepted(
+            &mut engine,
+            &ff_report(
+                3,
+                vec![ff_fact(FF_SIBLING, 0), exited],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        // Production minimized/host-hidden republish: the float row is no
+        // longer floating, has no geometry/token, and carries a Hold.
+        for row in &mut vetoed.windows {
+            if row.lifetime.0 == FF_SUBJECT {
+                row.floating = false;
+                row.allocation = None;
+                row.effective_frame = None;
+                row.frame_operation = None;
+                row.command_seq = None;
+                row.frame_authority = tiler_core::world_report::ScopeAuthority::Hold(
+                    tiler_core::world_report::HoldReason::Minimized,
+                );
+                row.membership_authority = tiler_core::world_report::ScopeAuthority::Hold(
+                    tiler_core::world_report::HoldReason::Minimized,
+                );
+            }
+        }
+        assert!(
+            !ff_row(&vetoed, FF_SUBJECT).floating
+                && ff_row(&vetoed, FF_SUBJECT)
+                    .frame_authority
+                    .hold_reason()
+                    .is_some(),
+            "the minimized held shape is in place: {:?}",
+            vetoed.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &vetoed);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "the minimized veto withholds the subject write: {after:?} vs {before:?}"
+        );
+        assert_eq!(
+            session
+                .pending_fullscreen_float_placements
+                .get(FF_SUBJECT)
+                .map(|pending| pending.target),
+            Some(fallback),
+            "the veto keeps the placement pending: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        // Minimized truth clears: exactly one write lands.
+        ff_set_roster_minimized(&mut retained, false);
+        let mut exited = ff_fact(FF_SUBJECT, 100);
+        exited.transient = Some(true);
+        exited.rect = Some(fullscreen_frame);
+        let revealed = ff_accepted(
+            &mut engine,
+            &ff_report(
+                4,
+                vec![ff_fact(FF_SIBLING, 0), exited],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &revealed);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the cleared veto releases the deferred write once: {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-2"),
+            "the released reveal spent the placement token"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "the released reveal settles the record: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+
+        // Leg C: a row-level hold (constraint clamp) defers the reveal
+        // until an authoritative reply, like the other vetoes.
+        let FfFixture {
+            shared,
+            mut session,
+            mut retained,
+            focus_queue,
+            mut engine,
+        } = ff_fullscreen_float_fixture();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        ff_set_subject_fullscreen(&mut retained, false);
+        ff_set_subject_observed(&mut retained, fullscreen_frame);
+        let mut exited = ff_fact(FF_SUBJECT, 100);
+        exited.transient = Some(true);
+        exited.rect = Some(fullscreen_frame);
+        let mut held = ff_accepted(
+            &mut engine,
+            &ff_report(
+                3,
+                vec![ff_fact(FF_SIBLING, 0), exited],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        for row in &mut held.windows {
+            if row.lifetime.0 == FF_SUBJECT {
+                row.floating = false;
+                row.allocation = None;
+                row.effective_frame = None;
+                row.frame_operation = None;
+                row.command_seq = None;
+                row.frame_authority = tiler_core::world_report::ScopeAuthority::Hold(
+                    tiler_core::world_report::HoldReason::ConstraintClamp,
+                );
+                row.membership_authority = tiler_core::world_report::ScopeAuthority::Hold(
+                    tiler_core::world_report::HoldReason::ConstraintClamp,
+                );
+            }
+        }
+        assert_eq!(
+            ff_row(&held, FF_SUBJECT).frame_authority,
+            tiler_core::world_report::ScopeAuthority::Hold(
+                tiler_core::world_report::HoldReason::ConstraintClamp
+            ),
+            "the row-level hold shape is in place: {:?}",
+            held.windows
+        );
+        assert!(
+            !ff_row(&held, FF_SUBJECT).floating,
+            "the held row is republished non-floating: {:?}",
+            held.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &held);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "a row-level hold withholds the reveal, staging only the sibling: \
+             {after:?} vs {before:?}"
+        );
+        assert_eq!(
+            session
+                .pending_fullscreen_float_placements
+                .get(FF_SUBJECT)
+                .map(|pending| pending.target),
+            Some(fallback),
+            "a row-level hold keeps the placement pending: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        // The next authoritative reply releases the one write.
+        let mut exited = ff_fact(FF_SUBJECT, 100);
+        exited.transient = Some(true);
+        exited.rect = Some(fullscreen_frame);
+        let released = ff_accepted(
+            &mut engine,
+            &ff_report(
+                4,
+                vec![ff_fact(FF_SIBLING, 0), exited],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &released);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the authoritative reply releases the deferred write once: \
+             {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-2"),
+            "the released reveal spent the placement token"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "the authoritative reveal settles the record: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+
+        // Leg D: a lifetime leaving adapter truth clears the deferral
+        // without inventing a write.
+        let FfFixture {
+            shared,
+            mut session,
+            mut retained,
+            focus_queue,
+            mut engine,
+        } = ff_fullscreen_float_fixture();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                None,
+                None,
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        ff_forget_subject(&mut retained);
+        let mut close_report = ff_report(3, vec![ff_fact(FF_SIBLING, 0)], FF_SIBLING, None, None);
+        close_report.closed = vec![WindowId(FF_SUBJECT.to_owned())];
+        let closed = ff_accepted(&mut engine, &close_report);
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &closed);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "a closed lifetime stages only the surviving sibling: {after:?} vs {before:?}"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "the closed lifetime clears its deferral: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+    }
+
+    #[test]
+    fn fullscreen_toggle_float_ordinary_first_float_stays_write_free() {
+        // Ordinary (not fullscreen) first float: core publishes the durable
+        // fallback with `Untouched` authority and keeps the token; the
+        // adapter must not stage a subject write or spend the token.
+        let (command, token) = ff_toggle_float_command();
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = ff_engine();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4,
+                        ticket: Option<(&WorldCommand, u64)>| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                ticket.map(|(command, _)| command),
+                ticket.map(|(_, seq)| seq),
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        let seed = ff_accepted(
+            &mut engine,
+            &ff_report(
+                1,
+                vec![ff_fact(FF_SIBLING, 0), ff_fact(FF_SUBJECT, 100)],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &seed, None);
+        let first = ff_accepted(
+            &mut engine,
+            &ff_report(
+                2,
+                vec![ff_fact(FF_SIBLING, 0), ff_fact(FF_SUBJECT, 100)],
+                FF_SUBJECT,
+                Some(2),
+                Some(command.clone()),
+            ),
+        );
+        let subject = ff_row(&first, FF_SUBJECT);
+        assert!(subject.floating, "subject floats: {subject:?}");
+        assert_eq!(
+            subject.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "ordinary float placement stays adapter-withheld: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_operation.as_deref(),
+            Some("op-2"),
+            "the placement token rides the row unspent: {subject:?}"
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &first, Some((&command, 2)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "only the sibling's Controlled frame stages: {after:?} vs {before:?}"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "ordinary floats never enter the fullscreen deferred lane: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+
+        // The same ordinary float enters fullscreen on an
+        // observation-only reply: it now sits under retained fullscreen
+        // with its placement token, but no ToggleFloat command was
+        // applied, so the adapter must not record a deferral. The token
+        // presence alone is not the discriminator.
+        let fullscreen_frame = ff_rect(0, 0, 800, 600);
+        ff_set_subject_fullscreen(&mut retained, true);
+        let mut subject_full = ff_fact(FF_SUBJECT, 100);
+        subject_full.transient = Some(true);
+        subject_full.fullscreen = Some(true);
+        subject_full.rect = Some(fullscreen_frame);
+        let mut entered = ff_accepted(
+            &mut engine,
+            &ff_report(
+                3,
+                vec![ff_fact(FF_SIBLING, 0), subject_full],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        let subject = ff_row(&entered, FF_SUBJECT);
+        assert!(
+            subject.floating,
+            "observation keeps the ordinary float: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_operation, None,
+            "the observation reply itself drops the spent token: {subject:?}"
+        );
+        // Counterfactual probe: a normally floated lifetime can still carry
+        // a placement token when it enters fullscreen (a stale/unsettled
+        // placement). Token presence must not create a deferral without a
+        // ToggleFloat command.
+        for row in &mut entered.windows {
+            if row.lifetime.0 == FF_SUBJECT {
+                row.frame_operation = Some("op-2".to_owned());
+            }
+        }
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &entered, None);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "observation-only fullscreen entry stages only the sibling: \
+             {after:?} vs {before:?}"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "no command means no deferral, even with a floating token row \
+             under fullscreen: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+
+        // Fullscreen exits with the native frame still at the fullscreen
+        // pose; with no recorded deferral there is no placement write, so
+        // the ordinary float stays in place.
+        ff_set_subject_fullscreen(&mut retained, false);
+        ff_set_subject_observed(&mut retained, fullscreen_frame);
+        let mut exited = ff_fact(FF_SUBJECT, 100);
+        exited.transient = Some(true);
+        exited.rect = Some(fullscreen_frame);
+        let exited = ff_accepted(
+            &mut engine,
+            &ff_report(
+                4,
+                vec![ff_fact(FF_SIBLING, 0), exited],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        assert!(
+            ff_row(&exited, FF_SUBJECT).floating,
+            "exit keeps the ordinary float: {:?}",
+            exited.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &exited, None);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "no deferred placement is invented on exit: {after:?} vs {before:?}"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "the observation-only lifetime never enters the lane: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        assert!(
+            session.spend_frame_op("op-2"),
+            "ordinary float token stays unspent (no write)"
+        );
+    }
+
+    #[test]
+    fn fullscreen_toggle_float_refused_after_accept_still_records_for_reveal() {
+        // Real native-route dispatch (production report builder over a live
+        // Space, unit-test roster raw facts) with the production ToggleFloat
+        // command: core applies the float under the retained fullscreen
+        // overlay, then either post-accept early return refuses the reply
+        // before emission:
+        //   - `intent-write-held`: no durable intent store, so the applied
+        //     reply's `intent_desired` row cannot be persisted;
+        //   - `stale-observation`: an attached store persists the row, then
+        //     the post-accept hook invalidates the clock before emission.
+        // Both must still run the record-only reconciliation and stage the
+        // pending placement. A later observation-only exit reveals it exactly
+        // once at the durable fallback.
+        let fullscreen_frame = ff_rect(0, 0, 800, 600);
+        for (expected, stale) in [("intent-write-held", false), ("stale-observation", true)] {
+            let (command, token) = ff_toggle_float_command();
+            let shared = focus_shared();
+            live_focus_app(&shared, FF_PID, 1);
+            let clock = Arc::clone(&lock_shared(&shared).clock);
+            let ctx = ff_native_context();
+            lock_shared(&shared).native_context = Some(Arc::clone(&ctx));
+            let mut session = WorldSession::new(
+                true,
+                crate::focus_route::FocusRoute::Slps,
+                Arc::clone(&clock),
+                &[],
+            );
+            // The durable store only exists for the stale leg: with one, the
+            // applied intent row persists and the reply proceeds to the
+            // emission-coherence gate; without one, the intent lane holds it.
+            let _store_root = stale.then(|| {
+                let (root, store) = crate::intent_store::test_store_parts();
+                session.attach_intent_store(store);
+                session.set_intent_identity(Box::new(|pid| {
+                    (pid == FF_PID).then_some(crate::intent_store::LiveBinding {
+                        launch_date_ns: 1,
+                        bundle_id: "com.example.app".to_owned(),
+                    })
+                }));
+                session.set_intent_process_liveness(Box::new(|pid| pid == FF_PID));
+                root
+            });
+            let mut retained = ff_retained();
+            ff_home_windows(&mut retained, &ctx);
+            let focus_queue = Arc::new(Mutex::new(Vec::new()));
+            let inbox = Arc::new(Inbox::new(16));
+
+            // Seed through the same native route so core stages the exact
+            // domain, roster facts, and tiled layout the toggle observes.
+            let seed = session
+                .sequencer()
+                .try_begin_request(None)
+                .expect("seed flight opens");
+            match dispatch_ticket(
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                16,
+                DispatchContext::Native(Arc::clone(&ctx)),
+                Vec::new(),
+                seed,
+                None,
+                false,
+                false,
+                "reconcile",
+                FF_PID,
+                1,
+                1,
+            ) {
+                DispatchVerdict::Applied { .. } => {}
+                other => panic!("the seed observation must apply, got {other:?}"),
+            }
+            assert!(
+                session.pending_fullscreen_float_placements.is_empty(),
+                "the seed stages no deferral"
+            );
+
+            // Native truth catches up: the subject is fullscreen and focused.
+            ff_set_subject_fullscreen(&mut retained, true);
+            retained.observed_focus = Some(WindowId(FF_SUBJECT.to_owned()));
+            retained.observed_focus_known = true;
+            clock.invalidate();
+            if stale {
+                let hook: crate::runtime_shared::PostAcceptHook = Arc::new({
+                    let clock = Arc::clone(&clock);
+                    move || {
+                        clock.invalidate();
+                    }
+                });
+                lock_shared(&shared)
+                    .post_accept_hook
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .replace(hook);
+            }
+            let ticket = session
+                .sequencer()
+                .try_begin_request(Some(command))
+                .expect("toggle flight opens");
+            let command_seq = ticket.command_seq.expect("command sequence minted");
+            let verdict = dispatch_ticket(
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                16,
+                DispatchContext::Native(Arc::clone(&ctx)),
+                Vec::new(),
+                ticket,
+                None,
+                false,
+                false,
+                token,
+                FF_PID,
+                1,
+                2,
+            );
+            lock_shared(&shared)
+                .post_accept_hook
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+            match verdict {
+                DispatchVerdict::Refused { token, .. } => {
+                    assert_eq!(token, expected, "the applied reply refuses here");
+                }
+                other => panic!("expected a refusal at {expected}, got {other:?}"),
+            }
+            let operation = format!("op-{command_seq}");
+            // The durable target is whatever the real applied reply published
+            // for the withheld placement (the settings-resolved centered
+            // float), never a hand-picked rect.
+            let applied = session
+                .sequencer()
+                .last_reply()
+                .expect("the applied reply stays retained");
+            let subject = ff_row(&applied, FF_SUBJECT);
+            assert!(
+                subject.floating,
+                "{expected}: core floated the subject: {subject:?}"
+            );
+            let durable = subject
+                .effective_frame
+                .expect("the withheld placement carries a durable target");
+            assert_eq!(
+                subject.frame_operation.as_deref(),
+                Some(operation.as_str()),
+                "{expected}: the placement token is minted for this command"
+            );
+            assert_eq!(
+                session
+                    .pending_fullscreen_float_placements
+                    .get(FF_SUBJECT)
+                    .map(|pending| (
+                        pending.operation.as_str(),
+                        pending.target,
+                        pending.generation
+                    )),
+                Some((operation.as_str(), durable, 1)),
+                "the refused-but-applied reply records the deferral: {:?}",
+                session.pending_fullscreen_float_placements
+            );
+
+            // Observation-only exit: no ticket, but the pending record is
+            // revealed exactly once at the durable fallback.
+            ff_set_subject_fullscreen(&mut retained, false);
+            ff_set_subject_observed(&mut retained, fullscreen_frame);
+            clock.invalidate();
+            // Production native builder over the same live Space: the exit
+            // observation carries the truthful fullscreen=false bit and the
+            // stale native frame, while core keeps the retained float target
+            // (the record) because the observation does not echo it.
+            let exit_report = build_dispatch_report(
+                &mut session,
+                &retained,
+                &DispatchContext::Native(Arc::clone(&ctx)),
+                &[],
+                4,
+                3,
+                None,
+                None,
+                None,
+                "req-exit",
+            )
+            .expect("exit report context");
+            let exit_reply = ff_accepted(session.engine_mut(), &exit_report);
+            let before = ff_counters(&shared);
+            consume_world_reply(
+                &mut session,
+                &mut retained,
+                &shared,
+                &focus_queue,
+                16,
+                &exit_reply,
+                &[],
+                None,
+                None,
+                token,
+                "accepted",
+                FF_PID,
+                1,
+                3,
+                0,
+            );
+            let after = ff_counters(&shared);
+            assert_eq!(
+                after.0 - before.0,
+                2,
+                "{expected}: the exit reveals the sibling plus the deferred subject: \
+                 {after:?} vs {before:?}"
+            );
+            assert!(
+                session.pending_fullscreen_float_placements.is_empty(),
+                "{expected}: the reveal settles the record: {:?}",
+                session.pending_fullscreen_float_placements
+            );
+            assert!(
+                !session.spend_frame_op(&operation),
+                "{expected}: the reveal spent the placement token"
+            );
+        }
+    }
+
+    #[test]
+    fn fullscreen_subject_emission_gate_requires_controlled_authority() {
+        // Emission-gate characterization on the REAL applied first-toggle
+        // reply: the retained-fullscreen subject row carries geometry AND
+        // the placement token with `Untouched` authority, so it stages
+        // nothing. The identical row with `frame_authority` flipped to
+        // `Controlled` stages, demonstrating that the existing authority
+        // filter (not a fullscreen special case) is the discriminator and
+        // that the real reply never spent the placement token. The flipped
+        // row is a test-only counterfactual probe, never a shape production
+        // core emits.
+        let (command, token) = ff_toggle_float_command();
+        let fallback = ff_rect(160, 120, 480, 360);
+        let fullscreen_frame = ff_rect(0, 0, 800, 600);
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4,
+                        ticket: Option<(&WorldCommand, u64)>| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                ticket.map(|(command, _)| command),
+                ticket.map(|(_, seq)| seq),
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        let mut engine = ff_engine();
+        let seed = ff_accepted(
+            &mut engine,
+            &ff_report(
+                1,
+                vec![ff_fact(FF_SIBLING, 0), ff_fact(FF_SUBJECT, 100)],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &seed, None);
+        ff_set_subject_fullscreen(&mut retained, true);
+        let mut subject_full = ff_fact(FF_SUBJECT, 100);
+        subject_full.fullscreen = Some(true);
+        subject_full.rect = Some(fullscreen_frame);
+        let real = ff_accepted(
+            &mut engine,
+            &ff_report(
+                2,
+                vec![ff_fact(FF_SIBLING, 0), subject_full],
+                FF_SUBJECT,
+                Some(2),
+                Some(command.clone()),
+            ),
+        );
+        let subject = ff_row(&real, FF_SUBJECT);
+        assert_eq!(
+            subject.effective_frame,
+            Some(fallback),
+            "real subject row carries geometry: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "real subject row is not Controlled: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_operation.as_deref(),
+            Some("op-2"),
+            "real subject row carries the token: {subject:?}"
+        );
+        assert_eq!(
+            gated_names(&real),
+            vec![FF_SIBLING],
+            "the retained-fullscreen subject row fails the authority gate: {:?}",
+            real.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &real, Some((&command, 2)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "authority-gated real reply stages only the sibling: {after:?} vs {before:?}"
+        );
+
+        // Differential probe: same row, flipped authority only.
+        let mut flipped = real.clone();
+        let row = flipped
+            .windows
+            .iter_mut()
+            .find(|row| row.lifetime.0 == FF_SUBJECT)
+            .expect("subject row");
+        row.frame_authority = tiler_core::world_report::ScopeAuthority::Controlled;
+        assert_eq!(
+            gated_names(&flipped),
+            vec![FF_SIBLING, FF_SUBJECT],
+            "the flipped identical row becomes emission-eligible: {:?}",
+            flipped.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &flipped, None);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the flipped row stages, proving the authority check is the \
+             discriminator and the real reply left the placement token unspent: \
+             {after:?} vs {before:?}"
         );
     }
 }

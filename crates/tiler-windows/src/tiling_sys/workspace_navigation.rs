@@ -105,7 +105,7 @@ fn apply_select(
     let line = match reply.as_ref() {
         Some(applied) => {
             state.tick += 1;
-            match super::history::resolved_select_view(state, &before, applied) {
+            match super::history::resolved_select_view(state, &before, &applied.reply) {
                 Some((resolved, view)) => super::history::select_resolved_log(
                     "workspace",
                     tick,
@@ -326,16 +326,15 @@ pub(super) fn workspace_tick(
                 let origin = intent.origin.clone();
                 match origin.filter(|o| o.hwnd == foreground_hwnd) {
                     Some(o) if !o.token.is_empty() => {
-                        // The command carries a home-then-cached-live
-                        // source: the core resolves the mover's retained
-                        // home, else the cached output when live, else the
-                        // first live screen. The cursor never steers a
-                        // homed mover; only a homeless mover can fall
-                        // through to a pointer-independent cached-live
-                        // fallback, never an adapter decision.
+                        // The command carries the implicit home-then-action
+                        // source: the core resolves the mover's retained home
+                        // first, then its action-context fallback chain. The
+                        // adapter never chooses an output here.
                         let command = WorldCommand::SendNumbered {
-                            window: tiler_core::directional::WindowId(o.token.clone()),
-                            source: tiler_core::world_report::SendSource::HomeThenCachedLive,
+                            window: tiler_core::directional::WindowSubject::Window(
+                                tiler_core::directional::WindowId(o.token.clone()),
+                            ),
+                            source: tiler_core::world_report::SendSource::HomeThenAction,
                             index,
                             follow: intent.follow,
                         };

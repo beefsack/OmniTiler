@@ -835,6 +835,13 @@ pub enum InputSemanticAction {
     /// with the execution-time current-focus subject. The core owns the
     /// composed route; there is no adapter maximize policy.
     ToggleMaximize,
+    /// Neutral current-workspace tiling toggle (Windows `Win+Y` / KDE
+    /// `Meta+Y` parity): resolved adapter-side to exactly one
+    /// `(output, workspace)` and dispatched as the neutral
+    /// [`tiler_core::world_report::WorldCommand::ToggleWorkspaceTiling`]
+    /// so core flips its retained mode at execution. The adapter never
+    /// carries a cached mode and never decides tiling policy.
+    ToggleWorkspaceTiling,
     /// Keyboard resize step for the observed-focus window, resolved
     /// engine-side to the existing
     /// [`tiler_core::boundary::CoreCommand::Resize`] with the shared

@@ -150,7 +150,10 @@ mod tests {
             floating: true,
             float_origin: origin,
             frame_operation: None,
-            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            state: Vec::new(),
         }
     }
 

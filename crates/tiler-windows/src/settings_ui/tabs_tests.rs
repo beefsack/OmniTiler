@@ -44,7 +44,7 @@ fn windows_sections_point_at_known_tabs() {
 
 #[test]
 fn every_scalar_field_renders_exactly_once() {
-    assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 29);
+    assert_eq!(WINDOWS_FIELD_MAPPINGS.len(), 27);
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for id in ALL_CONTROL_IDS {
         if let Some(field) = control_field(*id) {
@@ -404,7 +404,7 @@ fn radio_starters_cover_every_field_exactly_once() {
             }
         }
     }
-    assert_eq!(by_field.len(), 10);
+    assert_eq!(by_field.len(), 8);
     for (field, ids) in &by_field {
         let starters = ids.iter().filter(|id| is_radio_first(**id)).count();
         assert_eq!(starters, 1, "{field} needs one WS_GROUP starter");

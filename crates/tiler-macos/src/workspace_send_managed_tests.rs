@@ -3738,6 +3738,7 @@ mod send_join_tests {
             last_workspace_desires: Vec::new(),
             last_native_creations: Vec::new(),
             last_core_generation: String::new(),
+            indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }

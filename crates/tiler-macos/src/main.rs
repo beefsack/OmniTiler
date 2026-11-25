@@ -1267,17 +1267,6 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 signer,
             },
         ),
-        Command::AxDestroyedProbe {
-            announcement_file,
-            signer,
-            seconds,
-        } => tiler_macos::ax_destroyed_probe::run_ax_destroyed_probe(
-            &tiler_macos::ax_destroyed_probe::AxDestroyedProbeArgs {
-                announcement_file,
-                signer,
-                seconds,
-            },
-        ),
     }
 }
 

@@ -356,6 +356,7 @@ pub fn action_token(action: &InputSemanticAction) -> &'static str {
         InputSemanticAction::ResizeStep { .. } => "resize-step",
         InputSemanticAction::ToggleOrientation => "toggle-orientation",
         InputSemanticAction::ToggleMaximize => "toggle-maximize",
+        InputSemanticAction::ToggleWorkspaceTiling => "toggle-workspace-tiling",
         InputSemanticAction::WorkspaceSelect { .. } => "select",
         InputSemanticAction::IndicatorSelectWorkspace { .. } => "indicator-select",
         InputSemanticAction::WorkspaceSend { .. } => "send",
@@ -1175,6 +1176,7 @@ mod tests {
             },
             InputSemanticAction::ToggleOrientation,
             InputSemanticAction::ToggleMaximize,
+            InputSemanticAction::ToggleWorkspaceTiling,
             InputSemanticAction::WorkspaceSelect { index: 3 },
             InputSemanticAction::IndicatorSelectWorkspace {
                 output: "macos-display-1".to_owned(),
@@ -1210,7 +1212,7 @@ mod tests {
     #[test]
     fn action_tokens_are_static_class_names_without_content() {
         let tokens: Vec<&str> = all_actions().iter().map(action_token).collect();
-        assert_eq!(tokens.len(), 13);
+        assert_eq!(tokens.len(), 14);
         for token in &tokens {
             assert!(
                 token.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),

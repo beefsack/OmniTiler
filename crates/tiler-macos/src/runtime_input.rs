@@ -81,16 +81,19 @@ pub(crate) fn input_main_bound(
         .collect();
     // Orientation/maximize toggle hold: one toggle per discrete press (Windows
     // R-LAY-01 parity — held auto-repeat downs consume without dispatch,
-    // release/repress toggles again). Each hold tracks its physical key code:
+    // release/repress toggles again). The same rule covers the neutral
+    // current-workspace tiling toggle (a held Y must never flip the mode
+    // repeatedly). Each hold tracks its physical key code:
     // any key-up on that code releases it, so a chord broken by an early
     // modifier release can never wedge the next press. Focus, move, float,
     // and resize chords repeat while held (existing behavior; resize advances
     // its press-index schedule per down). Product tile arms tap/off sources,
     // which deliver both edges; a downs-only source would hold after the
-    // first orientation or maximize press (documented, never a product
-    // path — the tile offers tap/off only).
+    // first orientation, maximize, or tiling toggle press (documented, never
+    // a product path — the tile offers tap/off only).
     let mut orientation_held = false;
     let mut maximize_held = false;
+    let mut workspace_tiling_held = false;
     // The source is destroyed here on thread exit.
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -114,6 +117,9 @@ pub(crate) fn input_main_bound(
             }
             if event.key_code == crate::input_policy::KEY_M {
                 maximize_held = false;
+            }
+            if event.key_code == crate::input_policy::KEY_Y {
+                workspace_tiling_held = false;
             }
             {
                 let mut guard = lock_shared(&shared);
@@ -164,6 +170,7 @@ pub(crate) fn input_main_bound(
         let edge_held = match action {
             InputSemanticAction::ToggleOrientation => Some(&mut orientation_held),
             InputSemanticAction::ToggleMaximize => Some(&mut maximize_held),
+            InputSemanticAction::ToggleWorkspaceTiling => Some(&mut workspace_tiling_held),
             _ => None,
         };
         if let Some(held) = edge_held {

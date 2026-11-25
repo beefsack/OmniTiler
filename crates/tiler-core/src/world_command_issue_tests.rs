@@ -2048,3 +2048,74 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
         _ => panic!("expected direction-invalid refusal"),
     }
 }
+
+/// Composed-sticky exclusion: on hosts without a native sticky fact the raw
+/// row is `None`, and only core's retained intent carries the all-desktop
+/// lifetime. The swap member collector must consult the composed
+/// classification instead of the missing fact (a raw-fact filter silently
+/// makes null non-sticky and swaps/migrates the sticky window).
+#[test]
+fn composed_sticky_swap_source_members_excludes_intent_only_sticky() {
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            birth_clear: true,
+            native_sticky: false,
+            maximize: true,
+            fullscreen: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    let mut sticky_row = fact("win-sticky", "out-a", 0);
+    sticky_row.sticky = None;
+    let mut plain_row = fact("win-plain", "out-a", 200);
+    plain_row.sticky = None;
+    let mut report = report_v4_simple(1, vec![screen("out-a", 0)]);
+    report.windows = vec![sticky_row, plain_row];
+    let sticky = WindowId("win-sticky".to_owned());
+    let plain = WindowId("win-plain".to_owned());
+    engine
+        .world
+        .intent
+        .restored_sticky
+        .insert(sticky.clone(), false);
+    stage_v4(&mut engine, &report);
+    // Shape precondition: no native fact; the retained intent alone makes
+    // the composed classification sticky.
+    assert_eq!(
+        engine
+            .world
+            .staged
+            .facts
+            .get(&sticky)
+            .and_then(|fact| fact.sticky),
+        None,
+        "composed route carries no native sticky fact",
+    );
+    assert!(
+        engine.tx_ro(|tx| tx.derived_for(&sticky).sticky),
+        "retained intent proves the composed sticky lifetime",
+    );
+    assert!(!engine.tx_ro(|tx| tx.derived_for(&plain).sticky));
+    let source = home_key_ws("out-a", "ws-1");
+    for (window, floating) in [(sticky.clone(), true), (plain.clone(), false)] {
+        engine.world.workspace.members.insert(
+            window,
+            MemberState {
+                home: source.clone(),
+                floating,
+                minimized: false,
+                geometry: None,
+            },
+        );
+    }
+    let members = engine
+        .tx(|tx| crate::world_transaction::WorldTransaction::swap_source_members(tx, &source));
+    assert_eq!(
+        members,
+        vec![plain],
+        "only the composed non-sticky member swaps",
+    );
+}

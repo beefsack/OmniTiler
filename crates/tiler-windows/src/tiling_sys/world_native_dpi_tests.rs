@@ -58,11 +58,13 @@ fn cross_dpi_areas() -> Vec<super::super::super::MonitorArea> {
             device: DEV1.to_owned(),
             work: rect(0, 0, 1920, 1040),
             full: rect(0, 0, 1920, 1080),
+            dpi: DPI_120,
         },
         super::super::super::MonitorArea {
             device: DEV2.to_owned(),
             work: rect(1920, 0, 1920, 1040),
             full: rect(1920, 0, 1920, 1080),
+            dpi: DPI_96,
         },
     ]
 }
@@ -311,7 +313,7 @@ fn s_set_outer_cross_dpi_with_game_race(hwnd: u64, outer: Rect) -> bool {
 }
 
 /// Tiled transfer reply moving `w1` to the rig target with frame `target`.
-fn cross_reply(rig: &CrossRig, target: Rect) -> WorldReply {
+fn cross_reply(rig: &CrossRig, target: Rect) -> tiler_core::world_report::WorldReplyV4 {
     let mut reply = reply_shell(
         7,
         1,
@@ -331,16 +333,23 @@ fn cross_reply(rig: &CrossRig, target: Rect) -> WorldReply {
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: Auth::Untouched,
+        state: Vec::new(),
     });
-    reply.transfers.push(TransferTarget {
-        operation_id: "op-x".to_owned(),
-        kind: TransferKind::Window(WindowId("w1".to_owned())),
-        target_output: OutputId(rig.tgt_out.clone()),
-        target_workspace: rig.tgt_ws.clone(),
-        follow: false,
-        held: false,
-    });
+    reply
+        .transfers
+        .push(tiler_core::world_report::TransferTargetV4 {
+            operation_id: "op-x".to_owned(),
+            kind: TransferKind::Window(WindowId("w1".to_owned())),
+            target_output: OutputId(rig.tgt_out.clone()),
+            target_workspace: rig.tgt_ws.clone(),
+            follow: false,
+            held: false,
+            command_seq: None,
+            parent: None,
+        });
     reply.outputs.push(tiler_core::world_report::OutputDesire {
         output: OutputId(rig.tgt_out.clone()),
         logical_view: Some(rig.tgt_ws.clone()),
@@ -404,7 +413,6 @@ fn cross_dpi_shrink_arrives_exact_and_proves() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -454,7 +462,6 @@ fn cross_dpi_grow_arrives_exact_and_proves() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -521,7 +528,6 @@ fn cross_dpi_identity_drift_holds_ambiguous_without_correction() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -553,7 +559,6 @@ fn cross_dpi_identity_drift_holds_ambiguous_without_correction() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(stats.held > 0);
@@ -587,7 +592,6 @@ fn cross_dpi_racing_fullscreen_vetoes_correction() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -665,7 +669,6 @@ fn cross_dpi_freshly_ineligible_takes_no_correction() {
             &mut Vec::new(),
             &mut members,
             &mut views,
-            &mut Vec::new(),
             0,
         );
         assert!(

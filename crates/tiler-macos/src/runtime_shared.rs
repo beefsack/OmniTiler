@@ -506,6 +506,11 @@ pub(crate) struct Shared {
     /// indicator drain's exact-id select: a render verified against one
     /// generation never actuates against another).
     pub(crate) last_core_generation: String,
+    /// Monotonic count of applied replies whose workspace desires or pager
+    /// presentation changed; the menu-bar indicator's change trigger so a
+    /// toggle reply repaints the checkmark before any topology/observation
+    /// tick.
+    pub(crate) indicator_revision: u64,
     /// Startup-resolved presentation style numbers for the report ingress
     /// (whole-point rounded width/gap plus the ring switch). Published
     /// once by the tile main thread at startup; the engine copies it into

@@ -807,7 +807,7 @@ fn catalogue_config_validates() {
         ..RuntimeConfig::default()
     };
     assert!(good.validate().is_ok());
-    assert_eq!(good.tile_bindings.as_ref().map(|b| b.len()), Some(35));
+    assert_eq!(good.tile_bindings.as_ref().map(|b| b.len()), Some(36));
 
     // Shift-as-Meta collapses the focus/move arms to the same native chord.
     // Refuse it before registering rather than silently choosing focus.

@@ -9,8 +9,11 @@
 //! selects over the adopted ring, relative/previous/trailing unchanged),
 //! the send-shaped actions map to positional planner-owned send commands
 //! for the core-owned implicit source, directional focus/move, keyboard
-//! resize and the toggles map to execution-time implicit subjects
-//! (core-owned subject at execution), and anything
+//! resize, and the window toggles map to execution-time implicit subjects
+//! (core-owned subject at execution), the neutral current-workspace tiling
+//! toggle names its one `(output, workspace)` resolved from retained
+//! native homing plus the published native→logical binding rows, and
+//! anything
 //! else has no route (capability-refused by the caller). Pure over
 //! retained input state except the keyboard-resize repeat cursor it
 //! advances. The core resolves all targeting from these commands; the
@@ -33,6 +36,7 @@ pub(crate) const OP_RESIZE: &str = "resize";
 pub(crate) const OP_TOGGLE_FLOAT: &str = "toggle-float";
 pub(crate) const OP_TOGGLE_ORIENTATION: &str = "toggle-orientation";
 pub(crate) const OP_TOGGLE_MAXIMIZE: &str = "toggle-maximize";
+pub(crate) const OP_TOGGLE_WORKSPACE_TILING: &str = "toggle-workspace-tiling";
 pub(crate) const OP_SELECT: &str = "select";
 pub(crate) const OP_SEND: &str = "send";
 pub(crate) const OP_TERMINATE: &str = "terminate";
@@ -228,12 +232,84 @@ pub(crate) fn send_command_with_capability(
     }
 }
 
+/// Translate one retained NATIVE domain to the core logical workspace id
+/// through the applied reply's published binding rows
+/// ([`crate::pager::PagerWorkspaceBinding`] is the adapter's single
+/// native→logical table, maintained by [`crate::pager::pager_bindings_for`]
+/// from `WorkspaceDesire.native_binding`). No row means the native domain
+/// is not adopted/bound (or no reply applied yet): `None`, never a
+/// substituted workspace.
+fn logical_workspace_for(
+    bindings: &[crate::pager::PagerWorkspaceBinding],
+    output: &OutputId,
+    native: &str,
+) -> Option<WorkspaceId> {
+    bindings
+        .iter()
+        .find(|row| row.output == output.0 && row.native.as_deref() == Some(native))
+        .map(|row| WorkspaceId(row.workspace.clone()))
+}
+
+/// Resolve the neutral current-workspace tiling toggle to exactly one
+/// planner-owned [`WorldCommand::ToggleWorkspaceTiling`]. The adapter owns
+/// no mode cache and never decides policy: core flips its retained mode at
+/// execution. Target resolution is adapter-local because the command names
+/// the workspace explicitly, and it requires a live native context: with no
+/// topology there is no current workspace to toggle. The focused window's
+/// exact retained home must appear in that live topology as `current &&
+/// readable` (a stale or hidden home refuses instead of flipping another
+/// workspace); only with no observed focus does the UNIQUE `current &&
+/// readable` native domain apply. A focused window NEVER falls through to
+/// that fallback: an unretained, stale, hidden, or unbound home is an honest
+/// refusal. The native domain then translates through the published binding
+/// rows; no row means no logical workspace to toggle yet (`None`). Pure: no
+/// logging, no mutation, allocation only for the command's own clones.
+pub(crate) fn toggle_workspace_tiling_command(
+    retained: &RetainedCore,
+    ctx: Option<&NativeContext>,
+    bindings: &[crate::pager::PagerWorkspaceBinding],
+) -> Option<WorldCommand> {
+    let ctx = ctx?;
+    if let Some(focus) = retained.observed_focus.as_ref() {
+        let home = retained.window_domains.get(&focus.0)?;
+        let domain = ctx
+            .domains
+            .iter()
+            .find(|domain| domain.output == home.output && domain.workspace == home.workspace)?;
+        if !domain.current || !domain.readable {
+            return None;
+        }
+        return logical_workspace_for(bindings, &home.output, &home.workspace.0).map(|workspace| {
+            WorldCommand::ToggleWorkspaceTiling {
+                output: home.output.clone(),
+                workspace,
+            }
+        });
+    }
+    let mut current = ctx
+        .domains
+        .iter()
+        .filter(|domain| domain.current && domain.readable);
+    let key = current.next()?;
+    if current.next().is_some() {
+        return None;
+    }
+    logical_workspace_for(bindings, &key.output, &key.workspace.0).map(|workspace| {
+        WorldCommand::ToggleWorkspaceTiling {
+            output: key.output.clone(),
+            workspace,
+        }
+    })
+}
+
 /// Map one supported tiling input to its world command plus its
 /// diagnostic op token. Directional focus/move and keyboard
 /// resize/toggle-float/toggle-orientation/toggle-maximize ride execution-time implicit
 /// subjects: `CurrentFocus` resolves from retained canonical focus at
 /// execution after preceding actions, so no placeholder window id is
-/// carried and observed foreground is never substituted. The resize repeat
+/// carried and observed foreground is never substituted. The neutral
+/// current-workspace tiling toggle instead names its `(output, workspace)`
+/// explicitly (see [`toggle_workspace_tiling_command`]). The resize repeat
 /// cursor is keyed on the observed foreground when one is reported (the
 /// native continuation proof available adapter-side) and on the implicit
 /// selector otherwise. Selects and unsupported actions have no operation
@@ -241,6 +317,8 @@ pub(crate) fn send_command_with_capability(
 pub(crate) fn operation_command(
     action: &InputSemanticAction,
     retained: &mut RetainedCore,
+    native_ctx: Option<&NativeContext>,
+    bindings: &[crate::pager::PagerWorkspaceBinding],
 ) -> Option<(WorldCommand, &'static str)> {
     use crate::runtime::InputDirection;
     use tiler_core::boundary::CoreCommand;
@@ -325,6 +403,10 @@ pub(crate) fn operation_command(
             },
             OP_TOGGLE_MAXIMIZE,
         )),
+        InputSemanticAction::ToggleWorkspaceTiling => {
+            toggle_workspace_tiling_command(retained, native_ctx, bindings)
+                .map(|command| (command, OP_TOGGLE_WORKSPACE_TILING))
+        }
         _ => None,
     }
 }
@@ -464,7 +546,7 @@ mod directional_codec_tests {
                 expected_move,
             ),
         ] {
-            let (command, token) = operation_command(&action, &mut retained)
+            let (command, token) = operation_command(&action, &mut retained, None, &[])
                 .unwrap_or_else(|| panic!("{action:?} has an operation route"));
             assert_eq!(token, op);
             assert_eq!(
@@ -683,7 +765,8 @@ mod directional_codec_tests {
         // Control 1: win1 -> win2 plans with one correlated retained
         // explicit focus request and no command result (tiled success
         // carries no result: the request IS the outcome).
-        let (command, op) = operation_command(&right, &mut retained).expect("focus route");
+        let (command, op) =
+            operation_command(&right, &mut retained, None, &[]).expect("focus route");
         assert_eq!(op, OP_FOCUS);
         let second = command_report(
             &ctx,
@@ -726,7 +809,8 @@ mod directional_codec_tests {
         );
 
         // Control 2: arrival on win2, then win2 -> win3.
-        let (command, _) = operation_command(&right, &mut retained).expect("focus route");
+        let (command, _) =
+            operation_command(&right, &mut retained, None, &[]).expect("focus route");
         let third = command_report(
             &ctx,
             &members,
@@ -770,7 +854,8 @@ mod directional_codec_tests {
         // Exhausted edge: arrival on win3, then win3 + right retains.
         // Accepted envelope, typed Rejected(OperationRefused), no focus
         // effect, sequence consumed.
-        let (command, _) = operation_command(&right, &mut retained).expect("focus route");
+        let (command, _) =
+            operation_command(&right, &mut retained, None, &[]).expect("focus route");
         let edge_command = command.clone();
         let fourth = command_report(
             &ctx,

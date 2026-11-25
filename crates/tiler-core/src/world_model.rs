@@ -1738,6 +1738,7 @@ impl WorldTransaction<'_> {
                 if before.contains(id) || transferred.contains(id) {
                     continue;
                 }
+
                 // Disconnect rehoming is never a fresh admission: members
                 // carried off a removed output by this report's
                 // displacement spend here without emitting, so a survivor

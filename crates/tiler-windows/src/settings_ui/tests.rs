@@ -104,12 +104,12 @@ fn born_maximized_tip_texts_come_from_shared_options() {
 
 #[test]
 fn choice_tip_buffers_cover_all_radio_pairs() {
-    // Fifteen buffers in control order: same-axis pair, born-maximized
-    // pair, fixed-size pair, migration-refill pair, admission D3 pair,
-    // stage 2c switch-target pair, and stage 2c fresh-placement triple,
-    // so each tooltip tool reads its own choice text.
+    // Thirteen buffers in control order: same-axis pair, born-maximized
+    // pair, fixed-size pair, migration-refill pair, stage 2c switch-target
+    // pair, and stage 2c fresh-placement triple, so each tooltip tool reads
+    // its own choice text.
     let tips = choice_tip_texts();
-    assert_eq!(tips.len(), 15);
+    assert_eq!(tips.len(), 13);
     assert_eq!(tips[0], wide("COSMIC"));
     assert_eq!(tips[1], wide("i3, sway"));
     assert_eq!(tips[0], same_axis_tip_texts()[0]);

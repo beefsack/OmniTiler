@@ -606,7 +606,8 @@ pub fn workspace_unsupported_reason_with(
         | InputSemanticAction::ResizeStep { .. }
         | InputSemanticAction::ToggleFloat
         | InputSemanticAction::ToggleOrientation
-        | InputSemanticAction::ToggleMaximize => None,
+        | InputSemanticAction::ToggleMaximize
+        | InputSemanticAction::ToggleWorkspaceTiling => None,
         InputSemanticAction::WorkspaceSelect { .. }
         | InputSemanticAction::IndicatorSelectWorkspace { .. }
         | InputSemanticAction::WorkspaceRelative { .. }
@@ -658,7 +659,8 @@ pub fn workspace_unsupported_outcome_with(
         | InputSemanticAction::ResizeStep { .. }
         | InputSemanticAction::ToggleFloat
         | InputSemanticAction::ToggleOrientation
-        | InputSemanticAction::ToggleMaximize => None,
+        | InputSemanticAction::ToggleMaximize
+        | InputSemanticAction::ToggleWorkspaceTiling => None,
         InputSemanticAction::WorkspaceSelect { .. }
         | InputSemanticAction::IndicatorSelectWorkspace { .. }
         | InputSemanticAction::WorkspaceRelative { .. }

@@ -208,6 +208,12 @@ pub struct IndicatorProjection {
     /// Status item title: the current Space's plain native ordinal.
     pub title: String,
     pub rows: Vec<IndicatorRow>,
+    /// The current workspace's retained planner mode from the coherent
+    /// applied reply. `None` means unproven (legacy native-order
+    /// projection, hidden projection, or no matching desire row) and is
+    /// never guessed: the menu toggle disables itself instead of offering
+    /// a mode the reply does not name.
+    pub tiling: Option<tiler_core::world_report::TilingMode>,
 }
 
 /// Project one indicator frame. `spaces` is the display's native-order user
@@ -238,6 +244,7 @@ pub fn project_indicator(
             hidden_reason: Some("disabled by configuration".to_owned()),
             title: String::new(),
             rows: Vec::new(),
+            tiling: None,
         });
     }
     if display_count != 1 {
@@ -248,6 +255,7 @@ pub fn project_indicator(
             )),
             title: String::new(),
             rows: Vec::new(),
+            tiling: None,
         });
     }
     let current_position = spaces
@@ -280,6 +288,9 @@ pub fn project_indicator(
         hidden_reason: None,
         title: current_position.to_string(),
         rows,
+        // Native-order rows carry no core reply: the retained planner
+        // mode is unproven here, never inferred from the native order.
+        tiling: None,
     })
 }
 
@@ -320,6 +331,7 @@ pub fn project_core_indicator(
             hidden_reason: Some("disabled by configuration".to_owned()),
             title: String::new(),
             rows: Vec::new(),
+            tiling: None,
         });
     }
     if display_count != 1 {
@@ -330,6 +342,7 @@ pub fn project_core_indicator(
             )),
             title: String::new(),
             rows: Vec::new(),
+            tiling: None,
         });
     }
     if screens.len() != 1 {
@@ -341,6 +354,7 @@ pub fn project_core_indicator(
             )),
             title: String::new(),
             rows: Vec::new(),
+            tiling: None,
         });
     }
     let screen = &screens[0];
@@ -350,6 +364,7 @@ pub fn project_core_indicator(
             hidden_reason: Some("core pager screen carries no workspaces".to_owned()),
             title: String::new(),
             rows: Vec::new(),
+            tiling: None,
         });
     }
     let mut seen = std::collections::BTreeSet::new();
@@ -432,6 +447,13 @@ pub fn project_core_indicator(
         hidden_reason: None,
         title: current_position.to_string(),
         rows,
+        // The menu toggle renders the retained planner mode of the
+        // CURRENT workspace only: a reply without its desire row leaves
+        // it unproven (never guessed).
+        tiling: desires
+            .iter()
+            .find(|row| row.output.0 == screen.output && row.id == current_workspace.id)
+            .map(|row| row.tiling_mode),
     })
 }
 
@@ -638,6 +660,47 @@ pub struct IndicatorClick {
     pub expected_sid: u64,
     pub ui_generation: u64,
     pub topology_revision: u64,
+}
+
+/// Render-time binding of the current-workspace tiling toggle menu item:
+/// the UI generation the item was rendered under. Plain data forwarded by
+/// value over the bounded channel, so an AppKit click can never be
+/// reinterpreted against a newer render (only generation drift refuses;
+/// there is no position, SID, or ordinal to reinterpret).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndicatorToggleClick {
+    pub ui_generation: u64,
+}
+
+/// Sentinel tag of the tiling toggle menu item. Workspace rows carry
+/// 1-based positions, so tag 0 can never name a workspace row: the
+/// workspace-row readback filter ([`is_workspace_row_tag`]) therefore
+/// never reports the prepended toggle item as a row.
+pub const TOGGLE_TILING_MENU_TAG: isize = 0;
+
+/// Whether one live menu item tag names a workspace row (1-based position)
+/// rather than the prepended toggle item. The toggle is a control, not a
+/// workspace row, so row readbacks must skip it.
+#[must_use]
+pub fn is_workspace_row_tag(tag: isize) -> bool {
+    tag > 0
+}
+
+/// Resolve one queued tiling-toggle click to its neutral intent. Equal
+/// generations forward [`InputSemanticAction::ToggleWorkspaceTiling`];
+/// any drift refuses instead of toggling under a render the user did not
+/// see. No ordinal is consulted: core resolves the mode at execution, so
+/// a stale ordinal can never select the wrong workspace's mode.
+pub fn toggle_click_action(
+    ui_generation: u64,
+    current_generation: u64,
+) -> Result<InputSemanticAction, String> {
+    if ui_generation != current_generation {
+        return Err(format!(
+            "stale tiling toggle discarded: status view rebuilt after render (g{ui_generation} != current {current_generation}); no toggle dispatched"
+        ));
+    }
+    Ok(InputSemanticAction::ToggleWorkspaceTiling)
 }
 
 /// Resolve one queued NUMBERED segment click against the CURRENT render
@@ -1362,6 +1425,10 @@ pub struct IndicatorDriver {
     last_accent: Option<crate::active_border::SystemAccent>,
     last_revision: Option<u64>,
     last_observations: u64,
+    /// Indicator revision of the applied reply the cached render was built
+    /// from: the change trigger that repaints a toggle reply's checkmark
+    /// before any topology/observation tick moves.
+    last_indicator_revision: Option<u64>,
     /// Core generation of the applied reply the cached render was built
     /// from: the drain refuses any click whose render-time core
     /// generation no longer matches the coherent latest reply (same rule
@@ -1370,6 +1437,7 @@ pub struct IndicatorDriver {
     last_core_generation: String,
     updates: u64,
     clicks: u64,
+    toggles: u64,
 }
 
 impl IndicatorDriver {
@@ -1385,9 +1453,11 @@ impl IndicatorDriver {
             last_accent: None,
             last_revision: None,
             last_observations: 0,
+            last_indicator_revision: None,
             last_core_generation: String::new(),
             updates: 0,
             clicks: 0,
+            toggles: 0,
         }
     }
 
@@ -1458,21 +1528,44 @@ impl IndicatorDriver {
         self.clicks
     }
 
+    /// Accepted tiling-toggle submissions through the guarded lane.
+    #[must_use]
+    pub const fn toggles(&self) -> u64 {
+        self.toggles
+    }
+
     /// Whether a fresh snapshot revision / engine observation count pair
     /// plus the live system accent requires a projection rebuild: only a
-    /// moved revision, a published observation, a changed accent, or an
-    /// empty cache rebuilds — never a blind per-cadence poll. The accent
-    /// rides the trigger (settings cannot change at runtime, but the live
-    /// accent can) so a resolved-colour change repaints even on a steady
-    /// snapshot. Pager content itself (focus moves, reply updates) arrives
-    /// with observations and dedups inside [`apply`]. Disarmed drivers
-    /// never rebuild.
+    /// moved revision, a published observation, a changed accent, an
+    /// advanced indicator revision, or an empty cache rebuilds — never a
+    /// blind per-cadence poll. The accent rides the trigger (settings
+    /// cannot change at runtime, but the live accent can) so a
+    /// resolved-colour change repaints even on a steady snapshot. Pager
+    /// content itself (focus moves, reply updates) arrives with
+    /// observations and dedups inside [`apply`]. Disarmed drivers never
+    /// rebuild. This legacy shape pins indicator revision `0` so existing
+    /// callers keep their edge trigger unchanged.
     #[must_use]
     pub fn needs_tick(
         &self,
         revision: u64,
         observations: u64,
         accent: Option<crate::active_border::SystemAccent>,
+    ) -> bool {
+        self.needs_tick_with_revision(revision, observations, accent, 0)
+    }
+
+    /// [`needs_tick`] plus the applied-reply indicator revision: a moved
+    /// revision repaints even on a steady topology/observation pair, so a
+    /// toggle reply refreshes the checkmark on its own reply instead of
+    /// waiting for the next native tick.
+    #[must_use]
+    pub fn needs_tick_with_revision(
+        &self,
+        revision: u64,
+        observations: u64,
+        accent: Option<crate::active_border::SystemAccent>,
+        indicator_revision: u64,
     ) -> bool {
         if !self.armed {
             return false;
@@ -1481,6 +1574,9 @@ impl IndicatorDriver {
             || self.last_revision.is_some_and(|r| r != revision)
             || self.last_observations != observations
             || self.last_accent != accent
+            || self
+                .last_indicator_revision
+                .is_some_and(|r| r != indicator_revision)
     }
 
     /// Record that a rebuild was computed at `revision`/`observations`
@@ -1493,7 +1589,7 @@ impl IndicatorDriver {
     /// without counting a visible update, and disarmed drivers store
     /// nothing. The trailing slot rides the dedup key with the projection
     /// (see the struct docs): a slot-only change applies with a new
-    /// generation.
+    /// generation. This legacy shape pins indicator revision `0`.
     pub fn apply(
         &mut self,
         projection: IndicatorProjection,
@@ -1503,12 +1599,40 @@ impl IndicatorDriver {
         observations: u64,
         accent: Option<crate::active_border::SystemAccent>,
     ) -> DriverApply {
+        self.apply_with_revision(
+            projection,
+            trailing,
+            pager,
+            revision,
+            observations,
+            accent,
+            0,
+        )
+    }
+
+    /// [`apply`] plus the applied-reply indicator revision: recorded
+    /// before the dedup comparison so a desires/pager change that leaves
+    /// the visible projection identical does not retrigger every tick
+    /// (the trigger compares the last APPLIED revision, not the last
+    /// computing one).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_with_revision(
+        &mut self,
+        projection: IndicatorProjection,
+        trailing: Option<(TrailingSlot, SpaceOccupancy)>,
+        pager: Vec<(usize, Vec<crate::pager::MiniatureDraw>)>,
+        revision: u64,
+        observations: u64,
+        accent: Option<crate::active_border::SystemAccent>,
+        indicator_revision: u64,
+    ) -> DriverApply {
         if !self.armed {
             return DriverApply::Disarmed;
         }
         self.last_revision = Some(revision);
         self.last_observations = observations;
         self.last_accent = accent;
+        self.last_indicator_revision = Some(indicator_revision);
         if self.last.as_ref() == Some(&projection) && self.last_trailing == trailing {
             if self.last_pager == pager {
                 return DriverApply::Duplicate;
@@ -1541,6 +1665,7 @@ impl IndicatorDriver {
         self.last_trailing = None;
         self.last_pager = Vec::new();
         self.last_accent = None;
+        self.last_indicator_revision = None;
         self.last_core_generation = String::new();
     }
 
@@ -1548,6 +1673,12 @@ impl IndicatorDriver {
     /// refusals and discards never count).
     pub fn click_submitted(&mut self) {
         self.clicks += 1;
+    }
+
+    /// Record one accepted tiling-toggle submission (guarded-lane
+    /// `Accepted` only; refusals and discards never count).
+    pub fn toggle_submitted(&mut self) {
+        self.toggles += 1;
     }
 }
 
@@ -2405,6 +2536,183 @@ mod tests {
             &|_| None,
         )
         .expect("provable row projects")
+    }
+
+    #[test]
+    fn core_projection_carries_current_workspace_tiling_mode() {
+        use tiler_core::world_report::TilingMode;
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-a", 1, true, true, false),
+                core_workspace("ws-b", 2, false, false, false),
+            ],
+        )];
+        let mut desires = vec![
+            core_desire("ws-a", "out-a", Some("space-20"), false, 0),
+            core_desire("ws-b", "out-a", Some("space-10"), false, 1),
+        ];
+        let project = |desires: &[tiler_core::world_report::WorkspaceDesire]| {
+            project_core_indicator(
+                &screens,
+                desires,
+                1,
+                IndicatorMode::All,
+                &|_| SpaceOccupancy::Empty,
+                &|_| None,
+                10,
+            )
+            .expect("provable core rows project")
+        };
+        // Default retained mode is tiled.
+        assert_eq!(project(&desires).tiling, Some(TilingMode::Tiled));
+        // Only the CURRENT workspace's mode matters: floating the
+        // non-current row leaves the toggle tiled.
+        desires[1].tiling_mode = TilingMode::Floating;
+        assert_eq!(project(&desires).tiling, Some(TilingMode::Tiled));
+        // Floating the current row carries through.
+        desires[0].tiling_mode = TilingMode::Floating;
+        assert_eq!(project(&desires).tiling, Some(TilingMode::Floating));
+    }
+
+    #[test]
+    fn unproven_tiling_stays_none_never_guessed() {
+        use tiler_core::world_report::TilingMode;
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-a", 1, true, true, false),
+                core_workspace("ws-b", 2, false, false, false),
+            ],
+        )];
+        // No desire row for the CURRENT workspace: unproven.
+        let no_current_desire = vec![core_desire("ws-b", "out-a", Some("space-10"), false, 1)];
+        let projection = project_core_indicator(
+            &screens,
+            &no_current_desire,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Empty,
+            &|_| None,
+            10,
+        )
+        .expect("provable core rows project");
+        assert_eq!(projection.tiling, None);
+        // A hidden projection carries nothing.
+        let desires = vec![
+            core_desire("ws-a", "out-a", Some("space-20"), false, 0),
+            core_desire("ws-b", "out-a", Some("space-10"), false, 1),
+        ];
+        let off = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::Off,
+            &|_| SpaceOccupancy::Empty,
+            &|_| None,
+            10,
+        )
+        .expect("off mode projects hidden");
+        assert_eq!(off.tiling, None);
+        // The legacy native-order projection never names a core mode.
+        assert_eq!(projected(&[20, 3], 20).tiling, None);
+        // Sanity: the proven path still reports the mode.
+        let proven = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Empty,
+            &|_| None,
+            10,
+        )
+        .expect("provable core rows project");
+        assert_eq!(proven.tiling, Some(TilingMode::Tiled));
+    }
+
+    #[test]
+    fn projection_tiling_change_advances_driver_generation() {
+        use tiler_core::world_report::TilingMode;
+        let mut driver = IndicatorDriver::new(IndicatorMode::All);
+        let base = projected(&[20, 3], 20);
+        assert_eq!(base.tiling, None);
+        assert_eq!(
+            driver.apply(base.clone(), None, Vec::new(), 9, 0, None),
+            DriverApply::Applied(1)
+        );
+        // The projection equality is the dedup key: a proven mode change
+        // applies with a new generation (the checkmark is part of the
+        // clickable render).
+        let mut tiled = base.clone();
+        tiled.tiling = Some(TilingMode::Tiled);
+        assert_eq!(
+            driver.apply(tiled.clone(), None, Vec::new(), 9, 0, None),
+            DriverApply::Applied(2)
+        );
+        let mut floating = tiled;
+        floating.tiling = Some(TilingMode::Floating);
+        assert_eq!(
+            driver.apply(floating, None, Vec::new(), 9, 0, None),
+            DriverApply::Applied(3)
+        );
+    }
+
+    #[test]
+    fn driver_needs_tick_tracks_indicator_revision() {
+        let mut driver = IndicatorDriver::new(IndicatorMode::All);
+        assert!(
+            driver.needs_tick_with_revision(9, 0, None, 4),
+            "empty cache always rebuilds"
+        );
+        assert_eq!(
+            driver.apply_with_revision(projected(&[20, 3], 20), None, Vec::new(), 9, 0, None, 4),
+            DriverApply::Applied(1)
+        );
+        assert!(
+            !driver.needs_tick_with_revision(9, 0, None, 4),
+            "a steady applied revision does not retrigger"
+        );
+        assert!(
+            driver.needs_tick_with_revision(9, 0, None, 5),
+            "a moved indicator revision repaints on the reply alone"
+        );
+        // The legacy wrapper pins revision 0 and stays stable after its
+        // own apply.
+        let mut legacy = IndicatorDriver::new(IndicatorMode::All);
+        assert_eq!(
+            legacy.apply(projected(&[20, 3], 20), None, Vec::new(), 9, 0, None),
+            DriverApply::Applied(1)
+        );
+        assert!(!legacy.needs_tick(9, 0, None));
+        // Teardown forgets the revision too; the empty-cache clause
+        // already forces the rebuild.
+        driver.teardown();
+        assert!(driver.needs_tick_with_revision(9, 0, None, 4));
+    }
+
+    #[test]
+    fn driver_counts_only_accepted_toggles() {
+        let mut driver = IndicatorDriver::new(IndicatorMode::All);
+        assert_eq!(driver.toggles(), 0);
+        driver.toggle_submitted();
+        assert_eq!(driver.toggles(), 1);
+    }
+
+    #[test]
+    fn toggle_click_forwards_neutral_intent_or_discards_stale() {
+        assert_eq!(
+            toggle_click_action(7, 7),
+            Ok(InputSemanticAction::ToggleWorkspaceTiling)
+        );
+        let reason = toggle_click_action(7, 8).expect_err("generation drift discards");
+        assert!(reason.contains("stale tiling toggle discarded"));
+        assert!(reason.contains("g7"));
+        assert!(reason.contains("current 8"));
+        // Sentinel tag: workspace rows are 1-based, so 0 is never a row.
+        assert_eq!(TOGGLE_TILING_MENU_TAG, 0);
+        assert!(!is_workspace_row_tag(TOGGLE_TILING_MENU_TAG));
+        assert!(is_workspace_row_tag(1));
+        assert!(is_workspace_row_tag(9));
     }
 
     #[test]

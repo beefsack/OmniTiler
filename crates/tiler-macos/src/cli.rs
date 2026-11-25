@@ -218,11 +218,6 @@ pub enum Command {
         max_samples: u64,
         signer: String,
     },
-    AxDestroyedProbe {
-        announcement_file: String,
-        signer: String,
-        seconds: u64,
-    },
     FixtureLeg {
         seconds: u64,
         chords: Vec<String>,
@@ -677,16 +672,7 @@ pub fn help_text() -> String {
               \x20 \x20 5000/1000/256; run concurrently with exactly one\n\
               \x20 \x20 action invocation and join stamps offline; no writes,\n\
               \x20 \x20 no press, no focus changes, no input synthesis)\n\
-              \x20 ax-destroyed-probe --announcement-file PATH --signer REQUIREMENT [--seconds N]\n\
-              \x20 \x20 (development-only bounded D5 destroyed-identity diagnostic:\n\
-              \x20 \x20 requires an empty signed fixture, spawns exactly two owned\n\
-              \x20 \x20 windows, observes exact AXUIElementDestroyed identity via\n\
-              \x20 \x20 CFEqual on a dedicated observer, runs minimize/hide/app-hide/\n\
-              \x20 \x20 owned-Space positive controls, then closes only A and\n\
-              \x20 \x20 requires exactly one matched A event with zero B/unmatched;\n\
-              \x20 \x20 default and cap 90s; no input synthesis, no production\n\
-              \x20 \x20 transport, no settings writes)\n\
-              \x20 fixture-leg --chord NAME [--chord NAME ...] --signer REQUIREMENT [--seconds N] [--preset compatible|authentic] [--focus-follows-cursor] [--hover-probe]\n\
+              \x20 fixture-leg --chord NAME [--chord NAME ...] --signer REQUIREMENT [--seconds N] [--preset compatible|authentic] [--focus-follows-cursor] [--hover-probe] [--corrupt-intent-store]\n\
               \x20 \x20 (development-only fixture leg: the complete controller\n\
               \x20 \x20 entry from baseline through owned shutdown. Captures\n\
               \x20 \x20 the full baseline before ANY setup effect, launches\n\
@@ -701,7 +687,14 @@ pub fn help_text() -> String {
               \x20 \x20 tile override; --hover-probe adds the opt-in bounded\n\
               \x20 \x20 native hover/focus-follows-cursor/recency proof after\n\
               \x20 \x20 the chords, needs >=3 chords plus the flag, and\n\
-              \x20 \x20 launches the product with stage-timing diagnostics)\n\
+              \x20 \x20 launches the product with stage-timing diagnostics;\n\
+              \x20 \x20 --corrupt-intent-store pre-seeds the isolated product\n\
+              \x20 \x20 store with malformed JSON and requires one bounded\n\
+              \x20 \x20 startup diagnostic while the product still tiles and\n\
+              \x20 \x20 shuts down cleanly; the leg-only --chord maximize-toggle\n\
+              \x20 \x20 sends two real maximize-m presses through the product\n\
+              \x20 \x20 tap and requires native apply plus exact base restore\n\
+              \x20 \x20 evidence, not slice-5 acceptance)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
               \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
@@ -2255,56 +2248,6 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 interval_ms,
                 max_samples,
                 signer: signer.ok_or("fixture-frame-sample needs --signer")?,
-            }
-        }
-        "ax-destroyed-probe" => {
-            // Development-only bounded destroyed-identity diagnostic: the
-            // serve announcement file (socket/pid/nonce source), the expected
-            // designated requirement, and an optional lifetime bounded to the
-            // fixed 90 s cap. No caller/wid/chord vocabulary: the diagnostic
-            // owns exactly two spawned fixture windows.
-            let mut announcement_file: Option<String> = None;
-            let mut signer: Option<String> = None;
-            let mut seconds = crate::ax_destroyed_probe::PROBE_DEFAULT_SECONDS;
-            let mut seconds_given = false;
-            let mut j = 0;
-            while j < args.len() {
-                match args[j].as_str() {
-                    "--announcement-file" => {
-                        j += 1;
-                        announcement_file = Some(
-                            args.get(j)
-                                .ok_or("--announcement-file needs a value")?
-                                .clone(),
-                        );
-                    }
-                    "--signer" => {
-                        j += 1;
-                        signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
-                    }
-                    "--seconds" => {
-                        j += 1;
-                        seconds =
-                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
-                        seconds_given = true;
-                    }
-                    other => return Err(format!("ax-destroyed-probe: unknown arg '{other}'")),
-                }
-                j += 1;
-            }
-            let announcement_file =
-                announcement_file.ok_or("ax-destroyed-probe needs --announcement-file")?;
-            let signer = signer.ok_or("ax-destroyed-probe needs --signer")?;
-            if signer.trim().is_empty() {
-                return Err("ax-destroyed-probe needs a nonempty --signer".to_owned());
-            }
-            if seconds_given {
-                crate::ax_destroyed_probe::probe_seconds_bounded(seconds)?;
-            }
-            Command::AxDestroyedProbe {
-                announcement_file,
-                signer,
-                seconds,
             }
         }
         "fixture-leg" => {

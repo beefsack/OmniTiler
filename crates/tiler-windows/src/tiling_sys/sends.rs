@@ -79,13 +79,13 @@ pub(super) fn workspace_do_send(
     let window = tiler_core::directional::WindowId(origin_token.to_owned());
     let command = match target {
         SendTarget::Numbered(index) => WorldCommand::SendNumbered {
-            window,
+            window: tiler_core::directional::WindowSubject::Window(window.clone()),
             source: tiler_core::world_report::SendSource::HomeThenAction,
             index,
             follow,
         },
         SendTarget::Relative(delta) => WorldCommand::SendRelative {
-            window,
+            window: tiler_core::directional::WindowSubject::Window(window.clone()),
             source: tiler_core::world_report::SendSource::HomeThenAction,
             delta,
             follow,

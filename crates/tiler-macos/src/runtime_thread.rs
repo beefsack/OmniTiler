@@ -1954,7 +1954,54 @@ pub(crate) fn process_job(
             // subject surfaces as core's own `focus-unknown`, and an
             // off-current resolved target never reaches native actuation
             // because reply frames only apply in current scopes.
-            let Some((command, op)) = operation_command(&action, retained) else {
+            // The neutral current-workspace tiling toggle is the only
+            // action that names a workspace explicitly, so it — and only
+            // it — clones the native topology plus the published
+            // native→logical binding rows under one acquisition. Every
+            // other action keeps the zero-clone path. The adapter never
+            // caches a tiling mode: the approved core command flips it at
+            // execution.
+            let resolving_workspace_tiling =
+                matches!(&action, InputSemanticAction::ToggleWorkspaceTiling);
+            let (native_ctx, pager_bindings) = if resolving_workspace_tiling {
+                let guard = lock_shared(shared);
+                (
+                    guard.native_context.clone(),
+                    guard.last_pager_bindings.clone(),
+                )
+            } else {
+                (None, Vec::new())
+            };
+            let Some((command, op)) =
+                operation_command(&action, retained, native_ctx.as_deref(), &pager_bindings)
+            else {
+                if resolving_workspace_tiling {
+                    // No focused home, no unique current readable domain,
+                    // or no applied native→logical binding yet: refuse
+                    // honestly with no core contact, no mutation, and no
+                    // retry (a later press after the next observation may
+                    // resolve).
+                    {
+                        let mut guard = lock_shared(shared);
+                        guard.diagnostics.input_refused_no_focus += 1;
+                        guard.notify_test_waiters();
+                    }
+                    emit(
+                        shared,
+                        0,
+                        0,
+                        0,
+                        "input",
+                        "toggle-workspace-tiling-unresolved",
+                        0,
+                    );
+                    crate::stage_timing::finish(
+                        shared,
+                        span,
+                        crate::stage_timing::outcome::REFUSED,
+                    );
+                    return;
+                }
                 // Unarmed workspace actions refuse in the guard above and
                 // armed selects enqueue in their lane too (sends refuse in
                 // the guard as well), so this is unreachable (adding an
@@ -3363,6 +3410,7 @@ mod trailing_join_tests {
             last_workspace_desires: Vec::new(),
             last_native_creations: Vec::new(),
             last_core_generation: String::new(),
+            indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }
@@ -3945,6 +3993,187 @@ mod trailing_join_tests {
                 reason: tiler_core::world_report::VisibilityReason::Empty,
             }
         );
+    }
+
+    #[test]
+    fn workspace_tiling_toggle_real_core_flips_and_restores() {
+        // Real-core regression: two Ctrl+Y presses through the genuine
+        // `process_job` InputAction route flip the retained mode of the
+        // focused window's homed workspace (Floating, then Tiled). The
+        // first (floating) leg authorizes no frame writes at all; the
+        // re-enable leg republishes plan geometry.
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_send_subject());
+        lock_shared(&shared).config.topology_mode = crate::runtime_types::TopologyMode::Native;
+        lock_shared(&shared).focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(4242),
+            frontmost_bundle: None,
+            ax_focus: None,
+        });
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        assert_fixture_admitted(&session, &retained);
+        // The bootstrap reply publishes the adapter's single native→logical
+        // translation; the seeded native home must be bound there.
+        let logical = {
+            let guard = lock_shared(&shared);
+            guard
+                .last_pager_bindings
+                .iter()
+                .find(|row| row.output == output().0 && row.native.as_deref() == Some("space-1"))
+                .expect("bootstrap binds the seeded native domain")
+                .workspace
+                .clone()
+        };
+        assert_ne!(logical, "space-1", "core names logical workspaces");
+
+        let forwarded = lock_shared(&shared).diagnostics.input_forwarded;
+        process_job(
+            EngineJob::InputAction {
+                action: InputSemanticAction::ToggleWorkspaceTiling,
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.input_forwarded,
+            forwarded + 1,
+            "the resolved toggle dispatches through the core"
+        );
+        let mode = |session: &WorldSession| {
+            session
+                .sequencer()
+                .last_reply()
+                .and_then(|reply| {
+                    reply
+                        .workspaces
+                        .iter()
+                        .find(|row| row.output == output() && row.id == logical)
+                        .map(|row| row.tiling_mode)
+                })
+                .expect("the applied reply carries the toggled workspace")
+        };
+        assert_eq!(
+            mode(&session),
+            tiler_core::world_report::TilingMode::Floating,
+            "first toggle floats the current workspace"
+        );
+        assert!(
+            lock_shared(&shared).last_desired.is_empty(),
+            "floating authorizes no frame writes"
+        );
+
+        process_job(
+            EngineJob::InputAction {
+                action: InputSemanticAction::ToggleWorkspaceTiling,
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.input_forwarded,
+            forwarded + 2,
+            "the second toggle dispatches through the core"
+        );
+        assert_eq!(
+            mode(&session),
+            tiler_core::world_report::TilingMode::Tiled,
+            "second toggle re-enables the current workspace"
+        );
+        assert!(
+            !lock_shared(&shared).last_desired.is_empty(),
+            "re-enabling republishes plan geometry"
+        );
+    }
+
+    #[test]
+    fn workspace_tiling_toggle_unresolved_refuses_without_core_contact() {
+        // Honest refusal: no focused home and no unique current readable
+        // domain means no core contact, no mutation, no retry. The ring
+        // carries the static unresolved token and the refusal counter
+        // advances. Zero and two readable current domains both refuse.
+        let zero = Arc::new(NativeContext {
+            revision: 9,
+            domains: Vec::new(),
+            skipped: Vec::new(),
+        });
+        let ambiguous = Arc::new(NativeContext {
+            revision: 9,
+            domains: vec![domain(1, true), domain(2, true)],
+            skipped: Vec::new(),
+        });
+        let ambiguous_bindings = vec![
+            crate::pager::PagerWorkspaceBinding {
+                output: output().0.clone(),
+                workspace: "ws-1".to_owned(),
+                native: Some("space-1".to_owned()),
+            },
+            crate::pager::PagerWorkspaceBinding {
+                output: output().0.clone(),
+                workspace: "ws-2".to_owned(),
+                native: Some("space-2".to_owned()),
+            },
+        ];
+        for (ctx, bindings) in [(zero, Vec::new()), (ambiguous, ambiguous_bindings)] {
+            let (mut session, mut retained, shared, inbox, focus_queue) =
+                harness(ctx, RetainedCore::default());
+            lock_shared(&shared).last_pager_bindings = bindings;
+            let refused = lock_shared(&shared).diagnostics.input_refused_no_focus;
+            process_job(
+                EngineJob::InputAction {
+                    action: InputSemanticAction::ToggleWorkspaceTiling,
+                    trace_id: 0,
+                    intake_us: 0,
+                    enqueue_us: 0,
+                },
+                &mut session,
+                &mut retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+            );
+            assert_eq!(
+                lock_shared(&shared).diagnostics.input_refused_no_focus,
+                refused + 1,
+                "unresolved toggle counts as a focus-free refusal"
+            );
+            assert!(
+                lock_shared(&shared).diagnostics.core_replies.is_empty(),
+                "no core command is dispatched"
+            );
+            assert!(
+                session.sequencer().last_reply().is_none(),
+                "no core reply exists"
+            );
+            assert!(
+                lock_shared(&shared).log.iter().any(|entry| {
+                    entry.kind == "input" && entry.outcome == "toggle-workspace-tiling-unresolved"
+                }),
+                "the ring carries the honest refusal token"
+            );
+        }
     }
 
     #[test]
@@ -10288,6 +10517,239 @@ mod trailing_join_tests {
         }
     }
 
+    /// P6-2 (Accepted + durable-intent hold): core processed the report's
+    /// closes before the reply was accepted, so an accepted close must
+    /// drain from `pending_closes` even when the reply is held at the
+    /// durable-intent gate — and the select that already executed core-side
+    /// keeps its operation identity, so the held claim stores for feedback
+    /// instead of leaking unbound. Nothing actuates.
+    #[test]
+    fn accepted_intent_hold_drains_closes_and_keeps_select_identity() {
+        use crate::classifier::{ActivationPolicy, ROLE_WINDOW, SUBROLE_STANDARD};
+        use crate::ffi::{AxFrame, CgBounds};
+        use crate::native_facts::{NativeAppFacts, NativeReadOutcome, NativeWindowFacts};
+        use crate::native_tile_backend::build_scoped_snapshot;
+        use crate::runtime_shared::AppRecord;
+        use tiler_core::directional::WindowId;
+
+        const PID: u32 = 4242;
+        const GENERATION: u64 = 1;
+
+        fn ax_frame(x: i32, y: i32, w: i32, h: i32) -> AxFrame {
+            AxFrame {
+                x: x as f64,
+                y: y as f64,
+                w: w as f64,
+                h: h as f64,
+            }
+        }
+        fn window_facts(wid: u32, frame: AxFrame) -> NativeWindowFacts {
+            NativeWindowFacts {
+                wid,
+                role: Some(ROLE_WINDOW.to_owned()),
+                subrole: Some(SUBROLE_STANDARD.to_owned()),
+                fullscreen: Some(false),
+                minimized: Some(false),
+                modal: Some(false),
+                size_settable: Some(true),
+                min_size: None,
+                max_size: None,
+                frame: Some(frame),
+                cg_layer: Some(0),
+                cg_onscreen: Some(true),
+            }
+        }
+        fn frames() -> [AxFrame; 2] {
+            [ax_frame(10, 30, 450, 800), ax_frame(470, 30, 450, 800)]
+        }
+        fn outcome_of(wids: &[u32]) -> NativeReadOutcome {
+            let frames = frames();
+            NativeReadOutcome {
+                pid: PID,
+                requested: wids.len(),
+                observed: wids.len(),
+                failed: 0,
+                first_cause: String::new(),
+                windows: wids
+                    .iter()
+                    .copied()
+                    .map(|wid| window_facts(wid, frames[(wid - 1) as usize]))
+                    .collect(),
+                cg_complete: true,
+                cg_owner_wids: wids.to_vec(),
+                cg_entries: wids
+                    .iter()
+                    .copied()
+                    .map(|wid| {
+                        let frame = frames[(wid - 1) as usize];
+                        crate::native_facts::CgWindowEntry {
+                            wid,
+                            layer: 0,
+                            onscreen: true,
+                            bounds: CgBounds {
+                                x: frame.x,
+                                y: frame.y,
+                                w: frame.w,
+                                h: frame.h,
+                            },
+                        }
+                    })
+                    .collect(),
+            }
+        }
+        fn app_facts() -> NativeAppFacts {
+            NativeAppFacts {
+                pid: PID,
+                hidden: false,
+                activation_policy: ActivationPolicy::Regular,
+                is_own_bundle: false,
+                app_id: Some("com.example.app".to_owned()),
+            }
+        }
+        fn snapshot_of(outcome: &NativeReadOutcome) -> crate::runtime_types::ScopedBackendSnapshot {
+            build_scoped_snapshot(
+                PID,
+                9,
+                outcome,
+                &app_facts(),
+                &|_| Ok(vec![1u64]),
+                None,
+                false,
+                false,
+            )
+            .expect("complete ordinary read snapshots")
+        }
+
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), RetainedCore::default());
+        let (store_root, mut store) = crate::intent_store::test_store_parts();
+        let store_dir = store_root.dir();
+        // Restart hydration: seed one lifetime-verified float row before the
+        // first admission. The byte-identical hydration must not rewrite it.
+        let seeded_bytes = {
+            store
+                .apply_changes(std::collections::BTreeMap::from([(
+                    "4242_1".to_owned(),
+                    Some(crate::intent_store::StoredEntry {
+                        win: "4242_1".to_owned(),
+                        wid: 1,
+                        pid: PID,
+                        launch_date_ns: 777,
+                        bundle_id: "com.example.app".to_owned(),
+                        data: "{\"v\":1,\"float\":true,\"stickyPrior\":null}".to_owned(),
+                    }),
+                )]))
+                .expect("seed durable intent before admission");
+            std::fs::read(store_dir.join(store.file_name())).expect("seeded store")
+        };
+        let store_name = store.file_name();
+        session.attach_intent_store(store);
+        session.set_intent_identity(Box::new(|pid| {
+            (pid == PID).then_some(crate::intent_store::LiveBinding {
+                launch_date_ns: 777,
+                bundle_id: "com.example.app".to_owned(),
+            })
+        }));
+        session.set_intent_process_liveness(Box::new(|_| true));
+        assert!(
+            session.connection_bound(),
+            "genuine handshake binds the session"
+        );
+        lock_shared(&shared).apps.insert(
+            PID,
+            AppRecord {
+                generation: GENERATION,
+                terminated: false,
+                stop: Arc::new(AtomicBool::new(false)),
+                frames: Arc::new(FrameSlot::new()),
+                focus: Arc::new(FocusSlot::new()),
+                ready: Arc::new(Mutex::new(Some(Ok::<(), String>(())))),
+                worker: None,
+                worker_name: "test-4242".to_owned(),
+            },
+        );
+        // Admit two ordinary windows through the real scoped observation
+        // path: 4242_1 hydrates the seeded float row, 4242_2 is the accepted
+        // close target that keeps the intent row out of the closed set.
+        process_job(
+            EngineJob::ScopedObservation {
+                pid: PID,
+                generation: GENERATION,
+                seq: 1,
+                snapshot: snapshot_of(&outcome_of(&[1, 2])),
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        assert_eq!(
+            std::fs::read(store_dir.join(&store_name)).expect("store still readable"),
+            seeded_bytes,
+            "hydration imports the verified row without rewriting it"
+        );
+        assert!(
+            session.pending_closes.is_empty(),
+            "admission stages no close"
+        );
+
+        // The gone-process hold: the process liveness probe says dead and no
+        // durable lifetime is readable, so the next reply's non-empty
+        // `intent_desired` cannot be proven equal and the whole reply is
+        // held (recoverable, no latch).
+        session.set_intent_identity(Box::new(|_| None));
+        session.set_intent_process_liveness(Box::new(|_| false));
+        // Core is about to process this close on the select report; the
+        // drain must run before the held return so it is never re-sent.
+        session.pending_closes.insert(WindowId("4242_2".to_owned()));
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 }),
+            true,
+        );
+        assert!(
+            session.pending_closes.is_empty(),
+            "the accepted close drains before the held return"
+        );
+        let held = lock_shared(&shared)
+            .select_pending
+            .front()
+            .cloned()
+            .expect("held select claim stores for feedback");
+        assert!(
+            held.operation_id
+                .as_deref()
+                .is_some_and(|op| op.starts_with("op-")),
+            "the executed select keeps its operation identity: {:?}",
+            held.operation_id
+        );
+        {
+            let guard = lock_shared(&shared);
+            assert_eq!(
+                guard.diagnostics.input_select_refused, 0,
+                "a held executed select is a stored claim, not a refusal"
+            );
+            assert!(
+                guard
+                    .log
+                    .iter()
+                    .any(|entry| entry.kind == "core-reply" && entry.outcome == "intent-write-held"),
+                "the reply is held at the durable-intent gate"
+            );
+        }
+    }
+
     /// Scripted native leg for the handoff regression below: the ONLY
     /// fake there. Models one display's user-Space row with an
     /// exact-append create and a verified select over explicit proof
@@ -11102,6 +11564,7 @@ mod drag_gesture_handoff_tests {
             last_workspace_desires: Vec::new(),
             last_native_creations: Vec::new(),
             last_core_generation: String::new(),
+            indicator_revision: 0,
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
     }

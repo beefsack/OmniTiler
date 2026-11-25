@@ -1,13 +1,13 @@
 #![forbid(unsafe_code)]
 //! Native host-diff facade for the single world owner.
 //!
-//! Actuator over typed [`WorldReply`](tiler_core::world_report::WorldReply)
+//! Actuator over typed [`WorldReplyV4`](tiler_core::world_report::WorldReplyV4)
 //! facts against fresh native observations. All setters and proof re-reads
 //! go through [`NativeOps`], implemented by the production `LiveNative` and
 //! an in-memory fake in offline tests. Geometry converges from the core reply,
 //! never from a second policy: this module honors per-row authority, scope
-//! authority, holds, transfers, views, migrations, and one-shot effects
-//! exactly as the reply states them. Workspace lifecycle needs no
+//! authority, holds, transfers, views, migrations, and one-shot focus
+//! requests exactly as the reply states them. Workspace lifecycle needs no
 //! actuation: the core owns logical workspaces outright.
 //!
 //! Source-first inputs (M1): [`FreshHost::from_sources`] converts the real
@@ -41,9 +41,11 @@
 //!   readback alone never settles a placement.
 //! - No external verdicts are emitted: retained window/migration transfer
 //!   completion derives core-side from raw membership/view attempt facts
-//!   (setter disposition plus immediate pre/post proof). Creation, removal,
-//!   and effect outcomes are proven by read-back and counted in stats;
-//!   float placements ride the raw-attempt lane with their stable operation
+//!   (setter disposition plus immediate pre/post proof). Focus-request
+//!   outcomes are proven by read-back and counted in stats. This diff
+//!   actuates no creation or removal: Windows host-owned domains produce no
+//!   `native_creations` rows, so the core learns membership from the next
+//!   observed report; float placements ride the raw-attempt lane with their stable operation
 //!   id plus the immediate pre-write frame, and the core derives
 //!   confirmation, proven refusal, and ambiguity from that evidence plus
 //!   the staged observation.
@@ -57,9 +59,9 @@
 //!   immediately before every setter; a gesture barrier suspends geometry.
 //!   External invalidation is polled before every setter and stops remaining
 //!   unsafe writes, including after geometry/float/create/remove/view/
-//!   migration/effect writes.
+//!   migration/focus writes.
 //! - Correlated raw attempts (transfers, float placements, views) and
-//!   one-shot effects arm BEFORE the first native setter and never repeat
+//!   one-shot focus requests arm BEFORE the first native setter and never repeat
 //!   while ambiguous: the transport reports mechanical facts once, and the
 //!   core derives every verdict. Refused-proven transfers settle only on
 //!   fresh proof of nothing happened plus an explicit native refusal (both
@@ -80,12 +82,14 @@ use super::world_capture::{CapturedWorld, OwnerInputs, capture_facts_rideable};
 use super::{ObservedWindow, RetainedRow};
 use crate::native_guards::WindowKey;
 use crate::tiling::WindowFacts;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use tiler_core::directional::OutputId;
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
-    ClearAttempt, EffectKind, FrameAttempt, FrameSetter, HoldReason, MemberAttempt, ScopeAuthority,
-    TransferKind, TransferTarget, ViewAttempt, WorldCommand, WorldReply,
+    FocusRequestCause, FrameAttempt, FramePurpose, FrameSetter, HoldReason, LastWritePath,
+    MemberAttempt, MemberDisposition, ScopeAuthority, TransferKind, TransferTargetV4, ViewAttempt,
+    VisibilityAttempt, VisibilityDisposition, VisibilityFact, VisibilityReason, VisibilitySample,
+    WorkspaceRef, WorldCommand, WorldReplyV4,
 };
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
@@ -96,16 +100,6 @@ use tiler_core::world_report::{
 /// - `frame`: last proven frame (`None` = unreadable, never fabricated).
 ///   Retained maximized/fullscreen overlay rows ride their tile slot here
 ///   (allocation reasoning and home affinity), not the live maximized frame.
-/// - `observed_frame`: observation-time live frame before that slot
-///   substitution (the retained row's fresh frame for overlay rows with
-///   observed evidence, the observed visible frame for live-lane rows).
-///   `None` means no observed live frame this tick and never falls back to
-///   the slot: a coincidental slot/live equality must not fabricate proof.
-///   The maximize-clear race guard compares the diff-time live re-read
-///   against this, never the slot: the production live lane re-observes
-///   the maximized DWM frame through `observe_window`, so comparing
-///   against the slot would hold every maximized clear forever with no
-///   user race present.
 /// - `facts`: the raw native read (`None` = unproven; holds). Distinct from
 ///   `iconic`/`hidden`: `facts.minimized` is the native minimized bit while
 ///   `iconic` is the adapter minimized-omission classification; `facts.visible`
@@ -113,9 +107,11 @@ use tiler_core::world_report::{
 /// - `output`/`workspace`: homing at observation time.
 /// - `iconic`: adapter minimized omission or explicit minimized entry.
 /// - `hidden`: adapter hide-ledger membership.
-/// - `sticky`/`floating`/`fit_excluded`: adapter intent lanes from the
-///   accepted capture rows (float placement intent never authorizes tiled
-///   writes; only a stable `frame_operation` token does).
+/// - `sticky`/`floating`: adapter intent lanes from the accepted capture
+///   rows (float placement intent never authorizes tiled writes; only a
+///   stable `frame_operation` token does). v4 carries no native sticky or
+///   observed-workspace fact: `WindowFact.sticky` is `None` on Windows and
+///   best-effort exclusion is core-owned, so no adapter fit fence exists.
 /// - `live_tag`: live visible-membership tag; must equal the stored tag and
 ///   be nonempty, mirroring the production visible-lifetime gate.
 #[derive(Debug, Clone)]
@@ -123,7 +119,6 @@ pub(super) struct FreshWindow {
     pub(super) key: WindowKey,
     pub(super) token: String,
     pub(super) frame: Option<Rect>,
-    pub(super) observed_frame: Option<Rect>,
     pub(super) facts: Option<WindowFacts>,
     pub(super) output: String,
     pub(super) workspace: String,
@@ -131,7 +126,6 @@ pub(super) struct FreshWindow {
     pub(super) hidden: bool,
     pub(super) sticky: bool,
     pub(super) floating: bool,
-    pub(super) fit_excluded: bool,
     pub(super) live_tag: Option<String>,
 }
 
@@ -178,14 +172,6 @@ impl FreshHost {
             }
         }
         let mut baseline: HashMap<String, FreshWindow> = HashMap::new();
-        // Which capture lane each fact rode: the live lane over the current
-        // enumeration, or the retained lane for members with no live row.
-        // The retained overlay lane substitutes the tile slot for `rect`;
-        // the race baseline below keeps the pre-substitution live frame.
-        let observed_tokens: HashSet<&str> = observed
-            .iter()
-            .map(|window| window.token.as_str())
-            .collect();
         // Logical homing is reply-side: the capture carries screen
         // affinity plus truthful observed receipts. Baselines home to
         // the last proven receipt where capture freshly proved it
@@ -206,61 +192,43 @@ impl FreshHost {
                 continue;
             };
             let hidden = state.hidden_claims.contains_key(key);
-            let iconic = fact.minimized || state.minimized_omitted.contains(key);
-            // Observation-time live frame before retained-slot substitution:
-            // retained overlay rows carry their fresh live frame in the
-            // retained row while `rect` rides the tile slot. Live-lane rows
-            // observe no substitution, so the fact rect is already the live
-            // frame. A retained row with no observed frame yields `None`:
-            // unavailable evidence is never backfilled from the slot, so a
-            // coincidental slot/live equality cannot fabricate proof.
-            let observed_frame = if observed_tokens.contains(token) {
-                fact.rect
-            } else {
-                retained
-                    .iter()
-                    .find(|row| row.token == token)
-                    .and_then(|row| row.rect)
-            };
-            // Observation-time homing: the retained proven receipt where
-            // capture freshly revalidated it this tick, else the live
-            // screen affinity with no workspace claim.
-            let (output, workspace) = match &fact.observed_workspace {
-                Some(proven_ws) => state
-                    .applied_homing
-                    .get(token)
-                    .filter(|(_, ws)| ws == proven_ws)
-                    .cloned()
-                    .unwrap_or_else(|| (fact.output.0.clone(), proven_ws.clone())),
-                None => (fact.output.0.clone(), String::new()),
-            };
+            let iconic = fact.minimized == Some(true) || state.minimized_omitted.contains(key);
+            // Observation-time homing: the adapter's last applied receipt,
+            // never a fresh desire (the core owns observed membership in
+            // v4). A lifetime with no proven receipt keeps an empty
+            // workspace claim so third-location checks never mistake an
+            // unknown preimage for an external move.
+            let (output, workspace) =
+                state.applied_homing.get(token).cloned().unwrap_or_else(|| {
+                    (
+                        fact.output
+                            .as_ref()
+                            .map(|o| o.0.clone())
+                            .unwrap_or_default(),
+                        String::new(),
+                    )
+                });
             baseline.insert(
                 token.to_owned(),
                 FreshWindow {
                     key: key.clone(),
                     token: token.to_owned(),
                     frame: fact.rect,
-                    observed_frame,
                     facts: facts_of.get(token).copied(),
                     output,
                     workspace,
                     iconic,
                     hidden,
-                    sticky: fact.sticky,
-                    floating: fact.floating,
-                    fit_excluded: fact.fit_excluded,
+                    sticky: state.sticky.contains_key(key),
+                    floating: state.floated.contains(key),
                     live_tag: state.member_tags.get(key).cloned(),
                 },
             );
         }
         // Observation-time views are the adapter's proven applied
-        // receipts from capture, never a fallback of desired views:
-        // empty means unknown and retains pending flights.
-        let views: HashMap<String, String> = captured
-            .observed_views
-            .iter()
-            .map(|view| (view.output.0.clone(), view.view.clone()))
-            .collect();
+        // receipts, never a fallback of desired views: empty means
+        // unknown and retains pending flights.
+        let views: HashMap<String, String> = state.applied_views.clone();
         Self {
             baseline,
             stored_tags,
@@ -284,7 +252,7 @@ pub(super) struct DiffGate {
 }
 
 impl DiffGate {
-    pub(super) fn fresh_reply(&self, reply: &WorldReply) -> bool {
+    pub(super) fn fresh_reply(&self, reply: &WorldReplyV4) -> bool {
         reply.ready
             && reply.adapter_incarnation == self.adapter
             && reply.core_generation == self.generation
@@ -295,7 +263,7 @@ impl DiffGate {
     /// Record one sequencer-applied core revision as the desired baseline.
     /// Called by the owner after [`AckOutcome::Applied`](super::world_sequencer::AckOutcome::Applied);
     /// host application results never move this watermark.
-    pub(super) fn note_applied(&mut self, reply: &WorldReply) {
+    pub(super) fn note_applied(&mut self, reply: &WorldReplyV4) {
         self.last_rev = reply.state_revision;
         self.has_accepted = true;
     }
@@ -336,16 +304,16 @@ pub(super) enum ForegroundState {
 /// cache of them, so removal rechecks observe racing host changes.
 ///
 /// Fresh accepted explicit-selection arrival provenance for one apply pass:
-/// the exact one-shot arrival focus effects of a freshly accepted
-/// explicit-workspace-selection reply, as `(effect id, target)` pairs.
-/// Minted only by the command path from the exact accepted report (command
-/// plus sequence) and reply; duplicates, command-consumed replays,
+/// the exact retained explicit-command focus request of a freshly accepted
+/// explicit-workspace-selection reply, as an `(focus request id, target)`
+/// pair. Minted only by the command path from the exact accepted report
+/// (command plus sequence) and reply; duplicates, command-consumed replays,
 /// observation replies, and every non-selection command mint nothing. The
-/// native seam admits the exact-desktop foreground exception only for an
-/// effect whose id AND target both match, so a directional focus,
+/// native seam admits the exact-desktop foreground exception only for a
+/// request whose id AND target both match, so a directional focus,
 /// send/migrate follow, automatic admission, focus-follows-cursor, or
-/// observation effect can never ride it — even when one shares the same
-/// reply. Never a policy input: the core alone decides the target.
+/// observation request can never ride it. Never a policy input: the core
+/// alone decides the target.
 #[derive(Debug, Clone, Default)]
 pub(super) struct SelectionArrivalGrant {
     arrivals: Vec<(String, String)>,
@@ -368,17 +336,16 @@ impl SelectionArrivalGrant {
         )
     }
 
-    /// Mint from the exact accepted report/reply triple at dispatch time:
+    /// Mint from the exact accepted report/reply pair at dispatch time:
     /// `Some` only for a fresh `accepted` delivery of a selection command
-    /// carrying that command's explicit arrival focus effect. Only effects
-    /// exactly equal to the command's explicit outcome qualify (see
-    /// [`OneShotEffect::is_explicit_focus_for`]): automatic admission
-    /// (`af-*`) and focus-follows-cursor (`ffc-*`) effects that may share
-    /// the same reply never mint, nor does any effect of another command.
+    /// whose reply carries that command's explicit-command focus request.
+    /// Only a request with the explicit cause and the exact originating
+    /// command sequence qualifies: automatic admission, focus-follows-cursor,
+    /// positive-close, and any request of another command never mint.
     pub(super) fn for_accepted(
         command: Option<&WorldCommand>,
         command_seq: Option<u64>,
-        reply: &WorldReply,
+        reply: &WorldReplyV4,
         delivery: &str,
     ) -> Option<Self> {
         if delivery != "accepted" {
@@ -389,22 +356,19 @@ impl SelectionArrivalGrant {
             return None;
         }
         let seq = command_seq?;
-        let arrivals = reply
-            .effects
-            .iter()
-            .filter(|effect| effect.is_explicit_focus_for(seq))
-            .map(|effect| (effect.id.clone(), effect.target.0.clone()))
-            .collect::<Vec<_>>();
-        if arrivals.is_empty() {
+        let request = reply.focus_request.as_ref()?;
+        if request.cause != FocusRequestCause::ExplicitCommand || request.cmd_seq != Some(seq) {
             return None;
         }
-        Some(Self { arrivals })
+        Some(Self {
+            arrivals: vec![(request.id.clone(), request.target.0.clone())],
+        })
     }
 
-    pub(super) fn allows(&self, effect_id: &str, target: &str) -> bool {
+    pub(super) fn allows(&self, request_id: &str, target: &str) -> bool {
         self.arrivals
             .iter()
-            .any(|(id, bound)| id == effect_id && bound == target)
+            .any(|(id, bound)| id == request_id && bound == target)
     }
 }
 
@@ -424,17 +388,6 @@ pub(super) trait NativeOps {
     /// app-held size.
     fn read_dpi(&mut self, token: &str) -> Option<u32>;
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()>;
-    /// Mechanical nonactivating maximize-clear for one core-authorized
-    /// `clear_operation` desire: restores the window in place without
-    /// activating it. `Ok(true)` is setter success (the caller re-reads the
-    /// maximized state; success alone never proves the clear),
-    /// `Ok(false)` is an explicit native refusal, and `Err(())` is a
-    /// throwing/ambiguous call. The default throws (no actuation): the
-    /// production seam overrides; offline fakes script it explicitly.
-    fn clear_maximized(&mut self, token: &str) -> Result<bool, ()> {
-        let _ = token;
-        Err(())
-    }
     /// Membership actuation toward `(out, ws)` with the desired visible
     /// frame as an actuation TARGET only (`None` for membership-only
     /// rows such as floats/sticky/overlays, which carry no published
@@ -494,13 +447,13 @@ pub(super) trait NativeOps {
     fn hide_view_nonactivating(&mut self, _output: &str, _logical: &str) -> Result<bool, ()> {
         Err(())
     }
-    /// Whether one exact one-shot focus effect rides the fresh accepted
-    /// explicit-selection arrival grant (effect id AND dispatch target).
-    /// Pure policy lookup, never a native read: only an effect the command
+    /// Whether one exact retained focus request rides the fresh accepted
+    /// explicit-selection arrival grant (request id AND dispatch target).
+    /// Pure policy lookup, never a native read: only a request the command
     /// path armed for this pass qualifies, so directional, follow,
-    /// admission, cursor-follow and observation effects never stage.
+    /// admission, cursor-follow and observation requests never stage.
     /// Fail-closed default (`false`).
-    fn selection_arrival_allows(&mut self, _effect_id: &str, _target: &str) -> bool {
+    fn selection_arrival_allows(&mut self, _request_id: &str, _target: &str) -> bool {
         false
     }
     /// Current foreground state (`Unknown` when unreadable: fail closed).
@@ -547,19 +500,19 @@ pub(super) trait NativeOps {
         let outcome = self.focus_window(token);
         (outcome, FocusCallDiag::default())
     }
-    /// Adapter-dispatched focus attempt for one exact one-shot effect: the
-    /// same record as [`Self::focus_window_traced`] plus the effect binding
-    /// the production seam checks against its fresh accepted
-    /// [`SelectionArrivalGrant`] (effect id AND dispatch target). The
-    /// default ignores the binding (no exception); the production seam
+    /// Adapter-dispatched focus attempt for one exact retained focus
+    /// request: the same record as [`Self::focus_window_traced`] plus the
+    /// request binding the production seam checks against its fresh
+    /// accepted [`SelectionArrivalGrant`] (request id AND dispatch target).
+    /// The default ignores the binding (no exception); the production seam
     /// overrides. The diff always calls this (never the unbound form) for
-    /// reply effects.
+    /// the retained focus request.
     fn focus_window_traced_selected(
         &mut self,
         token: &str,
-        effect_id: &str,
+        request_id: &str,
     ) -> (Result<bool, ()>, FocusCallDiag) {
-        let _ = effect_id;
+        let _ = request_id;
         self.focus_window_traced(token)
     }
     fn focus_window(&mut self, token: &str) -> Result<bool, ()>;
@@ -629,19 +582,11 @@ pub(super) struct FakeNative {
     pub(super) reveal_calls: Vec<(String, String)>,
     pub(super) hide_calls: Vec<(String, String)>,
     /// Scripted fresh accepted explicit-selection arrival grant (see
-    /// [`SelectionArrivalGrant`]): `None` takes the legacy single-shot
-    /// view path exactly as before.
+    /// [`SelectionArrivalGrant`]): `None` grants no explicit-desktop
+    /// foreground exception, so every focus keeps the ordinary proof.
     pub(super) arrival_grant: Option<SelectionArrivalGrant>,
     pub(super) fail_focus: HashSet<String>,
     pub(super) throw_focus: HashSet<String>,
-    /// Scripted clear dispositions for the offline lane: explicit native
-    /// refusal vs throwing/ambiguous call. A successful offline clear
-    /// flips the live maximized bit so re-reads observe it.
-    pub(super) fail_clear: HashSet<String>,
-    pub(super) throw_clear: HashSet<String>,
-    /// Every clear setter attempted, in order (vetoes record nothing: no
-    /// setter ran).
-    pub(super) clear_calls: Vec<String>,
     /// Scripted live cursor position (`None` = unreadable). Warp writes
     /// update it so re-reads observe the move, like the real position.
     pub(super) cursor: Option<(i32, i32)>,
@@ -785,6 +730,14 @@ impl NativeOps for FakeNative {
             return Ok(false);
         }
         self.views.insert(output.to_owned(), logical.to_owned());
+        // Production view switches hide departing members and reveal
+        // entering ones. The offline stand-in mirrors that visibility so
+        // target-matching readbacks can settle the selection binding.
+        for window in self.windows.values_mut() {
+            if window.output == output {
+                window.hidden = window.workspace != logical;
+            }
+        }
         self.note_write();
         Ok(true)
     }
@@ -839,10 +792,10 @@ impl NativeOps for FakeNative {
         self.note_write();
         Ok(true)
     }
-    fn selection_arrival_allows(&mut self, effect_id: &str, target: &str) -> bool {
+    fn selection_arrival_allows(&mut self, request_id: &str, target: &str) -> bool {
         self.arrival_grant
             .as_ref()
-            .is_some_and(|grant| grant.allows(effect_id, target))
+            .is_some_and(|grant| grant.allows(request_id, target))
     }
     fn foreground_state(&mut self) -> ForegroundState {
         let token = match self.foreground.as_deref() {
@@ -1010,25 +963,7 @@ impl NativeOps for FakeNative {
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
         self.focus_window_traced(token).0
     }
-    fn clear_maximized(&mut self, token: &str) -> Result<bool, ()> {
-        // Every setter attempt records, including throws: the attempt row
-        // (not this count) is the at-most-once proof the core reconciles.
-        self.clear_calls.push(token.to_owned());
-        if self.throw_clear.contains(token) {
-            return Err(());
-        }
-        if self.fail_clear.contains(token) {
-            self.note_write();
-            return Ok(false);
-        }
-        if let Some(window) = self.windows.get_mut(token)
-            && let Some(facts) = window.facts.as_mut()
-        {
-            facts.maximized = false;
-        }
-        self.note_write();
-        Ok(true)
-    }
+
     fn read_cursor(&mut self) -> Option<(i32, i32)> {
         self.cursor
     }
@@ -1050,27 +985,30 @@ impl NativeOps for FakeNative {
     }
 }
 
-/// At-most-once dispatch fences for transfers, floats, views, and effects.
-/// All entries are mechanical transport state, never policy verdicts:
+/// At-most-once dispatch fences for transfers, floats, views, and focus
+/// requests. All entries are mechanical transport state, never policy verdicts:
 /// completion, refusal, and ambiguity all live in the core over reported
 /// raw facts plus native observation. Operation-scoped entries live and
 /// die with the core generation; [`HostDiff::reset_generation`] clears
 /// them.
 #[derive(Debug, Default)]
-pub(super) struct EffectTracker {
+pub(super) struct DispatchFences {
     /// Membership phases already dispatched, per operation window:
     /// a possibly-executed write never repeats without fresh unambiguous
     /// proof. Retired only by [`HostDiff::prune`] (operation left the
     /// reply) or generation reset. Distinct from core `held`: this blocks
     /// the duplicate dispatch itself, the core owns the verdict.
     pub(super) attempted_members: HashSet<(String, String)>,
-    pub(super) spent_effects: HashSet<String>,
+    /// Retained focus request ids already dispatched: the transport never
+    /// re-actuates the same request, and a retired request never inherits
+    /// the spent mark of a newer one.
+    pub(super) spent_focus: HashSet<String>,
     pub(super) spent_floats: HashSet<String>,
-    /// Distinct maximize-clear phases per core operation id: armed (marked)
-    /// immediately before the clear setter (or before reporting a veto
-    /// refusal), so a spent clear never re-actuates. Only operation
-    /// retirement/reset retires a phase.
-    pub(super) spent_clears: HashSet<String>,
+    /// Identity minted for one fresh native attempt row: strictly
+    /// increasing, saturating, and reset with the core generation. Staged
+    /// rows keep their id across report resends, so the core filters
+    /// redeliveries by this counter alone.
+    next_attempt_id: u64,
     /// Distinct local view-phase memory per owning core id: the retained
     /// view id itself for standalone views, the window parent for follow,
     /// the migration parent for the target view, and the actual refill id
@@ -1089,7 +1027,7 @@ pub(super) struct EffectTracker {
     /// warp already ran. One mechanical warp per observation at most, so a
     /// duplicate delivery of the same accepted reply never moves the
     /// cursor twice. Cleared only by generation reset, never by prune:
-    /// later warps ride newer observations with newer focus effects.
+    /// later warps ride newer observations with newer focus requests.
     pub(super) last_warp_obs: Option<u64>,
     /// Trace-only hover emission cursor (stage 4b FFC oracle): the
     /// `(cursor-hit, focused, ffc-enabled)` triple of the last emitted
@@ -1102,7 +1040,7 @@ pub(super) struct EffectTracker {
     last_hover_trace: Option<(Option<String>, String, bool)>,
 }
 
-impl EffectTracker {
+impl DispatchFences {
     /// Membership-phase fence: true once this operation window attempted
     /// its membership setter. A possibly-executed write never repeats.
     pub(super) fn is_member_attempted(&self, op: &str, window: &str) -> bool {
@@ -1114,10 +1052,18 @@ impl EffectTracker {
         self.attempted_members
             .insert((op.to_owned(), window.to_owned()));
     }
-    /// Mark one effect spent BEFORE dispatch. Returns false when already
-    /// spent: duplicates never reapply.
-    pub(super) fn mark_effect_spent(&mut self, id: &str) -> bool {
-        self.spent_effects.insert(id.to_owned())
+    /// Mark one retained focus request spent BEFORE dispatch. Returns false
+    /// when already spent: a request never re-actuates.
+    pub(super) fn mark_focus_spent(&mut self, id: &str) -> bool {
+        self.spent_focus.insert(id.to_owned())
+    }
+    /// Mint the identity for one fresh native attempt row. Every fresh
+    /// attempt takes one id; the same staged row keeps it across resends.
+    /// Strictly increasing from 1, reset with the core generation.
+    pub(super) fn next_attempt_id(&mut self) -> u64 {
+        let id = self.next_attempt_id.max(1);
+        self.next_attempt_id = id.saturating_add(1);
+        id
     }
     /// Mark one float placement spent BEFORE dispatch. Returns false when
     /// already spent for this operation: the transport never dispatches the
@@ -1126,14 +1072,6 @@ impl EffectTracker {
     /// core over the reported raw attempt plus native observation.
     pub(super) fn mark_float_spent(&mut self, op: &str) -> bool {
         self.spent_floats.insert(op.to_owned())
-    }
-    /// Mark one maximize-clear spent BEFORE dispatch (or before reporting
-    /// a veto refusal). Returns false when already spent for this
-    /// operation: the transport never dispatches the same clear twice, and
-    /// a vetoed desire reports exactly one refused attempt. Strictly
-    /// at-most-once dispatch, never a policy verdict.
-    pub(super) fn mark_clear_spent(&mut self, op: &str) -> bool {
-        self.spent_clears.insert(op.to_owned())
     }
     /// View-phase fence: true once the owning core id attempted its view
     /// setter (follow parent, migration parent, refill id, or retained view
@@ -1177,11 +1115,11 @@ impl EffectTracker {
     #[allow(dead_code)]
     fn clear_generation(&mut self) {
         self.attempted_members.clear();
-        self.spent_effects.clear();
+        self.spent_focus.clear();
         self.spent_floats.clear();
-        self.spent_clears.clear();
         self.spent_views.clear();
         self.spent_reveals.clear();
+        self.next_attempt_id = 0;
         self.last_warp_obs = None;
     }
 }
@@ -1202,9 +1140,10 @@ pub(super) struct InFlightFocus {
     pub(super) token: String,
     pub(super) key: WindowKey,
     pub(super) tag: String,
-    /// Originating one-shot effect whose accepted setter armed this flight:
-    /// joins the dispatch row (`focus_dispatch[].id`) to the later landing
-    /// or clearing row (`inflight_events[].effect`).
+    /// Originating one-shot focus request whose accepted setter armed this
+    /// flight: joins the dispatch row (`focus_dispatch[].id`) to the later
+    /// landing or clearing row (`inflight_events[].effect`; field name kept
+    /// for trace compatibility).
     pub(super) effect: String,
     /// Shared monotonic stamp of the arming setter's return (same `mono_ms`
     /// basis as the log rows): joins dispatch to landing without claiming
@@ -1223,7 +1162,7 @@ pub(super) struct InFlightFocus {
 #[derive(Debug)]
 pub(super) struct HostDiff {
     pub(super) gate: DiffGate,
-    pub(super) effects: EffectTracker,
+    pub(super) effects: DispatchFences,
     pub(super) in_flight: Option<InFlightFocus>,
     /// Drained `EVENT_SYSTEM_FOREGROUND` HWNDs awaiting resolution at the
     /// next apply entry, in delivery order. The owner loop drains hook
@@ -1250,6 +1189,11 @@ pub(super) struct HostDiff {
     /// total there.
     pub(super) inflight_stash: Vec<InFlightEventDiag>,
     pub(super) inflight_stash_omitted: u64,
+    /// Latest-wins visibility evidence per window lifetime, produced by
+    /// this apply pass and drained into the next report by the owner.
+    /// Only target-matching live readbacks enter: a mismatched read is no
+    /// verdict and must hold, never latch a failure.
+    pending_visibility: BTreeMap<String, VisibilityAttempt>,
 }
 
 impl HostDiff {
@@ -1262,14 +1206,24 @@ impl HostDiff {
                 last_rev: 0,
                 has_accepted: false,
             },
-            effects: EffectTracker::default(),
+            effects: DispatchFences::default(),
             in_flight: None,
             pending_foreground: Vec::new(),
             pending_foreground_meta: Vec::new(),
             pending_foreground_omitted: 0,
             inflight_stash: Vec::new(),
             inflight_stash_omitted: 0,
+            pending_visibility: BTreeMap::new(),
         }
+    }
+
+    /// Drain the latest target-matching visibility evidence for the next
+    /// report. Entries are one per window lifetime; a newer pass replaces
+    /// an older row for the same window.
+    pub(super) fn take_visibility_attempts(&mut self) -> Vec<VisibilityAttempt> {
+        std::mem::take(&mut self.pending_visibility)
+            .into_values()
+            .collect()
     }
 
     /// Stash drained foreground HWNDs for the next apply entry, in delivery
@@ -1376,10 +1330,10 @@ impl HostDiff {
     /// inventory) and acknowledgement loss, allowing a possibly-executed
     /// write to repeat. Departed lifetimes retire with the operation id
     /// (the core forgets them on close when the reply drops the transfer).
-    fn prune(&mut self, reply: &WorldReply, _fresh: &FreshHost) {
+    fn prune(&mut self, reply: &WorldReplyV4, _fresh: &FreshHost) {
         let mut live_ops: HashSet<&str> = HashSet::new();
-        for effect in &reply.effects {
-            live_ops.insert(effect.id.as_str());
+        if let Some(request) = reply.focus_request.as_ref() {
+            live_ops.insert(request.id.as_str());
         }
         for transfer in &reply.transfers {
             live_ops.insert(transfer.operation_id.as_str());
@@ -1390,20 +1344,12 @@ impl HostDiff {
             {
                 live_ops.insert(op);
             }
-            if let Some(op) = row.clear_operation.as_deref()
-                && !op.is_empty()
-            {
-                live_ops.insert(op);
-            }
         }
         self.effects
-            .spent_effects
+            .spent_focus
             .retain(|id| live_ops.contains(id.as_str()));
         self.effects
             .spent_floats
-            .retain(|op| live_ops.contains(op.as_str()));
-        self.effects
-            .spent_clears
             .retain(|op| live_ops.contains(op.as_str()));
         self.effects
             .spent_views
@@ -1559,20 +1505,20 @@ pub(super) struct FocusCallDiag {
 /// executed visibility calls ride `visibility_posts`, never the veto row.
 pub(super) const FOCUS_SETTER_API: &str = "SetForegroundWindow";
 
-/// Trace-only per-effect focus dispatch record (stage 4b FFC oracle).
-/// One row per `reply.effects` entry in order, bounded by
+/// Trace-only per-request focus dispatch record (stage 4b FFC oracle).
+/// One row per retained focus request, bounded by
 /// [`MAX_FOCUS_DIAG`]: `dispatched` tells whether the native focus setter
 /// ran; `setter` is the raw setter disposition (`accepted`/`refused`/
 /// `threw`, or `skipped` when no setter ran); `foreground` is the immediate
 /// foreground proof read right after dispatch (always present, even when
 /// false, so dispatched-but-unproven is distinguishable from no setter);
-/// `hold` names the individual hold when the effect did not prove
+/// `hold` names the individual hold when the request did not prove
 /// (`None` only on proven foreground arrival). `fg_baseline`/`fg_live` ride
 /// only the `foreground-changed` veto rows: the entry baseline versus the
 /// post-switch live read that vetoed, as [`fg_trace_label`] strings, so a
 /// later join against `member-admitted` rows identifies managed versus
 /// foreign windows without attributing causality from membership alone.
-/// Pure trace state, never a policy input: the core consumes no effect
+/// Pure trace state, never a policy input: the core consumes no focus
 /// outcomes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct FocusDispatchDiag {
@@ -1707,24 +1653,9 @@ pub(super) fn gui_resolution_label(ops: &mut dyn NativeOps, hwnd: u64) -> Option
     Some(gui_trace_label(&ops.gui_focus_of(hwnd)))
 }
 
-/// Trace-only per-clear hold record for the common maximize-clear lane
-/// (stage 5 directional): one row per published `clear_operation` desire
-/// that dispatched no setter this pass, naming the exact pre-dispatch gate
-/// that held it. Pure trace state, never a policy input: the core consumes
-/// no hold reasons. Veto gates (`scope-not-controlled`, `identity-drift`,
-/// `policy-veto`) additionally emit their correlated refused attempt; every
-/// other reason is a silent hold with no attempt and no spent mark, so a
-/// later readable report retries the still-undispatched desire.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct ClearHoldDiag {
-    pub(super) op: String,
-    pub(super) window: String,
-    pub(super) hold: &'static str,
-}
-
-/// Bound for [`FocusDispatchDiag`] rows per apply pass. Effects themselves
-/// are already bounded by the reply byte budget; this caps only the retained
-/// trace rows with an honest omitted count in the tick diag.
+/// Bound for [`FocusDispatchDiag`] rows per apply pass. The retained focus
+/// request is already bounded by the reply byte budget; this caps only the
+/// retained trace rows with an honest omitted count in the tick diag.
 pub(super) const MAX_FOCUS_DIAG: usize = 8;
 
 /// Bound for [`InFlightEventDiag`] rows per apply pass, with an honest
@@ -1735,10 +1666,6 @@ pub(super) const MAX_INFLIGHT_DIAG: usize = 8;
 /// flight join. The production HWND queue itself is unbounded per pass
 /// (every drained edge resolves); only this diagnostic sidecar caps.
 pub(super) const MAX_PENDING_FOREGROUND_META: usize = 32;
-
-/// Bound for [`ClearHoldDiag`] rows per apply pass, with an honest omitted
-/// count in the tick diag.
-pub(super) const MAX_CLEAR_HOLD_DIAG: usize = 8;
 
 /// Bound for executed visibility-post rows per apply pass, with an honest
 /// omitted count in the tick diag. Single source of truth lives at the
@@ -1764,10 +1691,6 @@ pub(super) struct ApplyStats {
     pub(super) geometry_writes: usize,
     pub(super) membership_writes: usize,
     pub(super) view_writes: usize,
-    /// Mechanical maximize-clears actually dispatched this pass (setter ran;
-    /// success alone never proves the clear, the core settles from the
-    /// reported attempt plus the next observation).
-    pub(super) clear_writes: usize,
     pub(super) creations: usize,
     pub(super) removals: usize,
     pub(super) effects: usize,
@@ -1780,7 +1703,7 @@ pub(super) struct ApplyStats {
     /// Staged workspace-switch phases dispatched this pass: arrival reveals
     /// that proved ready, arrival-ready focuses dispatched, and departure
     /// hides that completed with view proof. Observability only; the
-    /// at-most-once fences live in [`EffectTracker`].
+    /// at-most-once fences live in [`DispatchFences`].
     pub(super) staged_reveals: usize,
     pub(super) staged_focus: usize,
     pub(super) staged_hides: usize,
@@ -1804,18 +1727,6 @@ pub(super) struct ApplyStats {
     /// queue itself is taken). The production `pending_foreground` HWNDs
     /// still resolve; only this diagnostic sidecar folds.
     pub(super) foreground_meta_omitted: u64,
-    /// Trace-only per-clear hold rows (see [`ClearHoldDiag`]): one entry
-    /// per published clear desire that dispatched no setter this pass.
-    /// Bounded to [`MAX_CLEAR_HOLD_DIAG`] entries in reply order; the
-    /// unbounded total rides `clear_holds_total` below so the tick diag
-    /// reports an honest omitted count past the cap.
-    pub(super) clear_holds: Vec<ClearHoldDiag>,
-    /// Trace-only count of every clear-hold attribution this pass,
-    /// including rows past the [`MAX_CLEAR_HOLD_DIAG`] storage cap.
-    /// The tick diag derives `clear_holds_omitted` from this total minus
-    /// the stored rows, so a pass with more held desires than storage
-    /// still reports the excess instead of a false zero.
-    pub(super) clear_holds_total: usize,
     /// Trace-only executed visibility posts this pass (see
     /// [`crate::product_hide::sys::VisibilityPostDiag`]): the actual host
     /// API that ran per hide/reveal post, in execution order. Bounded to
@@ -1861,21 +1772,6 @@ pub(super) struct ApplyStats {
 }
 
 impl ApplyStats {
-    /// Trace-only hold attribution for one published clear desire that
-    /// dispatched no setter. Counts every attribution in
-    /// `clear_holds_total` and retains only the first
-    /// [`MAX_CLEAR_HOLD_DIAG`] rows. Never a policy input.
-    pub(super) fn note_clear_hold(&mut self, op: &str, window: &str, hold: &'static str) {
-        self.clear_holds_total = self.clear_holds_total.saturating_add(1);
-        if self.clear_holds.len() < MAX_CLEAR_HOLD_DIAG {
-            self.clear_holds.push(ClearHoldDiag {
-                op: op.to_owned(),
-                window: window.to_owned(),
-                hold,
-            });
-        }
-    }
-
     /// Trace-only in-flight clearing attribution: counts every clearing in
     /// `inflight_total` and retains only the first [`MAX_INFLIGHT_DIAG`]
     /// rows. Never a policy input: the flight already ended before this
@@ -1903,14 +1799,30 @@ impl ApplyStats {
 }
 
 /// Scope authority for one `(output, workspace)` domain, matching the core
-/// envelope: `ScopeStatus.scope` is `"{output}/{workspace}"`, and omission
-/// inside a held or untouched scope authorizes no write or retirement.
-fn scope_controlled(reply: &WorldReply, output: &str, workspace: &str) -> bool {
-    let scope = format!("{output}/{workspace}");
+/// envelope: [`ScopeStatus::scope`](tiler_core::world_report::ScopeStatus)
+/// is a typed authority scope, and omission inside a held or untouched
+/// scope authorizes no write or retirement.
+fn scope_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
+    let output = OutputId(output.to_owned());
+    reply.scopes.iter().any(|status| {
+        status.authority == ScopeAuthority::Controlled
+            && status.scope.covers_workspace(&output, workspace)
+    })
+}
+
+/// Whether the output row proves this workspace is the current view. A
+/// missing output row or a `None` logical view is not proof that the
+/// workspace is current, so it withholds an otherwise-authorized frame
+/// write. A named different view is core-owned hidden state: native hide
+/// may still lag the view switch, but the departing window must not be
+/// reflowed before it hides.
+fn row_on_current_view(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
     reply
-        .scopes
+        .outputs
         .iter()
-        .any(|status| status.scope == scope && status.authority == ScopeAuthority::Controlled)
+        .find(|row| row.output.0 == output)
+        .and_then(|row| row.logical_view.as_deref())
+        .is_some_and(|view| view == workspace)
 }
 
 /// Mechanical actuation authority for one `(output, workspace)` domain:
@@ -1928,16 +1840,16 @@ fn scope_controlled(reply: &WorldReply, output: &str, workspace: &str) -> bool {
 /// outputs, and mid-gesture Untouched targets hold with no attempt,
 /// exactly as before.
 fn scope_actuatable(
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     ops: &mut dyn NativeOps,
     output: &str,
     workspace: &str,
 ) -> bool {
-    let scope = format!("{output}/{workspace}");
+    let scope_output = OutputId(output.to_owned());
     let Some(authority) = reply
         .scopes
         .iter()
-        .find(|status| status.scope == scope)
+        .find(|status| status.scope.covers_workspace(&scope_output, workspace))
         .map(|status| status.authority)
     else {
         return false;
@@ -1975,7 +1887,7 @@ fn scope_actuatable(
 /// do (same read kinds as before: window, homing, frame).
 fn staged_arrival_ready(
     ops: &mut dyn NativeOps,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh: &FreshHost,
     out: &str,
     ws: &str,
@@ -2036,7 +1948,7 @@ fn staged_arrival_ready(
 /// pending external invalidation; on any staleness the caller stops before
 /// remaining unsafe writes.
 fn ensure_fresh(
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     gate: &mut DiffGate,
     entry_obs: u64,
     ops: &mut dyn NativeOps,
@@ -2113,7 +2025,6 @@ fn overlay_guarded(window: &FreshWindow) -> bool {
         .is_some_and(|facts| facts.captionless_fullscreen || facts.maximized)
         || window.sticky
         || window.floating
-        || window.fit_excluded
 }
 
 /// Full fresh safety/identity gate immediately before a setter, over the
@@ -2173,17 +2084,13 @@ fn pre_setter_ok(
         SetterKind::Float => {
             // Strict eligibility: the full classify gate (cloaked,
             // elevated, shell, tool, owned, dialog, no-activate, hidden,
-            // minimized, plus fullscreen/maximized overlay protection) and
-            // the live adapter lanes. Ordinary floating intent alone is
-            // allowed, and sticky rides too: this lane only ever writes
-            // under an explicit retained `frame_operation` token (directional
-            // half-snaps), so ordinary unsolicited sticky frame writes stay
-            // prohibited by the token gate plus the tiled lane. Only
-            // fit-excluded holds here.
+            // minimized, plus fullscreen/maximized overlay protection).
+            // Ordinary floating intent alone is allowed, and sticky rides
+            // too: this lane only ever writes under an explicit retained
+            // `frame_operation` token (directional half-snaps), so ordinary
+            // unsolicited sticky frame writes stay prohibited by the token
+            // gate plus the tiled lane.
             if crate::tiling::classify(&facts).is_err() {
-                return Gate::Hold;
-            }
-            if live.fit_excluded {
                 return Gate::Hold;
             }
         }
@@ -2216,9 +2123,21 @@ fn homing_proven(
         .is_some_and(|(out, ws)| out == output && ws == workspace)
 }
 
-/// Read one homing as the carried report pair (`None` = unreadable).
-fn homing_pair(homing: Option<(String, String)>) -> Option<(OutputId, String)> {
-    homing.map(|(out, ws)| (OutputId(out), ws))
+/// Read one homing as the carried logical reference (`None` = unreadable).
+fn homing_pair(homing: Option<(String, String)>) -> Option<WorkspaceRef> {
+    homing.map(|(out, ws)| WorkspaceRef::Logical {
+        output: OutputId(out),
+        workspace: tiler_core::directional::WorkspaceId(ws),
+    })
+}
+
+/// Read one observed output view as the carried logical reference (`None`
+/// = unreadable). Windows is native-free: every view ref is logical.
+fn view_ref(out: &str, view: Option<String>) -> Option<WorkspaceRef> {
+    view.map(|ws| WorkspaceRef::Logical {
+        output: OutputId(out.to_owned()),
+        workspace: tiler_core::directional::WorkspaceId(ws),
+    })
 }
 
 /// Migration-member arrival proof shared by every gate in the migration
@@ -2228,7 +2147,7 @@ fn homing_pair(homing: Option<(String, String)>) -> Option<(OutputId, String)> {
 /// member proves). The setter boolean is never proof in either lane.
 fn migration_member_proven(
     ops: &mut dyn NativeOps,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh: &FreshHost,
     id: &str,
     out: &str,
@@ -2251,7 +2170,7 @@ fn migration_member_proven(
     ops.migration_arrival_proven(id, out, ws, frame, floating, baseline)
 }
 
-fn window_transfer_for<'a>(reply: &'a WorldReply, window: &str) -> Option<&'a TransferTarget> {
+fn window_transfer_for<'a>(reply: &'a WorldReplyV4, window: &str) -> Option<&'a TransferTargetV4> {
     reply.transfers.iter().find(|t| {
         matches!(t.kind, TransferKind::Window(_)) && {
             match &t.kind {
@@ -2268,7 +2187,7 @@ fn window_transfer_for<'a>(reply: &'a WorldReply, window: &str) -> Option<&'a Tr
 /// member slots write only through the migration membership phase, never
 /// as bare sweep geometry.
 fn migration_arrival_pending(
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     ops: &mut dyn NativeOps,
     token: &str,
     output: &str,
@@ -2297,13 +2216,13 @@ enum FollowOutcome {
 
 #[allow(clippy::too_many_arguments)]
 fn actuate_follow_view(
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     gate: &mut DiffGate,
     entry_obs: u64,
     ops: &mut dyn NativeOps,
     stats: &mut ApplyStats,
-    transfer: &TransferTarget,
-    effects: &mut EffectTracker,
+    transfer: &TransferTargetV4,
+    effects: &mut DispatchFences,
     fresh: &FreshHost,
     view_out: &mut Vec<ViewAttempt>,
     attempt_ms: u64,
@@ -2343,13 +2262,10 @@ fn actuate_follow_view(
         operation_id: parent,
         target_output: transfer.target_output.clone(),
         target_workspace: ws.clone(),
-        setter: frame_setter(result.as_ref().ok().copied()),
-        pre,
-        post: proof.clone(),
-        baseline,
-        native_pre: None,
-        native_post: None,
-        native_baseline: None,
+        disposition: frame_setter(result.as_ref().ok().copied()),
+        pre: view_ref(&out, pre),
+        post: view_ref(&out, proof.clone()),
+        baseline: view_ref(&out, baseline),
         attempt_ms,
     });
     if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
@@ -2428,13 +2344,13 @@ fn drain_visibility_posts(stats: &mut ApplyStats, ops: &mut dyn NativeOps) {
 /// marks a confirmed native write (post-setter proof).
 #[allow(clippy::too_many_arguments)]
 fn settle_transfer_proven(
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     gate: &mut DiffGate,
     entry_obs: u64,
     ops: &mut dyn NativeOps,
     stats: &mut ApplyStats,
-    transfer: &TransferTarget,
-    effects: &mut EffectTracker,
+    transfer: &TransferTargetV4,
+    effects: &mut DispatchFences,
     fresh: &FreshHost,
     view_out: &mut Vec<ViewAttempt>,
     attempt_ms: u64,
@@ -2494,21 +2410,93 @@ fn frame_setter(wrote: Option<bool>) -> FrameSetter {
 /// verdicts live in the core). Every attempted frame write appends one
 /// mechanical [`FrameAttempt`] to `frame_out`, every membership write one
 /// [`MemberAttempt`] to `member_out`, every view write one
-/// [`ViewAttempt`] to `view_out`, and every maximize-clear write one
-/// mechanical [`ClearAttempt`](tiler_core::world_report::ClearAttempt) to
-/// `clear_out` for the next report (each stamped with `attempt_ms`, the
-/// tick's monotonic clock); the core owns all completion and the next
-/// desire is obeyed as-is.
+/// [`ViewAttempt`] to `view_out` (each stamped with `attempt_ms`, the tick's
+/// monotonic clock, and one freshly minted `attempt_id`); the core owns all
+/// completion and the next desire is obeyed as-is. v4 carries native state
+/// targets on the desire rows, but this facade has no state-attempt sink: a
+/// state write is not actuated here (see the module report for the gap).
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn apply_world_reply(
     state: &mut HostDiff,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh: &FreshHost,
     ops: &mut dyn NativeOps,
     frame_out: &mut Vec<FrameAttempt>,
     member_out: &mut Vec<MemberAttempt>,
     view_out: &mut Vec<ViewAttempt>,
-    clear_out: &mut Vec<ClearAttempt>,
+    attempt_ms: u64,
+) -> ApplyStats {
+    let stats = apply_world_reply_inner(
+        state, reply, fresh, ops, frame_out, member_out, view_out, attempt_ms,
+    );
+    let attempts = collect_visibility_attempts(reply, ops, state.gate.current_obs);
+    for attempt in attempts {
+        state
+            .pending_visibility
+            .insert(attempt.window.0.clone(), attempt);
+    }
+    stats
+}
+
+/// One target-matching visibility readback per desired window: the core's
+/// native-free selection binding settles only from these rows. A read that
+/// does not match the target is no verdict (hold), never a failure; a
+/// minimized or natively hidden window also holds.
+fn collect_visibility_attempts(
+    reply: &WorldReplyV4,
+    ops: &mut dyn NativeOps,
+    obs: u64,
+) -> Vec<VisibilityAttempt> {
+    let mut out = Vec::new();
+    for row in &reply.windows {
+        let Some(target) = row.visibility else {
+            continue;
+        };
+        let Some(live) = ops.read_window(&row.lifetime.0) else {
+            continue;
+        };
+        let minimized = live.iconic || live.facts.as_ref().is_some_and(|facts| facts.minimized);
+        let host_hidden = live.facts.as_ref().is_some_and(|facts| facts.cloaked);
+        if minimized || host_hidden {
+            continue;
+        }
+        let visible = !live.hidden && live.facts.as_ref().map_or(true, |facts| facts.visible);
+        if visible != target.shown {
+            continue;
+        }
+        out.push(VisibilityAttempt {
+            window: row.lifetime.clone(),
+            target: target.shown,
+            revision: target.revision,
+            path: LastWritePath::Staged,
+            disposition: VisibilityDisposition::Called {
+                setter: FrameSetter::Accepted,
+                reason: VisibilityReason::Empty,
+            },
+            pre: None,
+            post: Some(VisibilitySample {
+                obs,
+                lifetime_matched: Some(true),
+                visibility: VisibilityFact {
+                    visible: Some(visible),
+                    suppression_owned: Some(!visible),
+                },
+                minimized: Some(false),
+                host_hidden: Some(false),
+            }),
+        });
+    }
+    out
+}
+
+fn apply_world_reply_inner(
+    state: &mut HostDiff,
+    reply: &WorldReplyV4,
+    fresh: &FreshHost,
+    ops: &mut dyn NativeOps,
+    frame_out: &mut Vec<FrameAttempt>,
+    member_out: &mut Vec<MemberAttempt>,
+    view_out: &mut Vec<ViewAttempt>,
     attempt_ms: u64,
 ) -> ApplyStats {
     let mut stats = ApplyStats::default();
@@ -2651,6 +2639,7 @@ pub(super) fn apply_world_reply(
         pending_foreground_omitted: _,
         inflight_stash: _,
         inflight_stash_omitted: _,
+        pending_visibility: _,
     } = state;
 
     // Entry foreground for the NA remembered-focus guard.
@@ -2713,6 +2702,18 @@ pub(super) fn apply_world_reply(
             // the destination output, so writing it pre-move would place
             // foreign geometry on the source. Never hold-count a correctly
             // deferred frame.
+        } else if frame_controlled
+            && row.effective_frame.is_some()
+            && !row_on_current_view(reply, &row.output.0, &row.workspace)
+        {
+            // The output row is missing, names no logical view, or names a
+            // different view: none of these proves this workspace is
+            // current, so the frame write withholds. A named different view
+            // is logically hidden even if its native hide has not landed
+            // yet; a departing workspace reflow must never write the hidden
+            // frame, and the reveal republishes it once the view returns.
+            // Never hold-count a correctly withheld frame (same as a
+            // deferred move).
         } else if frame_controlled && let Some(target) = row.effective_frame {
             if overlay_guarded(base) {
                 // Reserved lanes (overlay, sticky, float, fit-excluded)
@@ -2758,13 +2759,13 @@ pub(super) fn apply_world_reply(
                                     frame_out.push(FrameAttempt {
                                         window: row.lifetime.clone(),
                                         target,
-                                        setter: frame_setter(wrote),
+                                        disposition: frame_setter(wrote),
                                         readback: proof,
                                         dpi_before,
                                         dpi_after,
-                                        attempt_ms,
-                                        operation_id: None,
-                                        prewrite: None,
+                                        attempt_id: effects.next_attempt_id(),
+                                        attempt_ms: Some(attempt_ms),
+                                        purpose: FramePurpose::Layout,
                                     });
                                     match (wrote, proof) {
                                         (Some(true), Some(proven)) if proven == target => {
@@ -2825,9 +2826,36 @@ pub(super) fn apply_world_reply(
             continue;
         }
         if homing_proven(ops, base, &fresh.stored_tags, &target_out, &target_ws) {
-            // Pre-proven arrival (no setter ran): the core settles from
-            // staged observation alone. Only the follow phase may still
-            // need actuation.
+            // Pre-proven arrival: no setter runs, so the core still needs a
+            // consumed no-call receipt. Windows has no native workspace
+            // property, so a same-output send would otherwise hold forever
+            // waiting for a raw post that never comes. Held targets skip
+            // it: possibly-executed evidence must not be settled by a
+            // no-call row. A stale reply or racing invalidation stops the
+            // pass before any receipt is emitted.
+            if t.held {
+                stats.held += 1;
+                continue;
+            }
+            if !ensure_fresh(reply, gate, entry_obs, ops) {
+                stats.stopped_mid_apply = true;
+                break;
+            }
+            if !effects.is_member_attempted(&op, &row.lifetime.0) {
+                effects.mark_member_attempted(&op, &row.lifetime.0);
+                let at_target = homing_pair(Some((target_out.clone(), target_ws.clone())));
+                member_out.push(MemberAttempt {
+                    operation_id: op.clone(),
+                    window: row.lifetime.clone(),
+                    target_output: t.target_output.clone(),
+                    target_workspace: target_ws.clone(),
+                    disposition: MemberDisposition::AlreadyAtTarget,
+                    pre: at_target.clone(),
+                    post: at_target,
+                    attempt_ms,
+                });
+            }
+            // Only the follow phase may still need actuation.
             settle_transfer_proven(
                 reply, gate, entry_obs, ops, &mut stats, t, effects, fresh, view_out, attempt_ms,
                 false,
@@ -2907,22 +2935,32 @@ pub(super) fn apply_world_reply(
             row.effective_frame
         };
         let moved = ops.move_membership(&row.lifetime.0, &target_out, &target_ws, frame_target);
+        // Floating membership-only moves preserve the physical frame, so the
+        // native homing read still names the source even though the logical
+        // membership write landed. Prove that no-effect crossing from the
+        // untouched fresh frame and report the applied target as the raw
+        // post; otherwise the core holds the transfer forever (there is no
+        // physical move to observe).
+        let float_ok = (row.floating || base.floating)
+            && float_no_effect_proven(ops, base, &fresh.stored_tags);
         // Re-read for the mechanical post proof BEFORE any early
         // invalidation break: the setter boolean is never proof, and the
         // raw attempt must survive even when racing input stopped the pass.
         // The core derives confirmation, proven refusal, and ambiguity from
         // this raw attempt plus the staged observation.
-        let post = ops.read_homing(&row.lifetime.0);
+        let post = if float_ok {
+            homing_pair(Some((target_out.clone(), target_ws.clone())))
+        } else {
+            homing_pair(ops.read_homing(&row.lifetime.0))
+        };
         member_out.push(MemberAttempt {
             operation_id: op.clone(),
             window: row.lifetime.clone(),
             target_output: t.target_output.clone(),
             target_workspace: target_ws.clone(),
-            setter: frame_setter(moved.as_ref().ok().copied()),
+            disposition: MemberDisposition::Called(frame_setter(moved.as_ref().ok().copied())),
             pre: homing_pair(before),
-            post: homing_pair(post),
-            native_pre: None,
-            native_post: None,
+            post,
             attempt_ms,
         });
         if gate.current_obs != entry_obs {
@@ -2934,7 +2972,6 @@ pub(super) fn apply_world_reply(
         // reports like any other attempt; the setter boolean alone never
         // counts a confirmed write.
         let proven = homing_proven(ops, base, &fresh.stored_tags, &target_out, &target_ws);
-        let float_ok = base.floating && float_no_effect_proven(ops, base, &fresh.stored_tags);
         if moved.is_ok() && (proven || (moved == Ok(true) && float_ok)) {
             settle_transfer_proven(
                 reply, gate, entry_obs, ops, &mut stats, t, effects, fresh, view_out, attempt_ms,
@@ -3071,13 +3108,16 @@ pub(super) fn apply_world_reply(
         frame_out.push(FrameAttempt {
             window: row.lifetime.clone(),
             target,
-            setter: frame_setter(wrote),
+            disposition: frame_setter(wrote),
             readback: proof,
             dpi_before,
             dpi_after,
-            attempt_ms,
-            operation_id: Some(op.to_owned()),
-            prewrite,
+            attempt_id: effects.next_attempt_id(),
+            attempt_ms: Some(attempt_ms),
+            purpose: FramePurpose::FloatPlacement {
+                operation_id: op.to_owned(),
+                prewrite,
+            },
         });
         if wrote == Some(true) {
             stats.geometry_writes += 1;
@@ -3096,235 +3136,28 @@ pub(super) fn apply_world_reply(
         return stats;
     }
 
-    // 1c. Explicit maximize-clears: the one-shot `clear_operation` token
-    // is necessary but never sufficient. The row carries no frame
-    // authority for the clear; the token plus the fresh gates below are
-    // the only write authority. Ordinary maximized windows (no token)
-    // never ride here.
-    //
-    // This lane reports mechanical write facts only (setter disposition
-    // plus immediate pre/post maximized states) with exact operation-id
-    // plus window correlation; the core derives confirmation, proven
-    // refusal, ambiguity, and external abandonment. No outcome verdict is
-    // emitted here: a setter boolean or a readback alone never settles a
-    // clear, and completion comes from native observation.
-    //
-    // Native vetoes (fullscreen, elevated/shell/tool/dialog policy
-    // failures, identity/lifetime races, uncontrolled scopes) MUST produce
-    // a correlated refused attempt rather than leave a silent unattempted
-    // active desire: the phase arms (spent) before reporting refusal, so a
-    // vetoed desire retires with no loop and no re-actuation. Gaps
-    // (unreadable, hidden, minimized, cloaked, gesture, manual frame race)
-    // hold with no attempt and no spent mark, so a later readable report
-    // retries the still-undispatched desire.
-    for row in &reply.windows {
-        let op = row.clear_operation.as_deref().unwrap_or("");
-        if op.is_empty() {
-            continue;
-        }
-        let token = row.lifetime.0.clone();
-        // A stale pass stops before dispatching any remaining desire: the
-        // first unprocessed desire still attributes the stop so the trace
-        // distinguishes it from a row-narrow hold (which skips one row and
-        // keeps converging the rest). Stops end the pass; holds do not.
-        if gate.current_obs != entry_obs {
-            stats.note_clear_hold(op, &token, "stale-stopped");
-            stats.stopped_mid_apply = true;
-            break;
-        }
-        // Bounded trace-only hold attribution for this desire: one row per
-        // pre-dispatch gate, in reply order. Never a policy input.
-        macro_rules! push_clear_hold {
-            ($reason:expr) => {{
-                stats.note_clear_hold(op, &token, $reason);
-            }};
-        }
-        // Best-known maximized states for a veto refusal row: the live
-        // re-read when it proves, else the observation baseline (possibly
-        // unreadable, which the core reconciles as ambiguity, never proof).
-        let baseline_maximized = fresh
-            .baseline
-            .get(&token)
-            .and_then(|base| base.facts.map(|facts| facts.maximized));
-        // A veto refusal spends the phase and reports exactly one refused
-        // attempt with best-known pre/post states. Never silent, never
-        // re-actuated. The hold reason rides the trace alongside the
-        // refused attempt.
-        let mut veto_refused = |clear_out: &mut Vec<ClearAttempt>,
-                                stats: &mut ApplyStats,
-                                hold: &'static str,
-                                pre: Option<bool>,
-                                post: Option<bool>| {
-            stats.note_clear_hold(op, &token, hold);
-            if effects.mark_clear_spent(op) {
-                clear_out.push(ClearAttempt {
-                    operation_id: op.to_owned(),
-                    window: row.lifetime.clone(),
-                    setter: FrameSetter::Refused,
-                    pre_maximized: pre,
-                    post_maximized: post,
-                    attempt_ms,
-                });
-            }
-        };
-        if !scope_controlled(reply, &row.output.0, &row.workspace) {
-            veto_refused(
-                clear_out,
-                &mut stats,
-                "scope-not-controlled",
-                baseline_maximized,
-                baseline_maximized,
-            );
-            stats.held += 1;
-            continue;
-        }
-        let Some(base) = fresh.baseline.get(&token) else {
-            push_clear_hold!("unknown-baseline");
-            stats.held += 1;
-            continue;
-        };
-        if base.hidden || base.iconic || base.frame.is_none() || base.observed_frame.is_none() {
-            push_clear_hold!("hidden-or-unreadable");
-            stats.held += 1;
-            continue;
-        }
-        if ops.gesture_barrier() {
-            push_clear_hold!("gesture-barrier");
-            stats.held += 1;
-            continue;
-        }
-        let Some(live) = ops.read_window(&token) else {
-            push_clear_hold!("unknown-live");
-            stats.held += 1;
-            continue;
-        };
-        if live.key != base.key {
-            veto_refused(
-                clear_out,
-                &mut stats,
-                "identity-drift",
-                baseline_maximized,
-                None,
-            );
-            stats.held += 1;
-            continue;
-        }
-        let live_maximized = live.facts.map(|facts| facts.maximized);
-        let Some(live_facts) = live.facts else {
-            push_clear_hold!("unreadable-facts");
-            stats.held += 1;
-            continue;
-        };
-        match crate::tiling::classify(&live_facts) {
-            Ok(()) => {}
-            Err(crate::tiling::SkipReason::Maximized) => {}
-            Err(
-                crate::tiling::SkipReason::Fullscreen
-                | crate::tiling::SkipReason::Elevated
-                | crate::tiling::SkipReason::Shell
-                | crate::tiling::SkipReason::Tool
-                | crate::tiling::SkipReason::OwnedDialog
-                | crate::tiling::SkipReason::Dialog
-                | crate::tiling::SkipReason::NoActivate,
-            ) => {
-                veto_refused(
-                    clear_out,
-                    &mut stats,
-                    "policy-veto",
-                    live_maximized.or(baseline_maximized),
-                    live_maximized.or(baseline_maximized),
-                );
-                stats.held += 1;
-                continue;
-            }
-            Err(_) => {
-                push_clear_hold!("classify-hold");
-                stats.held += 1;
-                continue;
-            }
-        }
-        if !live_maximized.unwrap_or(true) {
-            // Already unmaximized: no write, no attempt, no hold row. The
-            // core settles from the staged observation itself (an external
-            // clear without a correlated attempt abandons; it never
-            // continues).
-            continue;
-        }
-        // Manual-change race: the live frame left the observation-time live
-        // frame. Never fight the user; hold for the next stable observation.
-        // The baseline is the pre-substitution live frame
-        // (`observed_frame`), never the retained tile slot: retained
-        // maximized/fullscreen rows ride their slot in `frame` while the
-        // native window shows the maximized frame, and the production live
-        // lane re-observes that maximized frame through `observe_window`.
-        // Any disagreement between the two live reads still holds.
-        if base.observed_frame != live.frame {
-            push_clear_hold!("frame-race");
-            stats.held += 1;
-            continue;
-        }
-        if !ensure_fresh(reply, gate, entry_obs, ops) {
-            push_clear_hold!("stale-stopped");
-            stats.stopped_mid_apply = true;
-            break;
-        }
-        // Arm the clear phase immediately pre-dispatch, after every
-        // safety/authority gate passed, so holds never consume the desire.
-        // Strictly at-most-once dispatch, never a policy verdict.
-        if !effects.mark_clear_spent(op) {
-            push_clear_hold!("already-spent");
-            stats.held += 1;
-            continue;
-        }
-        let pre = ops
-            .read_window(&token)
-            .and_then(|window| window.facts.map(|facts| facts.maximized));
-        let wrote = ops.clear_maximized(&token).ok();
-        let post = ops
-            .read_window(&token)
-            .and_then(|window| window.facts.map(|facts| facts.maximized));
-        // Mechanical facts only: the setter boolean is never proof, the
-        // pre/post maximized states are the refusal/confirmation preimage,
-        // and the core settles from this evidence plus the next staged
-        // observation.
-        clear_out.push(ClearAttempt {
-            operation_id: op.to_owned(),
-            window: row.lifetime.clone(),
-            setter: frame_setter(wrote),
-            pre_maximized: pre,
-            post_maximized: post,
-            attempt_ms,
-        });
-        if wrote == Some(true) {
-            stats.clear_writes += 1;
-        }
-        if post != Some(false) {
-            stats.held += 1;
-        }
-        if gate.current_obs != entry_obs {
-            stats.stopped_mid_apply = true;
-            break;
-        }
-    }
-    if stats.stopped_mid_apply {
-        drain_visibility_posts(&mut stats, ops);
-        finalize(&mut stats);
-        return stats;
-    }
+    // 1c. (removed) Native state targets ride the v4 desire rows; this
+    // facade has no state-attempt sink, so no clear is dispatched here.
 
-    // Paired migration source-refill views (`{migration-op}-refill`) defer
-    // to the migration path below: switching the source view before member
-    // arrival proof would hide unmoved members.
+    // Paired migration source-refill views defer to the migration path
+    // below: a refill is the View whose `parent` names this migration, and
+    // switching the source view before member arrival proof would hide
+    // unmoved members. A View whose parent names no Migration transfer is
+    // not deferred and dispatches in the normal view pass.
+    let migration_ops: HashSet<&str> = reply
+        .transfers
+        .iter()
+        .filter(|t| matches!(t.kind, TransferKind::Migration))
+        .map(|t| t.operation_id.as_str())
+        .collect();
     let mut deferred_refills: HashSet<&str> = HashSet::new();
     for t in &reply.transfers {
         if !matches!(t.kind, TransferKind::View) {
             continue;
         }
-        if let Some(prefix) = t.operation_id.strip_suffix("-refill")
-            && reply
-                .transfers
-                .iter()
-                .any(|m| matches!(m.kind, TransferKind::Migration) && m.operation_id == prefix)
+        if t.parent
+            .as_deref()
+            .is_some_and(|parent| migration_ops.contains(parent))
         {
             deferred_refills.insert(t.operation_id.as_str());
         }
@@ -3358,7 +3191,9 @@ pub(super) fn apply_world_reply(
         }
         if ops.read_view(&out).as_deref() == Some(ws.as_str()) {
             // Already shown: no write, no attempt. The core settles from
-            // the staged echo itself.
+            // the staged echo itself (or, native-free, from its selection
+            // binding); a redundant no-op switch would only fabricate a
+            // setter row.
             continue;
         }
         if t.held || effects.is_view_spent(&op) {
@@ -3377,26 +3212,22 @@ pub(super) fn apply_world_reply(
         }
         let pre = ops.read_view(&out);
         let baseline = fresh.views.get(&out).cloned();
-        // The nonactivating lane only for a pure view matching a focus
-        // target's proven live homing. Everything else stays pumped.
-        let na = reply.effects.iter().any(|effect| {
-            effect.kind == EffectKind::Focus
-                && ops
-                    .read_homing(&effect.target.0)
-                    .is_some_and(|(o, w)| o == out && w == ws)
+        // The nonactivating lane only for a pure view matching the retained
+        // focus request's proven live homing. Everything else stays pumped.
+        let na = reply.focus_request.as_ref().is_some_and(|request| {
+            ops.read_homing(&request.target.0)
+                .is_some_and(|(o, w)| o == out && w == ws)
         });
         // Staged explicit-selection lane: a pure NA view whose arrival
-        // focus effect rides the fresh accepted selection grant. Only an
-        // exact grant-bound effect stages; every other NA view keeps the
+        // focus request rides the fresh accepted selection grant. Only an
+        // exact grant-bound request stages; every other NA view keeps the
         // single-shot switch below. Empty targets never stage (no arrival
         // means no arrival-ready authority, see `staged_arrival_ready`).
         let staged = na
-            && reply.effects.iter().any(|effect| {
-                effect.kind == EffectKind::Focus
-                    && ops
-                        .read_homing(&effect.target.0)
-                        .is_some_and(|(o, w)| o == out && w == ws)
-                    && ops.selection_arrival_allows(&effect.id, &effect.target.0)
+            && reply.focus_request.as_ref().is_some_and(|request| {
+                ops.read_homing(&request.target.0)
+                    .is_some_and(|(o, w)| o == out && w == ws)
+                    && ops.selection_arrival_allows(&request.id, &request.target.0)
             });
         if staged {
             // Reveal arrivals first without hiding departures: the focus
@@ -3462,13 +3293,10 @@ pub(super) fn apply_world_reply(
             operation_id: op,
             target_output: t.target_output.clone(),
             target_workspace: ws.clone(),
-            setter: frame_setter(result.as_ref().ok().copied()),
-            pre,
-            post: proof.clone(),
-            baseline,
-            native_pre: None,
-            native_post: None,
-            native_baseline: None,
+            disposition: frame_setter(result.as_ref().ok().copied()),
+            pre: view_ref(&t.target_output.0, pre),
+            post: view_ref(&t.target_output.0, proof.clone()),
+            baseline: view_ref(&t.target_output.0, baseline),
             attempt_ms,
         });
         if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
@@ -3624,11 +3452,9 @@ pub(super) fn apply_world_reply(
                 window: tiler_core::directional::WindowId(id.clone()),
                 target_output: t.target_output.clone(),
                 target_workspace: ws.clone(),
-                setter: frame_setter(moved.as_ref().ok().copied()),
+                disposition: MemberDisposition::Called(frame_setter(moved.as_ref().ok().copied())),
                 pre: homing_pair(before),
                 post: homing_pair(post),
-                native_pre: None,
-                native_post: None,
                 attempt_ms,
             });
             if gate.current_obs != entry_obs {
@@ -3689,13 +3515,10 @@ pub(super) fn apply_world_reply(
                 operation_id: op.clone(),
                 target_output: t.target_output.clone(),
                 target_workspace: ws.clone(),
-                setter: frame_setter(result.as_ref().ok().copied()),
-                pre,
-                post: proof.clone(),
-                baseline,
-                native_pre: None,
-                native_post: None,
-                native_baseline: None,
+                disposition: frame_setter(result.as_ref().ok().copied()),
+                pre: view_ref(&out, pre),
+                post: view_ref(&out, proof.clone()),
+                baseline: view_ref(&out, baseline),
                 attempt_ms,
             });
             if proof.as_deref() == Some(ws.as_str()) {
@@ -3709,16 +3532,14 @@ pub(super) fn apply_world_reply(
             }
         }
         // Paired source refill only after the target view proves: never
-        // ahead of arrival. The refill owns its own view phase under the
-        // actual refill id, with its own held/actuation/spent gates: a
-        // floating (Untouched) refill actuates exactly like a standalone
-        // floating view once the target proof is in.
-        let refill_op = format!("{op}-refill");
-        if let Some(refill) = reply
-            .transfers
-            .iter()
-            .find(|v| matches!(v.kind, TransferKind::View) && v.operation_id == refill_op)
-        {
+        // ahead of arrival. The refill is the View whose `parent` names
+        // this migration. It owns its own view phase under the actual
+        // refill id, with its own held/actuation/spent gates: a floating
+        // (Untouched) refill actuates exactly like a standalone floating
+        // view once the target proof is in.
+        if let Some(refill) = reply.transfers.iter().find(|v| {
+            matches!(v.kind, TransferKind::View) && v.parent.as_deref() == Some(op.as_str())
+        }) {
             let refill_out = refill.target_output.0.clone();
             let refill_ws = refill.target_workspace.clone();
             if ops.read_view(&refill_out).as_deref() == Some(refill_ws.as_str()) {
@@ -3754,13 +3575,10 @@ pub(super) fn apply_world_reply(
                     operation_id: refill.operation_id.clone(),
                     target_output: refill.target_output.clone(),
                     target_workspace: refill_ws.clone(),
-                    setter: frame_setter(result.as_ref().ok().copied()),
-                    pre,
-                    post: proof.clone(),
-                    baseline: baseline_refill,
-                    native_pre: None,
-                    native_post: None,
-                    native_baseline: None,
+                    disposition: frame_setter(result.as_ref().ok().copied()),
+                    pre: view_ref(&refill_out, pre),
+                    post: view_ref(&refill_out, proof.clone()),
+                    baseline: view_ref(&refill_out, baseline_refill),
                     attempt_ms,
                 });
                 if proof.as_deref() == Some(refill_ws.as_str()) {
@@ -3785,26 +3603,26 @@ pub(super) fn apply_world_reply(
         return stats;
     }
 
-    // 4. One-shot effects: spent BEFORE dispatch, proven by read-back, gated
-    // on the exact live view (switch-before-focus). Stale effects drop
-    // (at-most-once), never steal focus later. Effects emit no verdict:
-    // the core consumes no effect outcomes; the spent proof plus the
-    // foreground read-back is the whole contract. Trace-only per-effect
+    // 4. Retained focus request: spent BEFORE dispatch, proven by read-back,
+    // gated on the exact live view (switch-before-focus). A spent request
+    // never re-actuates, and a retired request never steals focus later.
+    // The core consumes no focus outcomes; the spent proof plus the
+    // foreground read-back is the whole contract. Trace-only per-request
     // rows land in `stats.focus_dispatch` (bounded, see MAX_FOCUS_DIAG):
     // `dispatched` plus the raw setter disposition and the immediate
     // foreground proof even when false distinguish dispatched-but-unproven
     // from no setter; `hold` names the individual hold. Static-hover retry
     // behavior is unchanged: no extra dispatch, no re-actuation.
-    for effect in &reply.effects {
-        // Bounded trace push helper: reply order, honest truncation (the
-        // tick reports the omitted count from the reply length).
+    for request in reply.focus_request.iter() {
+        // Bounded trace push helper: request order, honest truncation (the
+        // tick reports the omitted count from the recorded total).
         macro_rules! push_focus {
             ($dispatched:expr, $setter:expr, $foreground:expr, $hold:expr) => {{
                 if stats.focus_dispatch.len() < MAX_FOCUS_DIAG {
                     stats.focus_dispatch.push(FocusDispatchDiag {
-                        id: effect.id.clone(),
-                        target: effect.target.0.clone(),
-                        kind: effect.kind.as_str(),
+                        id: request.id.clone(),
+                        target: request.target.0.clone(),
+                        kind: request.cause.as_str(),
                         dispatched: $dispatched,
                         setter: $setter,
                         foreground: $foreground,
@@ -3851,7 +3669,7 @@ pub(super) fn apply_world_reply(
             stats.stopped_mid_apply = true;
             break;
         }
-        let Some(base) = fresh.baseline.get(&effect.target.0) else {
+        let Some(base) = fresh.baseline.get(&request.target.0) else {
             push_focus!(false, "skipped", false, Some("unknown-baseline"));
             stats.held += 1;
             continue;
@@ -3865,7 +3683,7 @@ pub(super) fn apply_world_reply(
         // way (reveal does not restore them).
         let live_reveal: Option<FreshWindow> = if base.hidden || base.iconic || base.frame.is_none()
         {
-            ops.read_window(&effect.target.0)
+            ops.read_window(&request.target.0)
                 .filter(|live| !live.hidden && !live.iconic && live.frame.is_some())
         } else {
             None
@@ -3924,7 +3742,7 @@ pub(super) fn apply_world_reply(
         // authority. `read_homing` stays truthful throughout (never
         // normalized): membership is untouched here.
         let mut arrival_ready_lane = false;
-        let Some((live_out, live_ws)) = ops.read_homing(&effect.target.0) else {
+        let Some((live_out, live_ws)) = ops.read_homing(&request.target.0) else {
             push_focus!(false, "skipped", false, Some("unknown-homing"));
             stats.held += 1;
             continue;
@@ -3951,7 +3769,7 @@ pub(super) fn apply_world_reply(
             let staged_ready = staged_views
                 .iter()
                 .any(|(o, w, _)| o == &live_out && w == &live_ws)
-                && ops.selection_arrival_allows(&effect.id, &effect.target.0)
+                && ops.selection_arrival_allows(&request.id, &request.target.0)
                 && staged_arrival_ready(ops, reply, fresh, &live_out, &live_ws);
             if staged_ready {
                 arrival_ready_lane = true;
@@ -3971,7 +3789,7 @@ pub(super) fn apply_world_reply(
                 // exact target; this classifies freshness/safety only.
                 let sticky_ready = shown_view.as_deref().is_some_and(|shown_ws| {
                     scope_controlled(reply, &live_out, shown_ws)
-                        && ops.read_window(&effect.target.0).is_some_and(|live| {
+                        && ops.read_window(&request.target.0).is_some_and(|live| {
                             live.sticky
                                 && live.key == base.key
                                 && lifetime_ok(&live, &fresh.stored_tags)
@@ -4021,7 +3839,7 @@ pub(super) fn apply_world_reply(
                 (ForegroundState::Known(a), ForegroundState::Known(b)) => a != b,
                 _ => true,
             };
-            if changed_or_unknown && !ops.is_foreground(&effect.target.0) {
+            if changed_or_unknown && !ops.is_foreground(&request.target.0) {
                 // Event-driven own-landing excuse: the live foreground
                 // names the exact full in-flight identity (HWND plus PID
                 // plus creation) with its lifetime still proven, so this
@@ -4092,9 +3910,9 @@ pub(super) fn apply_world_reply(
                     // rows, never this row.
                     if stats.focus_dispatch.len() < MAX_FOCUS_DIAG {
                         stats.focus_dispatch.push(FocusDispatchDiag {
-                            id: effect.id.clone(),
-                            target: effect.target.0.clone(),
-                            kind: effect.kind.as_str(),
+                            id: request.id.clone(),
+                            target: request.target.0.clone(),
+                            kind: request.cause.as_str(),
                             dispatched: false,
                             setter: "skipped",
                             foreground: false,
@@ -4134,7 +3952,7 @@ pub(super) fn apply_world_reply(
                 }
             }
         }
-        if !effects.mark_effect_spent(&effect.id) {
+        if !effects.mark_focus_spent(&request.id) {
             push_focus!(false, "skipped", false, Some("already-spent"));
             continue;
         }
@@ -4153,13 +3971,13 @@ pub(super) fn apply_world_reply(
         // along as a dispatch-time observation only, never proof of
         // arrival; the landing GUI below is sampled at the read-back.
         let (setter_outcome, call_diag) =
-            ops.focus_window_traced_selected(&effect.target.0, &effect.id);
+            ops.focus_window_traced_selected(&request.target.0, &request.id);
         let setter = match &setter_outcome {
             Ok(true) => "accepted",
             Ok(false) => "refused",
             Err(()) => "threw",
         };
-        let foreground = ops.is_foreground(&effect.target.0);
+        let foreground = ops.is_foreground(&request.target.0);
         // Owner-clock proof stamp immediately after the existing read-back:
         // result context only, never a setter-return-as-proof claim. No
         // native reread, no authority or product logic change.
@@ -4203,13 +4021,13 @@ pub(super) fn apply_world_reply(
                         creation: Some(creation),
                     });
                 }
-            } else if let Some(tag) = fresh.stored_tags.get(&effect.target.0).cloned()
+            } else if let Some(tag) = fresh.stored_tags.get(&request.target.0).cloned()
                 && !tag.is_empty()
                 && let Some(flight) = in_flight.replace(InFlightFocus {
-                    token: effect.target.0.clone(),
+                    token: request.target.0.clone(),
                     key: base.key.clone(),
                     tag,
-                    effect: effect.id.clone(),
+                    effect: request.id.clone(),
                     set_mono_ms: armed_ret_mono_ms,
                 })
             {
@@ -4233,9 +4051,9 @@ pub(super) fn apply_world_reply(
         }
         if stats.focus_dispatch.len() < MAX_FOCUS_DIAG {
             stats.focus_dispatch.push(FocusDispatchDiag {
-                id: effect.id.clone(),
-                target: effect.target.0.clone(),
-                kind: effect.kind.as_str(),
+                id: request.id.clone(),
+                target: request.target.0.clone(),
+                kind: request.cause.as_str(),
                 dispatched: true,
                 setter,
                 foreground,
@@ -4310,24 +4128,22 @@ pub(super) fn apply_world_reply(
             stats.stopped_mid_apply = true;
             break;
         }
-        // The staged focus effect for this view: an exact grant-bound
-        // one-shot focus effect homed there whose setter already ran.
-        let staged_effect = reply.effects.iter().find(|effect| {
-            effect.kind == EffectKind::Focus
-                && ops
-                    .read_homing(&effect.target.0)
-                    .is_some_and(|(home_out, home_ws)| home_out == out && home_ws == ws)
-                && ops.selection_arrival_allows(&effect.id, &effect.target.0)
-                && effects.spent_effects.contains(&effect.id)
+        // The staged focus request for this view: the exact grant-bound
+        // retained focus request homed there whose setter already ran.
+        let staged_request = reply.focus_request.as_ref().filter(|request| {
+            ops.read_homing(&request.target.0)
+                .is_some_and(|(home_out, home_ws)| home_out == out && home_ws == ws)
+                && ops.selection_arrival_allows(&request.id, &request.target.0)
+                && effects.spent_focus.contains(&request.id)
         });
-        let Some(staged_effect) = staged_effect else {
+        let Some(staged_request) = staged_request else {
             // Focus never dispatched (held or vetoed above): departures
             // stay visible and the operation stays pending with no
             // actuation and no spent view.
             stats.held += 1;
             continue;
         };
-        if !ops.is_foreground(&staged_effect.target.0) {
+        if !ops.is_foreground(&staged_request.target.0) {
             // Setter ran but foreground is unproven (async landing still in
             // flight, refusal, or supersession): never hide while another
             // window may hold foreground. A later pass hides without
@@ -4371,13 +4187,10 @@ pub(super) fn apply_world_reply(
             operation_id: op,
             target_output: OutputId(out.clone()),
             target_workspace: ws.clone(),
-            setter: frame_setter(result.as_ref().ok().copied()),
-            pre,
-            post: proof.clone(),
-            baseline,
-            native_pre: None,
-            native_post: None,
-            native_baseline: None,
+            disposition: frame_setter(result.as_ref().ok().copied()),
+            pre: view_ref(&out, pre),
+            post: view_ref(&out, proof.clone()),
+            baseline: view_ref(&out, baseline),
             attempt_ms,
         });
         if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
@@ -4416,18 +4229,17 @@ pub(super) fn apply_world_reply(
         } else if !ensure_fresh(reply, gate, entry_obs, ops) {
             stats.stopped_mid_apply = true;
         } else {
-            // The last focus effect in order dictates the resulting focus
-            // (section 4 applies effects in order): warp only for that
-            // exact target while it holds the observed foreground.
+            // The retained focus request dictates the resulting focus
+            // (section 4 dispatches it): warp only for that exact target
+            // while it holds the observed foreground.
             let target = reply
-                .effects
-                .iter()
-                .rfind(|effect| effect.kind == EffectKind::Focus)
-                .map(|effect| effect.target.clone());
+                .focus_request
+                .as_ref()
+                .map(|request| request.target.clone());
             let mut correlated = false;
             match target {
                 None => {
-                    // Stale point with no focus effect: consume below
+                    // Stale point with no focus request: consume below
                     // without motion.
                 }
                 Some(target) => match fresh.baseline.get(&target.0) {

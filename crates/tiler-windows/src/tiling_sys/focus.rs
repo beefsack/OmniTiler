@@ -302,15 +302,29 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
     // style); the adapter never recomputes border shapes here. The reply
     // token must name this live foreground or the shapes stay hidden with
     // the geometry veto, never a stale paint.
-    let outer = match state.world.last_reply() {
-        Some(reply)
-            if reply.presentation.foreground == window.token
-                && reply.presentation.border.visible =>
-        {
-            reply.presentation.border.outer
+    // v4 carries the anchored ring as the witness frame plus per-side
+    // outsets, never a precomputed outer rect. Expand the witness frame by
+    // the core-provided outsets; the local style values remain the paint
+    // widths (the reply width/gap/radius describe the same host-scaled
+    // style). Missing or non-uniform outsets are a geometry veto.
+    let outer = (|| {
+        let reply = state.world.last_reply()?;
+        if reply.presentation.foreground != window.token || !reply.presentation.border.visible {
+            return None;
         }
-        _ => None,
-    };
+        let border = &reply.presentation.border;
+        let witness = border.witness.as_ref()?;
+        let [left, top, right, bottom] = border.outsets?;
+        if left != top || top != right || right != bottom {
+            return None;
+        }
+        Some(Rect {
+            x: witness.frame.x.checked_sub(left)?,
+            y: witness.frame.y.checked_sub(top)?,
+            w: witness.frame.w.checked_add(left)?.checked_add(right)?,
+            h: witness.frame.h.checked_add(top)?.checked_add(bottom)?,
+        })
+    })();
     let Some(outer) = outer else {
         hide_border(state, "geometry");
         return;
