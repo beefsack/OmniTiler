@@ -2,7 +2,7 @@
 
 ## Purpose, status and gates
 
-- Working plan and review record for porting `tiler-windows` onto the supported
+- Implementation record for porting `tiler-windows` onto the supported
   [v4 world contract](../porting/world-contract.md). The contract, spec and
   [decision register](../decisions.md) own normative behavior; this record
   tracks implementation status, review findings and ordered work until the port
@@ -137,9 +137,10 @@ and flagged tentative for later review:
   windows, capture performs lightweight live reads (`IsWindowVisible`, DWM
   cloaked, style/owner/class) with fail-closed hold if unreadable, reporting
   `host_hidden: Some(cloaked)` and `visibility: { visible: Some(vis), suppression_owned: Some(true) }`.
-- **T5 (Truthful incremental capabilities):** Advertise `above: false` in
-  `windows_capabilities()` until its actuator and R12 preimages exist.
-  `warp` is now `true` through `WARP_SUPPORTED` after the stage-2 adapter and
+- **T5 (Truthful incremental capabilities):** Advertise `above: true` in
+  `windows_capabilities()` only after its actuator, R12 preimages, release
+  path, and live border follow are proved; the Task 9 section below records
+  that proof. `warp` is now `true` through `WARP_SUPPORTED` after the stage-2 adapter and
   the clean-HEAD live receipt below (`fdead7d45e`); `cursorWarp` still
   defaults off.
 - **T6 (Direct typed connection calls):** Replace the in-process JSON
@@ -217,7 +218,7 @@ and flagged tentative for later review:
   instead of local toggling in `keyboard_overlays.rs`.
 - Implement `StateTarget` actuation in `world_diff.rs` (`maximized` including
   `automaticClear`, `fullscreen`, and `above` with R12 crash-safe preimages;
-  flip `above: true` once proved), report honest `StateAttempt`s through
+  flipped `above: true` after the Task 9 live proof below), report honest `StateAttempt`s through
   `WorldSequencer`, and restore the maximize-clear test coverage removed from
   `tests_directional_world.rs`.
 - Wire `intent_records` preload before first admission and atomic
@@ -268,11 +269,12 @@ test ...live_set_cursor_pos_does_not_advance_raw_input_generation ... ok
   requires both that liveness and the `SetCursorPos` non-increment property.
   Injected motion counts conservatively as user activity.
 
-### Task 5 live evidence (2026-11-25, clean HEAD 42558707)
+### Task 5 live evidence (2026-11-25)
 
-Run only from the clean post-Slice-A tree; fixture-only scope, cleanup reported
-by the runner in every case. No display identity values or host paths are
-recorded here.
+Run from clean committed HEADs; fixture-only scope, with cleanup reported for
+every case. Each subsection names its exact HEAD. The R11 probe and six-case
+matrix below ran at clean HEAD 42558707; later subsections name theirs. No
+display identity values or host paths are recorded here.
 
 - R11 read-only probe:
   `cargo test --locked -p tiler-windows --lib live_monitor_identities_are_readable -- --ignored --nocapture`
@@ -314,10 +316,31 @@ and SPI state, and left no owned ledger, process, or fixture window.
 This proves the migrated minimized-resident path: no automatic restore, no
 invented frame/membership hold, and no lingering order workaround during a
 mover send and workspace return. Limits: B was never posted a hide while
-off-view, so the minimized-preserving reveal path (`SW_SHOWMINNOACTIVE`) is
-not exercised; moving the iconic window itself as the sent subject is also
-unproven. The strict stress harness still cannot encode this row without a
-minimize/restore observation op and a minimized-aware oracle.
+off-view; the follow-up below sends the iconic window itself and preserves the
+hold, but still does not observe a native hide-to-show transition. The strict
+stress harness cannot encode this row without a minimize/restore observation
+op and a minimized-aware oracle.
+
+A follow-up iconic-subject run at clean `6236e534` reproduced the minimize
+hold (frame authority hold, frame hold minimized, membership controlled,
+allocation null, zero frame writes to the iconic window) and then sent the
+iconic window itself. The first `--send 3` target was rejected because ordinal
+3 was outside the per-output ring; that was a test-target choice, not a
+product finding. The corrected `--send 2` first remained pending at 30
+seconds, but an actuation-aware rerun settled on tick 8 after 11.2 seconds:
+alpha moved to `ws-3` controlled with allocation `2560x1380`; beta stayed
+`ws-1`, minimized, membership controlled, allocation null, with zero frame
+writes and its native rect unchanged. `workspace --select 1` then returned to
+`ws-1`; beta remained minimized, visible and native-rect-identical, with no
+automatic restore, invented hold, or hybrid allocation. Cleanup stopped and
+restored, the ledger was clean, and settings/SPI matched the preimage.
+
+Limits: beta was never natively hidden (it stayed `visible:true` off-view), so
+`SW_SHOWMINNOACTIVE` is behaviorally indistinguishable from a no-op reveal
+for a visible iconic window. The leg proves preservation and no invention,
+not a hide-to-show transition. One earlier return run hit a transient
+held-scope (`w24` on `ws-3`, `unreadable`) that produced no writes or hijack
+and did not reproduce on the passing run.
 
 #### Multi-output send + positive retained warp (manual fixture, 2026-11-25, clean 1d00b766)
 
@@ -353,19 +376,212 @@ readback, stopped the exact owner, shut down the fixture, restored the
 settings bytes and SPI state, and left no owned ledger, process, request
 file, or fixture window.
 
-Not run in this evidence (explicit TBD, not claimed):
+#### Input audit (2026-11-25, all live runs)
 
-- Forced-crash/R12 recovery: no isolated throwaway session was used; the
-  bounded owned-resource crash lane is unrun.
-- Fullscreen/game safety: the fixture supports fullscreen mode, but no
-  fullscreen or paused-game leg has run; game/anti-cheat acceptance remains
-  user-owned.
-- Live settings refused revision and `RestartRequired`: the accepted startup
-  and live cursor-warp revisions are proven above, and unit tests cover the
-  refused/restart paths; no live fixture seam has exercised those two
-  outcomes.
-- Iconic window as the moved subject and the minimized-preserving reveal
-  (`SW_SHOWMINNOACTIVE`): unproven. The iconic-resident mover-send evidence
-  above is manual; the strict stress schema has no `minimize`/`restore`
-  observation op, and a minimized-aware oracle is still needed before the
-  leg can be encoded there.
+All 18 owner logs from the six stress runs, the iconic-resident run, the
+multi-output/warp run, and both settings/fullscreen legs were audited for
+physical key input. The audit found zero physical key callbacks: all 976
+snap-callback records carried `source:"injected-filtered"`, all 946 command
+edges carried `edge:"cli"`, and the only non-CLI command edge was one
+`foreground` wake. The filtered synthetic key records produced no command and
+no window or workspace state change. The recorded passes are not contaminated
+by key input; the initial fullscreen timeout below was a test-predicate gap,
+not input.
+
+#### Settings restart-required (manual fixture, 2026-11-25, clean 6236e534)
+
+The preimage had `core.mouse.snap_prevention:true`; the owner was launched
+without `--no-mouse-snap-prevention`, and both owners logged
+`mouse-snap disabled phase:resume` then `mouse-snap restored phase:teardown`
+after a verified readback (a mismatch would log `mismatch` and retain the
+claim). The standalone `tile restore` after owner exit reported
+`{restored:true, windows:0, ledger_cleaned:true, mouse_snap_restored:false}`:
+the teardown had already restored SPI and relinquished the ledger note, so
+there was no owned mutation left to restore; this is "nothing owned", not a
+failed restore. An independent read-only SPI read after cleanup matched the
+preimage exactly (`arranging=1`, `pen=35`, `abm=0`). Limit: the driver did not
+sample SPI at stop; equality rests on the product's verified teardown plus the
+independent read.
+
+Settings replay: the startup document set `core.workspace.mode=shared` at
+revision 4. The owner accepted its initial settings at revision 1 with no
+diagnostics and adopted `shared` (both output views reported `ws-1`). A live
+change to `per-output-local` was accepted at revision 2 with the single
+diagnostic `{key:"mode", kind:"restart-required"}`; the workspace scope stayed
+`live-pending` with effective `shared` retained (`saved:"per-output-local"`),
+and a selector command did not adopt it (views remained `ws-1`/`ws-1`).
+Restarting with the changed document accepted an initial revision 1 with no
+diagnostics, adopted `per-output-local`, and produced views `ws-1`/`ws-2`.
+The refused-revision path has no live seam; unit tests cover it. Cleanup
+restored the settings bytes byte-exact.
+
+#### Fullscreen safety result (manual fixture, 2026-11-25, clean 6236e534)
+
+A borderless fixture window was tiled on `o1/ws-1`, then set fullscreen through
+the fixture at 2560x1440. The sole accepted post-transition apply row, tick 5,
+carried `held_scopes:[{scope:{kind:"workspace", out:"o1", ws:"ws-1"},
+authority:"hold", reason:"unreadable"}]`, `stats.held:2`,
+`stats.geometry_writes:0`; both windows `w23` and `w24` had
+`frame_authority:"hold"`, `frame_hold:"unreadable"`,
+`membership_authority:"hold"`, `membership_hold:"unreadable"`,
+`allocation:null`, `frame_op:null`, and no transfers, operations, or frames.
+The adapter logged `w24` as `retained-fullscreen` with `reason:"overlay"` and
+`overlay:"fullscreen"`, visible and uncloaked. `observe.managed` fell from 2 to
+1; that is not proof of unreadability, since retained overlay rows ride the
+retained lane while `managed` counts eligible observed windows.
+
+The initial 30-second test predicate timed out because it treated the held
+scope as pending and also required a readable-domain `untouched` row
+(`frame_authority:"untouched"`, non-null allocation, no frame operation). The
+missing `untouched` row is entailed by the scope hold: held scopes publish
+lifetime rows with narrow holds, and the fullscreen `Untouched` branch runs
+only for readable/controlled scopes. This was a test-predicate gap, not a
+product publish gap.
+
+A held-scope-aware rerun then passed the safety row at the same clean HEAD.
+On tick 5 both desired rows had `frame_authority:"hold"`,
+`frame_hold:"unreadable"`, membership authority `hold`, `allocation:null`,
+`frame_op:""`, with `desired_operations:[]`, `desired_transfers:[]`,
+`frames:[]`, and `geometry_writes:0`. `w24` was logged
+`retained-fullscreen` then overlay, `visible:true`, `cloaked:false`; native
+rects were alpha `0,0 2560x1440` and beta unchanged `1280,0 1280x1380`. No
+late publish rows or writes followed settlement. A directional CLI send used
+`w24` as origin; the post row had no focus effects, beta was not focused (no
+hijack), and the next tick retiled both windows with native restoration and
+`cursor_warps=0`. The skip-reason surface was `absent`: the trace carries the
+row-level `unreadable` reason but no skip or refusal event names, so the root
+cause of the unreadable hold remains a diagnostic gap. The primary
+readable-domain `untouched` overlay row also remains unproven. The safety
+behavior itself passes: zero tiled writes, zero pending transfers/operations,
+visible retained fullscreen, and no hijack. Game/anti-cheat acceptance
+remains user-owned; no game was run.
+
+#### Forced-crash/R12 recovery (manual fixture, 2026-11-25, clean 6236e534)
+
+Two fixture windows were admitted under the fixture-only scope with settings
+bytes and SPI captured; the exact owner pid/creation/executable/ledger
+identity was recorded. `select 2` left `ws-1` with both fixture windows
+natively hidden (`visible:false`, rects unchanged) and the ledger present.
+The graceful prerequisite passed: `stop` returned
+`{stopped:true, owner_exited:true}`, and independent `restore` returned
+`{restored:true, windows:0, ledger_cleaned:true}`; both windows were visible
+with unchanged rects and the ledger was clean.
+
+The crash leg started a second exact-identity owner, left both fixture windows
+hidden with `ledger.json` present, revalidated identity, and ran
+`emergency-stop` → `{emergency_stopped:true, owner_exited:true,
+recovery_required:true}` with the ledger still present. The owner's
+`watch-owner` child performed the independent crash restore: the ledger was
+gone in 85 ms and both windows were revealed with identical rects. The CLI
+`restore` path refuses while the watcher holds the store (documented
+behavior); after the watcher exited it reported
+`{restored:true, windows:0, ledger_cleaned:true}`. The watcher exited, no
+owner or fixture process remained, settings bytes were byte-exact, and SPI
+read back `{arranging:1, pen:35, abm:0}`. No mismatch was observed.
+
+Limits: this crashed the hidden-window/ledger recovery path; a maximized or
+fullscreen R12 state preimage was not crashed in this leg and remains TBD.
+The CLI restore refusal while the watcher holds the lease is the documented
+single-store behavior, not a failed restoration.
+
+### Task 9 targeted live verification (2026-11-25, final tree, above:true build)
+
+All legs ran fixture-only under the fixture-only scope, on the final working
+tree whose only capability change is `windows_capabilities().above = true`.
+Each leg recorded the exact owner binary hash, the HEAD it started from
+(`d064a653c2`), the preflight absence of another owner/ledger, and byte-exact
+settings restore; the proof code on that working tree was then committed as
+`717ff7e187` without changing the binaries' behavior. SPI/taskbar state was
+not modified by these legs.
+
+- **Production reveal (strict hide→show).** Evidence
+  `target/task9/above-iconic-20261125-164411-9972/evidence.json`, owner sha
+  `8715AFB0…365E3`. A native workspace departure hid the target
+  (`visible:false`) and the return produced **exactly one** production
+  `workspace-reveal` row (`w24`, tick 24, correlation `tick-24`,
+  `outcome:"revealed"`, elapsed 6 ms), native `visible:true`, `cloak:0`,
+  `iconic:false`, and no second row after 900 ms. The off-view iconic sibling
+  produced zero reveal rows and stayed `cloak:0`. This closes the earlier
+  diagnostic gap: the row is emitted on the production path, not under
+  `cfg(test)`.
+- **[R12 crash/restart twice](../decisions/contract.md#native-writes-difficult-to-undo-r12) with above durable intent.** Evidence
+  `target/task9/r12-restart-20261125-165332-16652/evidence.json`, owner sha
+  `AACA18CA…57D6`. Two exact-PID crash/restart cycles produced one admitted
+  row per new session, the member tag stayed `c9bbb36d8ddae0dc` across three
+  sessions, `max_rows` stayed 1, both boots kept the expected topmost band,
+  release cleared the rows and topmost, no fullscreen rows were orphaned, and
+  settings bytes restored.
+- **[R20 anchored border](../decisions/contract.md#anchored-border-r20) and DPI independence** ([visual reference](../decisions/visuals.md#anchored-active-border-v4-r20)). Evidence
+  `target/task9/r20-border-20261125-172846-20720/evidence.json`. On the
+  non-125% output (96 dpi) the ring was sampled from the composed screen DC at
+  **8/8** straight-edge points with `style_px [3,0,6]`; on the 125% output
+  (120 dpi) a snapped half-work frame (physical client `1280×1332`) was
+  sampled at **8/8** points with `style_px [4,0,8]`. In both stages the
+  logged overlay outer equaled the live DWM visible frame expanded by the
+  core outsets (±1 px), and the ring was refreshed only through a genuine
+  hide→show cycle (minimize/restore plus a real fixture focus, retried until
+  the core reply and observation joined). The sampled pixels carry the
+  configured hue at the coverage the compositor gave them (DWM edge
+  shadow/coverage scales all channels equally); the assertion is a
+  proportional match with a coverage floor, never an arbitrary near-colour.
+  This proves the ring follows the live frame and scales per monitor rather
+  than inheriting 125%-only metrics. Limits: the leg floats the target to
+  preserve an exact snapped frame; a tiled half-work frame is retiled by the
+  product, so the snapped case uses a floating member.
+- **Fullscreen and stale-fullscreen auto-retire.** Evidence
+  `target/task9/fullscreen-20261125-172941-13200/evidence.json`; all stages
+  passed. Enter/exit produced the expected `state_attempt` rows and native
+  caption/thickframe restoration. The stale stage re-entered product
+  fullscreen, then restored the external chrome style (`0x00C40000`) without
+  any exit command: the adapter logged `fullscreen-retired` at tick 26,
+  removed the owned marker, cleared the durable preimage (0 rows), restored
+  the style, and retiled the window at tick 26 with zero pending
+  transfers/operations. The remediation is therefore **reintroduced in the
+  Windows adapter** (detected-on-sweep, not silently subsumed by core); core
+  does not need to own the native style sweep. This corrects the earlier Task
+  5 narrative: the strict hide→show transition is now proven by the reveal
+  leg, while stale-retire is proven here. The readable-domain `untouched`
+  overlay row for a held fullscreen scope remains unproven.
+- **`state_attempts` audit.** The final-tree logs carry `above` target
+  `true` on float and `false` on release (one each), fullscreen target `true`
+  on enter and `false` on exit, and no state attempt for the iconic or
+  off-view sibling. No redundant or spurious state attempts appear in these
+  runs.
+- **DWM visibility, selection and pager.** The reveal leg records native DWM
+  visibility/cloak/iconic and the selection return; pager host/cell/icon rows
+  were produced in the same run (no pager crash or missing cell in the
+  settled rows). Drag preview was **not** exercised: no input driver was
+  used in Task 9, so drag-preview `id` gating remains covered only by unit
+  tests and is recorded as a residual rather than live-proven.
+- **KWin reference and Windows attestation.** The KWin anchored-border
+  behavior remains the reference label for R20: a frame-anchored ring whose
+  width/radius scale with the output, drawn outside the live visible frame.
+  The Windows implementation reproduces that geometry and scales it per
+  monitor (3 px at 96 dpi, 4 px at 120 dpi), and the same decision-register
+  R20/R14 references apply. This evidence is Windows-host attestation, not a
+  KWin equivalence claim beyond the shared geometry contract; no display
+  identity values, host paths, or user window contents are recorded, and all
+  fixture windows, owners, ledgers and settings were cleaned up.
+
+Remaining TBD (explicit, not claimed):
+
+- R12 above-band preimage crash now passes twice (Task 9: two exact-PID
+  crashes, one durable row per boot, stable member tag, release clears it).
+  A maximized or fullscreen R12 state preimage crash is still not exercised.
+- Fullscreen root cause and game: the safe fail-closed held-scope row passes,
+  and the stale-fullscreen auto-retire remediation now passes on external
+  chrome restore (Task 9). The primary readable-domain `untouched` overlay row
+  and the `unreadable` hold's skip/refusal reason remain unproven.
+  Game/anti-cheat acceptance remains user-owned.
+- Live settings refused revision: no live fixture seam exists; unit tests
+  cover the refused path. The startup, live `restart-required`, and restart
+  adoption rows are proven above.
+- Strict iconic hide-to-show is now proven by the Task 9 reveal leg (one
+  production `workspace-reveal`, honest DWM visibility, no duplicate). The
+  older iconic-subject minimize hold remains documented above, including its
+  former `SW_SHOWMINNOACTIVE` limit.
+- Full phase4 stress matrix: Task 9 ran the targeted live legs and the
+  `tiler-windows`/core unit suites on the final tree, not the full
+  `home-away`/`trio-churn` delay matrix. Unsupported matrix rows are TBD.
+- Drag preview: no input driver was used, so `dragPreview.id` gating is
+  unit-tested only; live drag interaction remains a residual.
