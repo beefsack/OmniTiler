@@ -1455,7 +1455,7 @@
             "gestureSettled": null,
             "operationSettled": [],
             "nativeCreations": [],
-            "warpRequest": null,
+            "warpCursor": null,
             "presentation": {
               "foreground": "win-a",
               "rev": "1",

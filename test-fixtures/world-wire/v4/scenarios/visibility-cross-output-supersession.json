@@ -365,7 +365,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpRequest": null,
+          "warpCursor": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "1",
@@ -710,7 +710,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpRequest": null,
+          "warpCursor": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "2",
@@ -1043,7 +1043,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpRequest": null,
+          "warpCursor": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "3",
@@ -1316,7 +1316,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpRequest": null,
+          "warpCursor": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "4",
@@ -1589,7 +1589,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpRequest": null,
+          "warpCursor": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "5",
@@ -1884,7 +1884,7 @@
           "gestureSettled": null,
           "operationSettled": [],
           "nativeCreations": [],
-          "warpRequest": null,
+          "warpCursor": null,
           "presentation": {
             "foreground": "win-a",
             "rev": "6",
