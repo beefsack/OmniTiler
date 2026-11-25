@@ -40,13 +40,59 @@ pub(super) fn note_focus_advance(
         });
 }
 
-/// Managed origins for chord resolution: eligible observed windows plus
-/// verified overlay-retained members (maximized/fullscreen). An overlay
-/// member is retained, never eligible, so eligible-only origins break Win+M
-/// restore, Win+F11 exit, focus while overlaid, and send from a maximized
-/// foreground. Only existing members with full identity plus live
-/// lifetime-tag match ride along: no foreign or invented members. Exactness
-/// stays with the per-intent owner recheck.
+/// One verified member origin: existing member with full stored identity, a
+/// live matching lifetime tag, an in-scope executable, the hosted-child gate,
+/// and (for proof owners) the frozen allowlist. Exactness stays with the
+/// per-intent owner recheck.
+fn verified_snap_origin(
+    state: &TileLoop,
+    me: &ProcessIdentity,
+    key: &crate::native_guards::WindowKey,
+    token: &str,
+) -> Option<SnapOrigin> {
+    let stored = state.member_identity.get(key)?;
+    if stored.pid != key.pid
+        || stored.process_creation != key.creation
+        || stored.user_sid != me.user_sid
+        || stored.session_id != me.session_id
+    {
+        return None;
+    }
+    let live_tag = crate::product_hide::sys::read_member_tag(key.hwnd);
+    let tag = state.member_tags.get(key)?;
+    if !crate::native_guards::visible_lifetime_ok(tag, live_tag.as_deref()) {
+        return None;
+    }
+    if !scope_allows(&state.scope, &stored.exe_path) {
+        return None;
+    }
+    if !hosted_gate_allows(
+        &stored.exe_path,
+        key.hwnd,
+        stored.pid,
+        &state.scope_hosts,
+    ) {
+        return None;
+    }
+    if let Some(entries) = state.allowlist.as_ref() {
+        let entry = entries.iter().find(|e| e.hwnd == key.hwnd)?;
+        if verify_proof_owned(key.hwnd, entry, me).is_err() {
+            return None;
+        }
+    }
+    Some(SnapOrigin {
+        hwnd: key.hwnd,
+        token: token.to_owned(),
+        pid: key.pid,
+        creation: key.creation.clone(),
+    })
+}
+
+/// Managed origins for chord resolution: eligible observed windows, verified
+/// overlay-retained members (maximized/fullscreen), and verified iconic
+/// members that Windows can hold as foreground. Only existing members with
+/// full identity plus a live lifetime-tag match ride along: no foreign or
+/// invented members. Exactness stays with the per-intent owner recheck.
 fn managed_origins(
     state: &TileLoop,
     me: &ProcessIdentity,
@@ -58,48 +104,26 @@ fn managed_origins(
         if !row.maximized && !row.fullscreen {
             continue;
         }
-        let Some(stored) = state.member_identity.get(&row.key) else {
-            continue;
-        };
-        if stored.pid != row.key.pid
-            || stored.process_creation != row.key.creation
-            || stored.user_sid != me.user_sid
-            || stored.session_id != me.session_id
-        {
+        if let Some(origin) = verified_snap_origin(state, me, &row.key, &row.token) {
+            out.push(origin);
+        }
+    }
+    // Iconic members are observed-ineligible, so they are neither in the fresh
+    // rows nor the overlay-retained set, yet Windows can hold an iconic window
+    // as foreground. A verified existing member stays an origin so an
+    // iconic-subject command reaches the core settlement path instead of being
+    // refused as unmanaged before it runs. Membership is live-checked here so
+    // stale tokens for non-iconic or dead windows never enter the map.
+    for (key, token) in &state.member_tokens {
+        if !live_is_iconic(key.hwnd) {
             continue;
         }
-        let live_tag = crate::product_hide::sys::read_member_tag(row.key.hwnd);
-        let Some(tag) = state.member_tags.get(&row.key) else {
-            continue;
-        };
-        if !crate::native_guards::visible_lifetime_ok(tag, live_tag.as_deref()) {
+        if out.iter().any(|origin| origin.hwnd == key.hwnd) {
             continue;
         }
-        if !scope_allows(&state.scope, &stored.exe_path) {
-            continue;
+        if let Some(origin) = verified_snap_origin(state, me, key, token) {
+            out.push(origin);
         }
-        if !hosted_gate_allows(
-            &stored.exe_path,
-            row.key.hwnd,
-            stored.pid,
-            &state.scope_hosts,
-        ) {
-            continue;
-        }
-        if let Some(entries) = state.allowlist.as_ref() {
-            let Some(entry) = entries.iter().find(|e| e.hwnd == row.key.hwnd) else {
-                continue;
-            };
-            if verify_proof_owned(row.key.hwnd, entry, me).is_err() {
-                continue;
-            }
-        }
-        out.push(SnapOrigin {
-            hwnd: row.key.hwnd,
-            token: row.token.clone(),
-            pid: row.key.pid,
-            creation: row.key.creation.clone(),
-        });
     }
     out
 }

@@ -1,6 +1,83 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+/// Auto-retire owned fullscreen markers whose chrome the application has
+/// already restored, so no clear action is needed to trigger cleanup.
+///
+/// This is the Task 8 legacy-policy retirement's one intended survivor:
+/// core-only observation never mints a fullscreen exit (commands do), so a
+/// marker left behind after an external restore would otherwise keep
+/// claiming tiler ownership, be replayed over the window by a later explicit
+/// exit, and survive as a durable R12 row that a future startup could restore
+/// over already-normal chrome. Metadata removal only: no style, frame,
+/// activation or z-order write runs here, and a fullscreen/transitional/
+/// unreadable/recycled/drifted shape keeps its marker. Candidates need a
+/// verified workspace home and a fresh observed or retained row whose live
+/// fullscreen fact is positively false; the retirement re-proves the exact
+/// lifetime, style restoration and marker equality immediately before
+/// clearing (see [`super::fullscreen::retire_restored_fullscreen`]).
+pub(super) fn sweep_retire_restored_fullscreen(
+    state: &mut TileLoop,
+    dir: &Path,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+) {
+    let candidates: Vec<(crate::native_guards::WindowKey, String)> = state
+        .member_tokens
+        .iter()
+        .map(|(key, token)| (key.clone(), token.clone()))
+        .collect();
+    for (key, token) in candidates {
+        if state.member_home(&key).is_none() {
+            continue;
+        }
+        let Some(meta) = super::read_fullscreen_meta(key.hwnd) else {
+            continue;
+        };
+        if meta.changed == 0 {
+            continue;
+        }
+        let live_fullscreen =
+            match observed
+                .iter()
+                .find(|window| window.token == token && window.identity.hwnd == key.hwnd)
+            {
+                Some(window) => Some(window.facts.captionless_fullscreen),
+                None => match retained
+                    .iter()
+                    .find(|row| row.token == token && row.key == key)
+                {
+                    Some(row) => Some(row.fullscreen),
+                    None => continue,
+                },
+            };
+        // Only a positive non-fullscreen read retires: unknown or fullscreen
+        // keeps the marker.
+        if live_fullscreen != Some(false) {
+            continue;
+        }
+        let Some(tag) = state
+            .member_tags
+            .get(&key)
+            .cloned()
+            .filter(|tag| !tag.is_empty())
+        else {
+            continue;
+        };
+        if super::fullscreen::retire_restored_fullscreen(dir, &key, &tag, &meta) {
+            log_json_at(
+                &state.log_path,
+                serde_json::json!({
+                    "event": "fullscreen-retired",
+                    "tick": state.tick,
+                    "window": token,
+                    "reason": "restored",
+                }),
+            );
+        }
+    }
+}
+
 /// Run one reconcile tick through the single world owner: enumerate once,
 /// run the mechanical admission preamble plus visibility diagnostics, then
 /// dispatch one observation report (capture/sequence/deliver/apply/ack).
@@ -33,6 +110,10 @@ pub(super) fn reconcile_tick(
         );
         return;
     };
+    // Retire owned fullscreen markers whose chrome the application already
+    // restored before this tick's capture reads ownership metadata: metadata
+    // only, exact-lifetime fenced, and never a geometry or style write.
+    sweep_retire_restored_fullscreen(state, dir, &observed, &retained);
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
     workspace_close_cleanup(state);

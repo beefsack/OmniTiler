@@ -42,12 +42,12 @@ pub(super) const WARP_SUPPORTED: bool = true;
 ///   claimed.
 /// - `window_suppression: true`: the product hide/restore lane exists.
 /// - `maximize: true`, `fullscreen: true`: native actuators exist for each.
-/// - `above: false`: capture now produces the topmost fact from the live
-///   `WS_EX_TOPMOST` read, but no persistent stacking actuator exists yet;
-///   R14's `StateTarget`/R12 crash-safe preimage lane has not landed, so a
-///   truth-claiming window would have no honest topmost actuation or
-///   recovery. The capability claim stays `false` until the live proof task
-///   proves both; flip it to `true` then.
+/// - `above: false`: capture produces the topmost fact from the live
+///   `WS_EX_TOPMOST` read and the R14 `StateTarget` lane raises/releases the
+///   persistent band with R12 durable lifetime-bound preimages, but the
+///   capability claim stays false until the crash/restart orphan proof lands
+///   in the Task 9 record of `docs/changes/v4-phase4-windows-port.md`. Live
+///   float/unfloat evidence exists; the R12 leg is still outstanding.
 /// - `warp`: the retained exact-once cursor-warp lane, sourced from
 ///   [`WARP_SUPPORTED`]. It is true after the adapter lane and the
 ///   clean-HEAD live Raw Input non-increment receipt; the `cursorWarp`

@@ -245,30 +245,49 @@ fn verify_live_lifetime(row: &AbovePreimage) -> bool {
     crate::product_hide::sys::read_member_tag(row.hwnd).as_deref() == Some(row.tag.as_str())
 }
 
+/// A row's lifetime can never be restored again once the process that owned
+/// it is provably gone (or its pid now belongs to a different creation).
+/// Such rows are permanent orphaned metadata: startup recovery can never
+/// verify them, so every later startup would re-read and retain them forever.
+/// Unreadable identity (access denied, unknown error) is never treated as
+/// dead, and the current session's own rows are excluded by the caller.
+fn lifetime_provably_dead(row: &AbovePreimage) -> bool {
+    match crate::native::HeldProcess::open(row.pid) {
+        Err(crate::native::IdentityError::Absent) => true,
+        Err(_) => false,
+        Ok(held) => match held.identity() {
+            Err(crate::native::IdentityError::Absent) => true,
+            Err(_) => false,
+            Ok(live) => live.process_creation != row.creation,
+        },
+    }
+}
+
 /// Restore verified leftovers at startup and drop their rows. `current_session`
 /// is the restoring process's creation: only rows of a different session are
 /// considered, so the dead owner's rows are foreign and the current session's
-/// own live preimages are never touched. Each candidate self-verifies its
-/// exact live lifetime (existing window, stored pid, stored process creation,
-/// stored membership tag) without an observation dependency. A row whose
-/// current band already equals the preimage needs no write but is still
-/// cleared once its lifetime is verified. A failed native restore keeps the
-/// row so the next startup retries the same idempotent restore; a failed
-/// publish only means a later startup re-checks. An unreadable store restores
-/// nothing. Returns how many rows were restored.
+/// own live preimages are never touched. Rows whose exact process lifetime is
+/// provably gone are pruned instead of being retained forever; a row with an
+/// unreadable identity is kept for a later attempt. Each remaining candidate
+/// self-verifies its exact live lifetime (existing window, stored pid, stored
+/// process creation, stored membership tag) without an observation
+/// dependency. A row whose current band already equals the preimage needs no
+/// write but is still cleared once its lifetime is verified. A failed native
+/// restore keeps the row so the next startup retries the same idempotent
+/// restore; a failed publish only means a later startup re-checks. An
+/// unreadable store restores nothing. Returns how many rows were restored.
 pub(super) fn restore_verified_leftovers(dir: &Path, current_session: &str) -> usize {
     let Ok(mut rows) = read_store(dir) else {
         return 0;
     };
+    let before = rows.len();
+    rows.retain(|row| row.session == current_session || !lifetime_provably_dead(row));
+    let mut dirty = rows.len() != before;
     let candidates: Vec<AbovePreimage> = leftover_candidates(&rows, current_session)
         .into_iter()
         .cloned()
         .collect();
-    if candidates.is_empty() {
-        return 0;
-    }
     let mut restored = 0usize;
-    let mut dirty = false;
     for row in &candidates {
         if !verify_live_lifetime(row) {
             continue;
@@ -370,22 +389,44 @@ mod tests {
     }
 
     #[test]
-    fn dead_lifetime_is_not_restored_and_keeps_its_row() {
+    fn provably_dead_lifetime_row_is_pruned_not_retained() {
         let dir = temp_store("dead");
         std::fs::create_dir_all(&dir).expect("temp dir");
-        let dead = row(0, "session-a", false);
+        let dead = AbovePreimage::new(0, u32::MAX, "creation-a", "tag-a", false, "session-a")
+            .expect("row");
         persist(&dir, &dead).expect("persist");
-        // No observation list is consulted; the row itself cannot prove a
-        // live exact lifetime (HWND 0), so nothing is written and the row is
-        // retained for a later startup.
+        // The owning process creation is provably absent, so the row can
+        // never be restored again: it is pruned instead of surviving every
+        // future startup as orphaned metadata.
         assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
-        assert_eq!(
-            load(&dir, 0, 7, "creation-a", "tag-a"),
-            Some(dead),
-            "unverified row must stay for the next startup"
+        assert!(
+            load(&dir, 0, u32::MAX, "creation-a", "tag-a").is_none(),
+            "provably dead row must be pruned"
         );
-        // The current session never treats its own live preimage as leftover.
+        assert!(read_store(&dir).expect("store").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unverifiable_live_lifetime_row_is_kept() {
+        let dir = temp_store("kept");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let pid = std::process::id();
+        let creation = crate::native::HeldProcess::open(pid)
+            .expect("self process")
+            .identity()
+            .expect("self identity")
+            .process_creation;
+        // HWND 0 never verifies, but the process lifetime is still live and
+        // matches: this row is not provably dead and must stay for a later
+        // attempt (and the current session never treats it as leftover).
+        let row = AbovePreimage::new(0, pid, &creation, "tag-a", false, "session-a")
+            .expect("row");
+        persist(&dir, &row).expect("persist");
+        assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
+        assert_eq!(load(&dir, 0, pid, &creation, "tag-a"), Some(row.clone()));
         assert_eq!(restore_verified_leftovers(&dir, "session-a"), 0);
+        assert_eq!(load(&dir, 0, pid, &creation, "tag-a"), Some(row));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -311,30 +311,49 @@ fn verify_live_lifetime(row: &FullscreenPreimage) -> bool {
     crate::product_hide::sys::read_member_tag(row.hwnd).as_deref() == Some(row.tag.as_str())
 }
 
+/// A row's lifetime can never be restored again once the process that owned
+/// it is provably gone (or its pid now belongs to a different creation).
+/// Such rows are permanent orphaned metadata: startup recovery can never
+/// verify them, so every later startup would re-read and retain them forever.
+/// Unreadable identity (access denied, unknown error) is never treated as
+/// dead, and the current session's own rows are excluded by the caller.
+fn lifetime_provably_dead(row: &FullscreenPreimage) -> bool {
+    match crate::native::HeldProcess::open(row.pid) {
+        Err(crate::native::IdentityError::Absent) => true,
+        Err(_) => false,
+        Ok(held) => match held.identity() {
+            Err(crate::native::IdentityError::Absent) => true,
+            Err(_) => false,
+            Ok(live) => live.process_creation != row.creation,
+        },
+    }
+}
+
 /// Restore verified fullscreen-chrome leftovers at startup and drop their
 /// rows. `current_session` is the restoring process's creation: only rows of a
 /// different session are considered, so the dead owner's rows are foreign and
-/// the current session's own live preimages are never touched. Each candidate
-/// self-verifies its exact live lifetime (existing window, stored pid, stored
-/// process creation, stored membership tag) without an observation
-/// dependency. The row leaves only after the production restore sequence
-/// reports `restored`; a failed or unproven native restore keeps the row so
-/// the next startup retries. A failed publish only means a later startup
-/// re-checks, and an unreadable store restores nothing. Returns how many rows
-/// were restored.
+/// the current session's own live preimages are never touched. Rows whose
+/// exact process lifetime is provably gone are pruned instead of being
+/// retained forever; a row with an unreadable identity is kept for a later
+/// attempt. Each remaining candidate self-verifies its exact live lifetime
+/// (existing window, stored pid, stored process creation, stored membership
+/// tag) without an observation dependency. The row leaves only after the
+/// production restore sequence reports `restored`; a failed or unproven native
+/// restore keeps the row so the next startup retries. A failed publish only
+/// means a later startup re-checks, and an unreadable store restores nothing.
+/// Returns how many rows were restored.
 pub(super) fn restore_verified_leftovers(dir: &Path, current_session: &str) -> usize {
     let Ok(mut rows) = read_store(dir) else {
         return 0;
     };
+    let before = rows.len();
+    rows.retain(|row| row.session == current_session || !lifetime_provably_dead(row));
+    let mut dirty = rows.len() != before;
     let candidates: Vec<FullscreenPreimage> = leftover_candidates(&rows, current_session)
         .into_iter()
         .cloned()
         .collect();
-    if candidates.is_empty() {
-        return 0;
-    }
     let mut restored = 0usize;
-    let mut dirty = false;
     for row in &candidates {
         if !verify_live_lifetime(row) {
             continue;
@@ -529,6 +548,37 @@ mod tests {
         std::fs::write(&path, br#"{"v":2,"rows":[]}"#).expect("write future store");
         assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
         assert!(read_store(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn provably_dead_lifetime_row_is_pruned_not_retained() {
+        let dir = std::env::temp_dir().join(format!(
+            "omnitester-fullscreen-dead-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dead = FullscreenPreimage::new(
+            0,
+            u32::MAX,
+            "creation-a",
+            "tag-a",
+            "session-a",
+            FULLSCREEN_STYLE_BITS,
+            false,
+            Some(frame()),
+        )
+        .expect("row");
+        persist(&dir, &dead).expect("persist");
+        // The owning process creation is provably absent: the row can never
+        // be restored and is pruned instead of surviving every startup.
+        assert_eq!(restore_verified_leftovers(&dir, "session-b"), 0);
+        assert!(load(&dir, 0, u32::MAX, "creation-a", "tag-a").is_none());
+        assert!(read_store(&dir).expect("store").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

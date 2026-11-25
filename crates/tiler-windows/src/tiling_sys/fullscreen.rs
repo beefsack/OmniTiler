@@ -348,6 +348,64 @@ pub(super) fn restore_owned_chrome(hwnd_u64: u64, meta: &FullscreenMeta) -> &'st
     exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta)
 }
 
+/// Retire one owned fullscreen marker whose chrome has provably been
+/// restored by other means (the application or an external caller put every
+/// owned style bit back and the live window is positively non-fullscreen).
+///
+/// Metadata removal only: this function performs no style, frame, activation
+/// or z-order write, so retirement can never undo the restored chrome or move
+/// the window. It re-proves the exact native lifetime (pid, held-process
+/// creation, live membership tag), the live style restoration, and that the
+/// marker still equals the caller's probed preimage immediately before
+/// clearing. Clearing also drops the matching durable R12 row, otherwise a
+/// later startup would restore chrome and a pre-fullscreen frame over a
+/// window that is already normal. Any unreadable or drifted leg fails closed
+/// and keeps the marker for a later explicit exit.
+pub(super) fn retire_restored_fullscreen(
+    dir: &std::path::Path,
+    key: &crate::native_guards::WindowKey,
+    tag: &str,
+    meta: &FullscreenMeta,
+) -> bool {
+    if meta.changed == 0 || tag.is_empty() || !crate::ffi::is_window(key.hwnd) {
+        return false;
+    }
+    if crate::ffi::window_pid(key.hwnd) != key.pid {
+        return false;
+    }
+    let Some(held) = HeldProcess::open(key.pid).ok() else {
+        return false;
+    };
+    let live = match held.identity() {
+        Ok(live) => live,
+        Err(_) => return false,
+    };
+    if live.pid != key.pid || live.process_creation != key.creation {
+        return false;
+    }
+    if crate::product_hide::sys::read_member_tag(key.hwnd).as_deref() != Some(tag) {
+        return false;
+    }
+    let Some(style) = crate::ffi::window_style_checked(key.hwnd) else {
+        return false;
+    };
+    if !crate::tiling::stale_fullscreen_retire_eligible(
+        meta.changed,
+        style & meta.changed == meta.changed,
+        Some(false),
+    ) {
+        return false;
+    }
+    if read_fullscreen_meta(key.hwnd).as_ref() != Some(meta) {
+        return false;
+    }
+    if !clear_fullscreen_meta(key.hwnd) {
+        return false;
+    }
+    let _ = super::fullscreen_preimage::clear(dir, key.hwnd, key.pid, &key.creation, tag);
+    true
+}
+
 /// Native effects behind the project-owned fullscreen exit, split from the
 /// effect ordering so hermetic tests can substitute scripted answers while
 /// the production sequence (style restore, frame reapply, pre-fullscreen

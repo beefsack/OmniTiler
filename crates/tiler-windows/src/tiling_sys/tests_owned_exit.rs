@@ -413,6 +413,37 @@ fn rect_restore_failure_keeps_metadata() {
 }
 
 #[test]
+fn retire_restored_fullscreen_fails_closed_without_a_live_lifetime() {
+    use crate::native_guards::WindowKey;
+    let dir = std::env::temp_dir();
+    // A dead/bogus HWND never authorizes metadata removal; the marker stays
+    // for the exact live exit path. Zero owned bits is never a restore proof.
+    let dead = WindowKey {
+        hwnd: 0x7fff_ffff_fff0,
+        pid: 4,
+        creation: "creation-x".to_owned(),
+    };
+    let meta = super::FullscreenMeta {
+        changed: super::FULLSCREEN_STYLE_BITS,
+        was_maximized: false,
+        frame: None,
+    };
+    assert!(!super::fullscreen::retire_restored_fullscreen(
+        &dir, &dead, "tag-x", &meta
+    ));
+    let zero = super::FullscreenMeta {
+        changed: 0,
+        ..meta
+    };
+    assert!(!super::fullscreen::retire_restored_fullscreen(
+        &dir, &dead, "tag-x", &zero
+    ));
+    assert!(!super::fullscreen::retire_restored_fullscreen(
+        &dir, &dead, "", &meta
+    ));
+}
+
+#[test]
 fn frame_codec_round_trips_full_coordinate_range() {
     // The biased storage must distinguish NULL from every real coordinate,
     // including negative multi-monitor origins and `i32` extremes.
