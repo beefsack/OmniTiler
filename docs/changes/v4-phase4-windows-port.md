@@ -448,10 +448,12 @@ rects were alpha `0,0 2560x1440` and beta unchanged `1280,0 1280x1380`. No
 late publish rows or writes followed settlement. A directional CLI send used
 `w24` as origin; the post row had no focus effects, beta was not focused (no
 hijack), and the next tick retiled both windows with native restoration and
-`cursor_warps=0`. The skip-reason surface was `absent`: the trace carries the
-row-level `unreadable` reason but no skip or refusal event names, so the root
-cause of the unreadable hold remains a diagnostic gap. The primary
-readable-domain `untouched` overlay row also remains unproven. The safety
+`cursor_warps=0`. The skip-reason surface was `absent` in this run: the trace
+carried only the row-level `unreadable` reason without a skip or refusal
+event naming the cause. The later Task 9 fullscreen leg supersedes this: the
+readable-domain `untouched` overlay row is published with a named
+`fullscreen` skip, and the `unreadable` hold did not reproduce on the current
+tree. The safety
 behavior itself passes: zero tiled writes, zero pending transfers/operations,
 visible retained fullscreen, and no hijack. Game/anti-cheat acceptance
 remains user-owned; no game was run.
@@ -479,20 +481,22 @@ behavior); after the watcher exited it reported
 owner or fixture process remained, settings bytes were byte-exact, and SPI
 read back `{arranging:1, pen:35, abm:0}`. No mismatch was observed.
 
-Limits: this crashed the hidden-window/ledger recovery path; a maximized or
-fullscreen R12 state preimage was not crashed in this leg and remains TBD.
+Limits: this crashed the hidden-window/ledger recovery path. Maximized and
+normal fullscreen R12 state preimages are crashed separately in Task 9 above;
+none remains TBD for the supported rows.
 The CLI restore refusal while the watcher holds the lease is the documented
 single-store behavior, not a failed restoration.
 
 ### Task 9 targeted live verification (2026-11-25, final tree, above:true build)
 
-All legs ran fixture-only under the fixture-only scope, on the final working
-tree whose only capability change is `windows_capabilities().above = true`.
-Each leg recorded the exact owner binary hash, the HEAD it started from
-(`d064a653c2`), the preflight absence of another owner/ledger, and byte-exact
-settings restore; the proof code on that working tree was then committed as
-`717ff7e187` without changing the binaries' behavior. SPI/taskbar state was
-not modified by these legs.
+All legs ran fixture-only under the fixture-only scope. The first legs ran on
+the working tree at `d064a653c2` whose only capability change was
+`windows_capabilities().above = true`; that proof code was committed as
+`717ff7e187`. The matrix and the closing fullscreen/R12 legs ran after the
+observation-skip trace landed, on `b533c7e1b5` (owner sha
+`E911C336…0069`). Each leg recorded the exact owner binary hash, the preflight
+absence of another owner/ledger, and byte-exact settings restore. SPI/taskbar
+state was not modified by these legs.
 
 - **Production reveal (strict hide→show).** Evidence
   `target/task9/above-iconic-20261125-164411-9972/evidence.json`, owner sha
@@ -528,8 +532,52 @@ not modified by these legs.
   than inheriting 125%-only metrics. Limits: the leg floats the target to
   preserve an exact snapped frame; a tiled half-work frame is retiled by the
   product, so the snapped case uses a floating member.
+- **[R12](../decisions/contract.md#native-writes-difficult-to-undo-r12) fullscreen chrome preimage crash.** Two exact-PID crash/restart legs
+  on `b533c7e1b5`, both PASS with settings bytes restored and no orphaned
+  metadata:
+  - Normal entry: `target/task9/r12-state-20261125-180527-6252/evidence.json`.
+    The durable row recorded `wasMaximized:false` with the pre-fullscreen
+    outer `-8,0 2576×1388`; the crash kept the row and marker with chrome
+    stripped; restart recovery cleared the row and marker, restored
+    caption/thickframe, and moved the window back to the exact tile vis
+    `0,0 2560×1380`.
+  - Maximized entry: `target/task9/r12-state-20261125-181149-16708/evidence.json`.
+    The fixture maximized the member (WS_MAXIMIZE) before the product
+    fullscreen toggle, so the durable row recorded `wasMaximized:true` with
+    `frame:null`. The crash retained it; restart recovery cleared the row and
+    marker, restored chrome, and reasserted maximize (native style carries
+    WS_MAXIMIZE, fixture reports `maximized`).
+  - A separate probe at
+    `target/task9/r12-maxprobe-20261125-181209-13692/evidence.json` records
+    the same maximized entry before the crash and the concurrent
+    `world-observation-skips` reason (`fullscreen`) for the token.
+- **Readable-domain fullscreen overlay and skip reason.** The current
+  all-stages fullscreen leg (`target/task9/fullscreen-20261125-181248-12724/evidence.json`)
+  passes the application-fullscreen stage with an `untouched` row for the
+  fullscreen window (allocation `0,0 1280×1380` unchanged, `frame_op:null`),
+  zero held scopes, zero frame writes to it, and a monitor-sized DWM frame.
+  A `world-observation-skips` row names the same token with reason
+  `fullscreen`, so the retained-overlay lane is diagnosable instead of a bare
+  `unreadable` hold. The earlier Task 5 `unreadable` hold does not reproduce
+  with the current tree; if any skip recurs, the changed-set trace now names
+  the token and the closed-vocabulary reason (unit-tested for emission,
+  dedupe, clear, and change).
+- **Full phase4 stress/delay matrix on `b533c7e1b5`.** All six supported rows
+  PASS (`mise exec -- just world-stress -Case <case> -DelayMs <n>`), each with
+  102 publications, 61 burst gaps, `status=pass`, and
+  `world-stress final cleanup ok`:
+  - `home-away` 0 ms: `target/windows-world-stress/20261125-181457-948`
+  - `home-away` 10 ms (added 1490 ms): `20261125-181546-8848`
+  - `home-away` 50 ms (added 7450 ms): `20261125-181643-17224`
+  - `trio-churn` 0 ms: `20261125-181745-7368`
+  - `trio-churn` 10 ms (added 1560 ms): `20261125-181842-23668`
+  - `trio-churn` 50 ms (added 7800 ms): `20261125-181939-18168`
+  One transient `hide-L09` failure preceded the first `home-away` pass at the
+  same HEAD (`20261125-181329-18916`: checkpoint reported a managed
+  foreground where null was expected); the immediate rerun passed and the
+  other five rows passed first-try. No supported row is TBD.
 - **Fullscreen and stale-fullscreen auto-retire.** Evidence
-  `target/task9/fullscreen-20261125-172941-13200/evidence.json`; all stages
+  `target/task9/fullscreen-20261125-181248-12724/evidence.json`; all stages
   passed. Enter/exit produced the expected `state_attempt` rows and native
   caption/thickframe restoration. The stale stage re-entered product
   fullscreen, then restored the external chrome style (`0x00C40000`) without
@@ -539,9 +587,9 @@ not modified by these legs.
   transfers/operations. The remediation is therefore **reintroduced in the
   Windows adapter** (detected-on-sweep, not silently subsumed by core); core
   does not need to own the native style sweep. This corrects the earlier Task
-  5 narrative: the strict hide→show transition is now proven by the reveal
-  leg, while stale-retire is proven here. The readable-domain `untouched`
-  overlay row for a held fullscreen scope remains unproven.
+  5 narrative: the strict hide→show transition is proven by the reveal leg,
+  the readable-domain `untouched` overlay row by the app-fullscreen stage
+  above, and stale-retire here.
 - **`state_attempts` audit.** The final-tree logs carry `above` target
   `true` on float and `false` on release (one each), fullscreen target `true`
   on enter and `false` on exit, and no state attempt for the iconic or
@@ -565,14 +613,13 @@ not modified by these legs.
 
 Remaining TBD (explicit, not claimed):
 
-- R12 above-band preimage crash now passes twice (Task 9: two exact-PID
-  crashes, one durable row per boot, stable member tag, release clears it).
-  A maximized or fullscreen R12 state preimage crash is still not exercised.
-- Fullscreen root cause and game: the safe fail-closed held-scope row passes,
-  and the stale-fullscreen auto-retire remediation now passes on external
-  chrome restore (Task 9). The primary readable-domain `untouched` overlay row
-  and the `unreadable` hold's skip/refusal reason remain unproven.
-  Game/anti-cheat acceptance remains user-owned.
+- R12 state preimages now include the fullscreen chrome path: normal and
+  maximized entry both crash and restart cleanly (Task 9 evidence above),
+  in addition to the twice-crashed above-band intent.
+- Fullscreen: the safe fail-closed held-scope row passes, the stale-retire
+  remediation passes (Task 9), and the readable-domain `untouched` row plus a
+  named skip reason are now live-proven. The former `unreadable` hold did not
+  reproduce; game/anti-cheat acceptance remains user-owned.
 - Live settings refused revision: no live fixture seam exists; unit tests
   cover the refused path. The startup, live `restart-required`, and restart
   adoption rows are proven above.
@@ -580,8 +627,8 @@ Remaining TBD (explicit, not claimed):
   production `workspace-reveal`, honest DWM visibility, no duplicate). The
   older iconic-subject minimize hold remains documented above, including its
   former `SW_SHOWMINNOACTIVE` limit.
-- Full phase4 stress matrix: Task 9 ran the targeted live legs and the
-  `tiler-windows`/core unit suites on the final tree, not the full
-  `home-away`/`trio-churn` delay matrix. Unsupported matrix rows are TBD.
+- Full phase4 stress matrix: all six supported `home-away`/`trio-churn`
+  delay rows pass at `b533c7e1b5` (paths above); no supported row is TBD and
+  no unsupported row is claimed.
 - Drag preview: no input driver was used, so `dragPreview.id` gating is
   unit-tested only; live drag interaction remains a residual.
