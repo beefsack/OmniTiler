@@ -560,7 +560,10 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     assert_eq!(row.allocation, None, "no managed geometry");
     assert_eq!(row.effective_frame, None, "no placement");
     assert_eq!(row.frame_operation, None, "no placement token");
-    // Explicit send of the minimized lifetime refuses without a flight.
+    // Explicit send of an unfocused minimized lifetime refuses without a
+    // flight: the iconic membership-only lane (R12) serves only the focused
+    // window, so the focus-mismatch refusal reaches the wire as
+    // operation-refused.
     let mut send_report = report(
         3,
         3,
@@ -584,7 +587,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         (tiler_core::world_engine::WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
-                kind: tiler_core::world_report::CommandRejectKind::SendWindowUnknown
+                kind: tiler_core::world_report::CommandRejectKind::OperationRefused
             }),
             "minimized send must refuse"
         ),

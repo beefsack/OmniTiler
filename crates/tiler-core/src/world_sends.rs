@@ -592,15 +592,14 @@ impl WorldTransaction<'_> {
         // and approved combos pass, and the layout operation decides
         // their admission (deferred slotless carry). A minimized member
         // carries no live classification, so this lane cannot apply.
-        if let Some(source_row) = source_row {
-            if source_row.sticky
+        if let Some(source_row) = source_row
+            && (source_row.sticky
                 || (source_row.fit_excluded
                     && !source_row.floating
                     && !source_row.fullscreen
-                    && !source_row.maximized)
-            {
-                return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
-            }
+                    && !source_row.maximized))
+        {
+            return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
         }
         let source_key = match source_row {
             Some(row) => DomainKey {
