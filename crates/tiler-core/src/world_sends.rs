@@ -560,7 +560,22 @@ impl WorldTransaction<'_> {
         {
             return Err((KIND_IN_FLIGHT, MSG_IN_FLIGHT));
         }
-        let Some(source_row) = by_id.get(window) else {
+        let source_row = by_id.get(window);
+        // A minimized/iconic member has no Engine carrier: it lives only in
+        // the domain's minimized slot and the membership map. Its retained
+        // home is exact, so same-output workspace sends settle as a
+        // membership-only transfer (no frame plan, no staged frame focus).
+        let minimized_home = if source_row.is_none() {
+            self.world
+                .workspace
+                .members
+                .get(window)
+                .filter(|member| member.minimized)
+                .map(|member| member.home.clone())
+        } else {
+            None
+        };
+        if source_row.is_none() && minimized_home.is_none() {
             // Observed-but-excluded windows refuse (no automatic
             // permission) instead of reading unknown: the adapter reported
             // them and the core tracks them; membership is what is withheld.
@@ -570,23 +585,31 @@ impl WorldTransaction<'_> {
                 return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
             }
             return Err((KIND_SEND_WINDOW, MSG_SEND_WINDOW));
-        };
+        }
         // No automatic permission for sticky windows and unexplained
         // fit-excluded rows (game/overlay without a floating, fullscreen,
         // or maximized origin): only tiled members, D16-eligible floats,
         // and approved combos pass, and the layout operation decides
-        // their admission (deferred slotless carry).
-        if source_row.sticky
-            || (source_row.fit_excluded
-                && !source_row.floating
-                && !source_row.fullscreen
-                && !source_row.maximized)
-        {
-            return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
+        // their admission (deferred slotless carry). A minimized member
+        // carries no live classification, so this lane cannot apply.
+        if let Some(source_row) = source_row {
+            if source_row.sticky
+                || (source_row.fit_excluded
+                    && !source_row.floating
+                    && !source_row.fullscreen
+                    && !source_row.maximized)
+            {
+                return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
+            }
         }
-        let source_key = DomainKey {
-            output: source_row.output.clone(),
-            workspace: source_row.workspace.clone(),
+        let source_key = match source_row {
+            Some(row) => DomainKey {
+                output: row.output.clone(),
+                workspace: row.workspace.clone(),
+            },
+            None => minimized_home
+                .clone()
+                .expect("minimized home precedes the refusal path"),
         };
         let target_key = DomainKey {
             output: target_output.clone(),
@@ -627,13 +650,30 @@ impl WorldTransaction<'_> {
             return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         }
         // Floating-workspace sends (either endpoint floating, including
-        // both): transfer project membership with no two-domain layout
-        // plan. Shielding presents the mover at the target so the tiled
-        // side reconciles through its sweep; floating-side frames stay
-        // untouched (explicit untouched rows, never geometry).
+        // both) transfer project membership with no two-domain layout
+        // plan. A minimized/iconic mover uses the same membership-only
+        // shape: it carries no frame, so its retained home and the
+        // adapter's membership proof are the whole settlement. Shielding
+        // presents a live mover at the target so the tiled side reconciles
+        // through its sweep; floating-side frames stay untouched (explicit
+        // untouched rows, never geometry).
         let source_floating = self.world.floating_scopes.contains(&source_key);
         let target_floating = self.world.floating_scopes.contains(&target_key);
-        if source_floating || target_floating {
+        let iconic_mover = minimized_home.is_some();
+        if iconic_mover || source_floating || target_floating {
+            if iconic_mover && allow_cross_output {
+                // Cross-output membership-only sends have no proved native
+                // move lane yet; refuse instead of inventing one.
+                return Err((KIND_SEND_REFUSED, MSG_SEND_REFUSED));
+            }
+            if iconic_mover
+                && self.world.staged.observation.focused_global != window.0
+            {
+                return Err((
+                    RefusalKind::FocusMismatch.as_str(),
+                    "the moved window is not the focused window",
+                ));
+            }
             // Both scopes must be staged (target readable: the adapter
             // can only verify membership it can see).
             if !self
@@ -922,7 +962,23 @@ impl WorldTransaction<'_> {
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        let Some(source_row) = by_id.get(window) else {
+        let source_row = by_id.get(window);
+        // A minimized/iconic member carries no Engine carrier (it lives only
+        // in the domain's minimized slot and the membership map), so the
+        // layout lane cannot plan a frame for it. Its retained home is still
+        // exact, and a numbered send is a membership-only transfer for that
+        // mover. Unknown or excluded lifetimes keep the refusal path below.
+        let minimized_home = if source_row.is_none() {
+            self.world
+                .workspace
+                .members
+                .get(window)
+                .filter(|member| member.minimized)
+                .map(|member| member.home.clone())
+        } else {
+            None
+        };
+        if source_row.is_none() && minimized_home.is_none() {
             // Observed-but-excluded windows refuse (no automatic
             // permission) instead of reading unknown: the adapter reported
             // them and the core tracks them; membership is what is withheld.
@@ -938,7 +994,7 @@ impl WorldTransaction<'_> {
                 kind: KIND_SEND_WINDOW,
                 message: MSG_SEND_WINDOW,
             };
-        };
+        }
         if self
             .world
             .settlement
@@ -954,9 +1010,14 @@ impl WorldTransaction<'_> {
                 message: MSG_IN_FLIGHT,
             };
         }
-        let source_key = DomainKey {
-            output: source_row.output.clone(),
-            workspace: source_row.workspace.clone(),
+        let source_key = match source_row {
+            Some(row) => DomainKey {
+                output: row.output.clone(),
+                workspace: row.workspace.clone(),
+            },
+            None => minimized_home
+                .clone()
+                .expect("minimized home precedes the refusal path"),
         };
         // Held scopes refuse; floating workspaces route into the boundary
         // branch of [`WorldEngine::execute_send`] (membership-only when
@@ -973,7 +1034,7 @@ impl WorldTransaction<'_> {
         // wrong mapping, while the Engine refuses cross-output workspace
         // sends as `CrossDomainMismatch` at the boundary anyway. Refuse up
         // front with those exact semantics and no mutation.
-        if source_row.output != *output {
+        if source_key.output != *output {
             return CommandApplied::Rejected {
                 kind: RefusalKind::CrossDomainMismatch.as_str(),
                 message: RefusalKind::CrossDomainMismatch.message(),
@@ -1083,7 +1144,8 @@ impl WorldTransaction<'_> {
             };
             target
         };
-        if follow
+        if source_row.is_some()
+            && follow
             && matches!(
                 ring.as_slice(),
                 [.., source, spare] if source == &source_key.workspace.0 && spare == &target

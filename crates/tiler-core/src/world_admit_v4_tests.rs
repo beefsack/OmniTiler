@@ -4375,3 +4375,149 @@ fn retained_membership_cap_uncertainty_controls_and_command_created_entry() {
             .contains_key(&WindowId("win-sticky".to_owned()))
     );
 }
+
+#[test]
+fn numbered_send_moves_minimized_member_without_engine_carrier() {
+    // R12 live regression: an iconified window keeps its membership home but
+    // loses its Engine carrier (it lives only in the domain minimized slot),
+    // so the focused-window send must settle as a membership-only transfer
+    // instead of refusing with `send-window-unknown`.
+    let mut engine = engine();
+    let tiled_windows = || vec![fact("w0", "out-a", 0), fact("wKeep", "out-a", 100)];
+    accepted_reply(1, admit(&mut engine, &observe(1, tiled_windows(), "w0")));
+    let source_home = engine
+        .world
+        .workspace
+        .members
+        .get(&WindowId("w0".to_owned()))
+        .expect("tiled membership")
+        .home
+        .clone();
+    let iconic = || {
+        let mut fact = fact("w0", "out-a", 0);
+        fact.minimized = Some(true);
+        fact.rect = None;
+        fact
+    };
+    let minimized_windows = || vec![iconic(), fact("wKeep", "out-a", 100)];
+    let mut minimized_ingress = ingress("w0");
+    minimized_ingress.foreground_minimized = Some(true);
+    minimized_ingress.foreground_frame = None;
+    accepted_reply(
+        2,
+        admit(
+            &mut engine,
+            &report(
+                2,
+                minimized_windows(),
+                "w0",
+                PresentationRowV4::Valid(minimized_ingress.clone()),
+                None,
+                None,
+                Vec::new(),
+            ),
+        ),
+    );
+    assert!(
+        engine
+            .world
+            .workspace
+            .members
+            .get(&WindowId("w0".to_owned()))
+            .expect("iconic membership")
+            .minimized,
+        "minimization keeps the member but clears the Engine carrier"
+    );
+    assert!(
+        engine
+            .world
+            .staged
+            .domains
+            .iter()
+            .all(|domain| domain.windows.iter().all(|w| w.window.0 != "w0")),
+        "no Engine carrier exists for the iconified member"
+    );
+    let (outcome, settlements) = admit_with_settlements(
+        &mut engine,
+        &report(
+            3,
+            minimized_windows(),
+            "w0",
+            PresentationRowV4::Valid(minimized_ingress),
+            Some(2),
+            Some(WorldCommand::SendNumbered {
+                window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
+                index: 2,
+                follow: true,
+            }),
+            Vec::new(),
+        ),
+    );
+    let _reply = accepted_reply(3, outcome);
+    assert_eq!(settlements.len(), 1);
+    assert!(
+        settlements[0].result.is_none(),
+        "membership-only send executes without a typed rejection, got {:?}",
+        settlements
+    );
+    let target_home = engine
+        .world
+        .workspace
+        .members
+        .get(&WindowId("w0".to_owned()))
+        .expect("iconic membership survives the send")
+        .home
+        .clone();
+    assert_ne!(target_home.workspace, source_home.workspace);
+    assert_eq!(target_home.output, source_home.output);
+    let transfer = engine
+        .world
+        .settlement
+        .retained
+        .iter()
+        .find(|r| matches!(&r.target.kind, crate::world_report::TransferKind::Window(w) if w.0 == "w0"))
+        .expect("membership-only transfer retained");
+    assert_eq!(transfer.target.target_workspace, target_home.workspace.0);
+    assert!(
+        engine.world.staged.domains.iter().any(|domain| {
+            domain.key == target_home
+                && domain.minimized.iter().any(|w| w.0 == "w0")
+        }),
+        "the iconified mover stages minimized in its new domain"
+    );
+    // Unknown lifetimes still refuse with the cataloged kind: the new branch
+    // widens exactly to known iconic members.
+    let mut minimized_b = fact("wKeep", "out-a", 100);
+    minimized_b.minimized = Some(true);
+    minimized_b.rect = None;
+    let (unknown_outcome, unknown_settlements) = admit_with_settlements(
+        &mut engine,
+        &report(
+            4,
+            vec![iconic(), minimized_b],
+            "w0",
+            PresentationRowV4::Valid(ingress("w0")),
+            Some(3),
+            Some(WorldCommand::SendNumbered {
+                window: crate::directional::WindowSubject::Window(WindowId(
+                    "w-ghost".to_owned(),
+                )),
+                source: SendSource::Explicit(OutputId("out-a".to_owned())),
+                index: 1,
+                follow: false,
+            }),
+            Vec::new(),
+        ),
+    );
+    let _unknown_reply = accepted_reply(4, unknown_outcome);
+    assert_eq!(
+        unknown_settlements
+            .first()
+            .and_then(|s| s.result.clone()),
+        Some(CommandResult::Rejected {
+            kind: CommandRejectKind::SendWindowUnknown
+        }),
+        "unknown windows keep the send-window-unknown refusal"
+    );
+}
