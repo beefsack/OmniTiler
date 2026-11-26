@@ -9,6 +9,12 @@ workspace, drag, fullscreen-carry, Settings or underlay gates
 [scope audit](macos-0.1-product-scope-audit.md),
 [platform scope](../decisions/platforms.md)).
 
+**Update:** [Native Spaces prior art](macos-0.1-native-spaces-prior-art.md)
+supersedes three recommendations below as research only: indicator safe-hide
+as the whole answer, fullscreen deferral, and amending the sticky gate now.
+None is an approved change; the full native gate remains open and
+no scope was changed.
+
 **Evidence key:** Tagged external citations are source inspection only, not
 native execution or accepted evidence. AeroSpace v0.21.3-Beta is the latest
 available tagged pre-release; there is no stable AeroSpace tag. The TD2
@@ -285,3 +291,6 @@ These are separate decisions. Existing wording is in
 The user selects outcomes; owning records and the gate, plus minimal
 discriminating rows if needed, are updated only after those selections. That
 update is not done in this research note.
+
+For the superseding source-only recommendations and future native
+discriminators, see [native Spaces prior art](macos-0.1-native-spaces-prior-art.md).
