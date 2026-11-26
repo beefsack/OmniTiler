@@ -84,6 +84,13 @@ The [sticky contract](../decisions/window-state.md#sticky-floating) is per windo
   set, the exact away destination and return, fresh SLS membership
   reads before and after the switch, and an unconditional one-bit
   restore while owner identity is proven.
+- The synchronous controller was not pursued to a live run. The existing
+  harness has no masked per-window tag bindings or restore-first path
+  that keeps the exact signed fixture owner authenticated after its AX
+  title is no longer readable off-Space. Adding those pieces and a
+  pinned empty away Space was more than a small diagnostic change.
+  No tag was written and no new measurement was taken. Checks 6 and 32
+  retain their existing requirements.
 
 ## Project-owned native fullscreen
 

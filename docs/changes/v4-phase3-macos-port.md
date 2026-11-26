@@ -1329,6 +1329,9 @@ readbacks are retained separately from the repository.
   unmeasured. The topology was restored, with no owned residue. No retry
   was attempted with a sidecar that could not guarantee tag restoration.
   [Evidence](macos-0.1-native-spaces-prior-art.md#bounded-signed-fixture-probe-2026-11-27).
+  The synchronous follow-up was stopped before a live run: it would
+  require new masked tag bindings and an off-Space, identity-checked
+  restore-first path. No new measurement; checks 6 and 32 are unchanged.
 
 ## Transferable KDE lessons
 
