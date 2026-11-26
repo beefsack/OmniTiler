@@ -210,6 +210,13 @@ mise exec -- cargo test --locked -p tiler-macos --lib world_builder::tests::firs
 - The coverage gap marks both inventory and screen reports incomplete. The core's native-list completeness guard prevents idle native-echo adoption even though the report carries the fresh current Space. The retained logical current therefore stays on Desktop 3 and the indicator deduplicates the unchanged projection. Space-switch and current-highlight acceptance remain blocked on deciding whether presentation can follow independently verified native current while leaving inventory and action authority held.
 - Teardown stopped the scoped product, returned to Desktop 1, removed only the two owned Desktops, restored the original row, and cleared the recovery receipt.
 
+### Offline empty-destination diagnosis
+
+- The native gate stays open: this offline evidence does not accept the switch or current-highlight behavior. The raw scoped log for observations 5–10 verifies zero published AX windows, one retained and applied member, an incomplete hold, zero accepted frames and no newer indicator rebuild. It contains no retained pager receipt or logged CG completion, CG owner IDs, retained IDs/homes or re-home success set, so the failed prerequisite cannot be identified and CG-alive cannot be claimed.
+- A genuine builder/dispatch offline test reproduces the hold with unreadable CG, keeps the hold and removes the stale home on unknown SLS membership, then clears both the PID and session holds with complete owner enumeration, a live CG frame and fresh unique non-current SLS membership. `non-covering-retained` counts roster rows before recovery; blind preservation is not fresh proof.
+- No behavior, core or wire change. The full offline package gate passes: 1,721 library tests passed with zero failures and three ignored; 152 integration tests passed with zero failures.
+- A future signed-fixture leg must capture correlated CG completeness and owner IDs/details (including CG bounds and SLS result), roster homes and re-home results for the scoped observations, then require verified native current and a newer indicator rebuild/current ordinal. Unknown homes keep the hold and no writes.
+
 ## Backlog detail moved 2026-11-01
 
 ### Original backlog lines 1733-1740

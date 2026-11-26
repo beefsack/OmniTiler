@@ -10203,6 +10203,280 @@ mod trailing_join_tests {
         );
     }
 
+    /// Desktop 3 -> 4 with the sole retained fixture window: the fresh
+    /// Desktop's AX read is empty (the worker's `published=0` shape), so the
+    /// real `build_scoped_snapshot` -> `handle_scoped_observation` path keeps
+    /// the row homed on hidden Desktop 3 under a whole-report `blank-hidden`
+    /// hold until fresh native truth grounds it. Complete CG plus a fresh
+    /// exact non-current membership re-homes and clears; unknown membership
+    /// drops the stale home and holds. A preserved row never proves
+    /// completeness.
+    #[test]
+    fn desktop_switch_sole_hidden_fixture_window_cg_oracle_matrix() {
+        use crate::classifier::{ActivationPolicy, ROLE_WINDOW, SUBROLE_STANDARD};
+        use crate::ffi::{AxFrame, CgBounds, SlsDisplayRow, SlsSpaceType};
+        use crate::native_facts::{
+            CgWindowEntry, NativeAppFacts, NativeReadOutcome, NativeWindowFacts,
+        };
+        use crate::native_tile_backend::build_scoped_snapshot;
+        use crate::runtime_core::preserve_non_covering_hidden;
+        use crate::runtime_native::handle_scoped_observation;
+        use crate::topology::{DisplayGeometry, PointsRect, TopologySnapshot};
+
+        const PID: u32 = 4242;
+        const GEN: u64 = 1;
+        const WID: u32 = 1829;
+        const UUID: &str = "deadbeef-dead-4000-8000-deadbeefdead";
+        // Synthetic non-degenerate fixture frame inside the single display.
+        const FRAME: (f64, f64, f64, f64) = (720.0, 157.0, 1520.0, 1011.0);
+        const BOUNDS: (i32, i32, i32, i32) = (720, 157, 1520, 1011);
+
+        fn ctx(current: u64) -> Arc<NativeContext> {
+            let displays = vec![DisplayGeometry {
+                cg_id: 1,
+                uuid: Some(UUID.to_owned()),
+                cg_bounds: Some(PointsRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 2240.0,
+                    h: 1260.0,
+                }),
+                visible: Some(PointsRect {
+                    x: 0.0,
+                    y: 25.0,
+                    w: 2240.0,
+                    h: 1235.0,
+                }),
+                scale: 2.0,
+            }];
+            let rows = vec![SlsDisplayRow {
+                identifier: Some(UUID.to_owned()),
+                spaces: vec![3, 4],
+                current: Some(current),
+            }];
+            let revision = crate::topology::fingerprint_snapshot(&displays, &rows, Some(true));
+            let snap = TopologySnapshot {
+                displays,
+                rows,
+                separate_spaces: Some(true),
+                revision,
+            };
+            let (ctx, skipped) = NativeContext::derive(&snap, &|_| Some(SlsSpaceType::User));
+            assert!(skipped.is_empty(), "nothing skipped: {skipped:?}");
+            let order: Vec<u64> = ctx.domains.iter().map(|d| d.space).collect();
+            let live: Vec<u64> = ctx
+                .domains
+                .iter()
+                .filter(|d| d.current)
+                .map(|d| d.space)
+                .collect();
+            assert_eq!((order, live), (vec![3, 4], vec![current]));
+            Arc::new(ctx)
+        }
+        fn read(cg_complete: bool, ax: bool) -> NativeReadOutcome {
+            NativeReadOutcome {
+                pid: PID,
+                requested: ax as usize,
+                observed: ax as usize,
+                failed: 0,
+                first_cause: String::new(),
+                windows: if ax {
+                    vec![NativeWindowFacts {
+                        wid: WID,
+                        role: Some(ROLE_WINDOW.to_owned()),
+                        subrole: Some(SUBROLE_STANDARD.to_owned()),
+                        fullscreen: Some(false),
+                        minimized: Some(false),
+                        modal: Some(false),
+                        size_settable: Some(true),
+                        min_size: None,
+                        max_size: None,
+                        frame: Some(AxFrame {
+                            x: FRAME.0,
+                            y: FRAME.1,
+                            w: FRAME.2,
+                            h: FRAME.3,
+                        }),
+                        cg_layer: Some(0),
+                        cg_onscreen: Some(true),
+                    }]
+                } else {
+                    Vec::new()
+                },
+                cg_complete,
+                cg_owner_wids: if cg_complete { vec![WID] } else { Vec::new() },
+                cg_entries: if cg_complete {
+                    vec![CgWindowEntry {
+                        wid: WID,
+                        layer: 0,
+                        onscreen: false,
+                        bounds: CgBounds {
+                            x: FRAME.0,
+                            y: FRAME.1,
+                            w: FRAME.2,
+                            h: FRAME.3,
+                        },
+                    }]
+                } else {
+                    Vec::new()
+                },
+            }
+        }
+        fn snap(
+            ctx: &NativeContext,
+            cg_complete: bool,
+            ax: bool,
+            spaces: Option<Vec<u64>>,
+        ) -> ScopedBackendSnapshot {
+            let app = NativeAppFacts {
+                pid: PID,
+                hidden: false,
+                activation_policy: ActivationPolicy::Regular,
+                is_own_bundle: false,
+                app_id: None,
+            };
+            build_scoped_snapshot(
+                PID,
+                ctx.revision,
+                &read(cg_complete, ax),
+                &app,
+                &|wid| {
+                    assert_eq!(wid, WID);
+                    spaces
+                        .clone()
+                        .ok_or_else(|| "membership unreadable".to_owned())
+                },
+                None,
+                false,
+                false,
+            )
+            .expect("scoped snapshot")
+        }
+        fn space_key(space: u64) -> DomainKey {
+            DomainKey {
+                output: OutputId(crate::topology::output_key(1)),
+                workspace: WorkspaceId(crate::topology::workspace_key(space)),
+            }
+        }
+
+        let ctx3 = ctx(3);
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx3), RetainedCore::default());
+        assert!(session.connection_bound(), "genuine handshake binds");
+        close_app(&shared, PID, GEN);
+        let logged = |seq: u64, kind: &str, outcome: &str| {
+            lock_shared(&shared)
+                .log
+                .iter()
+                .find(|e| e.ref_id == seq && e.kind == kind && e.outcome == outcome)
+                .map(|e| e.count)
+        };
+        macro_rules! deliver {
+            ($seq:expr, $snap:expr) => {
+                handle_scoped_observation(
+                    &mut session,
+                    &mut retained,
+                    &shared,
+                    &inbox,
+                    &focus_queue,
+                    8,
+                    PID,
+                    GEN,
+                    $seq,
+                    $snap,
+                )
+            };
+        }
+
+        // Leg 1: home the sole fixture window on current Desktop 3.
+        let home = snap(&ctx3, true, true, Some(vec![3]));
+        assert_eq!((home.windows.len(), home.excluded), (1, 0));
+        deliver!(1, home);
+        assert_eq!(
+            retained.window_domains.get(&window_id(PID, WID)),
+            Some(&space_key(3))
+        );
+        assert!(!retained.apps[&PID].roster_incomplete);
+
+        // Current Desktop switches to 4; shared native context publishes first.
+        let ctx4 = ctx(4);
+        {
+            let mut guard = lock_shared(&shared);
+            guard.native_context = Some(Arc::clone(&ctx4));
+            guard.topology_revision = ctx4.revision;
+        }
+        let frames_before = lock_shared(&shared).diagnostics.frames_emitted;
+
+        // Leg 2 (raw-log shape): empty AX on Desktop 4, unreadable CG.
+        let unreadable = snap(&ctx4, false, false, None);
+        assert!(
+            unreadable.windows.is_empty(),
+            "published=0: zero AX windows"
+        );
+        assert!(unreadable.meta.is_empty() && unreadable.excluded == 0);
+        assert!(!unreadable.cg_complete && unreadable.cg_alive.is_empty());
+        assert_eq!(
+            preserve_non_covering_hidden(&retained, PID, &unreadable, &ctx4).len(),
+            1,
+            "blind preservation keeps the row but is not fresh proof"
+        );
+        deliver!(2, unreadable);
+        assert_eq!(logged(2, "observation", "applied"), Some(1));
+        assert_eq!(logged(2, "observation", "non-covering-retained"), Some(1));
+        assert_eq!(logged(2, "scope", "held-incomplete-inventory"), Some(0));
+        assert_eq!(logged(2, "core-reply", "reconcile-accepted"), Some(0));
+        assert!(retained.apps[&PID].roster_incomplete);
+        assert_eq!(retained.apps[&PID].roster_cause, "blank-hidden");
+        assert_eq!(
+            retained.window_domains.get(&window_id(PID, WID)),
+            Some(&space_key(3))
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            frames_before
+        );
+        assert!(session.coverage_gap());
+
+        // Leg 3: complete CG owner + live frame, unknown membership: fresh
+        // evidence contradicts the stale home and the hold persists.
+        let unknown = snap(&ctx4, true, false, None);
+        assert!(unknown.cg_complete && unknown.cg_owner_wids == vec![WID]);
+        assert!(unknown.cg_alive[0].spaces.is_empty());
+        assert_eq!(unknown.cg_alive[0].bounds, Some(BOUNDS));
+        assert!(preserve_non_covering_hidden(&retained, PID, &unknown, &ctx4).is_empty());
+        deliver!(3, unknown);
+        assert_eq!(logged(3, "observation", "applied"), Some(0));
+        assert_eq!(logged(3, "observation", "non-covering-retained"), Some(1));
+        assert_eq!(logged(3, "scope", "held-incomplete-inventory"), Some(0));
+        assert!(retained.apps[&PID].roster_incomplete);
+        assert!(retained.apps[&PID].roster[&WID].spaces.is_empty());
+        assert!(!retained.window_domains.contains_key(&window_id(PID, WID)));
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            frames_before
+        );
+
+        // Leg 4: same complete CG evidence + fresh exact non-current
+        // membership: the hidden row re-homes and the hold/gap clear.
+        let exact = snap(&ctx4, true, false, Some(vec![3]));
+        assert_eq!(exact.cg_alive[0].spaces, vec![3]);
+        deliver!(4, exact);
+        assert_eq!(logged(4, "observation", "applied"), Some(1));
+        assert_eq!(logged(4, "observation", "non-covering-retained"), Some(1));
+        assert_eq!(logged(4, "scope", "held-incomplete-inventory"), None);
+        assert_eq!(logged(4, "core-reply", "reconcile-accepted"), Some(0));
+        assert!(!retained.apps[&PID].roster_incomplete);
+        assert_eq!(
+            retained.window_domains.get(&window_id(PID, WID)),
+            Some(&space_key(3))
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_emitted,
+            frames_before
+        );
+        assert!(!session.coverage_gap());
+    }
+
     /// Durable intent through the production dispatch: explicit synthetic
     /// ordinary captures (production caps) admit three windows, then a real
     /// `ToggleFloat` core command dispatches through genuine
