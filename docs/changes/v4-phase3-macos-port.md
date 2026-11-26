@@ -1171,6 +1171,7 @@ run after the port:
   gesture, and the product re-applied the composed overlay. Core clear is
   gesture-commit attributed, so a native external-clear proof needs a real
   move/resize (physical or an attributed gesture), not a raw frame write.
+- Restart-to-base is blocked on a guarded two-launch fixture controller. The existing controller stops the product and closes the fixture at the end of each leg, so it cannot observe a settled base after restart over the same fixture lifetime.
 
 ## D4 native intent-store restart proof (2026-11-24)
 
@@ -1195,6 +1196,7 @@ run after the port:
   not late hydration: two tiles split the work area while floats keep native
   frames. A future rerun should compare the tile-rect multiset, keep float
   size+position exact, and record expected overlap rather than failing it.
+- Recomputing the retained run's before/after data gives exact position and size for both float rectangles and the same unordered multiset of tiled rectangles, with the two tiles swapping slots. These are fixture-socket readbacks only: no independent AX/CG frame samples or tile window IDs were retained. A fresh tightened proof is blocked on a guarded two-launch fixture controller that keeps the same fixture lifetimes and isolated store.
 - Unproved here: store write-failure recovery, re-login namespace rejection,
   numeric launch-date stability beyond the observed in-session rows, and
   native visual z-order after restart.
@@ -1284,7 +1286,7 @@ posting available, the session unlocked and Secure Input inactive.
   the signed fixture (2026-11-24), and malformed-store startup degrades cleanly
   (2026-11-25). Numeric launch-date stability and recoverable write failure
   are proved in one login (2026-11-26); skipped-publication recovery,
-  tightened restart geometry and re-login namespace rejection remain. No store
+  tightened restart geometry (blocked on a guarded two-launch fixture controller) and re-login namespace rejection remain. No store
   adoption is established by finite CG ID churn experiments.
 - M4's product route is decided, not reopened here; native apply/restore is
   proved on the signed fixture (2026-11-24). Physical Ctrl+M delivery, paint,
