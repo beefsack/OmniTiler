@@ -1296,6 +1296,13 @@ readbacks are retained separately from the repository.
   unchanged and empty. Both stops were verified and owned teardown
   restored the starting Space with no residue.
   [M3 and M4 evidence](archive/macos-guarded-two-launch-fixture.md#signed-runs-2026-11-27).
+- **M3 corrected rerun — passed (`m3-exact`).** Rebuilt and signed at
+  `ed908794`. The staged survivor layout matched before stop and after
+  fresh adoption as exact AX/CG multisets. Both exact-lifetime floats
+  recovered their frames, and a verified inter-launch nudge was undone
+  without launch-two input. The store fingerprint stayed unchanged and
+  both product lifetimes and owned teardown were verified.
+  [Evidence](archive/macos-guarded-two-launch-fixture.md#corrected-signed-m3-rerun-2026-11-27).
 
 - **Sticky — stopped before mutation.** A signed SIP-on SkyLight
   connection resolved `SLSProcessAssignToAllSpaces`, a PID-scoped API
@@ -1328,10 +1335,10 @@ readbacks are retained separately from the repository.
   recoverable hold; store adoption and orderly-restart persistence are proved on
   the signed fixture (2026-11-24), and malformed-store startup degrades cleanly
   (2026-11-25). Numeric launch-date stability and recoverable write failure
-  are proved in one login (2026-11-26). Skipped-publication recovery,
-  exact tile-rebuild acceptance and re-login namespace rejection remain.
-  The hardened signed restart [matched the floats but refused the tile
-  multiset](archive/macos-guarded-two-launch-fixture.md#signed-runs-2026-11-27).
+  are proved in one login (2026-11-26). The
+  [corrected signed restart](archive/macos-guarded-two-launch-fixture.md#corrected-signed-m3-rerun-2026-11-27)
+  proved exact tile re-adoption and float hydration. Skipped-publication
+  recovery and re-login namespace rejection remain.
   No store adoption is established by finite CG ID churn experiments.
 - M4's product route is decided, not reopened here; signed-fixture native
   apply/restore (2026-11-24) and restart-to-base (2026-11-27) passed.

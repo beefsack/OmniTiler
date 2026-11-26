@@ -93,3 +93,17 @@ the fresh survivor arrangement before launch one stops. The full
 macOS gate passed: **1,773 library and 152 integration tests**,
 zero failures, three library tests ignored. This does not close signed
 M3 acceptance; rerun the M3 command above with the corrected fixture.
+
+### Corrected signed M3 rerun (2026-11-27)
+
+The signed fixture and controller rebuilt from `ed908794` passed
+`m3-exact` in one run. Both AX and CG survivor multisets matched the
+side-by-side baseline before stop and after re-adoption, although the
+two tiles exchanged slots. The two exact-lifetime float bindings
+restored their individual AX/CG frames. Between launches, one owned
+write moved a tile to `(1140,54,1076,1091)` in both AX and CG, with
+every other frame unchanged. Both products stopped cleanly and their
+absence was verified independently. Launch two used no input and the
+private store fingerprint matched at hydration and after stop. The
+starting Space was restored with no owned residue or retained receipt.
+Both launch logs and terminal outcomes were retained outside the repo.
