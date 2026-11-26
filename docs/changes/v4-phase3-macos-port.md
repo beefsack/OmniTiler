@@ -1215,6 +1215,31 @@ run after the port:
   an empty store without blocking operation. It does not prove write-failure
   recovery after a later accepted reply, which remains a native M3 gap.
 
+## Single-display signed-fixture evidence (2026-11-26)
+
+At `3b0f73f7`, the signed probe and fixture rebuilt and passed `just verify`
+and `just fixture-verify`. `just preflight-app` reported AX trusted, event
+posting available, the session unlocked and Secure Input inactive.
+
+- **M3 launch-date stability.** During the bounded `fixture-leg --chord
+  maximize-toggle --chord focus-h --seconds 75` setup, three fresh
+  `proc-identity --pid` observer processes returned bit-identical, non-null
+  `launch_ref_bits` for the same live, signed fixture instance. This proves
+  stability across observer launches in one login, not across logins or
+  fixture relaunches. That leg refused input before posting because the
+  supplied requirement omitted the literal `designated =>` prefix. The
+  controller removed the fixture/run resources; independent
+  `spaces-diagnose` confirmed the same row and current Space.
+- **M4 apply/restore recheck.** The same bounded leg with the full designated
+  requirement completed on one owned ordinary Space. The first posted
+  Ctrl+M changed the native AX frame to the work-area overlay; the second
+  restored the exact original position and size. CG remained onscreen and
+  `AXZoomed` was absent at all three samples. The product reported
+  `shutdown_clean:true`; the starting Space was restored, the product and
+  awake companion were reaped, and no residue or receipt remained. This
+  corroborates the already accepted synthetic apply/restore leg, not
+  physical delivery, paint, restart-to-base or final slice-5 acceptance.
+
 ## Transferable KDE lessons
 
 - Fail closed: unknown never matches; setter acceptance is not native settlement ([runner oracles](v4-phase2-kde-scenario-runner.md#selected-design)).
