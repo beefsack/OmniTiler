@@ -27,11 +27,11 @@ use crate::fixture_post::{FixtureDriver, LiveTransport};
 const SETTLE_MS: u64 = 1_500;
 /// Observation-only duplicate window: more than one 1 s worker backstop.
 const OBSERVE_MS: u64 = 2_000;
-/// Bounded wait for a held issuing reply to consume its control file.
+/// Bounded wait for the product to report the one-shot issuing-reply hold.
 const HOLD_TIMEOUT_MS: u64 = 3_000;
 /// Bounded wait for an observation-only reply to converge a retained frame.
 const CONVERGE_TIMEOUT_MS: u64 = 5_000;
-/// Poll cadence for bounded native/AX control-file reads.
+/// Poll cadence for native readbacks and product log evidence.
 const POLL_MS: u64 = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
