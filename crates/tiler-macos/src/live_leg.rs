@@ -252,6 +252,42 @@ pub struct ProductRecord {
     pub launch_services: bool,
 }
 
+/// Evidence from stopping one product launch for the guarded two-launch
+/// controller: the exact PID plus its bound lifetime (internal only, never
+/// reported) plus the product's own terminal `outcome.json` body. The
+/// controller uses the bound lifetime for its independent gone check and
+/// reports the PID plus terminal body only.
+#[derive(Debug, Clone)]
+pub struct RestartStopEvidence {
+    pub pid: u32,
+    pub exe: String,
+    pub launch: String,
+    pub outcome: serde_json::Value,
+}
+
+/// Clean first-launch terminal verdict over the product's own
+/// `outcome.json` body: a boolean `shutdown_clean:true` plus one of the two
+/// non-refusal terminal outcome names. Anything missing, refused, unclean,
+/// or unshaped refuses, so the second launch never follows a merely-exited
+/// first one. Pure; unit-tested.
+pub fn clean_terminal_verdict(outcome: &serde_json::Value) -> Result<(), String> {
+    if outcome.get("shutdown_clean") != Some(&serde_json::Value::Bool(true)) {
+        return Err(
+            "prior product terminal evidence is not shutdown_clean:true; refusing restart"
+                .to_owned(),
+        );
+    }
+    match outcome.get("outcome").and_then(serde_json::Value::as_str) {
+        Some("stopped" | "completed") => Ok(()),
+        Some(other) => Err(format!(
+            "prior product terminal outcome '{other}' is not a clean stop; refusing restart"
+        )),
+        None => Err(
+            "prior product terminal evidence lacks an outcome name; refusing restart".to_owned(),
+        ),
+    }
+}
+
 /// Executed return proof: the Space-probe evidence plus the closing Mission
 /// Control presence. Space IDs only; no titles, paths, or content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -579,14 +615,28 @@ fn read_nonce_from_run_dir(run_dir: &Path) -> Result<String, String> {
     Err("shutdown: no parsable nonce in the announcement file".to_owned())
 }
 
+/// Known leaves of one product output directory (`--run-dir`): the stop
+/// request, terminal outcome plus its atomic-write temp, foreground logs,
+/// and the per-run ID. Shared by the single-launch product directory and
+/// each two-launch `launch-N` subdirectory.
+const PRODUCT_RUN_LEAVES: [&str; 6] = [
+    "stop-requested",
+    "outcome.json",
+    ".outcome.json.tmp",
+    "stdout.log",
+    "stderr.log",
+    "run-id",
+];
+
 /// Remove only the owned fixture run directory's known files plus the
 /// directory itself. Known leaves are the fixture announcement/log/socket
 /// plus the leg-created `product` subdirectory's known product leaves
-/// (`stop-requested`, `outcome.json`, `.outcome.json.tmp`, `stdout.log`,
-/// `stderr.log`, `run-id`). Every removal is symlink-guarded; an unknown
-/// leaf is residue (refused here, never broad-deleted) so the next leg's
-/// begin is blocked until inspection instead of silently dropping state.
-/// Never recursive beyond the owned leaves, never a pre-existing directory.
+/// ([`PRODUCT_RUN_LEAVES`]), the two-launch controller's `launch-1` /
+/// `launch-2` output subdirectories (same known leaves), and the isolated
+/// intent store. Every removal is symlink-guarded; an unknown leaf is
+/// residue (refused here, never broad-deleted) so the next leg's begin is
+/// blocked until inspection instead of silently dropping state. Never
+/// recursive beyond the owned leaves, never a pre-existing directory.
 fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
     for leaf in ["announcement.json", "stderr.log", "fixture.sock"] {
         remove_known_leaf(run_dir, leaf)?;
@@ -597,15 +647,13 @@ fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
             return Err("shutdown: owned product dir is a symlink; refusing".to_owned());
         }
         Ok(meta) if meta.is_dir() => {
-            for leaf in [
-                "stop-requested",
-                "outcome.json",
-                ".outcome.json.tmp",
-                "stdout.log",
-                "stderr.log",
-                "run-id",
-            ] {
+            for leaf in PRODUCT_RUN_LEAVES {
                 remove_known_leaf(&product_dir, leaf)?;
+            }
+            // Two-launch layout: per-launch output directories hold only
+            // the same known product leaves.
+            for leaf in ["launch-1", "launch-2"] {
+                remove_owned_launch_dir(&product_dir, leaf)?;
             }
             remove_owned_intent_store(&product_dir)?;
             // Unknown product leaves are residue, never broad-deleted: the
@@ -672,12 +720,57 @@ fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("shutdown: owned run-dir removal refused ({e})"))
 }
 
+/// Remove one owned two-launch product output directory (`launch-1` /
+/// `launch-2`) after its known leaves are removed: symlink-guarded, never a
+/// broad delete, and unknown leaves are residue that refuses the removal.
+fn remove_owned_launch_dir(product_dir: &Path, leaf: &str) -> Result<(), String> {
+    let dir = product_dir.join(leaf);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
+            "shutdown: owned product {leaf} dir is a symlink; refusing"
+        )),
+        Ok(meta) if meta.is_dir() => {
+            for known in PRODUCT_RUN_LEAVES {
+                remove_known_leaf(&dir, known)?;
+            }
+            let mut unknown = Vec::new();
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        unknown.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "shutdown: owned product {leaf} dir unreadable ({e})"
+                    ));
+                }
+            }
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "shutdown: owned product {leaf} dir holds unknown leaves ({}); residue retained, never broad-deleted",
+                    unknown.join(",")
+                ));
+            }
+            std::fs::remove_dir(&dir)
+                .map_err(|e| format!("shutdown: owned product {leaf} dir removal refused ({e})"))
+        }
+        Ok(_) => Err(format!(
+            "shutdown: owned product {leaf} path is not a directory; refusing"
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "shutdown: owned product {leaf} dir metadata refused ({e})"
+        )),
+    }
+}
+
 /// Remove the fixture-isolated intent store after the product has shut
 /// down. Only the product's store row and its atomic-write temp leaves are
 /// accepted; the directory and every file are symlink-guarded, and any
 /// other entry is residue rather than broad-deleted.
 fn remove_owned_intent_store(product_dir: &Path) -> Result<(), String> {
-    let store_dir = product_dir.join("intent-store");
+    let store_dir = product_dir.join(crate::fixture_leg::ISOLATED_STORE_LEAF);
     match std::fs::symlink_metadata(&store_dir) {
         Ok(meta) if meta.file_type().is_symlink() => {
             return Err("shutdown: owned intent-store is a symlink; refusing".to_owned());
@@ -1024,6 +1117,93 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         Ok(())
     }
 
+    /// True while one product instance is registered for this leg. The
+    /// guarded two-launch controller requires this false before binding its
+    /// second launch; teardown still owns any instance left here.
+    #[must_use]
+    pub fn has_owned_product(&self) -> bool {
+        self.owned_product.is_some()
+    }
+
+    /// The exact registered product instance, when one is bound. Read-only:
+    /// the two-launch controller verifies this record against a live
+    /// identity read at its post-restart capture, never with a PID alone.
+    #[must_use]
+    pub(crate) fn owned_product_record(&self) -> Option<&ProductRecord> {
+        self.owned_product.as_ref()
+    }
+
+    /// Stop the registered product for an orderly relaunch, using the
+    /// existing exact-owner stop path, and clear it only after all of:
+    /// the stop reports reaped, no residue was collected, the product's own
+    /// `outcome.json` is clean terminal evidence, and one independent
+    /// exact-PID liveness recheck proves the process gone. Every failure
+    /// keeps the record registered so `finish` retries the same exact stop
+    /// and reports residue; nothing is signalled on an unproven identity.
+    /// The owned run directory (and the isolated store inside it) stays for
+    /// the caller's fingerprint capture and final teardown.
+    pub fn stop_product_for_restart(&mut self) -> Result<RestartStopEvidence, String> {
+        let record = self
+            .owned_product
+            .clone()
+            .ok_or_else(|| "restart stop: no owned product is registered".to_owned())?;
+        let mut residue = Vec::new();
+        let stopped = self.stop_product(&mut residue);
+        if !stopped || !residue.is_empty() {
+            return Err(format!(
+                "restart stop: owned product pid {} did not stop cleanly; residue: {}",
+                record.pid,
+                if residue.is_empty() {
+                    "stop unproven".to_owned()
+                } else {
+                    residue.join("; ")
+                }
+            ));
+        }
+        let raw = std::fs::read_to_string(record.run_dir.join("outcome.json")).map_err(|e| {
+            format!(
+                "restart stop: owned product pid {} terminal outcome unreadable ({e}); refusing restart",
+                record.pid
+            )
+        })?;
+        let outcome: serde_json::Value = serde_json::from_str(&raw).map_err(|_| {
+            format!(
+                "restart stop: owned product pid {} terminal outcome is not JSON; refusing restart",
+                record.pid
+            )
+        })?;
+        clean_terminal_verdict(&outcome).map_err(|e| {
+            format!(
+                "restart stop: owned product pid {} terminal evidence refused: {e}",
+                record.pid
+            )
+        })?;
+        match self.transport.process_gone(record.pid) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(format!(
+                    "restart stop: owned product pid {} still present after the stop; refusing restart without overlap",
+                    record.pid
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "restart stop: owned product pid {} liveness unreadable after the stop ({e}); refusing restart",
+                    record.pid
+                ));
+            }
+        }
+        self.owned_product = None;
+        self.product_child = None;
+        self.product_outcome = Some(outcome.clone());
+        Ok(RestartStopEvidence {
+            pid: record.pid,
+            exe: record.exe,
+            launch: record.launch,
+            outcome,
+        })
+    }
+
     /// Register one leg-created native Space for owned-only removal at
     /// `finish` (pinned to its creation display).
     pub fn note_owned_space(&mut self, display: usize, sid: u64) {
@@ -1368,6 +1548,16 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             && let Err(e) = self.transport.shutdown_fixture(&record)
         {
             residue.push(format!("owned fixture pid {} shutdown: {e}", record.pid));
+        }
+        // 4b. The private store is product-owned state, not fixture state:
+        // once the product is proven reaped, remove it even when fixture
+        // shutdown failed. Receipts/logs stay for audit; an uncertain or
+        // symlinked store stays residue rather than being broad-deleted.
+        if product_reaped
+            && let Some(record) = self.owned_fixture.clone()
+            && let Err(e) = remove_owned_intent_store(&record.run_dir.join("product"))
+        {
+            residue.push(format!("owned private store cleanup: {e}"));
         }
         // 5. Remove only leg-created Spaces, each pinned and proven empty.
         for (display, sid) in self.owned_spaces.clone() {
@@ -2474,6 +2664,189 @@ mod tests {
                 "active_chords": 2
             }))
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_layout_removes_both_launch_dirs_and_only_the_private_store() {
+        // The two-launch layout shares one product directory: launch-1 and
+        // launch-2 hold only known product leaves, and one private
+        // intent-store sits beside them. Teardown removes both launch dirs
+        // and the store, then the product and run dirs.
+        let dir = test_dir("restart-layout");
+        let run = dir.join("run");
+        let product = run.join("product");
+        for launch in ["launch-1", "launch-2"] {
+            let launch_dir = product.join(launch);
+            std::fs::create_dir_all(&launch_dir).expect("launch dir creates");
+            for leaf in PRODUCT_RUN_LEAVES {
+                std::fs::write(launch_dir.join(leaf), "known\n").expect("leaf writes");
+            }
+        }
+        let store = product.join("intent-store");
+        std::fs::create_dir(&store).expect("store dir creates");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        for leaf in ["announcement.json", "stderr.log", "fixture.sock"] {
+            std::fs::write(run.join(leaf), "known\n").expect("leaf writes");
+        }
+        remove_owned_run_dir(&run).expect("restart layout removes");
+        assert!(!run.exists());
+
+        // An unknown leaf inside one launch dir is residue: the removal
+        // refuses and leaves the foreign file for audit.
+        let run = dir.join("run-unknown");
+        let launch = run.join("product").join("launch-1");
+        std::fs::create_dir_all(&launch).expect("launch dir creates");
+        std::fs::write(launch.join("foreign-debug.log"), "unknown\n").expect("unknown writes");
+        let err = remove_owned_run_dir(&run).unwrap_err();
+        assert!(err.contains("unknown leaves"), "unexpected: {err}");
+        assert!(launch.join("foreign-debug.log").exists());
+
+        // A symlinked launch dir refuses instead of following it.
+        let run = dir.join("run-link");
+        let product = run.join("product");
+        std::fs::create_dir_all(&product).expect("product dir creates");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/tmp", product.join("launch-2")).expect("link creates");
+            let err = remove_owned_run_dir(&run).unwrap_err();
+            assert!(err.contains("symlink"), "unexpected: {err}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn restart_product(run_dir: &Path, pid: u32) -> ProductRecord {
+        ProductRecord {
+            pid,
+            exe: "/probe-exe".to_owned(),
+            launch: "launch-product".to_owned(),
+            run_dir: run_dir.to_path_buf(),
+            launch_services: true,
+        }
+    }
+
+    #[test]
+    fn restart_stop_clears_ownership_only_after_clean_evidence_and_gone() {
+        let dir = test_dir("restart-stop-clean");
+        let product = dir.join("product");
+        std::fs::create_dir_all(&product).expect("product dir creates");
+        let store = product.join(crate::fixture_leg::ISOLATED_STORE_LEAF);
+        std::fs::create_dir(&store).expect("store dir creates");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        std::fs::write(
+            product.join("outcome.json"),
+            "{\"outcome\":\"stopped\",\"shutdown_clean\":true}",
+        )
+        .expect("outcome writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_product_ls(restart_product(&product, 5101))
+            .expect("product registers");
+        let evidence = leg.stop_product_for_restart().expect("clean stop");
+        assert_eq!(evidence.pid, 5101);
+        assert_eq!(evidence.exe, "/probe-exe");
+        assert_eq!(
+            evidence.outcome,
+            serde_json::json!({"outcome": "stopped", "shutdown_clean": true})
+        );
+        assert!(!leg.has_owned_product(), "clean stop clears the record");
+        // Stop never deletes the store or output dir: the caller captures
+        // the fingerprint and the final teardown removes them.
+        assert!(product.join("stop-requested").exists());
+        assert!(store.join("intent-v1-501-100021.json").exists());
+        // No product is registered now: a second stop is an explicit
+        // refusal, not a silent success.
+        assert!(leg.stop_product_for_restart().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_finish_removes_private_store_even_when_fixture_shutdown_fails() {
+        let dir = test_dir("restart-store-cleanup");
+        let product = dir.join("product");
+        let launch = product.join("launch-1");
+        let store = product.join(crate::fixture_leg::ISOLATED_STORE_LEAF);
+        std::fs::create_dir_all(&launch).expect("launch dir creates");
+        std::fs::create_dir(&store).expect("store dir creates");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        std::fs::write(
+            launch.join("outcome.json"),
+            "{\"outcome\":\"stopped\",\"shutdown_clean\":true}",
+        )
+        .expect("outcome writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        transport.shutdown = Err("injected fixture shutdown refusal".to_owned());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_fixture(FixtureRecord {
+            pid: 4242,
+            exe: "/live-exe".to_owned(),
+            launch: "launch-live".to_owned(),
+            socket_path: "/tmp/live-fixture.sock".to_owned(),
+            run_dir: dir.clone(),
+        })
+        .expect("fixture registers");
+        leg.register_product_ls(restart_product(&launch, 5103))
+            .expect("product registers");
+        leg.stop_product_for_restart().expect("clean first stop");
+        let err = leg
+            .finish()
+            .expect_err("fixture shutdown failure is residue");
+        let body: serde_json::Value = serde_json::from_str(&err.1).expect("teardown JSON");
+        let residue = body["residue"].as_array().expect("residue array");
+        assert!(
+            residue.iter().any(|entry| entry
+                .as_str()
+                .is_some_and(|text| text.contains("fixture pid 4242 shutdown"))),
+            "fixture shutdown residue reported: {body}"
+        );
+        // Shared finish attempted the private store even though fixture
+        // shutdown failed; receipts/logs stay for audit.
+        assert!(!store.exists(), "owned private store is removed");
+        assert!(
+            launch.join("outcome.json").exists(),
+            "terminal receipt stays"
+        );
+        assert!(launch.join("stop-requested").exists(), "stop request stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_stop_refuses_missing_or_unclean_terminal_and_keeps_ownership() {
+        let dir = test_dir("restart-stop-unclean");
+        let product = dir.join("product");
+        std::fs::create_dir_all(&product).expect("product dir creates");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_product_ls(restart_product(&product, 5102))
+            .expect("product registers");
+        // Missing terminal evidence with an already-gone PID refuses but
+        // keeps the exact record for teardown.
+        let err = leg.stop_product_for_restart().unwrap_err();
+        assert!(err.contains("did not stop cleanly"), "unexpected: {err}");
+        assert!(leg.has_owned_product());
+        // An unclean body is refused even though the process is gone.
+        std::fs::write(
+            product.join("outcome.json"),
+            "{\"outcome\":\"stopped\",\"shutdown_clean\":false}",
+        )
+        .expect("outcome writes");
+        let err = leg.stop_product_for_restart().unwrap_err();
+        assert!(
+            err.contains("terminal evidence refused"),
+            "unexpected: {err}"
+        );
+        assert!(leg.has_owned_product());
+        // A clean body on the same retained record then succeeds.
+        std::fs::write(
+            product.join("outcome.json"),
+            "{\"outcome\":\"completed\",\"shutdown_clean\":true}",
+        )
+        .expect("outcome writes");
+        let evidence = leg
+            .stop_product_for_restart()
+            .expect("clean evidence clears the retained record");
+        assert_eq!(evidence.pid, 5102);
+        assert!(!leg.has_owned_product());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

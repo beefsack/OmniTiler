@@ -223,6 +223,17 @@ impl PostOnlyOwnedSpace {
     pub(crate) fn sid(&self) -> u64 {
         self.sid
     }
+
+    /// Starting display's current SID recorded before the append.
+    pub(crate) fn starting_sid(&self) -> u64 {
+        self.starting_sid
+    }
+
+    /// The starting display's exact row after the append, used by the
+    /// two-launch controller to refuse before its second product launch.
+    pub(crate) fn spaces_after(&self) -> &[u64] {
+        &self.spaces_after
+    }
 }
 
 /// Bounded settle for the post-only occupancy proof after the window join

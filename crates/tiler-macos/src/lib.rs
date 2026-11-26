@@ -66,6 +66,7 @@ mod fixture_owned_space;
 #[cfg(target_os = "macos")]
 mod fixture_pager;
 pub mod fixture_post;
+pub mod fixture_restart;
 pub mod fixture_sample;
 pub mod fixture_zoom;
 pub mod focus;

@@ -1194,6 +1194,146 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
 }
 
 #[test]
+fn fixture_restart_cli_parses_modes_defaults_and_refusals() {
+    let r = parse_args(&argv(&[
+        "fixture-restart",
+        "--mode",
+        "m3",
+        "--signer",
+        "designated => test",
+    ]))
+    .unwrap();
+    assert!(
+        r.may_mutate,
+        "fixture-restart launches and stops the product"
+    );
+    match r.command {
+        Command::FixtureRestart {
+            mode,
+            seconds,
+            windows,
+            floats,
+            preset,
+            modifier,
+            signer,
+        } => {
+            assert_eq!(mode, crate::fixture_restart::RestartMode::M3);
+            assert_eq!(seconds, 90);
+            assert_eq!(windows, 4);
+            assert_eq!(floats, 2);
+            assert_eq!(preset, crate::input_policy::InputPreset::Compatible);
+            assert_eq!(modifier, ProbeModifier::Ctrl);
+            assert_eq!(signer, "designated => test");
+        }
+        _ => panic!("fixture-restart m3 must parse"),
+    }
+    let r = parse_args(&argv(&[
+        "fixture-restart",
+        "--mode",
+        "m3",
+        "--windows",
+        "6",
+        "--floats",
+        "3",
+        "--seconds",
+        "120",
+        "--preset",
+        "authentic",
+        "--signer",
+        "designated => test",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::FixtureRestart {
+            mode: crate::fixture_restart::RestartMode::M3,
+            seconds: 120,
+            windows: 6,
+            floats: 3,
+            preset: crate::input_policy::InputPreset::Authentic,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "fixture-restart",
+        "--mode",
+        "m4",
+        "--signer",
+        "designated => test",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::FixtureRestart {
+            mode: crate::fixture_restart::RestartMode::M4,
+            windows: 2,
+            floats: 0,
+            ..
+        }
+    ));
+    // Shape refusals happen at parse time, before any effect.
+    for bad in [
+        vec!["fixture-restart", "--signer", "designated => test"],
+        vec![
+            "fixture-restart",
+            "--mode",
+            "m5",
+            "--signer",
+            "designated => test",
+        ],
+        vec![
+            "fixture-restart",
+            "--mode",
+            "m4",
+            "--floats",
+            "1",
+            "--signer",
+            "designated => test",
+        ],
+        vec![
+            "fixture-restart",
+            "--mode",
+            "m3",
+            "--windows",
+            "3",
+            "--floats",
+            "2",
+            "--signer",
+            "designated => test",
+        ],
+        vec![
+            "fixture-restart",
+            "--mode",
+            "m3",
+            "--floats",
+            "1",
+            "--signer",
+            "designated => test",
+        ],
+        vec![
+            "fixture-restart",
+            "--mode",
+            "m3",
+            "--seconds",
+            "59",
+            "--signer",
+            "designated => test",
+        ],
+        vec!["fixture-restart", "--mode", "m3", "--signer", "  "],
+        vec![
+            "fixture-restart",
+            "--mode",
+            "m3",
+            "--signer",
+            "designated => test",
+            "--bogus",
+        ],
+    ] {
+        assert!(parse_args(&argv(&bad)).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
 fn fixture_zoom_press_is_named_zoom_only_with_all_flags() {
     // Standalone zoom diagnostic: announcement file plus caller plus exact
     // wid plus signer, all required; zoom-only vocabulary (no --chord, no

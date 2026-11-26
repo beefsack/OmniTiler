@@ -406,6 +406,11 @@ struct FixtureFrameReport {
     note: String,
 }
 
+/// Optional controller commit-boundary check. It runs on the AX worker before
+/// the signed proof and the single write; the standalone path passes none.
+#[cfg(target_os = "macos")]
+pub(crate) type FixtureFrameCommitCheck = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
 /// Standalone frame-write diagnostic: fresh proof, then exactly one native
 /// cross-process AX frame write on an AX worker with a commit-boundary
 /// re-proof, then before/after facts. A post-actuation leg failure still
@@ -413,6 +418,27 @@ struct FixtureFrameReport {
 /// Exit codes: 2 usage/validation, 1 gate/proof/write failure with evidence.
 #[cfg(target_os = "macos")]
 pub fn run_fixture_frame_write(args: &FixtureFrameWriteArgs) -> Result<String, (i32, String)> {
+    run_fixture_frame_write_impl(args, true, None)
+}
+
+/// Controller entry for a caller that already holds the interrupt arm (the
+/// two-launch controller). The existing arm stays authoritative: this path
+/// never registers a nested handler or resets the latched SIGINT/SIGTERM
+/// flag before its single write.
+#[cfg(target_os = "macos")]
+pub(crate) fn run_fixture_frame_write_under_interrupt(
+    args: &FixtureFrameWriteArgs,
+    commit_check: Option<FixtureFrameCommitCheck>,
+) -> Result<String, (i32, String)> {
+    run_fixture_frame_write_impl(args, false, commit_check)
+}
+
+#[cfg(target_os = "macos")]
+fn run_fixture_frame_write_impl(
+    args: &FixtureFrameWriteArgs,
+    arm_interrupt: bool,
+    commit_check: Option<FixtureFrameCommitCheck>,
+) -> Result<String, (i32, String)> {
     use crate::fixture_zoom::{ZoomAuthInputs, check_zoom_authorization};
     let err_json = |stage: &str, error: String| -> (i32, String) {
         (
@@ -454,8 +480,14 @@ pub fn run_fixture_frame_write(args: &FixtureFrameWriteArgs) -> Result<String, (
     check_frame_bounds(&requested).map_err(|e| (2, e))?;
     let mut _watchdog = crate::watchdog::Watchdog::arm(HARD_LIMIT).map_err(|e| (1, e))?;
     frame_session_gates().map_err(|e| refuse("session", e))?;
-    let _interrupt =
-        crate::space_drag_diag_live::InterruptArmed::arm().map_err(|e| refuse("interrupt", e))?;
+    let _interrupt = if arm_interrupt {
+        Some(
+            crate::space_drag_diag_live::InterruptArmed::arm()
+                .map_err(|e| refuse("interrupt", e))?,
+        )
+    } else {
+        None
+    };
     let proof_start = Instant::now();
     let raw = std::fs::read_to_string(&args.announcement_file).map_err(|e| {
         (
@@ -606,6 +638,7 @@ pub fn run_fixture_frame_write(args: &FixtureFrameWriteArgs) -> Result<String, (
                 &exe,
                 &launch,
                 &worker_cancelled,
+                commit_check,
             );
             let _ = done_tx.send(outcome);
         })
@@ -738,6 +771,7 @@ fn frame_write_on_worker(
     bound_exe: &str,
     bound_launch: &str,
     cancelled: &AtomicBool,
+    commit_check: Option<FixtureFrameCommitCheck>,
 ) -> Result<WorkerOutcome, FrameWriteFailure> {
     use crate::ffi::{
         AxFrame, ax_error_name, ax_get_frame, ax_set_messaging_timeout, ax_set_position,
@@ -772,6 +806,9 @@ fn frame_write_on_worker(
         _ => None,
     };
     let commit: Result<(), String> = (|| {
+        if let Some(check) = commit_check {
+            check()?;
+        }
         frame_session_gates()?;
         let fresh = crate::ffi::ns_app_identity_for_pid(pid_i32);
         check_zoom_authorization(&ZoomAuthInputs {

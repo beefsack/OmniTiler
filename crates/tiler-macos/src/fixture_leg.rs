@@ -231,7 +231,7 @@ fn resolve_fixture_bundle(
 /// Resolve the fixture bundle directory: the environment override when set,
 /// else the sibling of the controller's own signed bundle root (see
 /// [`resolve_fixture_bundle`]).
-fn fixture_bundle_path() -> Result<std::path::PathBuf, String> {
+pub(crate) fn fixture_bundle_path() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("fixture-leg: executable path unreadable ({e})"))?;
     let override_path = std::env::var(FIXTURE_APP_ENV).ok();
@@ -260,6 +260,12 @@ pub const PRODUCT_EXE_REL: &str = "Contents/MacOS/tiler-macos";
 /// The bind still enforces the exact probe bundle scope plus the marker,
 /// so an override can never widen the leg's authority.
 pub const PRODUCT_APP_ENV: &str = "OMNITILER_PROBE_APP";
+
+/// Isolated intent-store leaf under the controller-owned product directory.
+/// The product receives `OMNITILER_INTENT_STORE_DIR` pointing here; both
+/// guarded two-launch product instances share this one store, and owned
+/// teardown removes exactly this directory (never the per-user store).
+pub(crate) const ISOLATED_STORE_LEAF: &str = "intent-store";
 
 /// Check one product bundle directory: never a symlink, always a directory
 /// carrying the owned marker plus executable (see
@@ -308,7 +314,7 @@ fn resolve_product_bundle(
 /// [`resolve_product_bundle`]). The leg launches the product through
 /// LaunchServices from this bundle (never a direct executable spawn, which
 /// would lose the signed attribution).
-fn product_bundle_path() -> Result<std::path::PathBuf, String> {
+pub(crate) fn product_bundle_path() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("fixture-leg: executable path unreadable ({e})"))?;
     let override_path = std::env::var(PRODUCT_APP_ENV).ok();
@@ -350,7 +356,7 @@ fn verify_product_artifact(bundle: &std::path::Path) -> Result<(), String> {
 
 /// Create an owned private run directory: fresh unique leaf, mode 0700,
 /// never a symlink, owned by the current UID. Refuses on any deviation.
-fn create_owned_run_dir(tag: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn create_owned_run_dir(tag: &str) -> Result<std::path::PathBuf, String> {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!("fixture-leg-{tag}-{}-{id}", std::process::id()));
@@ -426,7 +432,7 @@ pub(crate) fn settle_hold(ms: u64) -> Result<(), (i32, String)> {
 /// run directory. Returns when `open(1)` spawns (LaunchServices owns the
 /// process from here; no `Child` is held, so lifetime rides the bound
 /// executable/launch-date plus the run nonce).
-fn launch_fixture_bundle(
+pub(crate) fn launch_fixture_bundle(
     bundle: &std::path::Path,
     run_dir: &std::path::Path,
 ) -> Result<(), String> {
@@ -459,7 +465,7 @@ fn launch_fixture_bundle(
 
 /// Read the single announcement line with a genuine deadline (`open(1)`
 /// offers no readiness event; stated here where the timer is defined).
-fn read_announcement(run_dir: &std::path::Path) -> Result<String, String> {
+pub(crate) fn read_announcement(run_dir: &std::path::Path) -> Result<String, String> {
     let path = run_dir.join("announcement.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(ANNOUNCE_WAIT_SECS);
     loop {
@@ -492,8 +498,13 @@ fn read_announcement(run_dir: &std::path::Path) -> Result<String, String> {
 /// controller-owned gate SIDs (repeatable `--fixture-owned-space`) and the
 /// recorded starting current. Pure: the launch-args test pins the fixed
 /// scope plus private gate IDs (never `--unscoped`, never another scope).
-fn product_argv(
-    opts: &FixtureLegOpts,
+/// Shared by the single-launch `fixture-leg` and both launches of
+/// `fixture-restart`, so the product flag surface has exactly one source.
+pub(crate) fn product_argv(
+    seconds: u64,
+    preset: InputPreset,
+    modifier: ProbeModifier,
+    focus_follows_cursor: bool,
     product_dir: &std::path::Path,
     owned_sids: &[u64],
     starting_sid: Option<u64>,
@@ -504,15 +515,15 @@ fn product_argv(
         "--scope".to_owned(),
         FIXTURE_SCOPE.to_owned(),
         "--seconds".to_owned(),
-        opts.seconds.to_string(),
+        seconds.to_string(),
         "--input".to_owned(),
         "tap".to_owned(),
         "--preset".to_owned(),
-        opts.preset.as_str().to_owned(),
+        preset.as_str().to_owned(),
         "--run-dir".to_owned(),
         product_dir.to_string_lossy().into_owned(),
     ];
-    if opts.focus_follows_cursor {
+    if focus_follows_cursor {
         argv.push("--focus-follows-cursor".to_owned());
     }
     for sid in owned_sids {
@@ -523,7 +534,7 @@ fn product_argv(
         argv.push("--fixture-starting-space".to_owned());
         argv.push(starting.to_string());
     }
-    argv.insert(0, format!("--ctrl={}", opts.modifier.as_str()));
+    argv.insert(0, format!("--ctrl={}", modifier.as_str()));
     argv
 }
 
@@ -561,9 +572,10 @@ fn read_product_started(stdout_log: &std::path::Path) -> Option<(u32, String)> {
 /// is fresh (absent before launch), the run ID equals this run's, and the
 /// bundle/executable/launch-date join is live.
 #[cfg(target_os = "macos")]
-fn launch_product_ls(
+pub(crate) fn launch_product_ls(
     bundle: &std::path::Path,
     product_dir: &std::path::Path,
+    store_dir: &std::path::Path,
     argv: &[String],
     run_id: &str,
     hover_probe: bool,
@@ -591,11 +603,12 @@ fn launch_product_ls(
     }
     // Fixture-scoped durable intent isolation: never read or write the
     // user's real Application Support store during a bounded leg. The
-    // product creates the 0700 private directory under this run.
+    // product creates the 0700 private directory under this run; the
+    // two-launch controller passes the same path to both launches.
     open.arg("--env").arg(format!(
         "{}={}",
         crate::intent_store::STORE_DIR_ENV,
-        product_dir.join("intent-store").display()
+        store_dir.display()
     ));
     let status = open
         .arg(bundle)
@@ -728,7 +741,7 @@ fn completed_envelope(
 /// Control setting. The singleton handle is benign: no `finishLaunching`, no
 /// activation policy change, no activation, and no focus effect.
 #[cfg(target_os = "macos")]
-fn ensure_appkit_singleton() {
+pub(crate) fn ensure_appkit_singleton() {
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSApplication;
     if let Some(mtm) = MainThreadMarker::new() {
@@ -903,7 +916,7 @@ fn run_leg_body(
 /// that follows a foreground change, so the single owned post is dispatched
 /// rather than consumed-refused. Purely harness-side; product policy is
 /// unchanged.
-const FOCUS_SETTLE_MS: u64 = 500;
+pub(crate) const FOCUS_SETTLE_MS: u64 = 500;
 
 /// macOS-only leg body (see [`run_leg_body`]).
 #[cfg(target_os = "macos")]
@@ -1114,10 +1127,20 @@ fn run_leg_body_macos(
     // The leg seconds ride verbatim (always within the product bound by
     // the entry validation above: the exact flag is accepted).
     let product_bundle = product_bundle_path().map_err(|e| (2, e))?;
-    let argv = product_argv(opts, &product_dir, &owned_sids, starting_sid);
+    let argv = product_argv(
+        opts.seconds,
+        opts.preset,
+        opts.modifier,
+        opts.focus_follows_cursor,
+        &product_dir,
+        &owned_sids,
+        starting_sid,
+    );
+    let store_dir = product_dir.join(ISOLATED_STORE_LEAF);
     match launch_product_ls(
         &product_bundle,
         &product_dir,
+        &store_dir,
         &argv,
         &run_id,
         opts.hover_probe,
@@ -1280,7 +1303,11 @@ fn run_leg_body_macos(
 /// reply must carry a passing entry per caller; anything else refuses
 /// before any join or post.
 #[cfg(target_os = "macos")]
-fn spawn_owned_windows(socket: &str, nonce: &str, callers: &[String]) -> Result<(), String> {
+pub(crate) fn spawn_owned_windows(
+    socket: &str,
+    nonce: &str,
+    callers: &[String],
+) -> Result<(), String> {
     let ids: Vec<&str> = callers.iter().map(String::as_str).collect();
     let reply = crate::fixture_post::send_fixture_spawn(socket, nonce, &ids)
         .map_err(|e| format!("fixture-leg: window spawn refused ({e})"))?;
@@ -1314,7 +1341,7 @@ fn spawn_owned_windows(socket: &str, nonce: &str, callers: &[String]) -> Result<
 /// a live window of that PID. Unjoined callers refuse before any post;
 /// pre-existing foreign windows never match (caller/run-tag join).
 #[cfg(target_os = "macos")]
-fn join_fixture_windows(
+pub(crate) fn join_fixture_windows(
     pid: u32,
     socket: &str,
     nonce: &str,
@@ -1371,7 +1398,7 @@ fn join_fixture_windows(
 
 /// Read the run nonce from the owned announcement file (the only nonce
 /// source; never logged).
-fn read_run_nonce(run_dir: &std::path::Path) -> Result<String, String> {
+pub(crate) fn read_run_nonce(run_dir: &std::path::Path) -> Result<String, String> {
     let path = run_dir.join("announcement.json");
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| format!("fixture-leg: announcement file unreadable ({e})"))?;

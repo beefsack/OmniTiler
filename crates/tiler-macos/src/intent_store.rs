@@ -608,10 +608,7 @@ fn encode_snapshot(
     Ok(bytes)
 }
 
-fn decode_snapshot(
-    store: &IntentStore,
-    bytes: &[u8],
-) -> Result<BTreeMap<String, StoredEntry>, String> {
+fn parse_store_file(bytes: &[u8]) -> Result<StoreFile, String> {
     if bytes.len() > MAX_STORE_FILE_BYTES {
         return Err("store file exceeds size bound".to_owned());
     }
@@ -620,12 +617,13 @@ fn decode_snapshot(
     if file.version != STORE_VERSION {
         return Err("store file version mismatch".to_owned());
     }
-    if file.session_uid != store.uid || file.session_asid != store.asid {
-        return Err("store file session namespace mismatch".to_owned());
-    }
     if file.entries.len() > MAX_STORE_ENTRIES {
         return Err("store file exceeds row bound".to_owned());
     }
+    Ok(file)
+}
+
+fn entries_from_file(file: StoreFile) -> Result<BTreeMap<String, StoredEntry>, String> {
     let mut entries = BTreeMap::new();
     for raw in file.entries {
         let entry = StoredEntry {
@@ -642,6 +640,26 @@ fn decode_snapshot(
         }
     }
     Ok(entries)
+}
+
+fn decode_snapshot(
+    store: &IntentStore,
+    bytes: &[u8],
+) -> Result<BTreeMap<String, StoredEntry>, String> {
+    let file = parse_store_file(bytes)?;
+    if file.session_uid != store.uid || file.session_asid != store.asid {
+        return Err("store file session namespace mismatch".to_owned());
+    }
+    entries_from_file(file)
+}
+
+/// Decode one persisted store envelope into its exact rows without opening
+/// the live namespace or touching disk. The caller already owns the bytes
+/// (for example an isolated-store fingerprint) and is responsible for the
+/// namespace implied by the store directory. Validation is the same row and
+/// envelope validation used by the live loader; no row is guessed.
+pub(crate) fn decode_store_entries(bytes: &[u8]) -> Result<Vec<StoredEntry>, String> {
+    entries_from_file(parse_store_file(bytes)?).map(|entries| entries.into_values().collect())
 }
 
 #[cfg(test)]

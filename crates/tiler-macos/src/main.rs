@@ -792,6 +792,30 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 corrupt_intent_store,
             })
         }
+        Command::FixtureRestart {
+            mode,
+            seconds,
+            windows,
+            floats,
+            preset,
+            modifier,
+            signer,
+        } => {
+            // Development-only guarded two-launch controller: one fixture
+            // instance and one private store across two authenticated product
+            // launches, with owned teardown on every path.
+            tiler_macos::fixture_restart::run_fixture_restart(
+                tiler_macos::fixture_restart::FixtureRestartOpts {
+                    mode,
+                    seconds,
+                    windows,
+                    floats,
+                    preset,
+                    modifier,
+                    signer,
+                },
+            )
+        }
         Command::TextEditGrabInspect { record, nonce } => {
             // Read-only grab-point inspection for the run-owned disposable
             // TextEdit document: same record/nonce gates plus fresh frame

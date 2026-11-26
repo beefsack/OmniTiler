@@ -113,7 +113,15 @@ fn product_argv_carries_fixed_scope_and_private_gate_ids() {
     // the private gate IDs. Never unscoped, never another scope.
     let opts = test_opts(vec!["select-3", "send-3"]);
     let product_dir = std::path::Path::new("/tmp/leg-run/product");
-    let argv = product_argv(&opts, product_dir, &[1001, 1002], Some(11));
+    let argv = product_argv(
+        opts.seconds,
+        opts.preset,
+        opts.modifier,
+        opts.focus_follows_cursor,
+        product_dir,
+        &[1001, 1002],
+        Some(11),
+    );
     assert_eq!(argv[1], "tile");
     assert!(argv.contains(&"--user-start".to_owned()));
     let scopes: Vec<&String> = argv
@@ -151,7 +159,15 @@ fn product_argv_carries_fixed_scope_and_private_gate_ids() {
     // created owned SID plus the recorded starting SID, arming the
     // existing product gate (no other argv change).
     let post = test_opts(vec!["focus-h"]);
-    let argv = product_argv(&post, product_dir, &[2001], Some(11));
+    let argv = product_argv(
+        post.seconds,
+        post.preset,
+        post.modifier,
+        post.focus_follows_cursor,
+        product_dir,
+        &[2001],
+        Some(11),
+    );
     let owned: Vec<u64> = argv
         .windows(2)
         .filter(|pair| pair[0] == "--fixture-owned-space")
@@ -164,9 +180,15 @@ fn product_argv_carries_fixed_scope_and_private_gate_ids() {
         .map(|pair| pair[1].parse().expect("starting SID"));
     assert_eq!(starting, Some(11));
     assert!(!argv.iter().any(|arg| arg == "--focus-follows-cursor"));
-    let mut ffc = test_opts(vec!["focus-h"]);
-    ffc.focus_follows_cursor = true;
-    let argv = product_argv(&ffc, product_dir, &[], None);
+    let argv = product_argv(
+        post.seconds,
+        post.preset,
+        post.modifier,
+        true,
+        product_dir,
+        &[],
+        None,
+    );
     assert_eq!(
         argv.iter()
             .filter(|arg| *arg == "--focus-follows-cursor")

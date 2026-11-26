@@ -227,6 +227,15 @@ pub enum Command {
         corrupt_intent_store: bool,
         signer: String,
     },
+    FixtureRestart {
+        mode: crate::fixture_restart::RestartMode,
+        seconds: u64,
+        windows: usize,
+        floats: usize,
+        preset: crate::input_policy::InputPreset,
+        modifier: ProbeModifier,
+        signer: String,
+    },
     TextEditGrabInspect {
         record: String,
         nonce: String,
@@ -697,6 +706,24 @@ pub fn help_text() -> String {
               \x20 \x20 samples first float and re-float with a second owned\n\
               \x20 \x20 window; use --chord pager-switch alone to observe the\n\
               \x20 \x20 pager across a switch between two owned Spaces)\n\
+              \x20 fixture-restart --mode m3|m4 --signer REQUIREMENT [--windows N] [--floats N] [--seconds N] [--preset compatible|authentic]\n\
+              \x20 \x20 (development-only guarded two-launch controller: one\n\
+              \x20 \x20 authenticated fixture instance, its owned windows and one\n\
+              \x20 \x20 isolated intent store survive two separately identified\n\
+              \x20 \x20 signed product launches sharing that store. The first\n\
+              \x20 \x20 launch must publish clean terminal evidence and its exact\n\
+              \x20 \x20 PID/lifetime must be independently gone before launch two;\n\
+              \x20 \x20 immediately before launch two the fixture join, owned\n\
+              \x20 \x20 current Space/topology and exact store bytes plus metadata\n\
+              \x20 \x20 are rechecked. No input is posted to launch two. m3 floats\n\
+              \x20 \x20 the first --floats windows (default 4 windows, 2 floats)\n\
+              \x20 \x20 and requires exact per-window float frames plus the same\n\
+              \x20 \x20 unordered tile-rectangle multiset after restart; m4 uses\n\
+              \x20 \x20 two windows, proves a distinct composed maximize overlay\n\
+              \x20 \x20 before the first stop, then requires the exact settled base\n\
+              \x20 \x20 after restart; the store must be unchanged in both modes;\n\
+              \x20 \x20 owned teardown runs on every path and removes only the\n\
+              \x20 \x20 private store)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
               \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
@@ -2324,6 +2351,94 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 hover_probe,
                 corrupt_intent_store,
                 signer: signer.ok_or("fixture-leg needs --signer")?,
+            }
+        }
+        "fixture-restart" => {
+            // Development-only guarded two-launch controller. Shape only:
+            // the runner revalidates before any effect. Mode is explicit;
+            // the default window count follows the mode, and `--floats`
+            // defaults to zero (M4 refuses a nonzero value).
+            let mut mode: Option<crate::fixture_restart::RestartMode> = None;
+            let mut seconds = 90u64;
+            let mut windows: Option<usize> = None;
+            let mut floats: Option<usize> = None;
+            let mut preset = crate::input_policy::InputPreset::Compatible;
+            let mut signer: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--mode" => {
+                        j += 1;
+                        mode = Some(crate::fixture_restart::RestartMode::parse(
+                            args.get(j).ok_or("--mode needs a value")?,
+                        )?);
+                    }
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--windows" => {
+                        j += 1;
+                        windows = Some(
+                            usize::try_from(parse_u64(
+                                args.get(j).ok_or("--windows needs a value")?,
+                                "--windows",
+                            )?)
+                            .map_err(|_| "--windows is out of range".to_owned())?,
+                        );
+                    }
+                    "--floats" => {
+                        j += 1;
+                        floats = Some(
+                            usize::try_from(parse_u64(
+                                args.get(j).ok_or("--floats needs a value")?,
+                                "--floats",
+                            )?)
+                            .map_err(|_| "--floats is out of range".to_owned())?,
+                        );
+                    }
+                    "--preset" => {
+                        j += 1;
+                        preset = crate::input_policy::InputPreset::parse(
+                            args.get(j).ok_or("--preset needs a value")?,
+                        )?;
+                    }
+                    "--signer" => {
+                        j += 1;
+                        signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
+                    }
+                    other => return Err(format!("fixture-restart: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            let mode = mode.ok_or("fixture-restart needs --mode m3|m4")?;
+            let windows = windows.unwrap_or(mode.default_windows());
+            let floats = floats.unwrap_or(if mode == crate::fixture_restart::RestartMode::M3 {
+                2
+            } else {
+                0
+            });
+            let signer = signer.ok_or("fixture-restart needs --signer")?;
+            crate::fixture_restart::validate_restart_opts(
+                &crate::fixture_restart::FixtureRestartOpts {
+                    mode,
+                    seconds,
+                    windows,
+                    floats,
+                    preset,
+                    modifier,
+                    signer: signer.clone(),
+                },
+            )?;
+            Command::FixtureRestart {
+                mode,
+                seconds,
+                windows,
+                floats,
+                preset,
+                modifier,
+                signer,
             }
         }
         "owned-space-join" => {
