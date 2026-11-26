@@ -33,7 +33,7 @@ a row is distinct from hydrating a row.
 
 ### Later signed run
 
-The build, sign, verify and launch recipes are in the [macOS live-testing guide](../live-macos-testing.md). After its preflight and permission gates, replace the `DESIGNATED_REQUIREMENT` placeholder with the complete `designated => ...` requirement printed by `just fixture-verify`, then run:
+The build, sign, verify and launch recipes are in the [macOS live-testing guide](../../live-macos-testing.md). After its preflight and permission gates, replace the `DESIGNATED_REQUIREMENT` placeholder with the complete `designated => ...` requirement printed by `just fixture-verify`, then run:
 
 ```
 mise exec -- just launch --timeout 300 -- fixture-restart --mode m3 --windows 4 --floats 2 --seconds 90 --preset compatible --signer 'DESIGNATED_REQUIREMENT'
