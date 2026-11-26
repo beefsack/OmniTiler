@@ -5,12 +5,12 @@
 //! Shared KDE/Windows semantics live in `tiler-core::visual`
 //! (`active_border_state`, `active_border_inner_rect`,
 //! `active_border_use_theme`, `active_border_is_maximized`); this module is
-//! the thin macOS-local layer over them: defaults (width 3, gap 0, host-derived
-//! centerline radius, fallback `#2a82da`, theme on), the closed hide-reason vocabulary, the
-//! carrier frame math in AppKit points, point-to-backing conversion, and the
-//! render fence (target visibility, current-Space membership, unlocked
-//! session). No AppKit, no window-server touch: the carrier (`ffi`) and the
-//! fixture holder (`border_session`) consume these pure helpers.
+//! the thin macOS-local layer over them: shared defaults (width 3, gap 0,
+//! centerline radius 6, fallback `#2a82da`, theme on), the closed hide-reason
+//! vocabulary, carrier frame math in AppKit points, point-to-backing
+//! conversion, and the render fence (target visibility, current-Space
+//! membership, unlocked session). No AppKit or window-server touch: the
+//! carrier (`ffi`) and fixture holder (`border_session`) consume these helpers.
 
 use tiler_core::visual::{
     VisualRect, active_border_inner_rect, active_border_is_maximized, active_border_state,
@@ -23,18 +23,6 @@ use crate::classifier::{AppFacts, AxFacts, CgFacts, Disposition, WindowFrame, cl
 pub const DEFAULT_WIDTH: f64 = 3.0;
 /// Default gap between the target frame and the ring, in points.
 pub const DEFAULT_GAP: f64 = 0.0;
-/// Native standard-window corner base for the Tahoe 26 family and newer
-/// (fixture readback: 16pt per corner on a normal decorated resizable
-/// window; newer releases reuse it until re-measured).
-pub const NATIVE_CORNER_BASE_MODERN: f64 = 16.0;
-/// Native standard-window corner base for the pre-26 family
-/// (source-history fallback: 9pt; no live pre-26 measurement in this tree).
-pub const NATIVE_CORNER_BASE_LEGACY: f64 = 9.0;
-/// Default centerline stroke-path radius in points for the portable fallback
-/// (legacy base 9 + gap 0 + width 3 / 2 = 10.5). Tahoe 26 resolves to 17.5
-/// through [`host_default_radius`]. Kept as a const so `Default` stays
-/// total without an OS read.
-pub const DEFAULT_RADIUS: f64 = 10.5;
 /// Fallback border colour (`#2a82da`, KDE `BorderColor` parity).
 pub const DEFAULT_COLOR_HEX: &str = "#2a82da";
 /// Same fallback as raw channels.
@@ -50,38 +38,6 @@ pub const MAX_GAP: f64 = 64.0;
 /// KCM radius maximum.
 pub const MAX_RADIUS: f64 = 64.0;
 
-/// Native window-edge corner base for one OS major: 16pt on Tahoe 26 and
-/// newer (fixture readback), else the 9pt source-history fallback (also the
-/// `None`/unreadable route, so portable stubs stay total).
-#[must_use]
-pub const fn native_corner_base(os_major: Option<u32>) -> f64 {
-    match os_major {
-        Some(major) => {
-            if major >= 26 {
-                NATIVE_CORNER_BASE_MODERN
-            } else {
-                NATIVE_CORNER_BASE_LEGACY
-            }
-        }
-        None => NATIVE_CORNER_BASE_LEGACY,
-    }
-}
-
-/// Host default for the centerline stroke-path radius: the native base plus
-/// the centerline outset (`gap + width / 2`) outside the window edge, so the
-/// ring stays concentric with the window corner. The carrier strokes the
-/// `outer` rect inset by `width / 2` (`ffi::BorderRingView::draw_rect`), and
-/// `outer` is the `gap`-expanded inner rect grown by `width` per side, hence
-/// the outset. Capped at `MAX_RADIUS`: the cap reflects the configured radius
-/// range, not a refusal of the width/gap config. Explicit user radii bypass
-/// this (applied verbatim). The default is approximate (standard-window
-/// fallback, not universal); fractional outsets keep the pre-existing
-/// nearest-whole-point rounding at presentation, no architecture change.
-#[must_use]
-pub fn host_default_radius(os_major: Option<u32>, width: f64, gap: f64) -> f64 {
-    (native_corner_base(os_major) + gap + width / 2.0).min(MAX_RADIUS)
-}
-
 /// Configured border style. All values are AppKit points; the carrier scales
 /// them to backing pixels at the target screen's scale when drawing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,8 +48,8 @@ pub struct ActiveBorderStyle {
     pub gap: f64,
     /// Centerline stroke-path corner radius in points (the `NSBezierPath`
     /// rounded-rect radius at the `width / 2` inset, NOT the window-edge
-    /// radius). Explicit user values apply verbatim; the host default derives
-    /// from [`host_default_radius`].
+    /// radius). Explicit user values apply verbatim; otherwise the shared
+    /// catalog supplies the radius.
     pub radius: f64,
     /// Configured fallback colour (used when theming is off or unavailable).
     pub color: (u8, u8, u8),
@@ -106,7 +62,7 @@ impl Default for ActiveBorderStyle {
         Self {
             width: DEFAULT_WIDTH,
             gap: DEFAULT_GAP,
-            radius: DEFAULT_RADIUS,
+            radius: tiler_core::settings_catalog::DEFAULT_CATALOG_BORDER_RADIUS,
             color: DEFAULT_COLOR_RGB,
             use_theme: DEFAULT_USE_THEME,
         }
@@ -560,12 +516,7 @@ mod tests {
         let style = ActiveBorderStyle::default();
         assert_eq!(style.width, 3.0);
         assert_eq!(style.gap, 0.0);
-        // Host-local default: legacy base 9 + gap 0 + width 3 / 2 (the
-        // portable `None` route); Tahoe 26 resolves to 17.5 via the helper.
-        assert_eq!(style.radius, 10.5);
-        assert_eq!(style.radius, host_default_radius(None, 3.0, 0.0));
-        assert_eq!(host_default_radius(Some(26), 3.0, 0.0), 17.5);
-        assert_eq!(host_default_radius(Some(15), 3.0, 0.0), 10.5);
+        assert_eq!(style.radius, 6.0);
         assert_eq!(style.color, (0x2a, 0x82, 0xda));
         assert!(style.use_theme);
         assert_eq!(render_color(style.color), "#2a82da");
@@ -574,27 +525,6 @@ mod tests {
         let options = ActiveBorderOptions::default();
         assert!(options.enabled);
         assert_eq!(options.style, style);
-    }
-
-    #[test]
-    fn host_default_follows_family_and_outset() {
-        // Family mapping: 26+ modern 16, older/unknown legacy 9.
-        assert_eq!(native_corner_base(Some(26)), 16.0);
-        assert_eq!(native_corner_base(Some(27)), 16.0);
-        assert_eq!(native_corner_base(Some(25)), 9.0);
-        assert_eq!(native_corner_base(Some(15)), 9.0);
-        assert_eq!(native_corner_base(None), 9.0);
-        // Centerline outset is gap + width / 2 outside the window edge.
-        assert_eq!(host_default_radius(Some(26), 3.0, 0.0), 17.5);
-        assert_eq!(host_default_radius(Some(15), 3.0, 0.0), 10.5);
-        assert_eq!(host_default_radius(None, 3.0, 0.0), 10.5);
-        assert_eq!(host_default_radius(Some(26), 4.0, 2.0), 20.0);
-        assert_eq!(host_default_radius(Some(15), 4.0, 2.0), 13.0);
-        // Auto-derived default caps at the configured radius range; valid
-        // width/gap configs still resolve (explicit 64 accepted, >64 refused
-        // by the unchanged parse bound).
-        assert_eq!(host_default_radius(Some(26), 32.0, 64.0), 64.0);
-        assert_eq!(host_default_radius(None, 32.0, 64.0), 64.0);
     }
 
     #[test]

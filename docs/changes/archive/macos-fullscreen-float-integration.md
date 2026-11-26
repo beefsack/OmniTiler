@@ -2,7 +2,7 @@
 
 - **Status:** Complete (2026-11-25), offline verification only.
 - **Source:** [backlog](../../backlog.md) P1 "macOS fullscreen float integration"; [shared fullscreen float toggle](fullscreen-float-toggle.md) (macOS section); [window-state decision](../../decisions/window-state.md#floating-membership-and-placement).
-- **Boundary:** No native, fixture or AppKit leg. The orchestrator owns `docs/backlog.md`; this note carries the slice's evidence.
+- **Boundary:** No native, fixture, or AppKit verification.
 
 ## Goal
 

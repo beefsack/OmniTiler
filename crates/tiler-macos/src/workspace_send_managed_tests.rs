@@ -1505,13 +1505,11 @@ fn managed_terminal_feedback_settles_transfer_and_stale_drops() {
 }
 
 #[test]
-fn managed_arming_and_holder_wiring_armed_for_numbered_follow() {
+fn managed_numbered_send_arming_and_unpinned_refusal() {
     // Numbered sends 0..9 follow plus 1..9 stay are armed; trailing
     // stay-0, relative sends/stays, and outputs stay unarmed. The
-    // async live controller still
-    // refuses a claim without admission pins before any thread spawn or
-    // post; no holder ensure is wired into the managed backend path
-    // (startup owns it).
+    // async live controller still refuses a claim without admission pins
+    // before any thread spawn or post.
     for row in crate::workspace_input::workspace_catalogue() {
         match &row.action {
             crate::runtime_types::InputSemanticAction::WorkspaceSend { index, follow }
@@ -1542,12 +1540,6 @@ fn managed_arming_and_holder_wiring_armed_for_numbered_follow() {
         .expect_err("unpinned claim refuses before any spawn");
     assert!(err.contains("unpinned"), "{err}");
     assert!(!controller.is_busy());
-    let source = include_str!("workspace_send_managed.rs");
-    assert!(
-        !source.contains("ensure_authentic_holders")
-            && !source.contains("ensure_holders_for_preset"),
-        "no startup holder writes from the managed path this unit"
-    );
 }
 
 #[test]

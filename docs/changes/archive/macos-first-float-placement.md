@@ -2,7 +2,7 @@
 
 - **Status:** Complete (2026-11-25), offline verification only.
 - **Source:** [macOS v4 open-decisions review](../macos-v4-open-decisions-review.md) Package 3, P1 — first-float placement verification, per [world-rendering.md](../../decisions/world-rendering.md#float-toggle-intent-and-output-targeting).
-- **Boundary:** No native, fixture, or live leg. Signed-fixture proof remains. `docs/backlog.md` is orchestrator-owned; this note carries the slice's status wording.
+- **Boundary:** No native or live testing. Signed-fixture proof remains.
 
 ## Goal
 
@@ -54,7 +54,7 @@ Focused regressions:
 
 ## Material decisions
 
-- The rule is global on `float_rect: None`, not capability-scoped: the decision says "no macOS exception", and no handshake discriminator exists that would scope it without a strict-schema amendment. macOS and KDE (which also sends a null rect with an explicit window) therefore land in place; Windows is unaffected because it sends an explicit rectangle.
+- The rule applies to `float_rect: None`, not to a specific platform capability. KDE, macOS, and v4 Windows use it when initially floating a tiled window. Windows dispatch sends no rectangle on that path (`tiling_sys/dispatch.rs`, `float_toggle_command`); Windows native and test verification are tracked separately.
 - First float uses the observed frame only when it is truthful: fullscreen, native maximized, core-composed maximized, newly admitted (not tiled), remembered-geometry, and pending-placement subjects keep the fallback or remembered frame.
 - The pre-existing-float cut lane and its sealed-focus-cut correlation are deliberately untouched: only the first-float class changes.
 - An in-place first float needs no frame write, so its placement is proven by the next readable report instead of staying pending; the tests that asserted a pending token on that path now assert the proven in-place frame.

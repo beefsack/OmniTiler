@@ -4858,12 +4858,7 @@ mod tests {
         // section so this test's own literals cannot self-match.
         let source = include_str!("tile.rs");
         let production = source.split("#[cfg(test)]").next().unwrap_or(source);
-        for forbidden in [
-            "ensure_holders_for_preset",
-            "canonical_preimage_path",
-            "LiveStore",
-            "desktop holders ensure",
-        ] {
+        for forbidden in ["apply_with_store", "canonical_preimage_path", "LiveStore"] {
             assert!(
                 !production.contains(forbidden),
                 "startup must not touch desktop holders ({forbidden})"

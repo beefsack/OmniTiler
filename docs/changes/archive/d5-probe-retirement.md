@@ -2,7 +2,7 @@
 
 - **Status:** Complete (2026-11-25), offline verification only.
 - **Source:** [macOS v4 open-decisions review](../macos-v4-open-decisions-review.md#part-6-follow-up-review-1c90b677e97ef34a-and-next-macos-work-queue-2026-11-25) finding **P6-6**; D5 closed on fallback Option A (`61b8d128`, `AXUIElementDestroyed` is state-identical on first window-hide and close, so no production destroy transport will be built).
-- **Boundary:** No native/live legs. Offline verification only. `docs/backlog.md` is owned by the orchestrator and untouched here.
+- **Boundary:** Offline verification only.
 
 ## Goal
 

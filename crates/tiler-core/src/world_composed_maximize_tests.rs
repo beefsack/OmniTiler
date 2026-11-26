@@ -2485,6 +2485,150 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
 }
 
 #[test]
+fn composed_float_release_to_floating_workspace_leaves_no_layout() {
+    // A composed float dragged onto a floating workspace: the report sweep
+    // never converges a floating scope, so the release restage must not
+    // converge it either. The destination gains no layout domain and the
+    // source keeps its durable placement instead of losing it to an adoption
+    // no ordinary report could make.
+    let mut engine = engine();
+    let windows = || vec![cfact("win-a", "out-a", 0), cfact("win-b", "out-a", 100)];
+    let roster = |first: WindowFact| vec![first, cfact("win-b", "out-a", 100)];
+    let first = accepted(&mut engine, &bootstrap_two(1, windows(), "win-a"));
+    let destination_view = first
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == "out-b")
+        .and_then(|row| row.logical_view.clone())
+        .expect("out-b view");
+    // Toggle the empty destination workspace floating: the layout session
+    // releases, so no domain exists there for the release to move into.
+    accepted(
+        &mut engine,
+        &cmd_two(
+            2,
+            1,
+            windows(),
+            "win-a",
+            WorldCommand::SetWorkspaceTiling {
+                output: crate::directional::OutputId("out-b".to_owned()),
+                workspace: crate::directional::WorkspaceId(destination_view.clone()),
+                tiled: false,
+            },
+        ),
+    );
+    let (_floated, floated_settlements) = accepted_with_settlements(
+        &mut engine,
+        &cmd_two(3, 2, windows(), "win-a", toggle_float("win-a")),
+    );
+    let float_base = float_placement(&floated_settlements);
+    let mut settled_fact = cfact("win-a", "out-a", 0);
+    settled_fact.rect = Some(float_base);
+    accepted(
+        &mut engine,
+        &bootstrap_two(4, roster(settled_fact), "win-a"),
+    );
+    let mut toggle_fact = cfact("win-a", "out-a", 0);
+    toggle_fact.rect = Some(float_base);
+    let (_toggled, toggled_settlements) = accepted_with_settlements(
+        &mut engine,
+        &cmd_two(5, 3, roster(toggle_fact), "win-a", toggle("win-a")),
+    );
+    assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
+    let source = crate::session::DomainKey {
+        output: crate::directional::OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId(
+            engine
+                .world
+                .workspace
+                .mapping
+                .get("out-a")
+                .and_then(|ring| ring.first())
+                .cloned()
+                .expect("out-a ring"),
+        ),
+    };
+    let destination = crate::session::DomainKey {
+        output: crate::directional::OutputId("out-b".to_owned()),
+        workspace: crate::directional::WorkspaceId(destination_view.clone()),
+    };
+    assert!(
+        engine.world.floating_scopes.contains(&destination),
+        "precondition: the toggled scope stages floating"
+    );
+    assert!(
+        !engine.world.layout.contains_domain(&destination),
+        "precondition: a floating workspace owns no layout domain"
+    );
+    let mut start_fact = cfact("win-a", "out-a", 0);
+    start_fact.rect = Some(work_area());
+    accepted(
+        &mut engine,
+        &greport_two(
+            6,
+            roster(start_fact),
+            "win-a",
+            gingress(
+                "win-a",
+                GestureKind::Move,
+                Some((150, 50)),
+                GesturePhase::Started,
+                work_area(),
+            ),
+        ),
+    );
+    let release = Rect {
+        x: 900,
+        y: 50,
+        w: 400,
+        h: 300,
+    };
+    let mut moved_fact = cfact("win-a", "out-b", 0);
+    moved_fact.rect = Some(release);
+    let released = accepted(
+        &mut engine,
+        &greport_two(
+            7,
+            vec![moved_fact, cfact("win-b", "out-a", 100)],
+            "win-a",
+            gingress(
+                "win-a",
+                GestureKind::Move,
+                Some((950, 60)),
+                GesturePhase::Released,
+                work_area(),
+            ),
+        ),
+    );
+    assert!(
+        !engine.world.layout.contains_domain(&destination),
+        "a floating destination is never converged behind the sweep's back"
+    );
+    assert_eq!(
+        engine
+            .world
+            .layout
+            .retained_float_geometry(&source, &WindowId("win-a".to_owned())),
+        Some(float_base),
+        "the source keeps the durable placement a skipped sweep never adopts"
+    );
+    assert_eq!(
+        engine
+            .world
+            .layout
+            .retained_float_geometry(&destination, &WindowId("win-a".to_owned())),
+        None,
+        "no placement is adopted at a floating destination"
+    );
+    assert!(
+        !released
+            .gesture_settled
+            .is_some_and(|settled| settled.committed),
+        "no destination session exists, so the release never commits"
+    );
+}
+
+#[test]
 fn composed_empty_output_drag_matches_ordinary_float_outcome() {
     // Parity regression: a composed float dragged to a valid but empty
     // output must end exactly where an ordinary float dragged to the same

@@ -13729,6 +13729,8 @@ mod tests {
             held_native: Vec::new(),
             cursor: None,
             cursor_hit: None,
+            pointer_activity: None,
+            warp_spent: None,
             focused_global: focused.to_owned(),
             foreground_known: true,
             focus_changes: None,

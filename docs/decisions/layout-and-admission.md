@@ -8,11 +8,11 @@
 - Evidence: [Windows placement](../changes/archive/windows-placement-correctness.md), [historical KDE B6](../changes/archive/kde-minimum-origin-placement.md), [core settlement](engine.md#core-derived-native-settlement), [approved KDE acceptance](../changes/kde-v4-acceptance-checklist.md#approved-acceptance-decisions), [R-SPC-05](../spec/reference-outcomes/special-windows.md#r-spc-05-app-owned-resize-and-minimum-hint-change-on-a-tile), [batch 3](../changes/c9-product-evidence.md#requirement-batch-3-admission-and-fullscreen-2026-11-13).
 
 ### Host-settled geometry design timing
-- Decision: defer shared host-settled geometry research/design until after macOS slice 1; bring the design for user approval before slice 3. Approval is still required before any core change; this timing decision does not approve a settlement rule.
-- Why: restore a usable v4 macOS baseline before designing from host evidence.
-- Assumes / revisit if: keep one core-owned, platform-neutral solution; the learned-size-limits candidate remains rejected for complexity.
-- Status: active, 2026-11-10; design pending
-- Evidence: User 2026-11-10; [pending design and evidence cases](../changes/learned-size-limits.md#original-backlog-lines-1038-1060), [macOS slices](../changes/v4-phase3-macos-port.md#proposed-dogfoodable-slices).
+- Decision: defer core-owned host-settled geometry via v4 `FrameAttempt` settlement past 0.1 unless live dogfooding reproduces visible resize shortfalls or tile oscillation. This supersedes the pre-slice-3 design milestone; no settlement rule or core change is approved.
+- Why: design from real host traces if the problem recurs, not from hypothetical shortfalls.
+- Assumes / revisit if: use a single platform-neutral core rule if reopened; the learned-size-limits candidate remains rejected for complexity.
+- Status: active, 2026-11-26; deferred.
+- Evidence: User 2026-11-26 (TD4); [prior evidence cases](../changes/learned-size-limits.md#original-backlog-lines-1038-1060).
 
 ### Inactive destination admission
 - Decision: honor a newcomer's observed destination membership without adding an app-to-workspace rule API. Ordinary admission uses the destination's remembered tiled leaf, then existing destination fallback, never the source's global focus. A birth on a workspace not currently displayed on its output consumes automatic admission focus without activating it or switching views, and never replays after return. Existing explicit sends/follow and fresh-placement settings remain unchanged.

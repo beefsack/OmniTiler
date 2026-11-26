@@ -984,10 +984,24 @@ fn run_broker_split(
 
 #[test]
 fn sequence_equivalence_two_toggle_float_all_six_routes_agree() {
+    check_two_toggle_float_all_six_routes(Some(Rect {
+        x: 32,
+        y: 32,
+        w: 400,
+        h: 300,
+    }));
+}
+
+#[test]
+fn sequence_equivalence_two_toggle_float_without_rect_keeps_visible_frame() {
+    check_two_toggle_float_all_six_routes(None);
+}
+
+fn check_two_toggle_float_all_six_routes(first_rect: Option<Rect>) {
     let typed_cmds = vec![
         WorldCommand::Operation(CoreCommand::ToggleFloat {
             window: WindowSubject::CurrentFocus,
-            float_rect: None,
+            float_rect: first_rect,
         }),
         WorldCommand::Operation(CoreCommand::ToggleFloat {
             window: WindowSubject::CurrentFocus,
@@ -999,7 +1013,12 @@ fn sequence_equivalence_two_toggle_float_all_six_routes_agree() {
         },
     ];
     let broker_cmds = vec![
-        "{\"op\":\"toggle-float\",\"win\":{\"currentFocus\":true},\"rect\":null}".to_owned(),
+        serde_json::json!({
+            "op": "toggle-float",
+            "win": {"currentFocus": true},
+            "rect": first_rect.map(|rect| [rect.x, rect.y, rect.w, rect.h]),
+        })
+        .to_string(),
         "{\"op\":\"toggle-float\",\"win\":{\"currentFocus\":true},\"rect\":null}".to_owned(),
         "{\"op\":\"focus\",\"win\":\"win-missing\"}".to_owned(),
     ];
@@ -1028,7 +1047,13 @@ fn sequence_equivalence_two_toggle_float_all_six_routes_agree() {
         typed_applied_host.applied_intermediate_float_placements[0].0,
         "win-a"
     );
-    assert_ne!(typed_applied_host.native_frames["win-a"], [8, 0, 400, 300]);
+    let expected_float_frame = first_rect
+        .map(|rect| [rect.x, rect.y, rect.w, rect.h].map(i64::from))
+        .unwrap_or([8, 0, 400, 300]);
+    assert_eq!(
+        typed_applied_host.native_frames["win-a"],
+        expected_float_frame
+    );
     assert_eq!(
         broker_applied_host
             .applied_intermediate_float_placements

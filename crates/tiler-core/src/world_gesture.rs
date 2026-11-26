@@ -1041,10 +1041,11 @@ impl WorldTransaction<'_> {
     /// independent of whether a destination session exists: an empty
     /// destination (no session) refuses the gesture with no transfer or
     /// gesture-owned admission. The ordinary observation sweep admits the
-    /// float and adopts its observed frame without a write. Unhomed,
-    /// unreadable or held targets and malformed frames refuse with the
-    /// bit retained. No Engine handle, transfer or placement token is
-    /// needed: the native frame already moved.
+    /// float and adopts its observed frame without a write; a floating
+    /// destination is never converged, so it gains no layout and keeps no
+    /// placement. Unhomed, unreadable or held targets and malformed frames
+    /// refuse with the bit retained. No Engine handle, transfer or placement
+    /// token is needed: the native frame already moved.
     fn gesture_float_release(
         &mut self,
         retained: &RetainedGesture,
@@ -1075,7 +1076,7 @@ impl WorldTransaction<'_> {
                 .retain(|held| held.window != retained.window);
             return GestureOutcome::Settled { committed: true };
         }
-        // Cross-output: the destination domain must already be staged
+        // Cross-domain: the destination domain must already be staged
         // readable and unheld; unreadable or held targets refuse with
         // the bit retained. An explicit drag clears the bit before
         // destination admission, independent of whether a destination
@@ -1113,6 +1114,13 @@ impl WorldTransaction<'_> {
                     continue;
                 }
                 if !domain.readable {
+                    continue;
+                }
+                // The report sweep never converges a held or floating scope;
+                // restaging must not mint layout there behind its back.
+                if held_scopes.contains(&domain.key)
+                    || self.world.floating_scopes.contains(&domain.key)
+                {
                     continue;
                 }
                 self.sweep_domain_with_float_source(

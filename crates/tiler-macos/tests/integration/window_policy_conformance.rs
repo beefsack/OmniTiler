@@ -32,6 +32,7 @@ fn overlay_free_facts(facts: &core::SafetyFacts) -> win::WindowFacts {
         tool_window: facts.tool,
         owned: facts.owned_dialog,
         captionless_fullscreen: false,
+        topmost: false,
         no_activate: facts.no_activate,
         dialog: facts.dialog,
     }

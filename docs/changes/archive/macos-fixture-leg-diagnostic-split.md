@@ -56,13 +56,12 @@ module doc, only necessary `pub(crate)` items, no new abstraction layer.
 ## Verification
 
 Baseline before the change: `cargo test --locked -p tiler-macos --lib` =
-1695 tests, `--test integration` = 152 tests. Gate: fmt check, lib and
-integration tests, clippy `-D warnings`, `git diff --cached --check`; all
-changed files staged, no commit/push.
+1695 tests, `--test integration` = 152 tests. Verification: fmt check, lib
+and integration tests, and clippy `-D warnings`.
 
 ## Evidence
 
-Baseline counts captured from the staged merge tree (no source changes yet).
+Baseline counts were captured before the extraction.
 
 Unit 1 accepted: `fixture_leg.rs` 2347 -> 1843 lines, new
 `fixture_owned_space.rs` 591 lines, lib registration +1 line; moved region
@@ -87,7 +86,7 @@ stale allow on the 20-line `run_leg_body` delegator was removed.
 
 Behavior parity: moved statements, error strings, JSON bodies, settles, and
 ordering copied verbatim (moved regions and test bodies diffed against the
-staged pre-split file; the two source-scanning tests lost only their dead
+pre-split file; the two source-scanning tests lost only their dead
 production-section split). `note_owned_space` registration order, pending
 launch ordering, and post-shutdown corrupt-store leaf ownership are
 unchanged.

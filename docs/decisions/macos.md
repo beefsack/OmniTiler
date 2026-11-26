@@ -139,11 +139,11 @@ See [trailing creation and presentation settlement](#trailing-creation-and-prese
 - Evidence: [macOS v2 review](../changes/macos-world-v2-port.md#decisions-and-review-status), [migration evidence](../changes/archive/decisions-evidence-2026-10-31.md#development-and-macos-evidence).
 
 ### Radius and native Space creation
-- Decision: unset border radius derives native base plus `gap + width / 2`, capped at configured max 64; base 16 on Tahoe release family 26+, 9 older/unknown. Explicit values apply verbatim with existing range handling. Dynamic per-window private SLS radius is shelved; version-derived default remains, explicit radius always wins, and no config/API shape selected. Native Space backing stays lazy on first switch/send.
-- Why: not recorded.
-- Assumes / revisit if: private SLS radius proposal was superseded/shelved; no product claim. Fixture-readback evidence is archived separately.
-- Status: active, 2026-10-28
-- Evidence: [macOS port decisions](../changes/macos-world-v2-port.md#decisions-and-review-status), [macOS 0.1 gate](../changes/macos-0.1-gate-proposal.md).
+- Decision: unset border radius uses the shared catalog default of 6, independent of macOS release, width, and gap. Explicit values apply verbatim with existing range handling. Dynamic per-window private SLS radius is shelved. Native Space backing stays lazy on first switch/send.
+- Why: keep the [shared default](visuals.md#border-style-defaults-and-theme-mapping) across platforms.
+- Assumes / revisit if: revisit per host only if dogfooding shows the default looks off.
+- Status: active; shared radius confirmed 2026-11-26.
+- Evidence: User 2026-11-26; `border_carrier_passes_finite_verbatim_without_range_checks`; [macOS port decisions](../changes/macos-world-v2-port.md#decisions-and-review-status).
 
 ### macOS ingress, stress and acceptance limits
 - Decision: every user command reaches core; adapter ingress queues in order and supersedes stale-topology commands per T3, with no busy-drop acceptance. Native stress runner is dev-only and consumes the same shared spec/oracles; native execution/readback/fixture ownership/restoration are macOS-specific and never weaken shared oracles. New cases belong in shared spec; shared format/oracle changes need user approval and Windows alignment.

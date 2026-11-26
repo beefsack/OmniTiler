@@ -40,10 +40,7 @@ use crate::world_command_map::send_command_implicit;
 use crate::world_runtime::{DispatchContext, WorldSession, build_dispatch_report};
 use crate::world_sequencer::ObservationClock;
 
-use crate::desktop_shortcuts::{
-    FakeStore, ShortcutEntry, desktop_digit_keycode, desktop_symbolic_id, lock_path_for,
-};
-use crate::input_policy::InputPreset;
+use crate::desktop_shortcuts::desktop_digit_keycode;
 use crate::runtime_types::{ClaimedSelect, InputSemanticAction, TileBinding};
 use crate::workspace_send::*;
 
@@ -53,14 +50,6 @@ fn send(index: u8) -> InputSemanticAction {
     InputSemanticAction::WorkspaceSend {
         index,
         follow: true,
-    }
-}
-
-fn enabled_entry(desktop: u32) -> ShortcutEntry {
-    ShortcutEntry {
-        enabled: true,
-        keycode: desktop_digit_keycode(desktop).unwrap(),
-        modifiers: CG_CTRL,
     }
 }
 
@@ -771,142 +760,6 @@ fn context_row_resolution_follows_native_order_per_output() {
         context_target_sid(&ctx, &OutputId("macos-display-9".to_owned()), 1),
         None
     );
-}
-
-#[test]
-fn compatible_performs_zero_store_touch() {
-    let mut store = FakeStore::new().with_entry(
-        118,
-        ShortcutEntry {
-            enabled: false,
-            keycode: 0x12,
-            modifiers: CG_CTRL,
-        },
-    );
-    let path = std::env::temp_dir().join(format!(
-        "omnitiler-send-compatible-{}-{}.json",
-        std::process::id(),
-        "zero-touch"
-    ));
-    assert!(!preset_enables_desktop_holders(InputPreset::Compatible));
-    assert!(preset_enables_desktop_holders(InputPreset::Authentic));
-    let outcome = ensure_holders_for_preset(InputPreset::Compatible, &mut store, &path)
-        .expect("compatible never refuses");
-    assert_eq!(outcome, None);
-    assert_eq!((store.reads, store.writes), (0, 0), "zero store touch");
-    assert!(!path.exists(), "no preimage without Authentic");
-}
-
-#[test]
-fn offline_holder_seam_enable_resume_preserve_and_conditional_revert() {
-    // Fake-proven ownership seam only (not wired to any runtime path):
-    // Desktops 1-9 disabled would enable with owned preimages.
-    let path = std::env::temp_dir().join(format!(
-        "omnitiler-send-authentic-{}-{}.json",
-        std::process::id(),
-        "resume"
-    ));
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(lock_path_for(&path));
-    // Desktops 1-9 disabled: Authentic enables with owned preimages.
-    let mut store = FakeStore::new();
-    for desktop in 1..=9u32 {
-        store = store.with_entry(
-            desktop_symbolic_id(desktop).unwrap(),
-            ShortcutEntry {
-                enabled: false,
-                keycode: desktop_digit_keycode(desktop).unwrap(),
-                modifiers: CG_CTRL,
-            },
-        );
-    }
-    let outcome = ensure_holders_for_preset(InputPreset::Authentic, &mut store, &path)
-        .expect("authentic ensure")
-        .expect("authentic applies");
-    assert_eq!(outcome.results.len(), 9);
-    assert!(outcome.failures.is_empty());
-    assert!(!outcome.resumed);
-    assert!(path.exists(), "durable preimage published before writes");
-    let writes_after_first = store.writes;
-    assert!(writes_after_first > 0);
-    // Resume: already-applied IDs verify without rewrite.
-    let outcome = ensure_holders_for_preset(InputPreset::Authentic, &mut store, &path)
-        .expect("resume")
-        .expect("resume applies");
-    assert!(outcome.resumed);
-    assert_eq!(outcome.results.len(), 9);
-    assert_eq!(
-        store.writes, writes_after_first,
-        "resume never rewrites owned holders"
-    );
-    // Later external edit is preserved, never overwritten.
-    store.entries.insert(
-        118,
-        ShortcutEntry {
-            enabled: true,
-            keycode: 0x13,
-            modifiers: CG_CTRL,
-        },
-    );
-    let outcome = ensure_holders_for_preset(InputPreset::Authentic, &mut store, &path)
-        .expect("external")
-        .expect("external applies");
-    assert!(outcome.external_modified.contains(&118));
-    assert_eq!(
-        store.get(118).unwrap().keycode,
-        0x13,
-        "external chord preserved verbatim"
-    );
-    // Conditional revert: the externally edited id keeps its edit and the
-    // preimage file is retained; the untouched ids restore.
-    let revert =
-        crate::desktop_shortcuts::revert_with_store_from(&mut store, &path).expect("revert runs");
-    assert!(revert.external_modified.contains(&118));
-    assert!(
-        revert.preimage_retained,
-        "retained while an external edit stands"
-    );
-    assert!(path.exists());
-    // Restore the owned chord, then a clean full revert removes the file.
-    store.entries.insert(118, enabled_entry(1).applied());
-    let revert =
-        crate::desktop_shortcuts::revert_with_store_from(&mut store, &path).expect("clean revert");
-    assert!(revert.external_modified.is_empty());
-    assert!(revert.failures.is_empty());
-    assert!(!revert.preimage_retained);
-    assert!(!path.exists(), "clean full revert removes the preimage");
-    let _ = std::fs::remove_file(lock_path_for(&path));
-}
-
-#[test]
-fn authentic_unreadable_holder_fails_per_id_without_blocking_siblings() {
-    let path = std::env::temp_dir().join(format!(
-        "omnitiler-send-authentic-{}-{}.json",
-        std::process::id(),
-        "partial"
-    ));
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(lock_path_for(&path));
-    let mut store = FakeStore::new();
-    for desktop in 1..=9u32 {
-        store = store.with_entry(
-            desktop_symbolic_id(desktop).unwrap(),
-            ShortcutEntry {
-                enabled: false,
-                keycode: desktop_digit_keycode(desktop).unwrap(),
-                modifiers: CG_CTRL,
-            },
-        );
-    }
-    store.fail_reads.insert(desktop_symbolic_id(2).unwrap());
-    let outcome = ensure_holders_for_preset(InputPreset::Authentic, &mut store, &path)
-        .expect("partial ensure")
-        .expect("partial applies");
-    assert_eq!(outcome.results.len(), 8);
-    assert_eq!(outcome.failures.len(), 1);
-    assert!(path.exists(), "preimage retained for retry/audit");
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(lock_path_for(&path));
 }
 
 #[test]

@@ -13,11 +13,8 @@
 //! Compatible disables known OS-conflicting chords, neither invents
 //! replacements):
 //! - Authentic consumes the exact supported chords while running (tap `Drop`
-//!   suppression, no persistent native-setting writes — notably no
-//!   `com.apple.symbolichotkeys` plist writes anywhere in this crate; the
-//!   numbered-send holder helpers in [`crate::workspace_send`] ensure
-//!   Desktop-N holders once at Authentic startup with owned durable
-//!   preimages, while Compatible stays zero-touch).
+//!   suppression, no startup holder changes or `com.apple.symbolichotkeys`
+//!   plist writes; Desktop-N holder changes require explicit Apply).
 //! - Compatible leaves known conflicting chords to macOS by not arming them
 //!   (they pass through natively): under the Ctrl Meta that is the 4
 //!   unshifted no-Alt arrow chords (Mission Control Ctrl+arrows are the

@@ -157,9 +157,8 @@ pub struct DevSettings {
 /// field optional; CLI wins per field). Key naming mirrors the Windows
 /// settings catalog fields (`border.enabled/width/gap/radius/color/use-theme`,
 /// storage `core.border.*`) under the `--active-border-*` CLI prefix:
-/// width 3, gap 0, host-derived centerline radius (17.5 on Tahoe 26+,
-/// 10.5 older/unknown with default width/gap), fallback `#2a82da`, theme
-/// on, switch on.
+/// width 3, gap 0, centerline radius 6, fallback `#2a82da`, theme on,
+/// switch on.
 ///
 /// The four core-owned keys (`enabled/width/gap/radius`) ride to core as
 /// raw acquisition values (see [`collect_raw_core_settings`]): core owns

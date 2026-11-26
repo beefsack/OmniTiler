@@ -2,7 +2,7 @@
 
 - **Status:** Complete (2026-11-25), offline verification only.
 - **Source:** [macOS v4 open-decisions review](../macos-v4-open-decisions-review.md#part-6-follow-up-review-1c90b677e97ef34a-and-next-macos-work-queue-2026-11-25) findings **P6-1**, **P6-2**, **P6-5**.
-- **Boundary:** No native/live legs. Offline verification only. `docs/backlog.md` is owned by the orchestrator; this note carries the slice's status wording.
+- **Boundary:** Offline verification only.
 
 ## Goal
 
@@ -46,7 +46,7 @@ Non-goals: P6-3 (`fixture_leg` split), P6-4 (history tidying), P6-6 (D5 probe re
 
 Offline gate at the merged tree (2026-11-25):
 
-- `cargo fmt --all -- --check` — clean (after rustfmt-only repair of merge-caused drift in `world_command_issue_tests.rs`, `world_global_swap_tests.rs`, and the staged Windows merge files `settings.rs`, `world_capture.rs`, `world_diff_tests.rs`, `world_native_roundtrip_tests.rs`, `world_sequencer.rs`).
+- `cargo fmt --all -- --check` — clean after correcting merge-related drift in `world_command_issue_tests.rs`, `world_global_swap_tests.rs`, `settings.rs`, `world_capture.rs`, `world_diff_tests.rs`, `world_native_roundtrip_tests.rs`, and `world_sequencer.rs`.
 - `cargo test --locked -p tiler-macos --lib` — **1,699 passed / 0 failed / 3 ignored** (baseline 1,694; five new regressions).
 - `cargo test --locked -p tiler-macos --test integration` — **152 passed / 0 failed**.
 - `cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-macos --all-targets -- -D warnings` — clean (4m31s; workspace dependency `tiler-windows` also checked).

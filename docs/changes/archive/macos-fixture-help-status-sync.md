@@ -2,7 +2,7 @@
 
 - **Status:** Complete (2026-11-25), offline verification only.
 - **Source:** [macOS v4 open-decisions review](../macos-v4-open-decisions-review.md#part-6-follow-up-review-1c90b677e97ef34a-and-next-macos-work-queue-2026-11-25) finding **P6-7**; follows the [fixture-leg diagnostic split](macos-fixture-leg-diagnostic-split.md).
-- **Boundary:** Docs and CLI help only; no behavior change. No CLI flag/behavior additions, fixture split, native/live legs, P6-4 history rewrite, or merge-resolution changes. `docs/backlog.md` is orchestrator-owned and untouched here.
+- **Boundary:** Documentation and CLI help only; no new flags, behavior changes, fixture split, or native testing.
 
 ## Goal
 
@@ -41,9 +41,8 @@ native facts beyond recorded evidence.
   interaction, external move/resize clear, fullscreen replacement,
   send/output/work-area changes, and restart-to-base open.
 - `docs/changes/macos-v4-open-decisions-review.md` Part 6 closure: P6-3 is
-  closed by the archived split note and P6-7 by this note; P6-4 remains open
-  because this session cannot rewrite unpushed history. P6-1/P6-2/P6-5/P6-6
-  closures are unchanged.
+  closed by the archived split note and P6-7 by this note; P6-4 remains open.
+  P6-1/P6-2/P6-5/P6-6 closures are unchanged.
 
 ## AXZoomed decision
 
@@ -59,19 +58,17 @@ into a new diagnostic here.
 
 ## Verification
 
-Offline gate at the staged merge tree (2026-11-25):
+Offline verification (2026-11-25):
 
 - `cargo fmt --all -- --check` — clean.
 - `cargo test --locked -p tiler-macos --lib` — **1,693 passed / 0 failed / 3
   ignored**.
-- `git diff --cached --check` — clean after staging the changed files.
-- Clippy was not run: no Rust file changed beyond `help_text()` text, which is
-  the brief's condition for skipping it.
+- The patch passed the whitespace check. Clippy was not run; the only Rust
+  change was the `help_text()` string.
 
 ## Residual
 
 - `AXZoomed` read error and absent attribute still both surface as `None`;
   distinguishing them requires a later diagnostic change (see above).
-- P6-4 remains open: the unpushed intermediate commit is not rewritten here.
 - No native/live legs were run; all native claims above quote existing
   recorded evidence only.

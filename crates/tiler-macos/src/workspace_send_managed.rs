@@ -5,10 +5,9 @@
 //!
 //! Numbered send-follow 1..9 is armed; reaching the live path happens
 //! through engine-admitted product claims (tests inject claims the same
-//! way). Nothing here enables a holder or
-//! posts input: the tile ensures Authentic holders once at startup
-//! (Compatible stays zero-touch), and posts run only on the dedicated
-//! owner through [`LiveManagedSendBackend`](crate::workspace_send_native::LiveManagedSendBackend)
+//! way). Neither startup nor the send effect changes holder settings.
+//! Input posts run only on the dedicated owner through
+//! [`LiveManagedSendBackend`](crate::workspace_send_native::LiveManagedSendBackend)
 //! under consumed per-edge proof permits.
 //!
 //! What this module holds over [`crate::workspace_send_effect`]:

@@ -66,14 +66,10 @@
 //! `PossiblyExecuted` without re-actuation (see
 //! [`classify_send_drain_error`]).
 //!
-//! Ownership: Authentic startup ensures Desktop-N holders once through
-//! [`ensure_holders_for_preset`] (enable-only with owned durable preimages,
-//! resume-safe, external edits preserved); Compatible performs zero store
-//! touch (no read, no write). [`preset_enables_desktop_holders`] names
-//! which preset enables. Revert stays explicit
-//! ([`crate::desktop_shortcuts::revert_with_store_from`], conditional — a
-//! later external edit is preserved, never overwritten); there is no
-//! automatic revert on shutdown.
+//! Ownership: tile startup never touches Desktop-N settings. Only the
+//! explicit Apply command enables holders with durable owned preimages.
+//! Revert is explicit and conditional: it preserves later external edits.
+//! There is no automatic revert on shutdown.
 //!
 //! Live wiring: the async live-send controller ([`LiveSendController`])
 /// plus the production managed-window backend
@@ -81,19 +77,14 @@
 /// injectable [`crate::workspace_send_managed::SendNativeReaders`] seam)
 /// and the dedicated effect owner are implemented and proven through
 /// scripted-reader tests. The tile submits engine-admitted claims
-/// nonblocking and reconciles completions nonblocking; Authentic startup
-/// ensures Desktop-N holders with owned preimages while Compatible stays
-/// zero-touch. Numbered sends 0..9 follow plus 1..9 stay are armed:
+/// nonblocking and reconciles completions nonblocking. Numbered sends
+/// 0..9 follow plus 1..9 stay are armed:
 /// trailing stay-0, relative sends/stays, and output sends stay refused behind the
 /// catalogue `implemented` flags and the engine unsupported guard.
 /// No modifier-plus-drag product trigger exists.
-use std::path::Path;
-
 use tiler_core::directional::WindowSubject;
 use tiler_core::world_report::{FrameSetter, SendSource, WorldCommand};
 
-use crate::desktop_shortcuts::{ApplyOutcome, DesktopShortcutStore, apply_with_store_to};
-use crate::input_policy::InputPreset;
 use crate::runtime_types::{ClaimedSelect, InputSemanticAction, TileBinding};
 
 /// Session gates for one send effect (plain booleans sampled on the effect
@@ -628,48 +619,6 @@ pub fn bind_trailing_send_target(
         ));
     }
     Ok(target)
-}
-
-/// Which preset enables Desktop-N holders. True only under Authentic;
-/// Compatible leaves holders to macOS and never touches shortcut
-/// settings.
-#[must_use]
-pub const fn preset_enables_desktop_holders(preset: InputPreset) -> bool {
-    matches!(preset, InputPreset::Authentic)
-}
-
-/// Authentic Desktop-N holder ensure (called once at tile startup under
-/// the Authentic preset; Compatible never reaches here): Desktops
-/// 1-9 coverage through the existing explicit-Apply machinery
-/// preimage published before the first write, never overwritten (resume
-/// replays stored first-observed records), external edits preserved, never
-/// overwritten, per-ID failures never block siblings. Returns the terminal
-/// [`ApplyOutcome`] (results plus failures plus transfer warnings).
-pub fn ensure_authentic_holders<S: DesktopShortcutStore>(
-    store: &mut S,
-    preimage_path: &Path,
-) -> Result<ApplyOutcome, String> {
-    apply_with_store_to(
-        store,
-        crate::desktop_shortcuts::DEFAULT_APPLY_COUNT,
-        preimage_path,
-    )
-}
-
-/// Preset-gated holder ensure for the tile startup path: Authentic ensures
-/// through [`ensure_authentic_holders`]; Compatible returns `Ok(None)` with
-/// zero store touch (no read, no write — proven by the FakeStore counters).
-/// `Err` is an Apply-level refusal (bad count, hostile preimage, lock held,
-/// publish failure): sends refuse at the holder leg before any post.
-pub fn ensure_holders_for_preset<S: DesktopShortcutStore>(
-    preset: InputPreset,
-    store: &mut S,
-    preimage_path: &Path,
-) -> Result<Option<ApplyOutcome>, String> {
-    if !preset_enables_desktop_holders(preset) {
-        return Ok(None);
-    }
-    ensure_authentic_holders(store, preimage_path).map(Some)
 }
 
 /// Proven outcome of one send drain for attempt feedback (see

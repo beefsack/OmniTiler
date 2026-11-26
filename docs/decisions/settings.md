@@ -107,8 +107,8 @@
 - Evidence: [pager implementation](../changes/windows-taskbar-pager-icons.md).
 
 ### macOS workspace indicator
-- Decision: Bounded select-only preview defaults to one native menu-bar item listing existing Space numbers in native order. `all` is default; `current` and `off` are alternatives; optional icons default false. Current highlight is independent of occupancy. Selection uses guarded AX route and refuses stale identities; ambiguous multi-display scope hides the item; numbers beyond armed 1-9 remain visible but disabled.
+- Decision: Bounded select-only preview defaults to one native menu-bar item listing existing Space numbers in native order. `all` is default; `current` and `off` are alternatives. Per-window icons are deferred past 0.1; the opt-in representative app icon (`workspace_indicator.icons`, default false) remains available outside the 0.1 gate. Current highlight is independent of occupancy. Selection uses guarded AX route and refuses stale identities; ambiguous multi-display scope hides the item; numbers beyond armed 1-9 remain visible but disabled.
 - Why: not recorded.
 - Assumes / revisit if: membership means retained managed-window membership, not all desktop apps; no trailing Space/lifecycle policy or polling loop. Physical/game/fullscreen acceptance remains TBD.
 - Status: active, 2026-10-17
-- Evidence: [indicator record](../changes/macos-workspace-indicator.md).
+- Evidence: User 2026-11-26 (icon scope); [indicator record](../changes/macos-workspace-indicator.md).

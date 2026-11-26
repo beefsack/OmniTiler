@@ -16,7 +16,7 @@
 //! - protected windows: raw PID, window ID, layer, onscreen, and bounds for
 //!   every window owned by a protected bundle or Ghostty (title-free read);
 //! - shortcut holders: exact per-holder session state (enabled plus the
-//!   posting chord) for Desktops 1-9, the coverage Authentic startup ensures;
+//!   posting chord) for Desktops 1-9;
 //! - accent: live resolved system-accent RGB (the `NSColor.controlAccentColor`
 //!   resolution, always present on a readable session). An unreadable
 //!   conversion refuses the whole category (never a fabricated absent
@@ -43,8 +43,7 @@ pub const BASELINE_SCHEMA_VERSION: u32 = 1;
 /// same parent as the Desktop-N preimage, so the conventions cannot drift).
 pub const BASELINE_FILE_NAME: &str = "live-leg-baseline.json";
 
-/// Shortcut-holder coverage: Desktops 1-9, matching the Authentic startup
-/// ensure ([`crate::workspace_send::ensure_authentic_holders`]).
+/// Shortcut-holder coverage: Desktops 1-9.
 pub const BASELINE_HOLDER_COUNT: u32 = 9;
 
 /// One protected window: raw identity plus geometry. No titles anywhere on

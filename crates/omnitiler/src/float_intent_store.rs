@@ -738,8 +738,10 @@ mod tests {
 
     fn fresh_root(name: &str) -> PathBuf {
         let id = TEST_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root =
-            std::env::temp_dir().join(format!("pat-intent-{name}-{}-{id}", std::process::id()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonical temp dir")
+            .join(format!("pat-intent-{name}-{}-{id}", std::process::id()));
         let mut builder = std::fs::DirBuilder::new();
         {
             use std::os::unix::fs::DirBuilderExt;

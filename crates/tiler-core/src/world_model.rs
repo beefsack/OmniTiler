@@ -2115,7 +2115,7 @@ impl WorldTransaction<'_> {
                         .filter(|member| member.floating && !member.minimized)
                         .map(|member| &member.home)
                 })
-            && source.output != key.output
+            && source != &key
             && self.world.layout.adopt_rehomed_float_placement(
                 source,
                 &key,

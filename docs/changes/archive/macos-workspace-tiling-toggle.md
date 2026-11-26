@@ -2,7 +2,7 @@
 
 - **Status:** Complete (2026-11-25), offline verification only.
 - **Source:** [macOS v4 open-decisions review](../macos-v4-open-decisions-review.md) Check 20 (0.1 Must-Pass) — `ToggleWorkspaceTiling` / `Ctrl+Y` / menu-bar toggle equivalent.
-- **Boundary:** No native, fixture, or AppKit-visual leg. `docs/backlog.md` is owned by the orchestrator; this note carries the slice's status wording.
+- **Boundary:** No native, fixture, or AppKit visual verification.
 
 ## Goal
 
