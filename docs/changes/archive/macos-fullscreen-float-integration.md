@@ -96,3 +96,31 @@ cannot authenticate the signed fixture. Its held-child exit route also
 does not apply to the LaunchServices fixture. Do not count either
 legacy helper behavior or a successful socket reply as the independent
 exit proof required by this procedure.
+
+**Automation deferred.** The existing signed socket route cannot attest
+exit, and the helper's held-child authority is not transferable. A new
+controller would need an independently verified fullscreen lifetime
+and return path, not just another setter. The leg was not entered.
+
+**Bounded user-run check.** Use the signed-fixture preflight and controls
+in the [live guide](../../live-macos-testing.md#fixture-first-live-tests).
+Keep only the exact signed fixture in scope. Start with two joined
+fixture windows on an owned ordinary Space; retain the subject PID/WID,
+launch identity, ordinary SID/current, and exact AX/CG base. In a
+no-product rehearsal, use the fixture window's green fullscreen control
+and then physically exit via that window's green control in the revealed
+title bar. Confirm the same PID/WID with `scope-inspect --scope
+io.github.omnitiler.live-fixture` for `fullscreen`, and `spaces-diagnose
+--wid WID` for native membership/current. Require `false → true → false`,
+the distinct fullscreen Space on entry, and original ordinary SID,
+membership and frame on exit; if any proof is missing, stop there.
+
+After that rehearsal, with the product bounded to the same exact fixture
+scope in Compatible mode, repeat native fullscreen and physically press
+Ctrl+G once on the identified fullscreen subject. Verify zero subject
+geometry/focus/state writes and read sibling reflow independently.
+Physically exit through the proven route, without another tiler command;
+verify the same lifetime and ordinary SID plus one exact durable reveal
+and no repeat on a later observation. Retain scoped stage traces and
+AX/CG readbacks, then stop the product, shut down the fixture and remove
+only owned resources.

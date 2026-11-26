@@ -1292,6 +1292,10 @@ readbacks are retained separately from the repository.
   controller did not post the half-snap after that sequence failed.
   Owned teardown was clean. The remaining native acceptance is deferred
   to dogfooding. [Evidence](archive/macos-first-float-placement.md#signed-f2-recovery-sequences-2026-11-27).
+- **Fullscreen float — not run.** The signed fixture has no independently
+  proven automated exit and return route. The legacy helper authenticates
+  a different process and a socket mode reply is not native proof.
+  [Bounded user-run procedure](archive/macos-fullscreen-float-integration.md#approved-signed-fixture-procedure-2026-11-26).
 
 - **M3 — native acceptance failed.** Both float frames matched exactly in
   AX and CG; the two tiles rebuilt from stacked rows to side-by-side
