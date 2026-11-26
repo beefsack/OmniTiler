@@ -1,19 +1,16 @@
 # macOS 0.1 parity options
 
-**Status:** Decision-ready research. No decision is enacted, no native
-acceptance is claimed, and no product changes were made. This note excludes
-the MX6 inventory-gap question and the fullscreen fixture procedure (both
-handled separately), all KDE/Windows work, and any relaxation of the
-workspace, drag, fullscreen-carry, Settings or underlay gates
-([macOS gate proposal](macos-0.1-gate-proposal.md),
-[scope audit](macos-0.1-product-scope-audit.md),
-[platform scope](../decisions/platforms.md)).
+**Status:** Decisions confirmed 2026-11-26/27 and recorded in the owning
+[decisions](../decisions.md). No new native acceptance is claimed. MX6 and
+the fullscreen fixture procedure are tracked separately. The existing
+[native gate](macos-0.1-gate-proposal.md) stays in place, including workspace,
+drag, fullscreen-carry, Settings, and underlay.
 
-**Update:** [Native Spaces prior art](macos-0.1-native-spaces-prior-art.md)
-supersedes three recommendations below as research only: indicator safe-hide
-as the whole answer, fullscreen deferral, and amending the sticky gate now.
-None is an approved change; the full native gate remains open and
-no scope was changed.
+The [native Spaces prior art](macos-0.1-native-spaces-prior-art.md) informs
+implementation and the next sticky discriminator. Keep native Spaces and
+native macOS functions with SIP on and the cross-platform consistency rule.
+An impossible feature is a Spaces-mode limitation; a separate virtualised
+mode remains a later user decision.
 
 **Evidence key:** Tagged external citations are source inspection only, not
 native execution or accepted evidence. AeroSpace v0.21.3-Beta is the latest
@@ -32,22 +29,11 @@ a per-output pager (`docs/decisions/settings.md:74-79`). Owning records:
 [indicator record](macos-workspace-indicator.md),
 [scope audit](macos-0.1-product-scope-audit.md).
 
-- **A — Lead recommendation (0.1).** Retain safe-hide and state the parity
-  limit explicitly. Consequence: no rich multi-display UI, but no incorrect
-  output attribution and no wrong-destination clicks.
-- **B.** Status item scoped to the main display, or to a reliably resolved
-  focused display, identified in the UI. Main is stable but hides other
-  outputs; focus scope follows work but needs focus/Space identity and
-  click-time proof. Safe-hide when scope is unknown.
-- **C.** One status item with labeled groups per output (aggregate, not
-  separate overlays). More coverage without multiple surfaces, but needs an
-  authoritative output mapping and safe click routing.
-- **D.** Separate pager per physical output: closest Windows parity, but needs
-  stable physical identity, hotplug/scale/reanchor/suppression coverage and
-  physical click/visibility proof.
-
-No option waives MX6 safe-hide under ambiguity or the two-display operating
-gates.
+**Selected:** Per-output rendering plus proven SIP-on selection on the
+intended display is a 0.1 consistency blocker. Keep safe-hide under
+ambiguity until scope is proven; a single main-display or aggregate view
+does not replace per-output rendering. Physical click, visibility,
+hotplug/scale/reanchor, and suppression remain unverified.
 
 Source inspection: AeroSpace v0.21.3-Beta
 `Sources/AppBundle/ui/TrayMenuModel.swift:29-36,55-63` (one aggregated bar
@@ -65,29 +51,15 @@ bar rendering was not verified).
 
 Windows Authentic Win+B uses the system browser association and Win+T opens
 Windows Terminal; Compatible disables both
-(`docs/decisions/reference-and-shortcuts.md:24-37`). The macOS counterparts
-are unselected and there is no existing macOS gate leg
-(`docs/changes/macos-0.1-product-scope-audit.md:41,50`). Plain Ctrl+B/T
-conflict with common editing/shell use; a global collision-free claim is not
-available. Owning records:
-[shortcut decision](../decisions/reference-and-shortcuts.md),
-[scope audit](macos-0.1-product-scope-audit.md).
+([Windows launcher shortcuts](../decisions/reference-and-shortcuts.md#windows-launcher-shortcuts)).
+Plain Ctrl+B/T conflict with common editing/shell use; a global
+collision-free claim is not available.
 
-- **A — Lead recommendation.** Configurable browser/terminal actions, unbound
-  in both presets until checked; optional suggested Ctrl+Alt+B/T or user
-  rebind. Browser goes through system association; terminal is an explicit
-  configurable app with Terminal.app as a proposed seed and no silent
-  fallback. Decide launch/focus versus guaranteed new window separately; do
-  not promise the latter. Consequence: portable capability without an
-  unproven default binding.
-- **B.** Authentic-only Ctrl+Alt+B/T default, Compatible unbound. Familiar
-  mnemonic, but Rectangle's alternate Ctrl+Alt+T collides and an older
-  Ctrl+Alt+B seed may survive upgrades.
-- **C.** Authentic-only Ctrl+Alt+Shift+B/T. More cumbersome, and Amethyst's
-  T binding conflicts; Ctrl+Alt+Return for terminal is also Rectangle's
-  alternate maximize, so it is not safer evidence.
-- **D.** Omit portable actions explicitly for 0.1 and rely on external tools;
-  no built-in convenience.
+**Selected:** Configurable browser and terminal actions, unbound in both
+presets. Suggest Ctrl+Alt+B/T. Use the system browser association and seed
+the configurable terminal app with Terminal.app, without silent fallback.
+No guarantee of a new window. No Fn/Globe tiler modifier in 0.1. See
+[launchers and modifier scope](../decisions/reference-and-shortcuts.md#macos-launchers-and-modifier-scope).
 
 Source inspection: AeroSpace v0.21.3-Beta `build-release.sh:71-72`,
 `docs/config-examples/default-config.toml:106-110` (commented Alt+Return
@@ -126,21 +98,10 @@ in scope (`docs/decisions/contract.md:177-187`,
 [gate proposal](macos-0.1-gate-proposal.md),
 [open decisions](macos-v4-open-decisions-review.md).
 
-- **A.** Named windowed work-area fill overlay with explicit restore and
-  retained membership, with no native Space or game fullscreen claim.
-  Consequence: overlaps existing M4 unless a distinct outcome is chosen;
-  needs ownership, protected preimage/geometry restoration and no unsafe
-  writes.
-- **B.** Project-owned AXFullScreen native enter/exit: the closest distinct
-  user-facing fullscreen, but with a different Space lifecycle. Before
-  advertising, prove eligibility, ownership, transition observation, exact
-  restoration of authorized touched preimage/retained base, refusal of unknown
-  app-owned exit, and recoverability.
-- **C — Lead recommendation (0.1).** Explicitly defer only the project-owned
-  actuator by an approved R14 scope amendment; keep composed maximize and
-  native fullscreen observation, with under-fullscreen policies and carry
-  gates unchanged. Consequence: no parity or pass claim; revisit only if a
-  recoverable proven route exists.
+**Selected:** Pursue project-owned native `AXFullScreen`. Leave capability
+unadvertised until owned exact restore, settled Space arrival, and recovery
+are proven. Unknown app-owned exit remains refused. Composed maximize and
+native fullscreen observation are separate and do not satisfy this gate.
 
 Source inspection: AeroSpace v0.21.3-Beta
 `Sources/AppBundle/command/impl/FullscreenCommand.swift:8-33`,
@@ -188,109 +149,47 @@ yabai v7.1.25 `doc/yabai.asciidoc:666-668` and `src/window_manager.c:2215-2230`
 use a scripting addition / partial SIP; this is not evidence for the selected
 SIP-on host or an acceptable security change.
 
-- **A — Lead recommendation.** User-approved gate amendment: check 6 keeps
-  maximize cycles and physical hold/release (one toggle, no stuck consumption
-  or leakage) and explicitly excludes native sticky repetitions; check 32
-  replaces the native adoption/persistence claim with a must-pass
-  unsupported/no-claim check — publish unsupported, refuse sticky targets
-  without mutation, and do not infer or persist sticky from partial or unknown
-  visibility, including restart. Mark the original positive sticky journey
-  explicitly outside macOS 0.1, never passed, with no M-to-K reclassification.
-- **B.** Keep both original rows and block release until there is a supported
-  route under the existing host posture, positive per-display
-  all-managed-Space evidence, lifecycle/restart visibility, and input and
-  safety proof.
-- **C.** Hold release with the known unsupported limit and queue the decision:
-  no changed gate and no acceptance. Differs from B by making no
-  implementation commitment.
+**Pending:** macOS currently does not advertise sticky. Run the bounded
+SIP-on live probe before deciding its release disposition; checks 6 and 32
+remain unchanged. Neither no-op nor refusal passes the current positive
+journeys.
 
-## 5. Five independent TD decisions
-
-These are separate decisions. Existing wording is in
-[decisions.md](../decisions.md) and
-[backlog.md](../backlog.md).
+## 5. Confirmed TD decisions
 
 ### TD2 — KDE reconnect same-index units
 
-- **Confirm.** Keep displaced same-index units separate and return their
-  then-current membership; KDE RC remains required.
-- **Retire.** Leave the merge policy undecided pending a discriminating
-  result. This does not authorize merges or change current behavior.
-- **Lead recommendation: confirm, with narrower wording.** Source-only
-  comparator: historical COSMIC pins `cosmic-comp @
-  3d55cba06c9cf6f27609cdefb520f7857dba20af src/shell/mod.rs:867-935,937-1029`
-  and `src/shell/workspace.rs:589-645`, plus
-  `docs/spec/reference-outcomes/multi-output.md:432-453,488-498`. The offline
-  correction did not settle policy
-  (`docs/changes/v4-phase2-kde-physical-reconnect.md:386-390`); KDE RC is still
-  required. See [multi-output reference outcomes](../spec/reference-outcomes/multi-output.md)
-  and [reconnect record](v4-phase2-kde-physical-reconnect.md).
+Keep displaced same-index units separate and return their then-current
+membership. Physical KDE RC proof is still required. See the
+[owning decision](../decisions/workspaces.md#kde-common-model-output-reconnection),
+[historical COSMIC comparison](../spec/reference-outcomes/multi-output.md),
+and [reconnect record](v4-phase2-kde-physical-reconnect.md).
 
 ### TD3 — M4 maximize sequencing
 
-- **Confirm.** Preserve KDE ST/RC as a prerequisite for final slice-5 native
-  acceptance. Implementation has landed and fixture apply/restore was
-  observed; other macOS acceptance is still open.
-- **Retire.** Cancel the sequencing dependency by explicit approval while
-  keeping all macOS acceptance; this is not by itself a pass or unblock.
-- **Lead recommendation: confirm the hold.** The distinct guarded two-launch
-  controller and physical Ctrl+M/paint/replacement journeys remain open
-  (`docs/changes/macos-v4-open-decisions-review.md:309,345`;
-  `docs/backlog.md:43-45,138,145`). See
-  [open decisions](macos-v4-open-decisions-review.md) and
-  [backlog](../backlog.md).
+Hold final slice-5 native acceptance until KDE ST/RC clears. No other
+cross-platform sequencing dependency remains. Implementation has landed
+and fixture apply/restore was observed; the signed two-launch restart
+proof and physical Ctrl+M/paint/replacement journeys remain open. See the
+[acceptance decision](../decisions/contract.md#contract-authority-and-v4-migration).
 
 ### TD5 — MX8 distribution
 
-- **Confirm.** Non-sandboxed Developer ID + notarized DMG via GitHub Releases
-  and Homebrew Cask; no Store and no in-app updater.
-- **Retire.** Drop the channel choice and stage a notarized DMG only, with an
-  explicit Cask deferral. A Store alternative requires scope/security redesign
-  and is not equivalent.
-- **Lead recommendation: confirm.** No installed lifecycle or notarization
-  gate pass follows from this choice
-  (`docs/research/cross-platform-support/feasibility.md:149`;
-  `docs/macos-dev-environment.md:159-170`;
-  `docs/decisions/platforms.md:17-22`;
-  `docs/changes/macos-0.1-gate-proposal.md:178`). See
-  [feasibility](../research/cross-platform-support/feasibility.md),
-  [dev environment](../macos-dev-environment.md),
-  [platforms decision](../decisions/platforms.md),
-  [gate proposal](macos-0.1-gate-proposal.md).
+Developer ID signing and Apple notarization; GitHub Releases DMG and
+Homebrew Cask, no Mac App Store and no in-app updater in 0.1. Installed
+lifecycle and release-artifact acceptance remain open. See the
+[distribution decision](../decisions/platforms.md#macos-01-distribution).
 
 ### TD6 — macOS 15 floor
 
-- **Confirm.** R2/F4 dual-surface fix has landed; keep the macOS 15 floor as
-  an unverified risk, with an optional floor run at RC.
-- **Retire.** Condition floor sign-off on live macOS 15 evidence, adding a
-  release dependency; no silent floor cut.
-- **Lead recommendation: confirm.** The fix is verified offline; the macOS 15
-  live Mission Control journey is not
-  (`docs/changes/macos-v4-open-decisions-review.md:36,42,296,312`;
-  `crates/tiler-macos/src/mc_probe.rs:92-160`;
-  `docs/changes/macos-0.1-gate-proposal.md:209`). See
-  [open decisions](macos-v4-open-decisions-review.md) and
-  [gate proposal](macos-0.1-gate-proposal.md).
+Keep macOS 15 as the support floor. R2/F4 was verified offline; live macOS 15
+Mission Control is still unverified and is an explicit risk. See the
+[platform decision](../decisions/platforms.md#macos-phase-0-and-host-foundations)
+and [gate proposal](macos-0.1-gate-proposal.md).
 
 ### TD7 — D4 store slot
 
-- **Confirm.** Implemented private per-session
-  `~/Library/Application Support/OmniTiler/intent-v1-<uid>-<asid>.json`
-  (0700 dir, 0600 file, `O_NOFOLLOW`, atomic replace).
-- **Retire.** Drop the fixed slot as contract and reopen design only for a
-  material failure (migration/identity risk), maintaining safe storage
-  meanwhile.
-- **Lead recommendation: confirm.** Orderly-restart fixture evidence is
-  bounded; it is not re-login/mismatched-ASID proof and not independent AX/CG
-  journey proof (`crates/tiler-macos/src/intent_store.rs:1-28,449-528,800-823`;
-  `docs/backlog.md:44`; `docs/decisions.md:69-73`). See
-  [backlog](../backlog.md) and [decisions](../decisions.md).
-
-## Next step
-
-The user selects outcomes; owning records and the gate, plus minimal
-discriminating rows if needed, are updated only after those selections. That
-update is not done in this research note.
-
-For the superseding source-only recommendations and future native
-discriminators, see [native Spaces prior art](macos-0.1-native-spaces-prior-art.md).
+Use the private per-session
+`~/Library/Application Support/OmniTiler/intent-v1-<uid>-<asid>.json`
+(`0700` dir, `0600` file, `O_NOFOLLOW`, atomic replace). Orderly-restart
+fixture evidence is not re-login/mismatched-ASID or independent AX/CG
+journey proof. See the [persistence decision](../decisions/persistence.md#macos-restart-intent-store).

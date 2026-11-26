@@ -25,9 +25,13 @@
 ### Windows launcher shortcuts
 - Decision: Default-on Win+B opens the Windows default web browser by system association, never a named browser; Win+T opens Windows Terminal. Browser opens empty `https://` through shell `open`; missing `wt.exe` logs narrowly with no fallback. Use conflict model: Authentic takes over; Compatible disables.
 - Why: Auto-tiler users rely on launch shortcuts.
-- Assumes / revisit if: Notification-area/taskbar-cycling native holders are general knowledge, unverified in repository. KDE/macOS counterparts unselected; physical check pending.
+- Assumes / revisit if: Notification-area/taskbar-cycling native holders are general knowledge, unverified in repository. KDE counterparts unselected; physical check pending.
 - Status: active, 2026-10-14
 - Evidence: [launcher delivery](../changes/archive/windows-launcher-shortcuts.md).
+
+### macOS launchers and modifier scope
+- Decision: provide configurable browser and terminal actions, unbound in both Authentic and Compatible; suggest Ctrl+Alt+B and Ctrl+Alt+T respectively. Use the system default browser association. Seed the configurable terminal app with Terminal.app; do not silently fall back if the configured app cannot launch. Do not use Fn/Globe as a tiler modifier in 0.1.
+- Status: active, 2026-11-26/27; binding and native delivery are not accepted by this decision.
 
 ### Shared shortcut defaults and conflict model
 - Decision: Meta/Win defaults across platforms: arrows navigate focus, Shift+arrows move windows, and every HJKL directional binding has its arrow alias. Grow uses Meta/Win+Alt+HJKL and arrows. Initial release supports standard US keyboards with hardcoded shifted aliases; layout detection, omission, opt-in configuration and migration are deferred. macOS Ctrl is configurable Meta by default. Per-binding conflicts offer keep/override, disable, rebind; Compatible avoids known OS conflicts, Authentic matches tilers and overrides; preset may appear first run. macOS Authentic takes safe/nonbreaking window-management conflicts and native settings with Revert.

@@ -13,23 +13,19 @@
   The user deferred those sub-legs until after macOS start; they remain open KDE
   acceptance, not start gates. ST is recorded in the
   [single acceptance checklist](kde-v4-acceptance-checklist.md#additional-kde-acceptance-and-diagnostic-legs).
-  The KDE reconnect (RC) leg-2 fix and merge decision
-  must land before this port reaches its reconnect/rehome slice and before 0.1. Other KDE acceptance remains separate, not implicitly
-  cleared by opening this port.
-- **Started under the amended gate (2026-11-10); slice 1 implementation in progress.**
-  Under the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration),
-  KDE phase 2 offline completion including v3 removal is done. macOS may start
-  while KDE ST/RC work continues. Neither slice 5 (state targets) nor slice 7
-  (physical reconnect/rehome) acceptance is claimed until both user-run KDE
-  ST/RC checks pass and resulting core changes are absorbed; see the
-  [single acceptance checklist](kde-v4-acceptance-checklist.md#additional-kde-acceptance-and-diagnostic-legs).
-  The RC leg-2 fix and merge decision remain pending before acceptance and 0.1.
-  Other KDE acceptance is separate, not implicitly cleared by opening this port.
+  The RC leg-2 fix is complete offline; TD2 keeps same-index units separate
+  with their then-current contents on return. Physical KDE RC remains open.
+- **macOS started under the amended gate (2026-11-10).** TD3 holds final
+  slice-5 native acceptance until KDE ST/RC clears and resulting core
+  corrections are absorbed. No other cross-platform sequencing dependency
+  remains; slice 7 still requires its own physical macOS proof. See the
+  [migration decision](../decisions/contract.md#contract-authority-and-v4-migration)
+  and [KDE acceptance checklist](kde-v4-acceptance-checklist.md#additional-kde-acceptance-and-diagnostic-legs).
 - The [pre-port review outcomes](#pre-port-review-outcomes-2026-11-10) are decided;
   their implementation/native proof remains below. Shared
   [host-settled geometry design](../decisions/layout-and-admission.md#host-settled-geometry-design-timing)
-  is deferred until after slice 1 and brought for user approval before slice 3;
-  approval remains required before any core change.
+  is deferred past 0.1 by TD4 unless live dogfooding reproduces a visible
+  regression; approval remains required before any core change.
 - The [2026-11-24 open-decision review](macos-v4-open-decisions-review.md) is
   user-approved: D0–D6 are decided, R1–R5 rectifications are tracked there, and
   the bounded D5 fixture diagnostic ran: close identity matched exactly, but
@@ -859,7 +855,7 @@ run after the port:
 | 4. Focus feedback | Port causal retained-request focus evidence and anchored-descriptor consumption under the approved unified design. Prove authorized focus/refusal without replay, exact lifetime joins and K5/M7 native event/render evidence, including stale/unwatched suppression. |
 | 5. State targets | Port fullscreen/sticky/stacking and composed-maximize frame application, attempts and recovery. Prove base restore, external-clear/fullscreen replacement, send/work-area changes and restart-to-base; retain durable intent/preimages where required. M4 implementation dependencies belong in shared core, not adapter-owned policy. Acceptance waits for both KDE ST/RC passes and absorption of resulting core changes. |
 | 6. Scaled metrics at scale 1 | Apply logical metrics once, separate native fractional-coordinate normalization from scaling, and recheck tiling/rendering on backing-scale changes while report scale stays 1. Do not absorb the Windows non-unit-scale prerequisite. |
-| 7. Physical reconnect/rehome | Supply M9 physical identity facts and prove user-run disconnect/return, ambiguous identity holds, FULL/work geometry and rehome behavior without regressing prior slices. Rehomed members are not new admissions. M8 crossing and two-display acceptance remain explicit gates. Acceptance waits for both KDE ST/RC passes and absorption of resulting core changes, including the RC fix/merge decision. |
+| 7. Physical reconnect/rehome | Supply M9 physical identity facts and prove user-run disconnect/return, ambiguous identity holds, FULL/work geometry and rehome behavior without regressing prior slices. Rehomed members are not new admissions. M8 crossing and two-display acceptance remain explicit gates. This slice requires its own physical proof, independent of KDE acceptance sequencing. |
 | 8. Scenario runner | Add a fixture-first ordered native runner with exact owned-state cleanup, plus offline genuine-producer journeys using real native shapes. Cover earlier slices and FIFO bursts; transport/readiness receipts never substitute for native outcomes. Physical keys, paint, hotplug and crash recovery remain separately named evidence. |
 | 9. Remaining v2/v3 removal | Map each supported legacy assertion to genuine v4 coverage; port uncovered behavior first. Cull obsolete implementations separately with no-live-path evidence and review. Retain immutable recorded fixtures, active migration records and both shared stage5 proofs. Cull proved-obsolete touched code earlier; no dedicated broad sweep. |
 
@@ -1278,16 +1274,20 @@ posting available, the session unlocked and Secure Input inactive.
 ## Open decisions and unknowns for the macOS port
 
 - The pre-port choices above are approved; implementation/evidence remains.
-  Shared host-settled geometry design still needs user approval after slice 1
-  and before slice 3, and before any core change.
+  TD4 defers [shared host-settled geometry](../decisions/layout-and-admission.md#host-settled-geometry-design-timing)
+  past 0.1 unless live dogfooding reproduces a visible regression. Any
+  resulting shared design still needs approval before a core change.
 - M3: D4 (2026-11-24) selects an adapter-owned atomic store with live-lifetime
   verification, pre-admission import, desired-versus-durable reconciliation and
   recoverable hold; store adoption and orderly-restart persistence are proved on
   the signed fixture (2026-11-24), and malformed-store startup degrades cleanly
   (2026-11-25). Numeric launch-date stability and recoverable write failure
-  are proved in one login (2026-11-26); skipped-publication recovery,
-  tightened restart geometry (blocked on a guarded two-launch fixture controller) and re-login namespace rejection remain. No store
-  adoption is established by finite CG ID churn experiments.
+  are proved in one login (2026-11-26). Skipped-publication recovery,
+  tightened native restart geometry and re-login namespace rejection remain.
+  The guarded two-launch fixture controller landed offline in `de681e19`;
+  the signed [restart leg](archive/macos-guarded-two-launch-fixture.md#later-signed-run)
+  remains to be run. No store adoption is established by finite CG ID churn
+  experiments.
 - M4's product route is decided, not reopened here; native apply/restore is
   proved on the signed fixture (2026-11-24). Physical Ctrl+M delivery, paint,
   native Zoom/drift interaction, external move/resize clear, fullscreen

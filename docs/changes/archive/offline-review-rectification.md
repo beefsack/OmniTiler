@@ -33,8 +33,9 @@ before a source that later held on inset exhaustion or reconciliation
 failure, so staged readability could not prove the source had swept.
 
 Offline verification: formatting passed. The locked suites passed
-2,621 core tests, 394 protocol tests, 1,719 macOS library tests (3 ignored),
-and 152 macOS integration tests, with no failures. The macOS integration
+2,835 core tests (2,515 unit and 320 integration), 394 protocol tests,
+1,719 macOS library tests (3 ignored), and 152 macOS integration tests,
+with no failures. The macOS integration
 fixture needed a neutral `topmost` field in addition to the neutral
 pointer fields in the library fixture. No native checks were run.
 The locked `omnitiler` tests passed 19 gesture transport, 3 sequence

@@ -108,6 +108,7 @@
 
 ### macOS workspace indicator
 - Decision: Bounded select-only preview defaults to one native menu-bar item listing existing Space numbers in native order. `all` is default; `current` and `off` are alternatives. Per-window icons are deferred past 0.1; the opt-in representative app icon (`workspace_indicator.icons`, default false) remains available outside the 0.1 gate. Current highlight is independent of occupancy. Selection uses guarded AX route and refuses stale identities; ambiguous multi-display scope hides the item; numbers beyond armed 1-9 remain visible but disabled.
+- Multi-display support is a 0.1 consistency blocker: render per output and prove selection on the intended physical display under SIP-on operation. Safe-hide remains a preview safety boundary under ambiguous scope, not a parity result.
 - Why: not recorded.
 - Assumes / revisit if: membership means retained managed-window membership, not all desktop apps; no trailing Space/lifecycle policy or polling loop. Physical/game/fullscreen acceptance remains TBD.
 - Status: active, 2026-10-17

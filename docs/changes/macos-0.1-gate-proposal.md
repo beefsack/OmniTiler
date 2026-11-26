@@ -128,7 +128,7 @@
 | 34 | M | Gaming and work-area reliability | A | Preserve fullscreen/game non-interference, correct work areas after changes. Requires REQUIRED USER-RUN REAL GAME leg plus incremental game CPU/frame-time/input cost against tiler-off (idle cost is not a substitute). | **U**: reliability/game-safety work never exercised on macOS (ROI item 6); user-run acceptance pending. |
 | 35 | K | Custom Tile manual runtime | X | KDE-specific development component; no macOS counterpart. Core tiling remains covered elsewhere. | **X**: [shared inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2). |
 | 36 | K | Nested placement visual smoke | A | Inspect shared nested placement and rendered geometry on macOS, without inferring visual quality from tests. | **U**: appearance pending; no accepted macOS visual-smoke record. |
-| 37 | K | Tray live/release acceptance | H | Signed DMG plus Homebrew installed lifecycle/login/autostart replaces KDE tray/service packaging. | **U**: development-owner evidence only; install path, signing/notarization and update channel open under [scope](../decisions/platforms.md#platform-scope). K does not waive a required delivery decision. |
+| 37 | K | Tray live/release acceptance | H | Signed, notarized DMG plus Homebrew Cask installed lifecycle/login/autostart replaces KDE tray/service packaging. | **U**: development-owner evidence only; [distribution decided](../decisions/platforms.md#macos-01-distribution), installed acceptance pending. |
 | 38 | K | Drag-oracle post-fix diagnostic proof | X | KWin-specific oracle diagnostic; no macOS counterpart. macOS behavioral proof stays in checks 17/25/26/47. | **X**: [shared inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2). |
 | 39 | M | Startup adoption | H | Host-owned native-Space adoption in native order with membership preserved and no launch moves replaces Planner loss; fresh owner re-adopts eligible frames with fit/fallback. | **O**: core adoption delivered, macOS consumption partial; four-Spaces-to-four-workspaces native proof pending ([adoption](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19)). |
 | 40 | K | KWin controller silent-unload diagnostic | X | No KWin controller on macOS; do not equate this diagnostic with permission for silent owner failure. Owner loss remains checks 28/30/50 and MX2/MX3. | **X**: [shared inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2). |
@@ -175,7 +175,7 @@
 | MX5 | Fullscreen membership and dedicated Spaces (1/9/31/45/N3) | Native fullscreen windows stay logical members; no force-exit; ordinary tiling never touches fullscreen frames; dedicated fullscreen Spaces omitted from `native_order` with empty logical view while current; fullscreen-Space scope and sticky subsets stay fenced TBD. | **U**: direction selected, design plus one bounded user-run probe pending (ROI item 4); current send-refused limit stands ([dogfood direction](../decisions/macos.md#follow-up-review-and-investigation-priority)). |
 | MX6 | Menu-bar indicator productization (20/22/29/N4) | Single-display numbers/click/current-highlight/occupancy-unknown handling; ambiguous multi-display scope hides the item rather than guessing; numbers beyond armed 1-9 visible but disabled; application icons excluded from this proposal per the existing deferral. Indicator numbers select workspaces; the check-20 tiling toggle is separate and not substituted. | **P**: plain-numbers quick check passed historically; click handling, Space-switch updates, current-highlight/unknown handling, appearance and game/fullscreen acceptance pending ([record](macos-workspace-indicator.md)). |
 | MX7 | Sleep, hotplug and scaling on native Spaces (30/44/50/51/N3/N4) | Native suspend/resume, display plug/unplug with displacement/return, and resolution/scale/work-area changes with then-current Space contents; reobserve topology/membership, preserve hidden claims, no replayed writes or stuck holds. Two-display setup required. | **U**: none exercised on macOS yet (backlog item 8). |
-| MX8 | Distribution and installed lifecycle (22/29/37/48) | Signed DMG plus Homebrew; release signing/notarization, update channel and App Store decision closed before 0.1 ships; installed login/autostart/stop/removal acceptance. | **U**: DMG plus Homebrew selected; paid-account signing/notarization, updates and Store remain open ([scope](../decisions/platforms.md#platform-scope)). No accepted installed journey. |
+| MX8 | Distribution and installed lifecycle (22/29/37/48) | Developer ID signing, notarization, GitHub Releases DMG and Homebrew Cask; installed login/autostart/stop/removal acceptance. No Mac App Store or in-app updater in 0.1. | **U**: [distribution decided](../decisions/platforms.md#macos-01-distribution); no accepted installed journey. |
 
 ## Proposed decisions
 
@@ -201,11 +201,10 @@
   `just launch` exit code).
 - Resolved 2026-10-29: D5 rejected (native Settings window is 0.1 scope),
   D6 rejected (product underlay attempt is 0.1 scope), first-float adopts
-  option A for macOS with no exception. Still open: fullscreen
-  logical-membership design; distribution channel plus paid
-  signing/notarization/update decisions; App Store stance. Already-decided
-  MC fallback, floor and route-settings timing is not reopened; the carried
-  icon/radius limits are subject to the P1 product-scope audit vs Windows 0.1.
+  option A for macOS with no exception. The [fullscreen product route](../decisions/macos.md#fullscreen-games)
+  and [distribution](../decisions/platforms.md#macos-01-distribution) are
+  decided; their acceptance remains open. Already-decided MC fallback,
+  floor, and route-settings timing are not reopened.
 - macOS 15 floor: support promise retained; floor-release verification
   deferred as explicit unverified risk.
 - Source ambiguity: macOS classification discriminators (AX-size-only
@@ -216,11 +215,8 @@
   appearance pixels; sticky per-display scope; notch-straddling geometry;
   separate-Spaces-off spanning domains. Each resolves through its
   existing TBD row, not through this gate.
-- Packaging/distribution dependencies accurately linked: DMG plus
-  Homebrew selected with release signing/notarization, update channel
-  and App Store open ([scope](../decisions/platforms.md#platform-scope));
-  backlog distribution item; MX8 acceptance pending. No installed pass
-  is claimed.
+- MX8 remains pending installed validation of the selected signed/notarized
+  DMG and Homebrew Cask; no installed pass is claimed.
 - Reliability and game safety are absolute: sleep/wake, output hotplug,
   resolution/scaling/config changes and fullscreen handling must pass on
   two outputs; game legs are REQUIRED USER-RUN REAL GAME acceptance with
