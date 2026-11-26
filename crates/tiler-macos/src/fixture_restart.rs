@@ -22,12 +22,18 @@
 //! capture.
 //!
 //! Two modes:
-//! - `m3`: float the first `--floats` owned windows, capture the settled
-//!   pre-stop arrangement, then require the same per-window float frames and
-//!   the same unordered tile-rectangle multiset (duplicates count) after the
-//!   restarted product hydrates, with the store bytes plus metadata
-//!   unchanged and every intended float row bound exactly to the fixture
-//!   lifetime.
+//! - `m3`: establish the owned Space and spawn only the tile callers that
+//!   must survive, then launch the product and capture their genuinely fresh
+//!   settled AX/CG layout as the baseline. Add the intended float windows
+//!   afterwards (preserving the survivor WIDs and original caller order),
+//!   float the first `--floats` callers, and require the surviving tile
+//!   multisets to match the fresh baseline again before the stop. After the
+//!   restart, require the same float frames, the same unordered survivor
+//!   tile-rectangle multisets (duplicates count) against that fresh baseline,
+//!   the store bytes plus metadata unchanged, and every intended float row
+//!   bound exactly to the fixture lifetime. The historical pre-stop tile
+//!   split is reported but is not the oracle: orderly restart re-adopts the
+//!   survivors as a fresh tree.
 //! - `m4`: capture the settled tiled base, apply exactly one composed
 //!   maximize overlay, require it distinct, then require the exact base
 //!   after restart with the store unchanged (absence is labelled as
@@ -39,7 +45,13 @@
 //! created empty Space, stop the awake companion, compare the baseline and
 //! remove the owned run directory. The private store is removed only once the
 //! product is proven reaped, even when fixture shutdown fails; otherwise
-//! product logs and the private store are preserved as residue.
+//! product logs and the private store are preserved as residue. Every
+//! restart outcome, pass or refusal, keeps both product lifetimes' stdout,
+//! stderr and terminal outcome as auditable non-native evidence residue:
+//! proven product absence still removes the private store and a clean native
+//! restoration removes the blocking receipt, while the evidence files stay
+//! for inspection. Non-restart legs keep their previous whole-directory
+//! cleanup.
 
 use std::path::{Path, PathBuf};
 
@@ -253,6 +265,11 @@ pub fn run_fixture_restart(opts: FixtureRestartOpts) -> Result<String, (i32, Str
             }
             #[cfg(target_os = "macos")]
             {
+                // Restart legs keep both product lifetimes' stdout, stderr
+                // and terminal outcome as auditable non-native evidence on
+                // every outcome, pass or refusal. The flag is set before the
+                // first launch so no later failure can delete it.
+                leg.retain_restart_product_evidence();
                 orchestration::run_restart_body_macos(leg, &opts)
             }
         },

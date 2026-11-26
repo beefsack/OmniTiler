@@ -136,6 +136,33 @@ pub(crate) fn compare_restart_arrangement(
     Ok(())
 }
 
+/// Require one tile capture to reproduce another capture's exact AX and CG
+/// rectangle multisets (counts included; slots may swap between tiles). Used
+/// before the stop to prove the surviving tiles returned to the fresh
+/// survivor-only baseline after the floats were removed. Pure; unit-tested.
+pub(crate) fn require_tile_multisets_match(
+    label: &str,
+    expected: &[WindowFrames],
+    observed: &[WindowFrames],
+) -> Result<(), String> {
+    require_same_windows_and_wids(label, expected, observed)?;
+    let expected_ax = rect_multiset(expected.iter().map(|frame| frame.ax));
+    let observed_ax = rect_multiset(observed.iter().map(|frame| frame.ax));
+    if expected_ax != observed_ax {
+        return Err(format!(
+            "restart {label}: tile AX rectangle multiset does not match the fresh survivor baseline; refusing"
+        ));
+    }
+    let expected_cg = rect_multiset(expected.iter().map(|frame| frame.cg));
+    let observed_cg = rect_multiset(observed.iter().map(|frame| frame.cg));
+    if expected_cg != observed_cg {
+        return Err(format!(
+            "restart {label}: tile CG rectangle multiset does not match the fresh survivor baseline; refusing"
+        ));
+    }
+    Ok(())
+}
+
 /// Require at least one tile window to have reflowed from the initial tile
 /// placement after the float toggles: the leg exercised an active tiled
 /// arrangement, not two coincidental float windows.

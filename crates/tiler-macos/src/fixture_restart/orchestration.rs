@@ -22,7 +22,7 @@ use crate::live_leg::{FixtureRecord, LiveLeg, LiveLegTransport, RestartStopEvide
 use super::arrangement::{
     ArrangementEvidence, compare_post_stop_overlay, compare_restart_arrangement,
     compare_restart_base, partition_arrangement, require_distinct_overlay, require_no_native_zoom,
-    require_tile_reflow, target_native_zoom,
+    require_tile_multisets_match, require_tile_reflow, target_native_zoom,
 };
 use super::frame::WindowFrames;
 use super::frames::{
@@ -96,7 +96,8 @@ pub(crate) fn run_guarded_between_launch<S, P, L>(
 /// Run one two-launch body, then the owned finish exactly once. A successful
 /// body whose finish refuses reports both the restart evidence and the
 /// teardown failure; a failed body keeps its original error and reports the
-/// teardown failure instead of masking it.
+/// owned teardown instead of masking it, so retained product launch evidence
+/// stays visible beside the refusal.
 pub(crate) fn run_body_then_finish<S, E, T>(
     mut state: S,
     body: impl FnOnce(&mut S) -> Result<E, (i32, String)>,
@@ -128,8 +129,16 @@ where
             }
         },
         Err(error) => {
-            if let Err(teardown) = finish(state) {
-                report_teardown(&teardown.1);
+            match finish(state) {
+                Ok(teardown) => {
+                    // A refused body can still end with a clean owned
+                    // teardown; report it so retained product launch
+                    // evidence is visible beside the refusal.
+                    if let Ok(teardown) = serde_json::to_string(&teardown) {
+                        report_teardown(&teardown);
+                    }
+                }
+                Err(teardown) => report_teardown(&teardown.1),
             }
             Err(error)
         }
@@ -353,13 +362,20 @@ fn launch_second_and_capture(
                     "fixture-restart m3: pre-stop arrangement is missing".to_owned(),
                 )
             })?;
+            let survivor_baseline = pre.survivor_baseline.as_ref().ok_or_else(|| {
+                (
+                    1,
+                    "fixture-restart m3: fresh survivor baseline is missing".to_owned(),
+                )
+            })?;
             compare_restart_arrangement(arrangement, &after).map_err(|error| {
                 (
                     1,
                     serde_json::json!({
                         "stage": "restart-compare",
                         "error": error,
-                        "before": arrangement,
+                        "survivor_baseline": survivor_baseline,
+                        "pre_stop": arrangement,
                         "after": after,
                     })
                     .to_string(),
@@ -371,6 +387,8 @@ fn launch_second_and_capture(
                 "tile_ax_multiset_exact": true,
                 "tile_cg_multiset_exact": true,
                 "tile_reflowed": arrangement.tile_reflowed,
+                "survivor_baseline_verified_before_stop": true,
+                "survivor_baseline": survivor_baseline,
                 "before": arrangement,
                 "after": after,
             })
@@ -610,6 +628,10 @@ fn run_post_restart_phase(
 struct PreStopEvidence {
     /// M3: settled arrangement after the floats (floats plus tiles).
     arrangement: Option<ArrangementEvidence>,
+    /// M3: settled launch-one layout with only the surviving tiles present.
+    /// Restart adoption is compared with this fresh tree, not with the
+    /// history-dependent pre-stop tile split.
+    survivor_baseline: Option<Vec<WindowFrames>>,
     /// M4: settled tiled base, then the active composed overlay.
     base: Option<Vec<WindowFrames>>,
     overlay: Option<Vec<WindowFrames>>,
@@ -621,6 +643,7 @@ struct PreStopEvidence {
 /// is posted after a settled capture unless the exact owned current
 /// Space/topology and joined placement are rechecked first.
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 fn run_pre_stop_phase(
     leg: &mut LiveLeg<LiveLegTransport>,
     opts: &FixtureRestartOpts,
@@ -629,6 +652,7 @@ fn run_pre_stop_phase(
     joined: &[(String, u32)],
     owned: &PostOnlyOwnedSpace,
     fixture_pid: u32,
+    survivor_baseline: Option<Vec<WindowFrames>>,
 ) -> Result<PreStopEvidence, (i32, String)> {
     let admission = leg.admit(fixture_pid, None)?;
     let live = crate::fixture_post::LiveTransport;
@@ -683,8 +707,32 @@ fn run_pre_stop_phase(
             let mut arrangement = partition_arrangement(&settled, opts.floats);
             arrangement.tile_reflowed =
                 require_tile_reflow(&initial, &arrangement.tiles).map_err(|error| (1, error))?;
+            // The survivors must return to the exact fresh launch-one
+            // multisets before the original restart oracle compares them.
+            let baseline = survivor_baseline.ok_or_else(|| {
+                (
+                    1,
+                    "fixture-restart m3: fresh survivor baseline is missing before the stop"
+                        .to_owned(),
+                )
+            })?;
+            require_tile_multisets_match("m3-pre-stop", &baseline, &arrangement.tiles).map_err(
+                |error| {
+                    (
+                        1,
+                        serde_json::json!({
+                            "stage": "restart-pre-stop",
+                            "error": error,
+                            "survivor_baseline": baseline,
+                            "pre_stop_tiles": arrangement.tiles,
+                        })
+                        .to_string(),
+                    )
+                },
+            )?;
             Ok(PreStopEvidence {
                 arrangement: Some(arrangement),
+                survivor_baseline: Some(baseline),
                 base: None,
                 overlay: None,
             })
@@ -713,11 +761,54 @@ fn run_pre_stop_phase(
                 .map_err(|error| (1, error))?;
             Ok(PreStopEvidence {
                 arrangement: None,
+                survivor_baseline: None,
                 base: Some(initial),
                 overlay: Some(overlay),
             })
         }
     }
+}
+
+/// Spawn, join, register and placement-guard one bounded caller subset on the
+/// owned Space. Returns the joined caller+WID pairs in the requested order;
+/// every window is born on the owned Space and registered before any action.
+#[cfg(target_os = "macos")]
+fn spawn_join_owned_callers(
+    leg: &mut LiveLeg<LiveLegTransport>,
+    fixture_pid: u32,
+    socket: &str,
+    nonce: &str,
+    callers: &[String],
+    owned: &PostOnlyOwnedSpace,
+    refusal: &str,
+) -> Result<Vec<(String, u32)>, (i32, String)> {
+    let (topology_readable, current_owned_space, topology_row_exact) =
+        owned_topology_facts(leg.transport_mut(), owned);
+    if !topology_readable || !current_owned_space || !topology_row_exact {
+        return Err((
+            1,
+            post_only_placement_refusal(
+                owned,
+                &[],
+                "restart fixture owned Space/topology changed before spawning windows; refusing",
+                Some(current_owned_space),
+            )
+            .to_string(),
+        ));
+    }
+    spawn_owned_windows(socket, nonce, callers).map_err(|error| (1, error))?;
+    let joined = join_fixture_windows(fixture_pid, socket, nonce, callers)
+        .map_err(|error| (1, error))?;
+    for (caller, wid) in &joined {
+        leg.note_owned_window(caller, fixture_pid, *wid);
+    }
+    if let Err(observed) = await_joined_on_owned_space(&joined, owned.sid()) {
+        return Err((
+            1,
+            post_only_placement_refusal(owned, &observed, refusal, None).to_string(),
+        ));
+    }
+    Ok(joined)
 }
 
 /// One two-launch body. The caller always runs owned teardown, even if this
@@ -789,29 +880,24 @@ pub(crate) fn run_restart_body_macos(
     leg.transport_mut()
         .set_fixture_control(parsed.socket.clone(), run_dir.clone());
     let callers: Vec<String> = (0..opts.windows).map(|index| format!("w{index}")).collect();
+    // The float chords and intent rows use the first `floats` callers; the
+    // remaining callers are the tiles that must survive the restart. M4
+    // floats nothing, so every caller is spawned before its single launch.
+    let (float_siblings, survivors) = callers.split_at(opts.floats);
     // Establish and switch to the owned Space BEFORE spawning any fixture
     // window, matching the single-leg order: windows are born on the owned
     // Space, never on a user Space and then moved.
     let established = establish_post_only_owned_space(leg)?;
     let owned = established.evidence;
-    spawn_owned_windows(&parsed.socket, &nonce, &callers).map_err(|error| (1, error))?;
-    let joined = join_fixture_windows(parsed.pid, &parsed.socket, &nonce, &callers)
-        .map_err(|error| (1, error))?;
-    for (caller, wid) in &joined {
-        leg.note_owned_window(caller, parsed.pid, *wid);
-    }
-    if let Err(observed) = await_joined_on_owned_space(&joined, owned.sid()) {
-        return Err((
-            1,
-            post_only_placement_refusal(
-                &owned,
-                &observed,
-                "restart fixture windows are not readable on the owned Space before the first product launch; refusing without posting",
-                None,
-            )
-            .to_string(),
-        ));
-    }
+    let survivor_joined = spawn_join_owned_callers(
+        leg,
+        parsed.pid,
+        &parsed.socket,
+        &nonce,
+        survivors,
+        &owned,
+        "restart fixture survivor windows are not readable on the owned Space; refusing without posting",
+    )?;
     // No first product launch may start while a foreign product instance is
     // already alive. This runs before the pending product registration.
     match foreign_product_overlap(leg, parsed.pid) {
@@ -878,6 +964,62 @@ pub(crate) fn run_restart_body_macos(
     leg.register_product_ls(record1)?;
     await_product_runtime_started(&launch1_dir)?;
     settle_hold(RESTART_STARTUP_SETTLE_MS)?;
+    let (joined, survivor_baseline) = if opts.mode == RestartMode::M3 {
+        // The survivor-only settled layout is only a valid fresh baseline
+        // while the exact owned Space/topology and joined placement hold.
+        let (topology_readable, current_owned_space, topology_row_exact) =
+            owned_topology_facts(leg.transport_mut(), &owned);
+        let placement = await_joined_on_owned_space(&survivor_joined, owned.sid());
+        if !pre_chord_placement_holds(
+            topology_readable,
+            current_owned_space,
+            topology_row_exact,
+            placement.is_ok(),
+        ) {
+            let observed = placement.err().unwrap_or_default();
+            return Err((
+                1,
+                post_only_placement_refusal(
+                    &owned,
+                    &observed,
+                    "restart fixture owned Space/topology or survivor placement drifted before the fresh baseline capture; refusing without posting",
+                    Some(current_owned_space),
+                )
+                .to_string(),
+            ));
+        }
+        let baseline = await_settled_frames(fixture_pid, &survivor_joined)?;
+        // Add the intended float siblings after the fresh baseline. Their
+        // join/registration and placement are the only new windows touched;
+        // the survivors keep their exact original WIDs.
+        let mut ordered = spawn_join_owned_callers(
+            leg,
+            fixture_pid,
+            &parsed.socket,
+            &nonce,
+            float_siblings,
+            &owned,
+            "restart fixture float siblings are not readable on the owned Space; refusing without posting",
+        )?;
+        // Original caller order is preserved for the later float chords and
+        // intent rows (both read the first `floats` entries).
+        ordered.extend(survivor_joined);
+        if let Err(observed) = await_joined_on_owned_space(&ordered, owned.sid()) {
+            return Err((
+                1,
+                post_only_placement_refusal(
+                    &owned,
+                    &observed,
+                    "restart fixture windows are not readable on the owned Space after the float siblings joined; refusing without posting",
+                    None,
+                )
+                .to_string(),
+            ));
+        }
+        (ordered, Some(baseline))
+    } else {
+        (survivor_joined, None)
+    };
     let pre = run_pre_stop_phase(
         leg,
         opts,
@@ -886,6 +1028,7 @@ pub(crate) fn run_restart_body_macos(
         &joined,
         &owned,
         fixture_pid,
+        survivor_baseline,
     )?;
     let prior = leg.stop_product_for_restart().map_err(|error| {
         (

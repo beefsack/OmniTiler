@@ -10,7 +10,7 @@
     use super::arrangement::{
         ArrangementEvidence, compare_post_stop_overlay, compare_restart_arrangement,
         compare_restart_base, require_no_native_zoom, require_nudge_preimage_distinct,
-        require_post_stop_arrangement, require_tile_reflow,
+        require_post_stop_arrangement, require_tile_multisets_match, require_tile_reflow,
     };
     use super::frame::WindowFrames;
     use super::frames::runtime_started_seen;
@@ -527,6 +527,65 @@
         assert!(require_tile_reflow(&initial, &initial[2..]).is_err());
     }
 
+    #[test]
+    fn captured_historical_split_is_not_the_fresh_survivor_adoption() {
+        // Exact frames from the refused 2026-11-27 signed M3 run: the two
+        // float frames matched, the historical all-at-once tree left the
+        // survivors stacked after the floats were removed, and the restarted
+        // product fresh-adopted the same survivors as side-by-side columns.
+        // The earlier staging compared the historical split with that fresh
+        // tree and refused. See world_layout::adoption::serial_seed (fresh
+        // insertion order) and restart_disjoint_adoption_tests
+        // (any_shared_id_preserves_retained_topology) for the source cause.
+        let floats = vec![
+            frames("w0", 20, 8.0, 38.0, 1108.0, 1123.0),
+            frames("w1", 21, 1124.0, 38.0, 1108.0, 1123.0),
+        ];
+        let historical_tiles = vec![
+            frames("w2", 22, 8.0, 38.0, 2224.0, 557.0),
+            frames("w3", 23, 8.0, 603.0, 2224.0, 558.0),
+        ];
+        let fresh_survivor_baseline = vec![
+            frames("w2", 22, 8.0, 38.0, 1108.0, 1123.0),
+            frames("w3", 23, 1124.0, 38.0, 1108.0, 1123.0),
+        ];
+        // Fresh adoption may assign the columns to either survivor.
+        let after_tiles = vec![
+            frames("w2", 22, 1124.0, 38.0, 1108.0, 1123.0),
+            frames("w3", 23, 8.0, 38.0, 1108.0, 1123.0),
+        ];
+        let after_all = [floats.clone(), after_tiles.clone()].concat();
+        let historical = ArrangementEvidence {
+            floats: floats.clone(),
+            tiles: historical_tiles.clone(),
+            tile_reflowed: true,
+        };
+        // The restart oracle still refuses the historical arrangement.
+        let refusal = compare_restart_arrangement(&historical, &after_all)
+            .expect_err("the historical arrangement must not pass");
+        assert!(refusal.contains("multiset changed"), "unexpected: {refusal}");
+        // The new pre-stop check accepts swapped survivor slots but refuses
+        // the historical split before launch one stops.
+        require_tile_multisets_match("m3-pre-stop", &fresh_survivor_baseline, &after_tiles)
+            .expect("swapped slots are the same multiset");
+        assert!(
+            require_tile_multisets_match(
+                "m3-pre-stop",
+                &fresh_survivor_baseline,
+                &historical_tiles
+            )
+            .is_err(),
+            "the historical split must not pass the fresh-baseline check"
+        );
+        let pre_stop = ArrangementEvidence {
+            floats,
+            tiles: fresh_survivor_baseline,
+            tile_reflowed: true,
+        };
+        compare_restart_arrangement(&pre_stop, &after_all)
+            .expect("the corrected staging yields the same arrangement across restart");
+    }
+
     fn store_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("restart-store-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -911,7 +970,9 @@
         assert_eq!(teardown["teardown"], true);
         assert_eq!(*trace.borrow(), vec!["body", "finish"]);
 
-        // Body failure with a clean finish: the original error is not masked.
+        // Body failure with a clean finish: the original error is not masked
+        // and the clean teardown is reported so retained launch evidence is
+        // visible beside the refusal.
         let trace = RefCell::new(Vec::new());
         let error = run_body_then_finish::<(), serde_json::Value, serde_json::Value>(
             (),
@@ -921,15 +982,16 @@
             },
             |_| {
                 trace.borrow_mut().push("finish");
-                Ok(serde_json::json!({}))
+                Ok(serde_json::json!({"evidence_retained": ["product/launch-1/stderr.log"]}))
             },
-            |_| {
+            |teardown| {
                 trace.borrow_mut().push("report");
+                assert!(teardown.contains("launch-1/stderr.log"), "{teardown}");
             },
         )
         .expect_err("body failure is returned");
         assert_eq!(error, (1, "body refused".to_owned()));
-        assert_eq!(*trace.borrow(), vec!["body", "finish"]);
+        assert_eq!(*trace.borrow(), vec!["body", "finish", "report"]);
 
         // Body failure with a refused finish: still one finish, and the
         // teardown failure is reported without replacing the cause.
@@ -1019,7 +1081,13 @@
         let trace = trace.borrow();
         assert_eq!(
             &trace[..],
-            ["effect", "pending-launch-two", "open-refused", "finish"]
+            [
+                "effect",
+                "pending-launch-two",
+                "open-refused",
+                "finish",
+                "report"
+            ]
         );
         assert_eq!(trace.iter().filter(|step| **step == "finish").count(), 1);
     }

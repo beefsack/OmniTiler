@@ -321,6 +321,13 @@ pub struct TeardownReport {
     /// (the stop path already records that residue; nothing is
     /// synthesized here).
     pub product_outcome: Option<serde_json::Value>,
+    /// Product launch evidence kept in the owned run directory after an
+    /// otherwise clean restoration: relative paths to both lifetimes'
+    /// stdout, stderr and terminal outcome. These are factual audit residue,
+    /// not an unsafe native result, so they do not retain the blocking
+    /// receipt. Empty when the clean completed leg removed the run directory
+    /// or when no evidence file exists.
+    pub evidence_retained: Vec<String>,
 }
 
 /// Injected leg boundary. Baseline reads ride [`BaselineReads`], Space
@@ -338,7 +345,10 @@ pub struct TeardownReport {
 ///   signal to a drifted PID). `product_absent` is the caller's proven
 ///   absence (owned product reaped and no pending product launch): only then
 ///   may product-owned launch logs, terminal outcome and the private store
-///   be removed; otherwise they stay as residue;
+///   be removed; otherwise they stay as residue. `retain_evidence` scopes
+///   that removal: restart legs keep both lifetimes' logs and terminal
+///   outcomes as auditable non-native evidence, while every other leg
+///   removes the whole known run directory exactly as before;
 /// - `process_gone` proves one exact PID exited (unreadable refuses);
 /// - `awake_start`/`awake_stop` own the bounded exact awake child.
 pub trait LegTransport: BaselineReads + NativeSpaces {
@@ -351,6 +361,7 @@ pub trait LegTransport: BaselineReads + NativeSpaces {
         &mut self,
         record: &FixtureRecord,
         product_absent: bool,
+        retain_evidence: bool,
     ) -> Result<(), String>;
     fn process_gone(&mut self, pid: u32) -> Result<bool, String>;
     fn awake_start(&mut self, seconds: u64) -> Result<(), String>;
@@ -544,6 +555,7 @@ impl LegTransport for LiveLegTransport {
         &mut self,
         record: &FixtureRecord,
         product_absent: bool,
+        retain_evidence: bool,
     ) -> Result<(), String> {
         // Identity first: a relaunched or PID-reused process never receives
         // our shutdown (which would authorize a foreign server), and no
@@ -576,7 +588,7 @@ impl LegTransport for LiveLegTransport {
                 ));
             }
         }
-        remove_owned_run_dir_after_absence(&record.run_dir, product_absent)
+        remove_owned_run_dir_after_absence(&record.run_dir, product_absent, retain_evidence)
     }
 
     fn process_gone(&mut self, pid: u32) -> Result<bool, String> {
@@ -681,39 +693,143 @@ const PRODUCT_RUN_LEAVES: [&str; 6] = [
 /// `product` subdirectory and its known leaves are product-owned.
 const FIXTURE_RUN_LEAVES: [&str; 3] = ["announcement.json", "stderr.log", "fixture.sock"];
 
+/// Product leaves that are the exact launch evidence for a refused or failed
+/// restart: foreground logs plus the terminal outcome when the product
+/// published one. Restart legs retain them as reported auditable residue on
+/// every outcome; every other leg removes them with the whole run directory.
+const PRODUCT_EVIDENCE_LEAVES: [&str; 3] = ["stdout.log", "stderr.log", "outcome.json"];
+
 /// Remove one owned fixture run directory after its fixture shut down.
 /// Only proven product absence (the owned product reaped plus no pending
-/// product launch) authorizes the full known-leaves removal; otherwise only
-/// the fixture-owned leaves remove and the product-owned subdirectory
-/// (launch logs, terminal outcome, private store) is retained as residue so
-/// a still-present or pending product never loses state and the end stays
-/// receipted.
-fn remove_owned_run_dir_after_absence(run_dir: &Path, product_absent: bool) -> Result<(), String> {
-    if product_absent {
-        return remove_owned_run_dir(run_dir);
+/// product launch) authorizes product-state cleanup; otherwise only the
+/// fixture-owned leaves remove and the product-owned subdirectory (launch
+/// logs, terminal outcome, private store) is retained as residue so a
+/// still-present or pending product never loses state and the end stays
+/// receipted. With absence proven, `retain_evidence` keeps the restart
+/// launches' stdout, stderr and terminal outcome while everything else
+/// removes; without it the whole known run directory removes as before.
+fn remove_owned_run_dir_after_absence(
+    run_dir: &Path,
+    product_absent: bool,
+    retain_evidence: bool,
+) -> Result<(), String> {
+    if !product_absent {
+        for leaf in FIXTURE_RUN_LEAVES {
+            remove_known_leaf(run_dir, leaf)?;
+        }
+        return Err(
+            "shutdown: product absence unproven (present or pending); product-owned launch logs, terminal outcome and private store retained as residue"
+                .to_owned(),
+        );
     }
-    for leaf in FIXTURE_RUN_LEAVES {
-        remove_known_leaf(run_dir, leaf)?;
-    }
-    Err(
-        "shutdown: product absence unproven (present or pending); product-owned launch logs, terminal outcome and private store retained as residue"
-            .to_owned(),
-    )
+    remove_owned_run_dir_impl(run_dir, retain_evidence)
 }
 
-/// Remove only the owned fixture run directory's known files plus the
-/// directory itself. Known leaves are the fixture announcement/log/socket
-/// plus the leg-created `product` subdirectory's known product leaves
-/// ([`PRODUCT_RUN_LEAVES`]), the two-launch controller's `launch-1` /
-/// `launch-2` output subdirectories (same known leaves), and the isolated
-/// intent store. Every removal is symlink-guarded; an unknown leaf is
-/// residue (refused here, never broad-deleted) so the next leg's begin is
-/// blocked until inspection instead of silently dropping state. Never
-/// recursive beyond the owned leaves, never a pre-existing directory. Only
-/// reached with proven product absence (see
-/// [`remove_owned_run_dir_after_absence`]); otherwise the product-owned
-/// leaves are never removed.
+/// Remove the whole known owned run directory (all launch evidence
+/// included). Reuses the same known-leaf, symlink-guarded removal as
+/// [`remove_owned_run_dir`].
+#[cfg(test)]
 fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
+    remove_owned_run_dir_impl(run_dir, false)
+}
+
+/// Remove the known product leaves under one directory, keeping the launch
+/// evidence files when `keep_evidence` is set. Unknown leaves and symlinks are
+/// never touched.
+fn remove_known_product_leaves(dir: &Path, keep_evidence: bool) -> Result<(), String> {
+    for known in PRODUCT_RUN_LEAVES {
+        if keep_evidence && PRODUCT_EVIDENCE_LEAVES.contains(&known) {
+            continue;
+        }
+        remove_known_leaf(dir, known)?;
+    }
+    Ok(())
+}
+
+/// Remove one `launch-1`/`launch-2` output directory. Keeping evidence leaves
+/// the directory itself; otherwise the directory removes once its known
+/// leaves are gone. An absent directory is fine; a symlink or non-directory
+/// refuses.
+fn remove_owned_launch_dir(
+    product_dir: &Path,
+    launch: &str,
+    keep_evidence: bool,
+) -> Result<(), String> {
+    let dir = product_dir.join(launch);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
+            "shutdown: owned product {launch} dir is a symlink; refusing"
+        )),
+        Ok(meta) if meta.is_dir() => {
+            remove_known_product_leaves(&dir, keep_evidence)?;
+            if keep_evidence {
+                // Only the exact regular-file evidence remains; an unknown
+                // leaf, symlink, or unexpected type refuses so the receipt
+                // is never cleared over unaudited residue.
+                let mut unknown = Vec::new();
+                match std::fs::read_dir(&dir) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            let evidence = PRODUCT_EVIDENCE_LEAVES.contains(&name.as_str())
+                                && entry.file_type().is_ok_and(|t| t.is_file());
+                            if !evidence {
+                                unknown.push(name);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "shutdown: owned product {launch} dir unreadable ({e})"
+                        ));
+                    }
+                }
+                if !unknown.is_empty() {
+                    return Err(format!(
+                        "shutdown: owned product {launch} dir holds unknown leaves ({}); residue retained, never broad-deleted",
+                        unknown.join(",")
+                    ));
+                }
+                return Ok(());
+            }
+            let mut unknown = Vec::new();
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        unknown.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "shutdown: owned product {launch} dir unreadable ({e})"
+                    ));
+                }
+            }
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "shutdown: owned product {launch} dir holds unknown leaves ({}); residue retained, never broad-deleted",
+                    unknown.join(",")
+                ));
+            }
+            std::fs::remove_dir(&dir).map_err(|e| {
+                format!("shutdown: owned product {launch} dir removal refused ({e})")
+            })
+        }
+        Ok(_) => Err(format!(
+            "shutdown: owned product {launch} path is not a directory; refusing"
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "shutdown: owned product {launch} dir metadata refused ({e})"
+        )),
+    }
+}
+
+/// Remove the known leaves of one owned run directory, optionally keeping the
+/// restart launch evidence. The private store always removes once absence is
+/// proven; unknown leaves refuse so the receipt is retained for audit and
+/// nothing is broad-deleted.
+fn remove_owned_run_dir_impl(run_dir: &Path, keep_evidence: bool) -> Result<(), String> {
     for leaf in FIXTURE_RUN_LEAVES {
         remove_known_leaf(run_dir, leaf)?;
     }
@@ -723,15 +839,64 @@ fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
             return Err("shutdown: owned product dir is a symlink; refusing".to_owned());
         }
         Ok(meta) if meta.is_dir() => {
-            for leaf in PRODUCT_RUN_LEAVES {
-                remove_known_leaf(&product_dir, leaf)?;
-            }
+            remove_known_product_leaves(&product_dir, keep_evidence)?;
             // Two-launch layout: per-launch output directories hold only
             // the same known product leaves.
-            for leaf in ["launch-1", "launch-2"] {
-                remove_owned_launch_dir(&product_dir, leaf)?;
+            for launch in ["launch-1", "launch-2"] {
+                remove_owned_launch_dir(&product_dir, launch, keep_evidence)?;
             }
             remove_owned_intent_store(&product_dir)?;
+            if keep_evidence {
+                // Only the two launch directories (checked for type above)
+                // and the exact regular-file evidence may remain; anything
+                // else refuses so the receipt is never cleared over
+                // unaudited residue.
+                let mut unknown = Vec::new();
+                match std::fs::read_dir(&product_dir) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            let launch_dir = ["launch-1", "launch-2"].contains(&name.as_str())
+                                && entry.file_type().is_ok_and(|t| t.is_dir());
+                            let evidence = PRODUCT_EVIDENCE_LEAVES.contains(&name.as_str())
+                                && entry.file_type().is_ok_and(|t| t.is_file());
+                            if !launch_dir && !evidence {
+                                unknown.push(name);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("shutdown: owned product dir unreadable ({e})"));
+                    }
+                }
+                if !unknown.is_empty() {
+                    return Err(format!(
+                        "shutdown: owned product dir holds unknown leaves ({}); residue retained, never broad-deleted",
+                        unknown.join(",")
+                    ));
+                }
+                // Root leaves beside the product directory are audited the
+                // same way before the receipt may clear.
+                match std::fs::read_dir(run_dir) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            let allowed = name == "product"
+                                || name == crate::live_baseline::BASELINE_FILE_NAME
+                                || name == RESIDUE_FILE_NAME;
+                            if !allowed {
+                                return Err(format!(
+                                    "shutdown: owned run dir holds unknown leaves ({name}); residue retained, never broad-deleted"
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("shutdown: owned run dir unreadable ({e})"));
+                    }
+                }
+                return Ok(());
+            }
             // Unknown product leaves are residue, never broad-deleted: the
             // removal refuses so the receipt is retained for audit.
             let mut unknown = Vec::new();
@@ -764,18 +929,28 @@ fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
             ));
         }
     }
-    // Unknown top-level leaves are residue as well: only the known receipt
-    // set plus the residue artifact itself may remain beside them.
-    match std::fs::read_dir(run_dir) {
-        Ok(entries) => {
+    match std::fs::symlink_metadata(run_dir) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Err("shutdown: owned run dir is a symlink; refusing".to_owned())
+        }
+        Ok(meta) if meta.is_dir() => {
             let mut unknown = Vec::new();
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name != crate::live_baseline::BASELINE_FILE_NAME
-                    && name != RESIDUE_FILE_NAME
-                    && name != "product"
-                {
-                    unknown.push(name);
+            match std::fs::read_dir(run_dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        // The receipt set and residue artifact may live
+                        // beside the run directory's known leaves.
+                        if name != crate::live_baseline::BASELINE_FILE_NAME
+                            && name != RESIDUE_FILE_NAME
+                            && name != "product"
+                        {
+                            unknown.push(name);
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(format!("shutdown: owned run dir unreadable ({e})"));
                 }
             }
             if !unknown.is_empty() {
@@ -784,61 +959,45 @@ fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
                     unknown.join(",")
                 ));
             }
+            std::fs::remove_dir(run_dir)
+                .map_err(|e| format!("shutdown: owned run dir removal refused ({e})"))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("shutdown: owned run dir already gone ({e})"));
-        }
-        Err(e) => {
-            return Err(format!("shutdown: owned run dir unreadable ({e})"));
-        }
+        Ok(_) => Err("shutdown: owned run path is not a directory; refusing".to_owned()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("shutdown: owned run dir metadata refused ({e})")),
     }
-    std::fs::remove_dir(run_dir)
-        .map_err(|e| format!("shutdown: owned run-dir removal refused ({e})"))
 }
 
-/// Remove one owned two-launch product output directory (`launch-1` /
-/// `launch-2`) after its known leaves are removed: symlink-guarded, never a
-/// broad delete, and unknown leaves are residue that refuses the removal.
-fn remove_owned_launch_dir(product_dir: &Path, leaf: &str) -> Result<(), String> {
-    let dir = product_dir.join(leaf);
-    match std::fs::symlink_metadata(&dir) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
-            "shutdown: owned product {leaf} dir is a symlink; refusing"
-        )),
-        Ok(meta) if meta.is_dir() => {
-            for known in PRODUCT_RUN_LEAVES {
-                remove_known_leaf(&dir, known)?;
-            }
-            let mut unknown = Vec::new();
-            match std::fs::read_dir(&dir) {
-                Ok(entries) => {
-                    for entry in entries.flatten() {
-                        unknown.push(entry.file_name().to_string_lossy().into_owned());
-                    }
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "shutdown: owned product {leaf} dir unreadable ({e})"
-                    ));
-                }
-            }
-            if !unknown.is_empty() {
-                return Err(format!(
-                    "shutdown: owned product {leaf} dir holds unknown leaves ({}); residue retained, never broad-deleted",
-                    unknown.join(",")
-                ));
-            }
-            std::fs::remove_dir(&dir)
-                .map_err(|e| format!("shutdown: owned product {leaf} dir removal refused ({e})"))
-        }
-        Ok(_) => Err(format!(
-            "shutdown: owned product {leaf} path is not a directory; refusing"
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!(
-            "shutdown: owned product {leaf} dir metadata refused ({e})"
-        )),
+/// Relative paths of the product launch evidence still present under one
+/// owned run directory. Symlinks never count as evidence; absent files are
+/// skipped. Never reads file content.
+fn retained_product_evidence_paths(run_dir: &Path) -> Vec<String> {
+    let product_dir = run_dir.join("product");
+    let is_directory =
+        |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+    if !is_directory(run_dir) || !is_directory(&product_dir) {
+        return Vec::new();
     }
+    let evidence_file = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
+    };
+    let mut paths = Vec::new();
+    let dirs = [product_dir.join("launch-1"), product_dir.join("launch-2")];
+    for leaf in PRODUCT_EVIDENCE_LEAVES {
+        if evidence_file(&product_dir.join(leaf)) {
+            paths.push(format!("product/{leaf}"));
+        }
+    }
+    for (dir, launch) in dirs.iter().zip(["launch-1", "launch-2"]) {
+        if is_directory(dir) {
+            for leaf in PRODUCT_EVIDENCE_LEAVES {
+                if evidence_file(&dir.join(leaf)) {
+                    paths.push(format!("product/{launch}/{leaf}"));
+                }
+            }
+        }
+    }
+    paths
 }
 
 /// Remove the fixture-isolated intent store after the product has shut
@@ -941,6 +1100,11 @@ pub struct LiveLeg<'a, T: LegTransport> {
     /// product stops, before the owned run directory removal, and reported
     /// in the teardown receipt.
     product_outcome: Option<serde_json::Value>,
+    /// Keep the exact product launch evidence (stdout/stderr plus terminal
+    /// outcome) in the owned run directory when this leg ends. Set by the
+    /// restart controller on a refused or failed restart; a clean completed
+    /// leg keeps the existing full removal instead.
+    retain_product_evidence: bool,
 }
 
 impl<'a, T: LegTransport> std::fmt::Debug for LiveLeg<'a, T> {
@@ -997,6 +1161,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             owned_spaces: Vec::new(),
             owned_pids: Vec::new(),
             product_outcome: None,
+            retain_product_evidence: false,
         })
     }
 
@@ -1244,6 +1409,17 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
     #[must_use]
     pub(crate) fn owned_product_record(&self) -> Option<&ProductRecord> {
         self.owned_product.as_ref()
+    }
+
+    /// Keep this leg's exact product launch evidence (stdout, stderr and the
+    /// terminal outcome when present) for both product lifetimes on every
+    /// restart outcome, pass or refusal, as auditable non-native evidence.
+    /// Teardown still reports the files and removes the private store once
+    /// product absence is proven; a clean restoration removes the blocking
+    /// receipt while leaving this factual evidence record. Every other leg
+    /// keeps its previous whole-directory cleanup.
+    pub fn retain_restart_product_evidence(&mut self) {
+        self.retain_product_evidence = true;
     }
 
     /// Stop the registered product for an orderly relaunch, using the
@@ -1673,7 +1849,11 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         // product still present or pending, product-owned logs and the
         // private store stay as residue.
         if let Some(record) = self.owned_fixture.clone()
-            && let Err(e) = self.transport.shutdown_fixture(&record, product_absent)
+            && let Err(e) = self.transport.shutdown_fixture(
+                &record,
+                product_absent,
+                self.retain_product_evidence,
+            )
         {
             residue.push(format!("owned fixture pid {} shutdown: {e}", record.pid));
         }
@@ -1737,29 +1917,31 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                 ));
             }
         }
-        // 9. Receipt: remove only on a clean full restoration, otherwise
-        // retain for audit (retention blocks the next persist until
-        // inspected, so residue is never silently dropped). A failure also
-        // persists the residue artifact beside the receipt.
-        let clean = product_absent
+        // 9. Receipt and evidence: a clean full restoration removes the
+        // blocking receipt. Non-evidence cleanup runs first, so a cleanup
+        // refusal leaves real residue *and* the receipt together; the
+        // receipt only removes once nothing residue-like remains. Restart
+        // legs retain both lifetimes' launch evidence as auditable
+        // non-native residue: that is reported factual data, not an unsafe
+        // native result, so it never keeps the blocking receipt and
+        // independent legs stay unblocked.
+        let restored_clean = product_absent
             && current_restored
             && !mismatches.iter().any(BaselineMismatch::is_blocking)
             && residue.is_empty();
-        let receipt_retained = if clean {
+        let mut receipt_retained = true;
+        if restored_clean {
             match remove_baseline_receipt(&self.receipt_path) {
-                Ok(()) => false,
-                Err(e) => {
-                    residue.push(format!("receipt removal refused: {e}"));
-                    true
-                }
+                Ok(()) => receipt_retained = false,
+                Err(e) => residue.push(format!("receipt removal refused: {e}")),
             }
-        } else {
-            true
-        };
-        let clean = product_absent
-            && current_restored
-            && !mismatches.iter().any(BaselineMismatch::is_blocking)
-            && residue.is_empty();
+        }
+        let evidence_retained = self
+            .owned_fixture
+            .as_ref()
+            .map(|record| retained_product_evidence_paths(&record.run_dir))
+            .unwrap_or_default();
+        let clean = restored_clean && !receipt_retained && residue.is_empty();
         if !clean {
             write_residue_artifact(
                 &self.receipt_path,
@@ -1775,6 +1957,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                     owned_reaped: owned_reaped.clone(),
                     receipt_retained: true,
                     product_outcome: self.product_outcome.clone(),
+                    evidence_retained: evidence_retained.clone(),
                 },
             );
         }
@@ -1789,6 +1972,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             owned_reaped,
             receipt_retained,
             product_outcome: self.product_outcome.clone(),
+            evidence_retained,
         }
     }
 
@@ -1818,6 +2002,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                     "caffeinate_reaped": report.caffeinate_reaped,
                     "receipt_retained": report.receipt_retained,
                     "product_outcome": report.product_outcome,
+                    "evidence_retained": report.evidence_retained,
                 })
                 .to_string(),
             ));
@@ -1927,6 +2112,7 @@ mod tests {
         close_fails: Vec<(u32, u32)>,
         shutdown: Result<(), String>,
         shutdown_product_absent: RefCell<Option<bool>>,
+        shutdown_retain_evidence: RefCell<Option<bool>>,
         gone: HashMap<u32, Result<bool, String>>,
         awake_stop_reaped: bool,
         receipt_ok: bool,
@@ -1949,6 +2135,7 @@ mod tests {
                 close_fails: Vec::new(),
                 shutdown: Ok(()),
                 shutdown_product_absent: RefCell::new(None),
+                shutdown_retain_evidence: RefCell::new(None),
                 gone: HashMap::new(),
                 awake_stop_reaped: true,
                 receipt_ok: true,
@@ -2112,9 +2299,11 @@ mod tests {
             &mut self,
             record: &FixtureRecord,
             product_absent: bool,
+            retain_evidence: bool,
         ) -> Result<(), String> {
             self.order.borrow_mut().push("shutdown");
             *self.shutdown_product_absent.borrow_mut() = Some(product_absent);
+            *self.shutdown_retain_evidence.borrow_mut() = Some(retain_evidence);
             // Identity-bounded like production: a drifted record refuses
             // before any control-channel touch.
             if record.exe != "/live-exe" || record.launch != "launch-live" {
@@ -2518,6 +2707,7 @@ mod tests {
             owned_reaped: vec![],
             receipt_retained: true,
             product_outcome: None,
+            evidence_retained: Vec::new(),
         };
         let flat = serde_json::to_string(&report).expect("report flattens");
         for leaked in [
@@ -2968,6 +3158,246 @@ mod tests {
         }
     }
 
+    /// Build one owned two-launch run directory with both product lifetimes'
+    /// known leaves, both launch evidence sets, the private store and the
+    /// fixture leaves. Returns the run directory and store path.
+    fn restart_run_with_launch_evidence(dir: &Path, tag: &str) -> (PathBuf, PathBuf) {
+        let run = dir.join(tag);
+        let product = run.join("product");
+        std::fs::create_dir_all(&run).expect("run dir creates");
+        for leaf in FIXTURE_RUN_LEAVES {
+            std::fs::write(run.join(leaf), "fixture\n").expect("fixture leaf writes");
+        }
+        for launch in ["launch-1", "launch-2"] {
+            let launch_dir = product.join(launch);
+            std::fs::create_dir_all(&launch_dir).expect("launch dir creates");
+            for leaf in PRODUCT_RUN_LEAVES {
+                std::fs::write(launch_dir.join(leaf), "known\n").expect("leaf writes");
+            }
+        }
+        let store = product.join(crate::fixture_leg::ISOLATED_STORE_LEAF);
+        std::fs::create_dir(&store).expect("store dir creates");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        (run, store)
+    }
+
+    fn fixture_for_run(run: &Path) -> FixtureRecord {
+        FixtureRecord {
+            pid: 4242,
+            exe: "/live-exe".to_owned(),
+            launch: "launch-live".to_owned(),
+            socket_path: "/tmp/live-fixture.sock".to_owned(),
+            run_dir: run.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn refused_restart_retains_both_launch_logs_and_removes_the_private_store() {
+        // A refused restart proves product absence, so the private store and
+        // non-evidence leaves remove; both exact lifetimes' stdout, stderr
+        // and terminal outcome stay as reported auditable residue.
+        let dir = test_dir("restart-refused-evidence");
+        let (run, store) = restart_run_with_launch_evidence(&dir, "run");
+        remove_owned_run_dir_after_absence(&run, true, true)
+            .expect("proven absence authorizes partial cleanup");
+        for leaf in FIXTURE_RUN_LEAVES {
+            assert!(!run.join(leaf).exists(), "fixture leaf {leaf} removes");
+        }
+        for launch in ["launch-1", "launch-2"] {
+            for leaf in PRODUCT_EVIDENCE_LEAVES {
+                assert!(
+                    run.join("product").join(launch).join(leaf).exists(),
+                    "{launch}/{leaf} must be retained"
+                );
+            }
+            for leaf in ["stop-requested", "run-id"] {
+                assert!(
+                    !run.join("product").join(launch).join(leaf).exists(),
+                    "{launch}/{leaf} is not launch evidence"
+                );
+            }
+        }
+        assert!(!store.exists(), "proven absence removes the private store");
+        assert!(run.exists(), "retained evidence keeps the owned run dir");
+        assert_eq!(
+            retained_product_evidence_paths(&run).len(),
+            6,
+            "both lifetimes' three evidence leaves are reported"
+        );
+        remove_owned_run_dir(&run).expect("a clean completed leg removes the evidence");
+        assert!(!run.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unproven_product_absence_protects_both_launch_evidence_and_the_store() {
+        // Without proven absence the private store and every product-owned
+        // launch leaf stay, including both lifetimes' evidence.
+        let dir = test_dir("restart-unproven-evidence");
+        let (run, store) = restart_run_with_launch_evidence(&dir, "run");
+        let err = remove_owned_run_dir_after_absence(&run, false, true)
+            .expect_err("unproven absence must report residue");
+        assert!(err.contains("product absence unproven"), "unexpected: {err}");
+        for launch in ["launch-1", "launch-2"] {
+            for leaf in PRODUCT_RUN_LEAVES {
+                assert!(
+                    run.join("product").join(launch).join(leaf).exists(),
+                    "{launch}/{leaf} must be protected"
+                );
+            }
+        }
+        assert!(store.join("intent-v1-501-100021.json").exists());
+        assert!(run.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_restart_evidence_is_reported_without_a_blocking_receipt() {
+        // A refused restart can still restore the starting state cleanly.
+        // Both lifetimes' evidence is then a factual record: the blocking
+        // receipt is removed so an independent leg can start, while the
+        // files and their relative paths are reported.
+        let dir = test_dir("restart-evidence-clean");
+        let (run, store) = restart_run_with_launch_evidence(&dir, "run");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_fixture(fixture_for_run(&run))
+            .expect("fixture registers");
+        leg.retain_restart_product_evidence();
+        let report = leg
+            .finish()
+            .expect("a factual evidence record is not an unclean restoration");
+        assert_eq!(
+            *transport.shutdown_retain_evidence.borrow(),
+            Some(true),
+            "restart teardown is scoped to keep both lifetimes' evidence"
+        );
+        let body = serde_json::to_value(&report).expect("report serializes");
+        let evidence = body["evidence_retained"]
+            .as_array()
+            .expect("retained evidence is reported");
+        assert_eq!(evidence.len(), 6, "{body}");
+        assert!(!store.exists(), "proven absence removes the private store");
+        for launch in ["launch-1", "launch-2"] {
+            for leaf in PRODUCT_EVIDENCE_LEAVES {
+                assert!(
+                    run.join("product").join(launch).join(leaf).exists(),
+                    "{launch}/{leaf} stays as reported residue"
+                );
+            }
+        }
+        assert!(
+            !dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists(),
+            "a factual evidence record must not hold the blocking receipt"
+        );
+        // The next independent leg is unblocked and can finish clean.
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let next = LiveLeg::begin(&mut transport, 60).expect("repeat begin passes");
+        next.finish().expect("repeat leg cleans");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_removal_refusal_keeps_the_blocking_receipt_and_reports_it() {
+        // A clean native restoration still keeps the receipt when
+        // non-evidence cleanup refuses on real residue: cleanup runs before
+        // the receipt removes, and both the error and the on-disk artifact
+        // report the truthful receipt state.
+        let dir = test_dir("cleanup-residue-receipt");
+        let (run, store) = restart_run_with_launch_evidence(&dir, "run");
+        std::fs::write(run.join("product").join("unknown-leaf"), "row\n")
+            .expect("unknown product leaf writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        transport.shutdown = remove_owned_run_dir_after_absence(&run, true, true);
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.retain_restart_product_evidence();
+        leg.register_fixture(fixture_for_run(&run))
+            .expect("fixture registers");
+        let err = leg.finish().expect_err("cleanup residue cannot clean");
+        let body: serde_json::Value = serde_json::from_str(&err.1).expect("teardown JSON");
+        assert_eq!(body["receipt_retained"], serde_json::json!(true), "{body}");
+        assert!(
+            dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists(),
+            "actual residue keeps the blocking receipt active"
+        );
+        let artifact_path = dir.join(RESIDUE_FILE_NAME);
+        let artifact: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&artifact_path).expect("residue artifact reads"),
+        )
+        .expect("residue artifact parses");
+        assert_eq!(
+            artifact["receipt_retained"],
+            serde_json::json!(true),
+            "artifact reports the receipt it actually kept"
+        );
+        assert!(!store.exists(), "proven absence removes the private store");
+        assert!(run.exists(), "residue is never broad-deleted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unclean_native_restoration_keeps_the_receipt_and_both_launch_evidence() {
+        // A teardown mismatch means native restoration is unproven: the
+        // canonical receipt stays and both launch evidence sets remain, so
+        // nothing was cleaned prematurely. Proven product absence still
+        // removes the private store.
+        let dir = test_dir("restart-evidence-unclean");
+        let (run, store) = restart_run_with_launch_evidence(&dir, "run");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_fixture(fixture_for_run(&run))
+            .expect("fixture registers");
+        // A teardown comparison mismatch blocks native restoration.
+        leg.transport_mut().baseline.protected_windows[0].w += 1.0;
+        let err = leg.finish().expect_err("unproven restoration cannot clean");
+        let body: serde_json::Value = serde_json::from_str(&err.1).expect("teardown JSON");
+        let evidence = body["evidence_retained"]
+            .as_array()
+            .expect("retained evidence is reported");
+        assert_eq!(evidence.len(), 6, "{body}");
+        assert_eq!(body["receipt_retained"], serde_json::json!(true));
+        assert!(dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
+        assert!(!store.exists(), "proven absence removes the private store");
+        for launch in ["launch-1", "launch-2"] {
+            for leaf in PRODUCT_EVIDENCE_LEAVES {
+                assert!(
+                    run.join("product").join(launch).join(leaf).exists(),
+                    "{launch}/{leaf} stays while restoration is unproven"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_non_restart_finish_removes_the_run_directory() {
+        // A clean non-restart shutdown retains no product output; its
+        // receipt clears after the ordinary owned run-directory cleanup.
+        let dir = test_dir("restart-evidence-success");
+        let (run, store) = restart_run_with_launch_evidence(&dir, "run");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        transport.shutdown = remove_owned_run_dir_after_absence(&run, true, false);
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_fixture(fixture_for_run(&run))
+            .expect("fixture registers");
+        let report = leg.finish().expect("clean finish passes");
+        assert_eq!(
+            *transport.shutdown_retain_evidence.borrow(),
+            Some(false),
+            "non-restart teardown keeps its previous whole-directory cleanup"
+        );
+        let body = serde_json::to_value(&report).expect("report serializes");
+        assert_eq!(
+            body["evidence_retained"],
+            serde_json::json!([]),
+            "clean cleanup leaves no evidence residue: {body}"
+        );
+        assert!(!store.exists());
+        assert!(!run.exists(), "clean completed leg removes the run dir");
+        assert!(!dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn restart_stop_clears_ownership_only_after_clean_evidence_and_gone() {
         let dir = test_dir("restart-stop-clean");
@@ -3063,7 +3493,8 @@ mod tests {
         // The fixture's own leaves may remove after its shutdown, but the
         // product-owned subdirectory (launch logs, terminal outcome and
         // private store) survives while absence is unproven, and the end is
-        // reported as residue. Proven absence removes the whole owned tree.
+        // reported as residue. Proven absence removes non-evidence state and
+        // keeps the restart launch evidence.
         let dir = test_dir("run-dir-retirement");
         let run = dir.join("run");
         let product = run.join("product");
@@ -3076,7 +3507,7 @@ mod tests {
             std::fs::write(product.join(leaf), "product\n").expect("product leaf writes");
         }
         std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
-        let err = remove_owned_run_dir_after_absence(&run, false)
+        let err = remove_owned_run_dir_after_absence(&run, false, true)
             .expect_err("unproven absence must report residue");
         assert!(err.contains("product absence unproven"), "unexpected: {err}");
         for leaf in FIXTURE_RUN_LEAVES {
@@ -3093,7 +3524,20 @@ mod tests {
             "private store must be preserved"
         );
         assert!(run.exists(), "run directory stays while product leaves exist");
-        remove_owned_run_dir_after_absence(&run, true).expect("proven absence removes the tree");
+        // Proven absence authorizes removing fixture leaves and the known
+        // non-evidence product leaves, while the launch evidence stays as
+        // reported auditable residue of the restart.
+        remove_owned_run_dir_after_absence(&run, true, true)
+            .expect("proven absence authorizes partial cleanup");
+        for leaf in ["stdout.log", "stderr.log", "outcome.json"] {
+            assert!(
+                product.join(leaf).exists(),
+                "product evidence {leaf} must be retained"
+            );
+        }
+        assert!(!product.join("run-id").exists(), "run-id is not evidence");
+        assert!(run.exists(), "retained evidence keeps the run directory");
+        remove_owned_run_dir(&run).expect("clean completion removes the evidence");
         assert!(!run.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
