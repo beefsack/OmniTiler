@@ -86,3 +86,10 @@ comparison. Both launch logs and terminal outcomes remain available for
 audit after teardown, including refusals. The private store is removed
 only after product absence is independently proven. The correction
 does not change product layout or persistence.
+
+Offline correction `22789d92`: the captured historical tile split
+reproduces the exact-multiset refusal; the staging regression requires
+the fresh survivor arrangement before launch one stops. The full
+macOS gate passed: **1,773 library and 152 integration tests**,
+zero failures, three library tests ignored. This does not close signed
+M3 acceptance; rerun the M3 command above with the corrected fixture.
