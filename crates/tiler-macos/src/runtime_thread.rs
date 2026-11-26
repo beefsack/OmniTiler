@@ -10211,6 +10211,12 @@ mod trailing_join_tests {
     /// exact non-current membership re-homes and clears; unknown membership
     /// drops the stale home and holds. A preserved row never proves
     /// completeness.
+    ///
+    /// The CG inventory is the production shape: alongside the fixture wid
+    /// the app owns auxiliary windows (a status item on both user Spaces and
+    /// an offscreen IME/backing helper) that AX never enumerates. They are
+    /// never retained lifetimes, so they can never fence the hold: only
+    /// roster-known absences are held or closed.
     #[test]
     fn desktop_switch_sole_hidden_fixture_window_cg_oracle_matrix() {
         use crate::classifier::{ActivationPolicy, ROLE_WINDOW, SUBROLE_STANDARD};
@@ -10226,10 +10232,18 @@ mod trailing_join_tests {
         const PID: u32 = 4242;
         const GEN: u64 = 1;
         const WID: u32 = 1829;
+        // Auxiliary CG windows the same app owns that AX never enumerates:
+        // an all-Spaces status item at the status window level and an
+        // offscreen IME/backing helper with degenerate bounds.
+        const AUX_STATUS_WID: u32 = 1830;
+        const AUX_HELPER_WID: u32 = 1831;
         const UUID: &str = "deadbeef-dead-4000-8000-deadbeefdead";
         // Synthetic non-degenerate fixture frame inside the single display.
         const FRAME: (f64, f64, f64, f64) = (720.0, 157.0, 1520.0, 1011.0);
         const BOUNDS: (i32, i32, i32, i32) = (720, 157, 1520, 1011);
+        // Status-item strip at the top-right of the 2240-wide display; the
+        // IME/backing helper is offscreen and degenerate.
+        const STATUS_BOUNDS: (f64, f64, f64, f64) = (1980.0, 0.0, 260.0, 25.0);
 
         fn ctx(current: u64) -> Arc<NativeContext> {
             let displays = vec![DisplayGeometry {
@@ -10304,19 +10318,47 @@ mod trailing_join_tests {
                     Vec::new()
                 },
                 cg_complete,
-                cg_owner_wids: if cg_complete { vec![WID] } else { Vec::new() },
+                cg_owner_wids: if cg_complete {
+                    vec![WID, AUX_STATUS_WID, AUX_HELPER_WID]
+                } else {
+                    Vec::new()
+                },
                 cg_entries: if cg_complete {
-                    vec![CgWindowEntry {
-                        wid: WID,
-                        layer: 0,
-                        onscreen: false,
-                        bounds: CgBounds {
-                            x: FRAME.0,
-                            y: FRAME.1,
-                            w: FRAME.2,
-                            h: FRAME.3,
+                    vec![
+                        CgWindowEntry {
+                            wid: WID,
+                            layer: 0,
+                            onscreen: false,
+                            bounds: CgBounds {
+                                x: FRAME.0,
+                                y: FRAME.1,
+                                w: FRAME.2,
+                                h: FRAME.3,
+                            },
                         },
-                    }]
+                        CgWindowEntry {
+                            wid: AUX_STATUS_WID,
+                            layer: 25,
+                            onscreen: true,
+                            bounds: CgBounds {
+                                x: STATUS_BOUNDS.0,
+                                y: STATUS_BOUNDS.1,
+                                w: STATUS_BOUNDS.2,
+                                h: STATUS_BOUNDS.3,
+                            },
+                        },
+                        CgWindowEntry {
+                            wid: AUX_HELPER_WID,
+                            layer: 0,
+                            onscreen: false,
+                            bounds: CgBounds {
+                                x: 0.0,
+                                y: 0.0,
+                                w: 0.0,
+                                h: 0.0,
+                            },
+                        },
+                    ]
                 } else {
                     Vec::new()
                 },
@@ -10340,11 +10382,17 @@ mod trailing_join_tests {
                 ctx.revision,
                 &read(cg_complete, ax),
                 &app,
-                &|wid| {
-                    assert_eq!(wid, WID);
-                    spaces
+                &|wid| match wid {
+                    WID => spaces
                         .clone()
-                        .ok_or_else(|| "membership unreadable".to_owned())
+                        .ok_or_else(|| "membership unreadable".to_owned()),
+                    // The status item rides every user Space on the display;
+                    // the IME/backing helper has no readable membership.
+                    // Neither is a retained lifetime, so neither may fence
+                    // the roster hold.
+                    AUX_STATUS_WID => Ok(vec![3, 4]),
+                    AUX_HELPER_WID => Ok(Vec::new()),
+                    other => panic!("unexpected wid {other}"),
                 },
                 None,
                 false,
@@ -10391,12 +10439,27 @@ mod trailing_join_tests {
         // Leg 1: home the sole fixture window on current Desktop 3.
         let home = snap(&ctx3, true, true, Some(vec![3]));
         assert_eq!((home.windows.len(), home.excluded), (1, 0));
+        assert_eq!(
+            home.cg_owner_wids,
+            vec![WID, AUX_STATUS_WID, AUX_HELPER_WID],
+            "auxiliary CG-owned windows ride the production inventory"
+        );
+        assert_eq!(
+            home.cg_alive.iter().map(|d| d.wid).collect::<Vec<_>>(),
+            vec![AUX_STATUS_WID, AUX_HELPER_WID],
+            "AX-live fixture wid never rides CG-alive; auxiliary entries do"
+        );
         deliver!(1, home);
         assert_eq!(
             retained.window_domains.get(&window_id(PID, WID)),
             Some(&space_key(3))
         );
         assert!(!retained.apps[&PID].roster_incomplete);
+        assert!(
+            !retained.apps[&PID].roster.contains_key(&AUX_STATUS_WID)
+                && !retained.apps[&PID].roster.contains_key(&AUX_HELPER_WID),
+            "auxiliary CG windows are never retained lifetimes"
+        );
 
         // Current Desktop switches to 4; shared native context publishes first.
         let ctx4 = ctx(4);
@@ -10440,32 +10503,64 @@ mod trailing_join_tests {
         // Leg 3: complete CG owner + live frame, unknown membership: fresh
         // evidence contradicts the stale home and the hold persists.
         let unknown = snap(&ctx4, true, false, None);
-        assert!(unknown.cg_complete && unknown.cg_owner_wids == vec![WID]);
+        assert!(
+            unknown.cg_complete
+                && unknown.cg_owner_wids == vec![WID, AUX_STATUS_WID, AUX_HELPER_WID]
+        );
         assert!(unknown.cg_alive[0].spaces.is_empty());
         assert_eq!(unknown.cg_alive[0].bounds, Some(BOUNDS));
+        assert_eq!(
+            unknown.cg_alive[1].spaces,
+            vec![3, 4],
+            "status item rides both user Spaces"
+        );
+        assert!(
+            unknown.cg_alive[2].spaces.is_empty(),
+            "IME/backing helper membership unreadable"
+        );
         assert!(preserve_non_covering_hidden(&retained, PID, &unknown, &ctx4).is_empty());
         deliver!(3, unknown);
         assert_eq!(logged(3, "observation", "applied"), Some(0));
         assert_eq!(logged(3, "observation", "non-covering-retained"), Some(1));
         assert_eq!(logged(3, "scope", "held-incomplete-inventory"), Some(0));
         assert!(retained.apps[&PID].roster_incomplete);
+        assert_eq!(retained.apps[&PID].roster_cause, "blank-hidden");
         assert!(retained.apps[&PID].roster[&WID].spaces.is_empty());
         assert!(!retained.window_domains.contains_key(&window_id(PID, WID)));
+        assert!(
+            !retained.apps[&PID].roster.contains_key(&AUX_STATUS_WID)
+                && !retained.apps[&PID].roster.contains_key(&AUX_HELPER_WID),
+            "auxiliary CG windows never enter the roster"
+        );
         assert_eq!(
             lock_shared(&shared).diagnostics.frames_emitted,
             frames_before
         );
 
         // Leg 4: same complete CG evidence + fresh exact non-current
-        // membership: the hidden row re-homes and the hold/gap clear.
+        // membership: the hidden row re-homes and the hold/gap clear. The
+        // auxiliary CG-owned wids are still in the fresh inventory and are
+        // still not retained lifetimes, so they cannot fence the hold: only
+        // roster-known absences hold.
         let exact = snap(&ctx4, true, false, Some(vec![3]));
         assert_eq!(exact.cg_alive[0].spaces, vec![3]);
+        assert_eq!(
+            exact.cg_owner_wids,
+            vec![WID, AUX_STATUS_WID, AUX_HELPER_WID]
+        );
         deliver!(4, exact);
         assert_eq!(logged(4, "observation", "applied"), Some(1));
         assert_eq!(logged(4, "observation", "non-covering-retained"), Some(1));
         assert_eq!(logged(4, "scope", "held-incomplete-inventory"), None);
         assert_eq!(logged(4, "core-reply", "reconcile-accepted"), Some(0));
         assert!(!retained.apps[&PID].roster_incomplete);
+        assert_eq!(retained.apps[&PID].roster_cause, "");
+        assert!(retained.apps[&PID].roster.contains_key(&WID));
+        assert!(
+            !retained.apps[&PID].roster.contains_key(&AUX_STATUS_WID)
+                && !retained.apps[&PID].roster.contains_key(&AUX_HELPER_WID),
+            "auxiliary CG windows never enter the roster"
+        );
         assert_eq!(
             retained.window_domains.get(&window_id(PID, WID)),
             Some(&space_key(3))

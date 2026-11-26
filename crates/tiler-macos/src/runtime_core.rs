@@ -1145,8 +1145,10 @@ pub(crate) fn preserve_non_covering_hidden(
 /// member windows per domain for the caller to merge into the partition
 /// map before [`note_scoped_members`]. Clears the `cg-alive` /
 /// `cg-unreadable` / `blank-hidden` hold when the complete oracle leaves
-/// no unhomed CG-owner absent and every retained absent row is freshly
-/// grounded; genuinely unknown details keep the hold.
+/// every retained absent roster row freshly grounded; genuinely unknown or
+/// uncertain roster details keep the hold. Roster-unknown CG-owned wids
+/// (auxiliary app windows AX never enumerates) can never fence it: only
+/// roster-known lifetimes are ever held or closed.
 pub(crate) fn rehydrate_cg_alive(
     retained: &mut RetainedCore,
     pid: u32,
@@ -1230,15 +1232,17 @@ pub(crate) fn rehydrate_cg_alive(
         }
         retained.window_domains.remove(&window_id(pid, *wid));
     }
-    // The oracle hold lifts only when the COMPLETE oracle leaves no
-    // unhomed CG-owner absent AND every retained absent row is freshly
-    // grounded: every CG-owner wid is AX-live, excluded, or freshly
-    // re-homed above, and every roster row absent from AX/exclusions is
-    // freshly re-homed. Anything else keeps the hold (including
-    // `blank-hidden` from the non-covering path: a fully re-homed hidden
-    // scope is covering truth for this PID). Decided from this call's
-    // success set (never the still-stale homing map, whose prune runs
-    // later in `note_scoped_members`).
+    // The oracle hold lifts only when every ROSTER-KNOWN absent row is
+    // freshly grounded: every retained row absent from AX/exclusions was
+    // re-homed above. Roster-unknown CG-owned wids (AppKit/winit auxiliary
+    // windows AX never enumerates) are never retained lifetimes — no path
+    // holds or closes them (see `apply_roster_covering`, which scopes its
+    // hold and close checks to `app.roster`) — so they must not fence this
+    // hold. Anything else keeps it (including `blank-hidden` from the
+    // non-covering path: a fully re-homed hidden scope is covering truth
+    // for this PID, while a contradicted or merely preserved row is not).
+    // Decided from this call's success set (never the still-stale homing
+    // map, whose prune runs later in `note_scoped_members`).
     if snapshot.cg_complete
         && let Some(app) = retained.apps.get_mut(&pid)
         && (app.roster_cause == "cg-alive"
@@ -1251,15 +1255,11 @@ pub(crate) fn rehydrate_cg_alive(
             snapshot.excluded_reasons.iter().map(|o| o.wid).collect();
         let homed: std::collections::BTreeSet<u32> =
             rehomed.iter().map(|(wid, _, _, _)| *wid).collect();
-        let pending_owner = snapshot
-            .cg_owner_wids
-            .iter()
-            .any(|wid| !live.contains(wid) && !excluded.contains(wid) && !homed.contains(wid));
         let pending_roster = app
             .roster
             .iter()
             .any(|(wid, _)| !live.contains(wid) && !excluded.contains(wid) && !homed.contains(wid));
-        if !pending_owner && !pending_roster {
+        if !pending_roster {
             app.roster_incomplete = false;
             app.roster_cause.clear();
         }
