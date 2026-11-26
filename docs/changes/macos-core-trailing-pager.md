@@ -195,6 +195,20 @@ mise exec -- cargo test --locked -p tiler-macos --lib world_builder::tests::firs
 - Offline verification otherwise passes; this does not claim full semantic
   acceptance, native/live closure, or native pixel/physical-feel acceptance.
 
+## Signed-fixture pager projection (2026-11-26)
+
+- The compatible `fixture-leg` Ctrl+Y run rebuilt the native indicator on a controller-owned Space. The complete rebuild projection reported four rows, one current row, one occupied row and one unknown-occupancy row across the mode changes. This establishes the live projection supplied to AppKit, not the painted highlight or unknown marker. The driver counted zero clicks.
+- The compatible toggle run started the product on the owned Space and restored the original Space only after shutdown. The older `workspace-indicator-proof` controller is bound to the probe helper rather than the signed Live Fixture and was not used as substitute evidence.
+- `fixture-leg --chord pager-switch --seconds 75 --signer REQUIREMENT` then exercised a public Mission Control switch from the occupied owned Space to a separately checked empty owned Space. Fresh native readback confirmed the destination became current; the running product adopted the topology but repeatedly held the scope for incomplete inventory after the fixture's AX windows left the visible Space. The indicator did not publish a newer rebuild for the destination within the bounded wait. The controller stopped the product and restored the starting Space and original topology without a retained receipt. This is a native shortfall, not a passing switch/rebuild proof; the diagnostic requires both native current Space and a newer indicator generation on each hop.
+- Click handling, the painted current highlight and unknown marker, and fullscreen/game suppression remain unverified.
+
+### Empty-destination report shape (documented fixture)
+
+- Single native row: Desktops 1–2 are the baseline; the controller appends Desktops 3–4. One signed fixture window is visible on Desktop 3; Desktop 4 is verified empty. Before the switch, observation 4 is applied and accepted with one frame; indicator generation 2 has current ordinal 3 of 4.
+- Public Mission Control switches 3 → 4; fresh native readback proves arrival. Topology updates, then scoped observations 5–10 each publish zero visible windows, emit `non-covering-retained count=1`, and produce `held-incomplete-inventory` and `reconcile-accepted count=0`. No newer rebuild for ordinal 4 appeared within eight seconds. Scope hold coverage matters here: zero frame rows is not proof of either a pager update or an empty authoritative world.
+- `runtime_core::snapshot_is_covering` sees only `windows.is_empty()` and `excluded > 0`; zero live rows and zero exclusions are indistinguishable from an AX enumeration gap. `runtime_native` keeps the retained lifetime and sets the `blank-hidden` roster cause plus a coverage gap. The later `rehydrate_cg_alive` escape hatch needs a complete CG oracle and a fresh hidden home for every remaining absent window; the retained scope did not recover in this run. The log does not identify which of those re-home prerequisites was unavailable. The existing policy was left unchanged.
+- Teardown stopped the scoped product, returned to Desktop 1, removed only the two owned Desktops, restored the original row, and cleared the recovery receipt.
+
 ## Backlog detail moved 2026-11-01
 
 ### Original backlog lines 1733-1740

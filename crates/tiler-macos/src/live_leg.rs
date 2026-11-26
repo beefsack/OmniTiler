@@ -104,10 +104,13 @@ impl AdmissionScope {
 /// refuse before any proof. Pure; unit-tested.
 #[must_use]
 pub fn required_scope(chord_name: &str) -> Option<AdmissionScope> {
-    // Diagnostic-only alias: the leg drives two real `maximize-m` posts on
-    // one window to prove apply-then-restore. It never reaches the fixture
-    // post resolver, which sees the underlying product chord.
-    if chord_name == crate::fixture_leg::MAXIMIZE_TOGGLE_CHORD {
+    // Diagnostic aliases are handled by the controller, not the post resolver.
+    if matches!(
+        chord_name,
+        crate::fixture_leg::MAXIMIZE_TOGGLE_CHORD
+            | crate::fixture_leg::FLOAT_PLACEMENT_CHORD
+            | crate::fixture_leg::PAGER_SWITCH_CHORD
+    ) {
         return Some(AdmissionScope::PostOnly);
     }
     if crate::fixture_post::resolve_fixture_chord(chord_name).is_some() {

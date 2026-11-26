@@ -693,7 +693,10 @@ pub fn help_text() -> String {
               \x20 \x20 shuts down cleanly; the leg-only --chord maximize-toggle\n\
               \x20 \x20 sends two real maximize-m presses through the product\n\
               \x20 \x20 tap and requires native apply plus exact base restore\n\
-              \x20 \x20 evidence, not slice-5 acceptance)\n\
+              \x20 \x20 evidence, not slice-5 acceptance; --chord float-placement\n\
+              \x20 \x20 samples first float and re-float with a second owned\n\
+              \x20 \x20 window; use --chord pager-switch alone to observe the\n\
+              \x20 \x20 pager across a switch between two owned Spaces)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
               \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
@@ -2309,10 +2312,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 ));
             }
             for chord in &chords {
-                if chord != crate::fixture_leg::MAXIMIZE_TOGGLE_CHORD
-                    && crate::fixture_post::resolve_fixture_chord(chord).is_none()
-                    && crate::fixture_post::resolve_fixture_bound(chord).is_none()
-                {
+                if crate::live_leg::required_scope(chord).is_none() {
                     return Err(format!("fixture-leg: unknown --chord '{chord}'"));
                 }
             }

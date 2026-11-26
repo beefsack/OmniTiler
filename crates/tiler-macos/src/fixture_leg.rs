@@ -87,6 +87,12 @@ pub const LEG_MAX_CHORDS: usize = 32;
 /// acceptance and not a product command.
 pub const MAXIMIZE_TOGGLE_CHORD: &str = "maximize-toggle";
 
+/// Diagnostic first float and re-float on the same owned window.
+pub const FLOAT_PLACEMENT_CHORD: &str = "float-placement";
+
+/// Diagnostic-only alias for a pager rebuild across an owned-Space round trip.
+pub(crate) const PAGER_SWITCH_CHORD: &str = "pager-switch";
+
 /// Operator settle window (harness only): milliseconds the leg holds before
 /// its first chord and again after its last chord, so an operator can drive
 /// extra owned fixture windows over the announced control socket and read
@@ -761,6 +767,25 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
             ));
         }
     }
+    if opts.chords.iter().any(|chord| chord == PAGER_SWITCH_CHORD)
+        && (opts.chords.as_slice() != [PAGER_SWITCH_CHORD] || opts.corrupt_intent_store)
+    {
+        return Err((
+            2,
+            "pager-switch must run alone without a corrupt store".to_owned(),
+        ));
+    }
+    if opts.chords.len() < 2
+        && opts
+            .chords
+            .iter()
+            .any(|chord| chord == FLOAT_PLACEMENT_CHORD)
+    {
+        return Err((
+            2,
+            "float-placement needs a second fixture window".to_owned(),
+        ));
+    }
     // The hover probe needs one tall anchor plus a stacked pair; refuse the
     // shape before any baseline, Space, or launch effect (no run dir).
     if opts.hover_probe && opts.chords.len() < crate::fixture_hover::HOVER_MIN_WINDOWS {
@@ -978,11 +1003,24 @@ fn run_leg_body_macos(
     let mut owned_sids: Vec<u64> = Vec::new();
     let mut starting_sid: Option<u64> = None;
     let mut owned_space: Option<PostOnlyOwnedSpace> = None;
+    let mut pager_destination = None;
     if post_only {
         let established = establish_post_only_owned_space(leg)?;
         owned_sids.push(established.sid);
         starting_sid = Some(established.starting_sid);
         owned_space = Some(established.evidence);
+        if opts.chords.as_slice() == [PAGER_SWITCH_CHORD] {
+            let created = leg.transport_mut().space_create(0).map_err(|e| (1, e))?;
+            leg.note_owned_space(0, created.sid);
+            if let Some(shortfall) = created.mc.shortfall_text("fixture pager destination") {
+                return Err((1, shortfall));
+            }
+            leg.transport_mut()
+                .space_require_empty(created.sid)
+                .map_err(|e| (1, e))?;
+            owned_sids.push(created.sid);
+            pager_destination = Some((established.sid, created.sid));
+        }
     }
     spawn_owned_windows(&parsed.socket, &nonce, &callers).map_err(|e| (1, e))?;
     let joined =
@@ -1142,6 +1180,16 @@ fn run_leg_body_macos(
             ));
         }
     }
+    if let Some((source, destination)) = pager_destination {
+        let report =
+            crate::fixture_pager::run(leg, source, destination, &product_dir.join("stderr.log"))?;
+        return Ok(LegReports {
+            chords: vec![report],
+            hover_probe: None,
+            owned_space: owned_space.map(|evidence| evidence.evidence()),
+            corrupt_store: None,
+        });
+    }
     let mut reports = Vec::new();
     for (chord, (caller, wid)) in opts.chords.iter().zip(joined.iter()) {
         if crate::space_drag_diag_live::diag_interrupted() {
@@ -1164,6 +1212,19 @@ fn run_leg_body_macos(
         settle_hold(FOCUS_SETTLE_MS)?;
         let report: serde_json::Value = if chord == MAXIMIZE_TOGGLE_CHORD {
             crate::fixture_maximize::run(&driver, parsed.pid, *wid, caller, chord, opts.modifier)?
+        } else if chord == FLOAT_PLACEMENT_CHORD {
+            let sibling = joined
+                .iter()
+                .find(|(_, other)| other != wid)
+                .expect("second fixture window");
+            crate::fixture_float::run(
+                &driver,
+                parsed.pid,
+                (caller, *wid),
+                sibling.1,
+                opts.modifier,
+                &product_dir.join("stderr.log"),
+            )?
         } else {
             serde_json::from_str(&driver.post(caller, *wid, chord, opts.modifier)?)
                 .map_err(|e| (1, e.to_string()))?

@@ -456,12 +456,11 @@ pub(crate) struct FixtureChord {
 
 /// Resolve a `fixture-post` chord name: the directional focus/move subset of
 /// the owned-post vocabulary (letters plus left/right arrows), the
-/// core-composed `maximize-m` toggle, and the numbered fixture selects
+/// core-composed `maximize-m`, `float-g`, `orientation-o`, and
+/// `workspace-tiling-y` toggles, and the numbered fixture selects
 /// `select-0..9` / send-follows `send-0..9` (Desktop-N digit keycode with the
-/// product arms; trailing `0` is Desktop 10). Float, grow, shrink,
-/// orientation, and the helper-only transports are NOT fixture routes; the
-/// numbered selects/sends above are. The bound relative/previous names are
-/// NOT admitted here: their only admission is [`resolve_fixture_bound`].
+/// product arms; trailing `0` is Desktop 10). The bound relative/previous
+/// names are NOT admitted here: their only admission is [`resolve_fixture_bound`].
 /// Stay chords, the
 /// TextEdit-only transports, and every other name refuse. Pure;
 /// unit-tested.
@@ -498,16 +497,20 @@ pub(crate) fn resolve_fixture_chord(name: &str) -> Option<FixtureChord> {
             });
         }
     }
-    // The core-composed maximize toggle is the product's Ctrl-role M chord.
-    // It is fixture-route-only so the native M4 proof can drive the real tap
-    // without adding a helper vocabulary entry or a direct core injection.
-    if name == "maximize-m" {
+    let basic = match name {
+        "maximize-m" => Some((crate::input_policy::KEY_M, "maximize")),
+        "float-g" => Some((crate::input_policy::KEY_G, "float")),
+        "orientation-o" => Some((crate::input_policy::KEY_O, "orientation")),
+        "workspace-tiling-y" => Some((crate::input_policy::KEY_Y, "workspace-tiling")),
+        _ => None,
+    };
+    if let Some((key_code, action)) = basic {
         return Some(FixtureChord {
-            key_code: crate::input_policy::KEY_M,
+            key_code,
             shift: false,
             alt: false,
             aux: false,
-            action: "maximize",
+            action,
         });
     }
     // Numbered fixture selects/send-follows with the product arms (no arms
@@ -2389,14 +2392,22 @@ mod tests {
             assert!(!chord.aux, "{name}");
             assert_eq!(chord.action, owned.action, "{name}");
         }
-        // The composed-maximize chord carries the product Ctrl+M key with no
-        // extra arms; it must reach the same real tap as a user press.
-        let maximize = resolve_fixture_chord("maximize-m").expect("maximize-m");
-        assert_eq!(maximize.key_code, crate::input_policy::KEY_M);
-        assert!(!maximize.shift);
-        assert!(!maximize.alt);
-        assert!(!maximize.aux);
-        assert_eq!(maximize.action, "maximize");
+        // Basic toggles carry their product keycode with no extra arms.
+        for (name, key_code, action) in [
+            ("maximize-m", crate::input_policy::KEY_M, "maximize"),
+            ("float-g", crate::input_policy::KEY_G, "float"),
+            ("orientation-o", crate::input_policy::KEY_O, "orientation"),
+            (
+                "workspace-tiling-y",
+                crate::input_policy::KEY_Y,
+                "workspace-tiling",
+            ),
+        ] {
+            let chord = resolve_fixture_chord(name).expect(name);
+            assert_eq!(chord.key_code, key_code);
+            assert!(!chord.shift && !chord.alt && !chord.aux);
+            assert_eq!(chord.action, action);
+        }
         // Numbered selects/send-follows 0..9 resolve with the product arms.
         for index in 0..=9u32 {
             for (prefix, shift, action) in [("select", false, "select"), ("send", true, "send")] {
@@ -2422,12 +2433,10 @@ mod tests {
             "focus-up",
             "focus-down",
             "move-up",
-            "float-g",
             "grow-h",
             "grow-left",
             "shrink-h",
             "shrink-right",
-            "orientation-o",
             "escape",
             "stay-1",
             "stay-2",

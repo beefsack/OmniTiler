@@ -2451,13 +2451,8 @@ fn consume_world_reply(
     let mut frame_ops: Vec<(String, String)> = Vec::new();
     for row in &reply.windows {
         let operation = row.frame_operation.as_deref();
-        let Some(frame) = row.effective_frame else {
-            continue;
-        };
-        if !current.contains(&(row.output.0.clone(), row.workspace.clone())) {
-            continue;
-        }
-        if row.frame_authority != ScopeAuthority::Controlled
+        let controlled = row.frame_authority == ScopeAuthority::Controlled;
+        if !controlled
             && !(row.frame_authority == ScopeAuthority::Untouched
                 && row.floating
                 && float_ticket.is_some_and(|seq| {
@@ -2466,12 +2461,21 @@ fn consume_world_reply(
                             .and_then(|op| op.strip_prefix("op-"))
                             .and_then(|seq| seq.parse().ok())
                             == Some(seq)
-                })
-                && !reply.scopes.iter().any(|scope| {
-                    scope.authority.hold_reason().is_some()
-                        && scope.scope.covers_workspace(&row.output, &row.workspace)
-                })
-                && allows_explicit_float_frame(retained, &row.lifetime.0, frame))
+                }))
+        {
+            continue;
+        }
+        let Some(frame) = row.effective_frame else {
+            continue;
+        };
+        if !current.contains(&(row.output.0.clone(), row.workspace.clone())) {
+            continue;
+        }
+        if !controlled
+            && (reply.scopes.iter().any(|scope| {
+                scope.authority.hold_reason().is_some()
+                    && scope.scope.covers_workspace(&row.output, &row.workspace)
+            }) || !allows_explicit_float_frame(retained, &row.lifetime.0, frame))
         {
             continue;
         }
@@ -15784,7 +15788,10 @@ mod tests {
             ),
         );
         let tile_row = ff_row(&unfloat, FF_SUBJECT);
-        assert!(!tile_row.floating, "the second toggle retiles: {tile_row:?}");
+        assert!(
+            !tile_row.floating,
+            "the second toggle retiles: {tile_row:?}"
+        );
         assert_eq!(
             tile_row.frame_operation, None,
             "the retiled row carries no placement token: {tile_row:?}"

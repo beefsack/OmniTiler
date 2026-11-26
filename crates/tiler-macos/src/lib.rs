@@ -54,6 +54,8 @@ pub mod drag_session;
 pub mod engine;
 pub mod ffi;
 mod fixture_corrupt_store;
+#[cfg(target_os = "macos")]
+mod fixture_float;
 pub mod fixture_frame;
 pub mod fixture_gate;
 mod fixture_hover;
@@ -61,6 +63,8 @@ pub mod fixture_leg;
 mod fixture_maximize;
 pub mod fixture_menu;
 mod fixture_owned_space;
+#[cfg(target_os = "macos")]
+mod fixture_pager;
 pub mod fixture_post;
 pub mod fixture_sample;
 pub mod fixture_zoom;
