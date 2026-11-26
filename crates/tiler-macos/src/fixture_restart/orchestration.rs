@@ -8,10 +8,9 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::fixture_leg::{
-    FIXTURE_SCOPE, FOCUS_SETTLE_MS, ISOLATED_STORE_LEAF, create_owned_run_dir,
-    fixture_bundle_path, join_fixture_windows, launch_fixture_bundle, launch_product_ls,
-    product_argv, product_bundle_path, read_announcement, read_run_nonce, settle_hold,
-    spawn_owned_windows,
+    FIXTURE_SCOPE, FOCUS_SETTLE_MS, ISOLATED_STORE_LEAF, create_owned_run_dir, fixture_bundle_path,
+    join_fixture_windows, launch_fixture_bundle, launch_product_ls, product_argv,
+    product_bundle_path, read_announcement, read_run_nonce, settle_hold, spawn_owned_windows,
 };
 use crate::fixture_owned_space::{
     PostOnlyOwnedSpace, await_joined_on_owned_space, establish_post_only_owned_space,
@@ -306,6 +305,7 @@ fn launch_second_and_capture(
         &argv,
         launch2_run_id,
         false,
+        None,
     ) {
         Ok(record) => record,
         Err(error) => {
@@ -797,8 +797,8 @@ fn spawn_join_owned_callers(
         ));
     }
     spawn_owned_windows(socket, nonce, callers).map_err(|error| (1, error))?;
-    let joined = join_fixture_windows(fixture_pid, socket, nonce, callers)
-        .map_err(|error| (1, error))?;
+    let joined =
+        join_fixture_windows(fixture_pid, socket, nonce, callers).map_err(|error| (1, error))?;
     for (caller, wid) in &joined {
         leg.note_owned_window(caller, fixture_pid, *wid);
     }
@@ -954,6 +954,7 @@ pub(crate) fn run_restart_body_macos(
         &argv1,
         &run_id1,
         false,
+        None,
     ) {
         Ok(record) => record,
         Err(error) => {

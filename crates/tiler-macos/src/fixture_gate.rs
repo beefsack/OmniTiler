@@ -20,10 +20,108 @@
 //! never silently expanding authority.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Exact fixture bundle scope admitted with a gate. No other scope, never
 /// unscoped.
 pub const FIXTURE_TEST_SCOPE: &str = "io.github.omnitiler.live-fixture";
+
+/// Fixture-controller-only one-shot ordinary float issuing-reply hold.
+///
+/// The controller launches the fixture-scoped product with this environment
+/// variable naming the exact rect-less `ToggleFloat` occurrence to hold
+/// (`1`-based, counted only for applied ordinary chord replies). No path, no
+/// file, no deletion. The product honors it only when the fixture gate is
+/// present (exact fixture scope, harness run directory, owned Space SIDs) and
+/// suppresses that one reply's emission in memory. Absent leaves the normal
+/// product path unchanged.
+pub const REPLY_HOLD_ENV: &str = "OMNITILER_FIXTURE_HOLD_FLOAT_REPLY";
+
+/// In-memory, fixture-gated one-shot issuance hold. Constructed only with a
+/// validated [`FixtureSpaceGate`] and the exact fixture scope, so consumption
+/// re-checks both the stored scope and the non-empty owned-Space gate.
+#[derive(Debug)]
+pub struct FixtureReplyHold {
+    scope: String,
+    gate: FixtureSpaceGate,
+    occurrence: u32,
+    seen: AtomicU32,
+    held: AtomicBool,
+}
+
+impl FixtureReplyHold {
+    /// Read the controller's occurrence from the launch environment. Absent
+    /// is inert; present without the exact fixture gate refuses instead of
+    /// silently not holding.
+    pub(crate) fn from_env(
+        gate: Option<&FixtureSpaceGate>,
+        scopes: &[String],
+    ) -> Result<Option<Arc<Self>>, String> {
+        let Some(raw) = std::env::var_os(REPLY_HOLD_ENV) else {
+            return Ok(None);
+        };
+        let Some(gate) = gate else {
+            return Err(format!(
+                "tile: {REPLY_HOLD_ENV} needs --fixture-owned-space (exact fixture scope, run dir, owned Space)"
+            ));
+        };
+        let raw = raw
+            .to_str()
+            .ok_or_else(|| format!("tile: {REPLY_HOLD_ENV} must be an ASCII occurrence"))?;
+        let occurrence: u32 = raw.parse().map_err(|_| {
+            format!("tile: {REPLY_HOLD_ENV} must be a 1-based occurrence, got '{raw}'")
+        })?;
+        Self::arm(gate, scopes, occurrence).map(Some)
+    }
+
+    /// Arm one exact occurrence behind the validated fixture gate and exact
+    /// fixture scope. Crate-internal so tests exercise the same construction;
+    /// no production caller can arm without a gate.
+    pub(crate) fn arm(
+        gate: &FixtureSpaceGate,
+        scopes: &[String],
+        occurrence: u32,
+    ) -> Result<Arc<Self>, String> {
+        if scopes.len() != 1 || scopes[0] != FIXTURE_TEST_SCOPE {
+            return Err(format!(
+                "tile: {REPLY_HOLD_ENV} needs exactly --scope {FIXTURE_TEST_SCOPE}"
+            ));
+        }
+        if occurrence == 0 || occurrence > 64 {
+            return Err(format!(
+                "tile: {REPLY_HOLD_ENV} occurrence must be 1..=64, got {occurrence}"
+            ));
+        }
+        Ok(Arc::new(Self {
+            scope: FIXTURE_TEST_SCOPE.to_owned(),
+            gate: gate.clone(),
+            occurrence,
+            seen: AtomicU32::new(0),
+            held: AtomicBool::new(false),
+        }))
+    }
+
+    /// Claim the configured ordinary rect-less float occurrence. The caller
+    /// matches the command first; this re-checks the exact fixture scope and
+    /// a non-empty owned-Space gate, counts only callers that pass, and
+    /// returns true exactly once for the configured occurrence.
+    pub(crate) fn claim_ordinary_float(&self) -> bool {
+        if self.scope != FIXTURE_TEST_SCOPE || self.gate.owned().is_empty() {
+            return false;
+        }
+        let seen = self.seen.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+        if seen != self.occurrence {
+            return false;
+        }
+        !self.held.swap(true, Ordering::SeqCst)
+    }
+
+    /// Console evidence for the exact held occurrence.
+    pub(crate) const fn occurrence(&self) -> u32 {
+        self.occurrence
+    }
+}
 
 /// Opaque native-SID allowlist for one fixture-gated product run: the exact
 /// SIDs the leg controller created plus the recorded initial starting

@@ -109,6 +109,7 @@ pub fn required_scope(chord_name: &str) -> Option<AdmissionScope> {
         chord_name,
         crate::fixture_leg::MAXIMIZE_TOGGLE_CHORD
             | crate::fixture_leg::FLOAT_PLACEMENT_CHORD
+            | crate::fixture_leg::FLOAT_SEQUENCES_CHORD
             | crate::fixture_leg::PAGER_SWITCH_CHORD
     ) {
         return Some(AdmissionScope::PostOnly);
@@ -655,7 +656,9 @@ fn read_nonce_from_run_dir(run_dir: &Path) -> Result<String, String> {
 /// proof. Pure file shape; unit-tested.
 fn read_product_tilestarted_pid(stdout_log: &Path, run_id: &str) -> Result<u32, String> {
     let raw = std::fs::read_to_string(stdout_log).map_err(|e| {
-        format!("run-specific tilestarted identity unreadable ({e}); residue retained without proof")
+        format!(
+            "run-specific tilestarted identity unreadable ({e}); residue retained without proof"
+        )
     })?;
     for line in raw.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
@@ -816,9 +819,8 @@ fn remove_owned_launch_dir(
                     unknown.join(",")
                 ));
             }
-            std::fs::remove_dir(&dir).map_err(|e| {
-                format!("shutdown: owned product {launch} dir removal refused ({e})")
-            })
+            std::fs::remove_dir(&dir)
+                .map_err(|e| format!("shutdown: owned product {launch} dir removal refused ({e})"))
         }
         Ok(_) => Err(format!(
             "shutdown: owned product {launch} path is not a directory; refusing"
@@ -983,9 +985,8 @@ fn retained_product_evidence_paths(run_dir: &Path) -> Vec<String> {
     if !is_directory(run_dir) || !is_directory(&product_dir) {
         return Vec::new();
     }
-    let evidence_file = |path: &Path| {
-        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
-    };
+    let evidence_file =
+        |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file());
     let mut paths = Vec::new();
     let dirs = [product_dir.join("launch-1"), product_dir.join("launch-2")];
     for leaf in PRODUCT_EVIDENCE_LEAVES {
@@ -2786,7 +2787,10 @@ mod tests {
         leg.resolve_pending_absence("product")
             .expect("run-specific tilestarted identity plus gone pid proves absence");
         assert!(leg.pending_launches().is_empty());
-        assert!(product.exists(), "resolution retains the owned run directory");
+        assert!(
+            product.exists(),
+            "resolution retains the owned run directory"
+        );
         leg.finish().expect("clean finish passes");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3243,7 +3247,10 @@ mod tests {
         let (run, store) = restart_run_with_launch_evidence(&dir, "run");
         let err = remove_owned_run_dir_after_absence(&run, false, true)
             .expect_err("unproven absence must report residue");
-        assert!(err.contains("product absence unproven"), "unexpected: {err}");
+        assert!(
+            err.contains("product absence unproven"),
+            "unexpected: {err}"
+        );
         for launch in ["launch-1", "launch-2"] {
             for leaf in PRODUCT_RUN_LEAVES {
                 assert!(
@@ -3515,7 +3522,10 @@ mod tests {
         std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
         let err = remove_owned_run_dir_after_absence(&run, false, true)
             .expect_err("unproven absence must report residue");
-        assert!(err.contains("product absence unproven"), "unexpected: {err}");
+        assert!(
+            err.contains("product absence unproven"),
+            "unexpected: {err}"
+        );
         for leaf in FIXTURE_RUN_LEAVES {
             assert!(!run.join(leaf).exists(), "fixture leaf {leaf} removes");
         }
@@ -3529,7 +3539,10 @@ mod tests {
             store.join("intent-v1-501-100021.json").exists(),
             "private store must be preserved"
         );
-        assert!(run.exists(), "run directory stays while product leaves exist");
+        assert!(
+            run.exists(),
+            "run directory stays while product leaves exist"
+        );
         // Proven absence authorizes removing fixture leaves and the known
         // non-evidence product leaves, while the launch evidence stays as
         // reported auditable residue of the restart.

@@ -461,6 +461,27 @@ fn bundle_overrides_keep_identity_checks() {
 }
 
 #[test]
+fn float_sequences_usage_refuses_before_any_effect() {
+    // Exactly two same-value chords (subject then sibling), no extra or
+    // mixed chord: usage refuses before a baseline, Space, or launch effect.
+    for chords in [
+        vec![FLOAT_SEQUENCES_CHORD],
+        vec![FLOAT_SEQUENCES_CHORD, "focus-h"],
+        vec![FLOAT_SEQUENCES_CHORD, FLOAT_SEQUENCES_CHORD, "focus-h"],
+    ] {
+        let err = run_fixture_leg(test_opts(chords)).unwrap_err();
+        assert_eq!(err.0, 2);
+        assert!(err.1.contains("exactly two"), "{}", err.1);
+    }
+    // The alias is a controller arm with a post-only admission scope; the
+    // post resolver never sees it.
+    assert_eq!(
+        crate::live_leg::required_scope(FLOAT_SEQUENCES_CHORD),
+        Some(crate::live_leg::AdmissionScope::PostOnly)
+    );
+}
+
+#[test]
 fn apply_send_usage_refuses_before_any_effect() {
     // Exactly one Compatible send: extra chords, Authentic (which writes
     // holders), and the extra probes refuse as usage before a baseline,

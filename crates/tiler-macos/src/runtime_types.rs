@@ -1326,6 +1326,12 @@ pub struct RuntimeConfig {
     /// startup and publishes its directory through
     /// [`RuntimeDiagnostics::intent_store_dir`].
     pub intent_store: IntentStoreMode,
+    /// Fixture-controller-only one-shot ordinary float issuance hold. `None`
+    /// (the normal product) leaves every reply path unchanged; `Some` is
+    /// constructible only with the validated fixture gate and exact fixture
+    /// scope, and suppresses exactly one configured rect-less `ToggleFloat`
+    /// reply's emission.
+    pub fixture_reply_hold: Option<std::sync::Arc<crate::fixture_gate::FixtureReplyHold>>,
 }
 
 impl Default for RuntimeConfig {
@@ -1348,6 +1354,7 @@ impl Default for RuntimeConfig {
             fixed_size_predicate: FixedSizePredicate::BothAxes,
             core_settings: Vec::new(),
             intent_store: IntentStoreMode::Disabled,
+            fixture_reply_hold: None,
         }
     }
 }

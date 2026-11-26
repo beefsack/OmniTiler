@@ -2303,6 +2303,21 @@ mod native {
             InputGuard::Tap(factory) => Arc::clone(factory) as Arc<dyn InputSourceFactory>,
             InputGuard::Off(factory) => Arc::clone(factory) as Arc<dyn InputSourceFactory>,
         };
+        // Development-only fixture gate (adapter boundary, default
+        // disabled): validated again here before the runtime starts so the
+        // optional one-shot issuance hold is armed at launch, never by a
+        // later mutable control.
+        let fixture_gate = crate::fixture_gate::validate_fixture_gate(
+            &request.scopes,
+            request.unscoped,
+            &request.run_dir,
+            &request.fixture_owned_spaces,
+            request.fixture_starting_space,
+        )
+        .map_err(|reason| (2, reason))?;
+        let fixture_reply_hold =
+            crate::fixture_gate::FixtureReplyHold::from_env(fixture_gate.as_ref(), &request.scopes)
+                .map_err(|reason| (2, reason))?;
         let config = RuntimeConfig {
             topology_mode: TopologyMode::Native,
             // Scoped runs carry the explicit allowlist; unscoped runs
@@ -2320,6 +2335,7 @@ mod native {
             // The product run owns the real per-user durable intent store;
             // every other config literal inherits the Disabled default.
             intent_store: IntentStoreMode::Default,
+            fixture_reply_hold,
             ..RuntimeConfig::default()
         };
         config.validate().map_err(|reason| (2, reason))?;
@@ -2517,19 +2533,11 @@ mod native {
         // AppKit. Numbered send-follow 1..9 is armed.
         let mut send_controller = crate::workspace_send::LiveSendController::new();
         // Development-only fixture-owned Space gate (adapter boundary,
-        // default disabled): validated in `TileRequest::validate` (exact
+        // default disabled): validated before the runtime started (exact
         // fixture scope, never unscoped, explicit harness run directory).
         // Stored in the adapter request plus both controllers (never
         // core); the send factories below apply the same gate to their
         // backends. Absent leaves the normal product unchanged.
-        let fixture_gate = crate::fixture_gate::validate_fixture_gate(
-            &request.scopes,
-            request.unscoped,
-            &request.run_dir,
-            &request.fixture_owned_spaces,
-            request.fixture_starting_space,
-        )
-        .map_err(|reason| (2, reason))?;
         select_controller.set_fixture_gate(fixture_gate.clone());
         send_controller.set_fixture_gate(fixture_gate.clone());
         // Install the host wake on both effect owners now that they exist:

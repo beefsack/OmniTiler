@@ -91,6 +91,17 @@ pub const MAXIMIZE_TOGGLE_CHORD: &str = "maximize-toggle";
 /// Diagnostic first float and re-float on the same owned window.
 pub const FLOAT_PLACEMENT_CHORD: &str = "float-placement";
 
+/// Diagnostic three-sequence retained float-frame arm on one subject
+/// lifetime: held issuing-reply recovery, composed maximize then float
+/// unmaximize, and a directional float half-snap. Requires exactly two
+/// controller-owned chords (subject, sibling); the sibling supplies the
+/// reflow and focus-trigger evidence.
+pub const FLOAT_SEQUENCES_CHORD: &str = "float-sequences";
+
+/// The re-float is the third applied rect-less `ToggleFloat` on this arm
+/// (first float, retile, refloat). The product holds exactly that occurrence.
+pub(crate) const FLOAT_SEQUENCES_HOLD_OCCURRENCE: u32 = 3;
+
 /// Diagnostic-only alias for a pager rebuild across an owned-Space round trip.
 pub(crate) const PAGER_SWITCH_CHORD: &str = "pager-switch";
 
@@ -588,6 +599,7 @@ pub(crate) fn launch_product_ls(
     argv: &[String],
     run_id: &str,
     hover_probe: bool,
+    hold_float_reply: Option<u32>,
 ) -> Result<ProductRecord, String> {
     use std::collections::BTreeSet;
     // PIDs of this bundle before launch: the announced PID must be fresh.
@@ -619,6 +631,15 @@ pub(crate) fn launch_product_ls(
         crate::intent_store::STORE_DIR_ENV,
         store_dir.display()
     ));
+    // Fixture-controller one-shot ordinary float hold: the occurrence rides
+    // this launch only; the product honors it only under its validated
+    // fixture gate and keeps the consumed flag in memory (no path, no file).
+    if let Some(occurrence) = hold_float_reply {
+        open.arg("--env").arg(format!(
+            "{}={occurrence}",
+            crate::fixture_gate::REPLY_HOLD_ENV
+        ));
+    }
     let status = open
         .arg(bundle)
         .arg("--args")
@@ -831,6 +852,25 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
         return Err((
             2,
             "float-placement needs a second fixture window".to_owned(),
+        ));
+    }
+    // The three-sequence float arm is one controller lifetime over exactly a
+    // subject and its reflow/focus sibling: no extra chord may ride along,
+    // and each window is named once.
+    if opts
+        .chords
+        .iter()
+        .any(|chord| chord == FLOAT_SEQUENCES_CHORD)
+        && (opts.chords.len() != 2
+            || opts
+                .chords
+                .iter()
+                .any(|chord| chord != FLOAT_SEQUENCES_CHORD))
+    {
+        return Err((
+            2,
+            "float-sequences needs exactly two --chord float-sequences values (subject then sibling)"
+                .to_owned(),
         ));
     }
     // The hover probe needs one tall anchor plus a stacked pair; refuse the
@@ -1513,6 +1553,11 @@ fn run_leg_body_macos(
         starting_sid,
     );
     let store_dir = product_dir.join(ISOLATED_STORE_LEAF);
+    let hold_float_reply = opts
+        .chords
+        .first()
+        .is_some_and(|chord| chord == FLOAT_SEQUENCES_CHORD)
+        .then_some(FLOAT_SEQUENCES_HOLD_OCCURRENCE);
     match launch_product_ls(
         &product_bundle,
         &product_dir,
@@ -1520,6 +1565,7 @@ fn run_leg_body_macos(
         &argv,
         &run_id,
         opts.hover_probe,
+        hold_float_reply,
     ) {
         Ok(product) => leg.register_product_ls(product)?,
         Err(e) => {
@@ -1594,6 +1640,31 @@ fn run_leg_body_macos(
     if let Some((source, destination)) = pager_destination {
         let report =
             crate::fixture_pager::run(leg, source, destination, &product_dir.join("stderr.log"))?;
+        return Ok(LegReports {
+            chords: vec![report],
+            hover_probe: None,
+            owned_space: owned_space.map(|evidence| evidence.evidence()),
+            corrupt_store: None,
+        });
+    }
+    // Three-sequence float arm: one controller lifetime, subject then
+    // sibling, entirely inside `run_sequences` so the exact same product
+    // launch owns every command and observation.
+    if opts
+        .chords
+        .first()
+        .is_some_and(|chord| chord == FLOAT_SEQUENCES_CHORD)
+    {
+        let (subject_caller, subject_wid) = &joined[0];
+        let (sibling_caller, sibling_wid) = &joined[1];
+        let report = crate::fixture_float::run_sequences(
+            &driver,
+            parsed.pid,
+            (subject_caller.as_str(), *subject_wid),
+            (sibling_caller.as_str(), *sibling_wid),
+            opts.modifier,
+            &product_dir,
+        )?;
         return Ok(LegReports {
             chords: vec![report],
             hover_probe: None,

@@ -47,6 +47,51 @@ use crate::world_runtime::{
 };
 use crate::world_sequencer::{CloseEnvelope, ReplyVerdict, RequestTicket, command_operation_id};
 
+/// One-shot ordinary float issuance hold (fixture controller only).
+///
+/// Matches only a rect-less `ToggleFloat` on the ordinary ticket lane with no
+/// gesture ingress, then claims the configured occurrence from the
+/// fixture-gated in-memory hold. On the single claimed occurrence it skips
+/// [`consume_world_reply`] — the existing held-emission shape: core already
+/// applied the command and the sequencer already accepted it, but this
+/// adapter never reaches its frame lane. A later observation-only reply
+/// republishes the retained operation and converges. Every non-matching or
+/// later reply is unchanged.
+fn fixture_holding_ordinary_float(
+    shared: &Arc<Mutex<Shared>>,
+    command: Option<&WorldCommand>,
+    command_seq: Option<u64>,
+    ordinary_ticket_without_gesture: bool,
+) -> bool {
+    if !ordinary_ticket_without_gesture {
+        return false;
+    }
+    let Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+        float_rect: None, ..
+    })) = command
+    else {
+        return false;
+    };
+    let hold = lock_shared(shared).config.fixture_reply_hold.clone();
+    let Some(hold) = hold else {
+        return false;
+    };
+    if !hold.claim_ordinary_float() {
+        return false;
+    }
+    match command_seq {
+        Some(seq) => eprintln!(
+            "tiler-macos fixture float reply held occurrence={} command_seq={seq}",
+            hold.occurrence()
+        ),
+        None => eprintln!(
+            "tiler-macos fixture float reply held occurrence={} command_seq=-",
+            hold.occurrence()
+        ),
+    }
+    true
+}
+
 /// Static reply token for the ring (`emit` needs `&'static str`): every
 /// production op/outcome pair is enumerated, so no per-reply allocation or
 /// leak carries diagnostics.
@@ -1068,6 +1113,9 @@ fn dispatch_ticket_inner(
     let select_operation: Option<String> = command_is_select
         .then(|| ticket.command_seq.map(command_operation_id))
         .flatten();
+    // The fixture one-shot hold applies only to this ordinary ticket lane,
+    // never a gesture-lifecycle report (which has its own dispatch path).
+    let ordinary_float_hold_allowed = gesture.is_none();
     let report_clock = crate::stage_timing::PhaseClock::start();
     let Some(report) = build_dispatch_report(
         session,
@@ -1274,39 +1322,47 @@ fn dispatch_ticket_inner(
                             accept_clock.elapsed(),
                         );
                     }
-                    let publish_clock = crate::stage_timing::PhaseClock::start();
-                    consume_world_reply(
-                        session,
-                        retained,
+                    let held_float_reply = fixture_holding_ordinary_float(
                         shared,
-                        focus_queue,
-                        focus_capacity,
-                        &applied,
-                        &report.native,
                         ticket.command.as_ref(),
                         ticket.command_seq,
-                        op,
-                        "accepted",
-                        pid,
-                        generation,
-                        seq,
-                        ticket.request_seq,
+                        ordinary_float_hold_allowed,
                     );
-                    if let Some(span) = crate::stage_timing::with_current(|held| *held) {
-                        crate::stage_timing::record(
+                    let publish_clock = crate::stage_timing::PhaseClock::start();
+                    if !held_float_reply {
+                        consume_world_reply(
+                            session,
+                            retained,
                             shared,
-                            span.id,
-                            crate::stage_timing::stage::PUBLISH,
-                            span.action,
-                            publish_clock.elapsed(),
+                            focus_queue,
+                            focus_capacity,
+                            &applied,
+                            &report.native,
+                            ticket.command.as_ref(),
+                            ticket.command_seq,
+                            op,
+                            "accepted",
+                            pid,
+                            generation,
+                            seq,
+                            ticket.request_seq,
                         );
-                        // Latest-publication identity for coalesced submit
-                        // attribution (border/indicator submits below join
-                        // through this, never through a per-action render
-                        // claim). Coalesced: a later publication overwrites
-                        // an earlier one before any submit; an obsolete
-                        // publication may be skipped entirely.
-                        crate::stage_timing::note_publish(span.id);
+                        if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+                            crate::stage_timing::record(
+                                shared,
+                                span.id,
+                                crate::stage_timing::stage::PUBLISH,
+                                span.action,
+                                publish_clock.elapsed(),
+                            );
+                            // Latest-publication identity for coalesced submit
+                            // attribution (border/indicator submits below join
+                            // through this, never through a per-action render
+                            // claim). Coalesced: a later publication overwrites
+                            // an earlier one before any submit; an obsolete
+                            // publication may be skipped entirely.
+                            crate::stage_timing::note_publish(span.id);
+                        }
                     }
                     DispatchVerdict::Applied { select_operation }
                 }
@@ -15972,6 +16028,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fixture_hold_claims_one_gated_ordinary_float_and_ignores_other_shapes() {
+        use crate::fixture_gate::{FIXTURE_TEST_SCOPE, FixtureReplyHold, FixtureSpaceGate};
+        let gate = FixtureSpaceGate::new(&[42], None).expect("fixture gate");
+        let scopes = vec![FIXTURE_TEST_SCOPE.to_owned()];
+        let hold = FixtureReplyHold::arm(&gate, &scopes, 2).expect("hold arms");
+        let shared = focus_shared();
+        lock_shared(&shared).config.fixture_reply_hold = Some(hold);
+        let float = WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: WindowSubject::CurrentFocus,
+            float_rect: None,
+        });
+        let explicit = WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: WindowSubject::CurrentFocus,
+            float_rect: Some(Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+            }),
+        });
+        let other = WorldCommand::Operation(CoreCommand::ToggleOrientation {
+            window: WindowSubject::CurrentFocus,
+        });
+        assert!(
+            !fixture_holding_ordinary_float(&shared, Some(&other), Some(1), true),
+            "another command never counts"
+        );
+        assert!(
+            !fixture_holding_ordinary_float(&shared, Some(&explicit), Some(1), true),
+            "an explicit rectangle never counts"
+        );
+        assert!(
+            !fixture_holding_ordinary_float(&shared, Some(&float), Some(1), false),
+            "a gesture ticket never counts"
+        );
+        assert!(
+            !fixture_holding_ordinary_float(&shared, Some(&float), Some(1), true),
+            "the first ordinary float is consumed normally"
+        );
+        assert!(
+            fixture_holding_ordinary_float(&shared, Some(&float), Some(2), true),
+            "the configured occurrence is held exactly once"
+        );
+        assert!(
+            !fixture_holding_ordinary_float(&shared, Some(&float), Some(3), true),
+            "a later ordinary float is inert"
+        );
+        assert!(
+            FixtureReplyHold::arm(&gate, &["com.apple.TextEdit".to_owned()], 1).is_err(),
+            "a non-fixture scope never arms"
+        );
+        let empty = FixtureReplyHold::arm(&FixtureSpaceGate::default(), &scopes, 1)
+            .expect("structurally armable");
+        assert!(
+            !empty.claim_ordinary_float(),
+            "an empty owned-Space gate never holds"
+        );
+    }
+
     /// Latest-world convergence for explicit float placement: when the
     /// issuing reply is skipped or held before emission, the next accepted
     /// observation-only reply still republishes the core's retained
@@ -16216,7 +16332,8 @@ mod tests {
             ),
         );
         assert_eq!(
-            ff_row(&echo, FF_SUBJECT).frame_operation, None,
+            ff_row(&echo, FF_SUBJECT).frame_operation,
+            None,
             "the proven placement retires its token"
         );
         let before = ff_counters(&shared);
@@ -16610,9 +16727,12 @@ mod tests {
         let half = row
             .effective_frame
             .expect("the half-snap publishes its authorized frame");
-        let expected_half =
-            tiler_core::world_directional::float_half_snap_rect(ff_rect(0, 0, 800, 600), 8, "right")
-                .expect("right half snap");
+        let expected_half = tiler_core::world_directional::float_half_snap_rect(
+            ff_rect(0, 0, 800, 600),
+            8,
+            "right",
+        )
+        .expect("right half snap");
         assert_eq!(
             half, expected_half,
             "the core-published half is the authorized right half: {row:?}"
