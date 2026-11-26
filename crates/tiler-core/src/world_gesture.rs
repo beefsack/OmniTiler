@@ -759,7 +759,8 @@ impl WorldTransaction<'_> {
         // An explicit composed-float drag to a valid but empty
         // destination clears the bit inside the float lane before
         // destination admission even though the release refuses with no
-        // commit, so the reflow publishes the ordinary dragged base.
+        // commit, so the reflow publishes the ordinary dragged base. A
+        // refused existing-layout destination move clears nothing.
         // No-op, cancel, refused, and cursor-less terminals never clear;
         // delayed/clamped `FrameAttempt` readbacks never reach this lane.
         // The tiled base is whatever the committed Session drag/resize
@@ -1037,10 +1038,12 @@ impl WorldTransaction<'_> {
     /// to a session-owned destination moves the existing exception record
     /// with the existing extract/insert primitives, like the sticky
     /// cross-output path. An explicit drag to a valid readable unheld
-    /// destination clears the bit before destination admission,
-    /// independent of whether a destination session exists: an empty
-    /// destination (no session) refuses the gesture with no transfer or
-    /// gesture-owned admission. The ordinary observation sweep admits the
+    /// destination clears the bit before destination admission for the
+    /// restage contract only, independent of whether a destination session
+    /// exists: an empty destination (no session) refuses the gesture with no
+    /// transfer or gesture-owned admission. An existing-layout destination
+    /// clears the bit only when the atomic move commits; a refused move keeps
+    /// the bit and both layouts. The ordinary observation sweep admits the
     /// float and adopts its observed frame without a write; a floating
     /// destination is never converged, so it gains no layout and keeps no
     /// placement. Unhomed, unreadable or held targets and malformed frames
@@ -1078,11 +1081,12 @@ impl WorldTransaction<'_> {
         }
         // Cross-domain: the destination domain must already be staged
         // readable and unheld; unreadable or held targets refuse with
-        // the bit retained. An explicit drag clears the bit before
-        // destination admission, independent of whether a destination
-        // session exists: an empty destination (no session) then refuses
-        // with no transfer and no minted session, matching the ordinary
-        // float dragged outcome on the same observation.
+        // the bit retained. The restage contract clears the bit before
+        // admitting a destination without a session: an empty destination
+        // then refuses with no transfer and no minted session, matching the
+        // ordinary float dragged outcome on the same observation. An
+        // existing-layout destination clears only with the committed atomic
+        // move below, so a refused move keeps the overlay.
         let readable = self
             .world
             .staged
@@ -1092,13 +1096,16 @@ impl WorldTransaction<'_> {
         if !readable || held_scopes.contains(&target_key) {
             return GestureOutcome::Settled { committed: false };
         }
-        self.world
-            .runtime
-            .composed_maximized
-            .remove(&retained.window);
         if !self.world.layout.contains_domain(&target_key)
             || !self.world.layout.contains_domain(&retained.home)
         {
+            // No destination session: this restage contract clears the
+            // overlay before the unshielded convergence below publishes the
+            // ordinary dragged base (even though the release refuses).
+            self.world
+                .runtime
+                .composed_maximized
+                .remove(&retained.window);
             // Restage without the cleared gesture shield so the scopes
             // below converge the same unshielded staging the ordinary
             // refused-gesture path swept: the destination sweep retains
@@ -1140,6 +1147,10 @@ impl WorldTransaction<'_> {
         ) {
             return GestureOutcome::Settled { committed: false };
         }
+        self.world
+            .runtime
+            .composed_maximized
+            .remove(&retained.window);
         self.commit_send_member(&retained.window, &target_key);
         self.world
             .settlement
@@ -1589,7 +1600,7 @@ mod staged_pause_tests {
 
     use super::RetainedGesture;
 
-    fn retained(window: &str) -> RetainedGesture {
+    pub(super) fn retained(window: &str) -> RetainedGesture {
         RetainedGesture {
             window: WindowId(window.to_owned()),
             id: 7,
@@ -1650,5 +1661,258 @@ mod staged_pause_tests {
         assert!(!engine.cursor_game_paused());
         assert!(!engine.tx(|tx| tx.gesture_game_paused(&retained("win-a"))));
         assert!(!engine.tx(|tx| tx.gesture_game_paused(&retained("game"))));
+    }
+}
+
+#[cfg(test)]
+mod float_release_mutation_tests {
+    //! A refused existing-layout cross release must keep the composed bit and
+    //! leave both layouts plus membership unchanged. Seeded directly from
+    //! retained layouts and a positively staged destination homing; the
+    //! empty-destination restage contract lives in `world_composed_maximize_tests`.
+
+    use std::collections::BTreeSet;
+
+    use crate::connection::HostCapabilities;
+    use crate::directional::{OutputId, WindowId, WorkspaceId};
+    use crate::geometry::Rect;
+    use crate::seed::EngineWindow;
+    use crate::session::{DomainKey, OutputDomain};
+    use crate::size_hints::WindowSizeHints;
+    use crate::world_engine::WorldEngine;
+    use crate::world_members::MemberState;
+    use crate::world_report::WindowFact;
+    use crate::world_v4_support_tests::{fact, report_full, screen};
+
+    use super::GestureOutcome;
+    use super::staged_pause_tests::retained;
+
+    const RELEASE: Rect = Rect {
+        x: 900,
+        y: 50,
+        w: 400,
+        h: 300,
+    };
+    const BASE: Rect = Rect {
+        x: 10,
+        y: 10,
+        w: 200,
+        h: 150,
+    };
+    const SIBLING: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 400,
+        h: 560,
+    };
+    const TILE: Rect = Rect {
+        x: 900,
+        y: 0,
+        w: 40,
+        h: 90,
+    };
+
+    fn domain(output: &str, workspace: &str, x: i32) -> OutputDomain {
+        OutputDomain {
+            id: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            bounds: Rect {
+                x,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            gap: 0,
+            adjacent: Default::default(),
+        }
+    }
+
+    fn window(id: &str, output: &str, workspace: &str, rect: Rect, floating: bool) -> EngineWindow {
+        EngineWindow {
+            window: WindowId(id.to_owned()),
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            rect,
+            floating,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: WindowSizeHints::none(),
+        }
+    }
+
+    fn row(id: &str, output: &str, x: i32, rect: Rect) -> WindowFact {
+        let mut row = fact(id, output, x);
+        row.maximized = None;
+        row.sticky = None;
+        row.rect = Some(rect);
+        row
+    }
+
+    #[test]
+    fn refused_existing_layout_cross_release_retains_composed_bit() {
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-1",
+            "adapter-1",
+            HostCapabilities {
+                maximize: false,
+                fullscreen: true,
+                ..HostCapabilities::default()
+            },
+        )
+        .expect("generation");
+        let source = DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        let destination = DomainKey {
+            output: OutputId("out-b".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+        };
+        let mover = WindowId("win-a".to_owned());
+        engine
+            .world
+            .workspace
+            .mapping
+            .insert("out-a".to_owned(), vec!["ws-1".to_owned()]);
+        engine
+            .world
+            .workspace
+            .mapping
+            .insert("out-b".to_owned(), vec!["ws-2".to_owned()]);
+        engine.world.workspace.members.insert(
+            mover.clone(),
+            MemberState {
+                home: source.clone(),
+                floating: true,
+                minimized: false,
+                geometry: Some(BASE),
+            },
+        );
+        engine.world.intent.restored_floats.insert(mover.clone());
+
+        engine
+            .world
+            .layout
+            .reconcile_fresh(
+                &domain("out-a", "ws-1", 0),
+                0,
+                &WindowId("win-b".to_owned()),
+                &[
+                    window("win-b", "out-a", "ws-1", SIBLING, false),
+                    window("win-a", "out-a", "ws-1", BASE, true),
+                ],
+            )
+            .expect("source layout");
+        assert!(
+            engine
+                .world
+                .layout
+                .adopt_float_placement(&source, &mover, BASE)
+        );
+        assert_eq!(
+            engine
+                .world
+                .layout
+                .exception_float_geometry(&source, &mover),
+            Some(BASE)
+        );
+
+        // Stale duplicate: the destination keeps its own record for the
+        // mover while the mover floats at its source.
+        engine
+            .world
+            .layout
+            .reconcile_fresh(
+                &domain("out-b", "ws-2", 800),
+                0,
+                &WindowId("win-c".to_owned()),
+                &[
+                    window("win-c", "out-b", "ws-2", TILE, false),
+                    window("win-a", "out-b", "ws-2", RELEASE, true),
+                ],
+            )
+            .expect("destination layout");
+        assert_eq!(
+            engine
+                .world
+                .layout
+                .exception_float_geometry(&destination, &mover),
+            None
+        );
+        engine
+            .world
+            .runtime
+            .composed_maximized
+            .insert(mover.clone());
+
+        let release = report_full(
+            1,
+            1,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            vec![
+                row("win-a", "out-b", 0, RELEASE),
+                row("win-c", "out-b", 900, TILE),
+            ],
+            vec![],
+            "win-a",
+            None,
+            None,
+        );
+        engine.tx(|tx| tx.stage_facts_v4(&release));
+        engine.tx(|tx| tx.build_staged_domains());
+        assert!(
+            engine
+                .world
+                .staged
+                .domains
+                .iter()
+                .any(|staged| staged.key == destination && staged.readable)
+        );
+        assert_eq!(
+            engine.tx(|tx| tx.logical_homing(&mover)),
+            Some(destination.clone()),
+            "the release positively homes at the destination"
+        );
+
+        let outcome = engine
+            .tx(|tx| tx.gesture_float_release(&retained("win-a"), RELEASE, &mut BTreeSet::new()));
+        assert!(matches!(
+            outcome,
+            GestureOutcome::Settled { committed: false }
+        ));
+        assert!(
+            engine.world.runtime.composed_maximized.contains(&mover),
+            "bit retained on refusal"
+        );
+        assert_eq!(
+            engine
+                .world
+                .layout
+                .exception_float_geometry(&source, &mover),
+            Some(BASE),
+            "source geometry unchanged"
+        );
+        assert_eq!(
+            engine.world.layout.retained_float_geometry(&source, &mover),
+            Some(BASE),
+            "source durable placement unchanged"
+        );
+        assert_eq!(
+            engine
+                .world
+                .layout
+                .exception_float_geometry(&destination, &mover),
+            None,
+            "destination duplicate unchanged"
+        );
+        assert_eq!(
+            engine.world.workspace.members.get(&mover).map(|m| &m.home),
+            Some(&source),
+            "membership unchanged"
+        );
     }
 }

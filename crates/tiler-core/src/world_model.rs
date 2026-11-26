@@ -2077,56 +2077,66 @@ impl WorldTransaction<'_> {
                 return;
             }
         }
-        // A retained float observed alone in a fresh destination has no
-        // placement after ordinary convergence. The native crossing already
-        // moved it: adopt its observed frame rather than issuing a write.
-        // Use the gesture's start home when shielded, otherwise pre-sweep
-        // membership: the source domain may already have converged empty.
-        if prior_geometry.is_none()
-            && !held_scopes.contains(&key)
+        // A retained float observed on a destination that already has a
+        // layout (or converges a fresh one) has no placement after ordinary
+        // convergence. The native crossing already moved it: adopt each
+        // mover's observed frame rather than issuing a write, retiring only
+        // that mover's source record. Use the gesture's start home when
+        // shielded, otherwise pre-sweep membership: the source domain may
+        // already have converged empty.
+        if !held_scopes.contains(&key)
             && self.world.staged.observation.inventory_complete
-            && domain.minimized.is_empty()
             && !self.world.workspace.is_floating(&key)
-            && let [entry] = windows.as_slice()
-            && entry.floating
-            && !entry.sticky
-            && !entry.fullscreen
-            && !entry.maximized
-            && !self
-                .world
-                .runtime
-                .composed_maximized
-                .contains(&entry.window)
-            && !self.is_held_window(&entry.window)
-            && self
-                .world
-                .staged
-                .facts
-                .get(&entry.window)
-                .is_some_and(|fact| fact.output.as_ref() == Some(&key.output))
-            && let Some(source) = gesture_source
-                .filter(|(window, _)| *window == &entry.window)
-                .map(|(_, home)| home)
-                .or_else(|| {
-                    self.world
-                        .workspace
-                        .members
-                        .get(&entry.window)
-                        .filter(|member| member.floating && !member.minimized)
-                        .map(|member| &member.home)
-                })
-            && source != &key
-            && self.world.layout.adopt_rehomed_float_placement(
-                source,
-                &key,
-                &entry.window,
-                entry.rect,
-            )
         {
-            self.world
-                .settlement
-                .retained_floats
-                .retain(|pending| pending.window != entry.window);
+            for entry in &windows {
+                if !entry.floating
+                    || entry.sticky
+                    || entry.fullscreen
+                    || entry.maximized
+                    || self
+                        .world
+                        .runtime
+                        .composed_maximized
+                        .contains(&entry.window)
+                    || self.is_held_window(&entry.window)
+                {
+                    continue;
+                }
+                let Some(fact) = self.world.staged.facts.get(&entry.window) else {
+                    continue;
+                };
+                if fact.output.as_ref() != Some(&key.output) {
+                    continue;
+                }
+                let Some(source) = gesture_source
+                    .filter(|(window, _)| *window == &entry.window)
+                    .map(|(_, home)| home)
+                    .or_else(|| {
+                        self.world
+                            .workspace
+                            .members
+                            .get(&entry.window)
+                            .filter(|member| member.floating && !member.minimized)
+                            .map(|member| &member.home)
+                    })
+                else {
+                    continue;
+                };
+                if source == &key {
+                    continue;
+                }
+                if self.world.layout.adopt_rehomed_float_placement(
+                    source,
+                    &key,
+                    &entry.window,
+                    entry.rect,
+                ) {
+                    self.world
+                        .settlement
+                        .retained_floats
+                        .retain(|pending| pending.window != entry.window);
+                }
+            }
         }
         // Safety-exclusion focus hold: the retained focus converged away as a
         // safety/own-process exclusion (never an explicit positive close) with

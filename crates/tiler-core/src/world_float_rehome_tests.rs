@@ -15,7 +15,7 @@ use crate::world_report::{
     ScreenReport, WindowFact, WorldCommand, WorldReportV4,
 };
 use crate::world_v4_support_tests::{
-    accepted, accepted_with_settlements, fact, report_full, screen,
+    accepted, accepted_with_settlements, desire, fact, report_full, screen,
 };
 
 /// Native drop frame used by every crossing below.
@@ -212,6 +212,135 @@ fn float_rehome_held_source_crossing_retires_only_mover() {
             .layout
             .exception_float_geometry(&destination, &window),
         Some(RELEASE)
+    );
+}
+
+#[test]
+fn float_rehome_occupied_destination_crossing_adopts_without_write() {
+    let mut engine = engine();
+    let roster = || {
+        vec![
+            plain("win-a", "out-a", 0),
+            plain("win-b", "out-a", 100),
+            plain("win-c", "out-b", 900),
+        ]
+    };
+    accepted(&mut engine, &report_two(1, roster(), "win-a"));
+    let source = key("out-a", &ring_id(&engine, "out-a"));
+    let destination = key("out-b", &ring_id(&engine, "out-b"));
+    let window = window_id("win-a");
+    let (_floated, settlements) = accepted_with_settlements(
+        &mut engine,
+        &command_two(2, 1, roster(), "win-a", toggle_float("win-a")),
+    );
+    let base = float_placement(&settlements);
+    let mut settled = roster();
+    settled[0] = with_rect(plain("win-a", "out-a", 0), base);
+    accepted(
+        &mut engine,
+        &report_two(3, settled, "win-a"),
+    );
+    assert_eq!(
+        engine
+            .world
+            .layout
+            .retained_float_geometry(&source, &window),
+        Some(base),
+        "the float command records the durable placement at the source"
+    );
+
+    // The native drag lands on the already-occupied tiled out-b while
+    // out-a reads held. The destination tile and the held source sibling
+    // stay put; only the positively observed mover retires at its source.
+    let mut crossing = report_full(
+        4,
+        4,
+        vec![screen("out-b", 800)],
+        vec![
+            with_rect(plain("win-a", "out-b", 0), RELEASE),
+            plain("win-c", "out-b", 900),
+        ],
+        vec![],
+        "win-a",
+        None,
+        None,
+    );
+    crossing.held_screens.push(HeldScreenRow {
+        output: OutputId("out-a".to_owned()),
+        ordinal: 0,
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId("out-a".to_owned())),
+            row: RowDiagnosticLane::Screen,
+            id: Some("out-a".to_owned()),
+            kind: RowDiagnosticKind::Unreadable,
+        },
+    });
+    let reply = accepted(&mut engine, &crossing);
+    assert!(
+        engine
+            .world
+            .layout
+            .is_tiled_window(&source, &window_id("win-b")),
+        "the held source still owns its unobserved sibling"
+    );
+    assert!(
+        engine
+            .world
+            .layout
+            .is_tiled_window(&destination, &window_id("win-c")),
+        "the destination keeps its existing tile"
+    );
+    assert_eq!(
+        engine
+            .world
+            .layout
+            .exception_float_geometry(&source, &window),
+        None,
+        "the source retires the positively rehomed exception"
+    );
+    assert_eq!(
+        engine
+            .world
+            .layout
+            .retained_float_geometry(&source, &window),
+        None,
+        "the source retires its durable placement with the exception"
+    );
+    assert_eq!(
+        engine
+            .world
+            .layout
+            .exception_float_geometry(&destination, &window),
+        Some(RELEASE),
+        "the occupied destination adopts the exact observed frame"
+    );
+    assert_eq!(
+        engine
+            .world
+            .layout
+            .retained_float_geometry(&destination, &window),
+        Some(RELEASE),
+        "the adopted frame is the durable destination placement"
+    );
+    let row = desire(&reply, "win-a");
+    assert!(
+        row.frame_operation.is_none(),
+        "adoption mints no operation token"
+    );
+    assert!(reply.transfers.is_empty(), "adoption issues no transfer");
+    assert!(
+        engine
+            .world
+            .settlement
+            .retained_floats
+            .iter()
+            .all(|pending| pending.window != window),
+        "adoption leaves no pending placement operation"
+    );
+    assert_eq!(
+        engine.world.workspace.members.get(&window).map(|m| &m.home),
+        Some(&destination),
+        "the crossing rehomes membership to the destination"
     );
 }
 

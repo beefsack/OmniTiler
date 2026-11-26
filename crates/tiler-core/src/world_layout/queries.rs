@@ -386,8 +386,10 @@ impl WorldLayout {
 
     /// Adopt a positively observed native rehome's frame after destination
     /// convergence. Destination acceptance proves this exact mover left the
-    /// source; retire both of its source records without a source sweep.
-    /// This does not infer departures for any other held source member.
+    /// source; retire its source records and stale admission provenance
+    /// without a source sweep. The destination's freshly classified record
+    /// is authoritative and is not overwritten. This does not infer
+    /// departures for any other held source member.
     pub(crate) fn adopt_rehomed_float_placement(
         &mut self,
         source: &DomainKey,
@@ -398,10 +400,15 @@ impl WorldLayout {
         if source == target || !self.adopt_float_placement(target, window, rect) {
             return false;
         }
-        if let Some(domain) = self.domains.get_mut(source) {
-            domain.exceptions.remove(window);
-            domain.retained_float_geometry.remove(window);
-        }
+        let Some(source_domain) = self.domains.get_mut(source) else {
+            return true;
+        };
+        source_domain.exceptions.remove(window);
+        source_domain.retained_float_geometry.remove(window);
+        source_domain.automatic_fixed.remove(window);
+        source_domain.fixed_tile_override.remove(window);
+        source_domain.capacity_floats.remove(window);
+        source_domain.admission_order.remove(window);
         true
     }
 
