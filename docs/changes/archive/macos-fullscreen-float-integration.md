@@ -76,7 +76,7 @@ Focused regressions, all in `crates/tiler-macos/src/world_dispatch.rs` `mod test
 - Native verification of the minimized/hidden veto release and close/lifetime clearing on a live session.
 - Windows adapter integration remains separately pending; ordinary macOS first-float-in-place remains the separate P1 item.
 
-### Approved signed-fixture procedure (2026-11-27)
+### Approved signed-fixture procedure (2026-11-26)
 
 Start with the signed fixture on a controller-owned ordinary Space and
 prove an independent exit and return route before changing fullscreen
