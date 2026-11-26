@@ -20,7 +20,7 @@ const WIN_B = "22222222-2222-2222-2222-222222222222";
 const OUT = "out-1";
 
 const TILE_B: [number, number, number, number] = [400, 0, 400, 600];
-const FLOAT_A: [number, number, number, number] = [162, 122, 475, 355];
+const FLOAT_A: [number, number, number, number] = [120, 100, 460, 340];
 
 const qmlLike = (items: ReadonlyArray<unknown>): object => {
     const o: Record<string, unknown> = { length: items.length };
@@ -316,17 +316,17 @@ function makeHarness(mode: ClearMode) {
         runTimers();
         const call = lastCall("DescribeWorld");
         const body = JSON.parse(call.payload) as Record<string, unknown>;
+        const subject = live.get(WIN_A);
+        assert.ok(subject !== undefined);
+        const { x, y, width, height } = subject.frame;
+        const tiledFrame: [number, number, number, number] = [x, y, width, height];
         call.callback(accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, rev, {
-            windows: [winRow(WIN_A, FLOAT_A, "untouched"), winRow(WIN_B, TILE_B, "controlled")],
-            result: { op: "toggle-float", win: WIN_A, rect: FLOAT_A },
+            windows: [winRow(WIN_A, tiledFrame, "untouched"), winRow(WIN_B, TILE_B, "controlled")],
+            result: { op: "toggle-float", win: WIN_A, rect: tiledFrame },
         }));
-        // The reply places the float; mirror the applied placement into the
-        // live store so later unfloat legs carry the floating frame (the
-        // apply path writes through the wrapper setters on the live host;
-        // the synthetic wrapper snapshot here needs the same end state).
-        const placed = live.get(WIN_A);
-        assert.ok(placed !== undefined);
-        placed.frame = { x: FLOAT_A[0], y: FLOAT_A[1], width: FLOAT_A[2], height: FLOAT_A[3] };
+        // The first float stays in place; move it while floating so the
+        // subsequent unfloat must carry a distinct live float frame.
+        subject.frame = { x: FLOAT_A[0], y: FLOAT_A[1], width: FLOAT_A[2], height: FLOAT_A[3] };
         return String((JSON.parse(call.payload) as Record<string, unknown>)["source"]);
     };
     return {

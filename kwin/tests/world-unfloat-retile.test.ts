@@ -1,7 +1,7 @@
 // Regression: Meta+G unfloat must re-tile immediately on the full-state
 // reply route, with no focus/event between the reply and the frame write.
 // The production entry (`startWorldAdapterEntry`) drives the whole
-// float -> unfloat sequence below: the float leg places the retained frame,
+// float -> unfloat sequence below: the first float keeps the tiled frame,
 // the unfloat leg must write the tile frame synchronously inside the reply
 // callback. A repeat snapshot must be a no-op, native overlays stay
 // guarded, and a fixed-size unfloat (tile-override addressed) retile as
@@ -28,10 +28,9 @@ const QT_ZERO = { width: 0, height: 0 };
 const QT_UNBOUNDED = { width: 16777215, height: 16777215 };
 const FIXED_HINT = { width: 480, height: 320 };
 
-const TILE_A: [number, number, number, number] = [0, 0, 400, 600];
-const TILE_B_HALF: [number, number, number, number] = [400, 0, 400, 600];
+const TILE_LEFT: [number, number, number, number] = [0, 0, 400, 600];
+const TILE_RIGHT: [number, number, number, number] = [400, 0, 400, 600];
 const TILE_B_FULL: [number, number, number, number] = [0, 0, 800, 600];
-const FLOAT_A: [number, number, number, number] = [162, 122, 475, 355];
 const TILE_F: [number, number, number, number] = [0, 0, 400, 600];
 const FLOAT_F: [number, number, number, number] = [100, 100, 480, 320];
 
@@ -345,7 +344,7 @@ describe("world unfloat immediate retile", () => {
     // Filed requestFloat commands carry the implicit execution-time
     // marker (docs/decisions/commands.md#kde-rapid-input); accepted
     // results below keep explicit subject ids.
-    it("float places then unfloat retiles synchronously with no focus event between", () => {
+    it("floats in place then retiles synchronously with no focus event between", () => {
         const h = makeHarness([
             termSpec(WIN_A, { x: 0, y: 0, width: 400, height: 600 }),
             termSpec(WIN_B, { x: 400, y: 0, width: 400, height: 600 }),
@@ -353,8 +352,9 @@ describe("world unfloat immediate retile", () => {
         h.discover();
         const entry = h.nonNullHandle;
 
-        // Float leg: Meta+G on the active terminal carries no rect; the
-        // reply carries the retained placement token plus the sibling reflow.
+        // First float carries no rect and adopts the observed frame in place.
+        // Only the sibling reflow needs a native write.
+        const writesBeforeFloat = h.geometryWrites.length;
         entry.requestFloat();
         h.runTimers();
         let call = h.lastCall("DescribeWorld");
@@ -366,19 +366,21 @@ describe("world unfloat immediate retile", () => {
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
+                winRow(WIN_A, TILE_LEFT, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
-            result: { op: "toggle-float", win: WIN_A, rect: FLOAT_A },
+            result: { op: "toggle-float", win: WIN_A, rect: TILE_LEFT },
         }));
-        assert.deepEqual(h.frameOf(WIN_A), FLOAT_A, "float places the retained frame");
+        assert.deepEqual(h.frameOf(WIN_A), TILE_LEFT, "first float keeps the tiled frame");
         assert.deepEqual(h.frameOf(WIN_B), TILE_B_FULL, "sibling reflows into the gap");
         const writesAfterFloat = h.geometryWrites.length;
-        assert.ok(writesAfterFloat >= 2, "both frames written on float");
+        assert.deepEqual(h.geometryWrites.slice(writesBeforeFloat), [`{${WIN_B}}@${TILE_B_FULL.join(",")}`]);
 
         // Unfloat leg: Meta+G again carries the live floating frame. The
         // reply must move the toggled window back to its tile inside the
         // reply callback itself: no fire(), no runTimers(), no focus change.
+        // Give the re-admitted window the opposite slot so the write is
+        // observable even though its first float stayed in place.
         entry.requestFloat();
         h.runTimers();
         call = h.lastCall("DescribeWorld");
@@ -386,17 +388,17 @@ describe("world unfloat immediate retile", () => {
         const filedUnfloat = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(
             filedUnfloat["command"] as Record<string, unknown>,
-            { op: "toggle-float", win: { currentFocus: true }, rect: [...FLOAT_A] },
+            { op: "toggle-float", win: { currentFocus: true }, rect: [...TILE_LEFT] },
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [
-                winRow(WIN_A, TILE_A, "controlled"),
-                winRow(WIN_B, TILE_B_HALF, "controlled"),
+                winRow(WIN_A, TILE_RIGHT, "controlled"),
+                winRow(WIN_B, TILE_LEFT, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: null },
         }));
-        assert.deepEqual(h.frameOf(WIN_A), TILE_A, "unfloat retiles synchronously without a focus event");
-        assert.deepEqual(h.frameOf(WIN_B), TILE_B_HALF, "sibling returns to its half");
+        assert.deepEqual(h.frameOf(WIN_A), TILE_RIGHT, "unfloat retiles synchronously without a focus event");
+        assert.deepEqual(h.frameOf(WIN_B), TILE_LEFT, "sibling reflows into the remaining half");
         const writesAfterUnfloat = h.geometryWrites.length;
         assert.ok(writesAfterUnfloat > writesAfterFloat, "unfloat writes frames");
 
@@ -409,13 +411,13 @@ describe("world unfloat immediate retile", () => {
         assert.ok(!("command" in (body["report"] as Record<string, unknown>)), "repeat is observation-only");
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "3", {
             windows: [
-                winRow(WIN_A, TILE_A, "controlled"),
-                winRow(WIN_B, TILE_B_HALF, "controlled"),
+                winRow(WIN_A, TILE_RIGHT, "controlled"),
+                winRow(WIN_B, TILE_LEFT, "controlled"),
             ],
             dragPreview: null,
         }));
         assert.equal(h.geometryWrites.length, writesAfterUnfloat, "converged repeat writes nothing");
-        assert.deepEqual(h.frameOf(WIN_A), TILE_A);
+        assert.deepEqual(h.frameOf(WIN_A), TILE_RIGHT);
     });
 
     it("fixed-size unfloat retiles through the tile override without a focus event", () => {
@@ -487,7 +489,7 @@ describe("world unfloat immediate retile", () => {
         const body = JSON.parse(call.payload) as Record<string, unknown>;
         const writesBefore = h.geometryWrites.length;
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
-            windows: [winRow(WIN_O, TILE_A, "controlled")],
+            windows: [winRow(WIN_O, TILE_LEFT, "controlled")],
             dragPreview: null,
         }));
         assert.equal(h.geometryWrites.length, writesBefore, "overlay frame never auto-writes");

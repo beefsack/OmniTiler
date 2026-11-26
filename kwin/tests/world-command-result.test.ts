@@ -373,16 +373,6 @@ function gestureBody(over: Record<string, unknown>): Record<string, unknown> {
 const takeRev = { n: 10 };
 
 const TAKE_RESULTS: Record<string, Record<string, unknown>> = {
-    "float": {
-        "op": "toggle-float",
-        "win": "win-a",
-        "rect": [
-            162,
-            122,
-            475,
-            355
-        ]
-    },
     "migrate": {
         "op": "migrate-workspace",
         "direction": "right",
@@ -649,14 +639,14 @@ describe("world command result entry", () => {
         const wins = [makeWindow("win-a", out, ws), makeWindow("win-b", out, ws)];
         const h = setup(wins, new Map([["out", "ws"]]), true);
         discover(h);
-        // Float first: the accepted controlled placement writes the live
-        // frame; the accepted explicit core intentWrite converges the
-        // opaque float membership (genuine core-minted schema-1 bytes,
-        // see world-entry.test.ts FLOAT_DATA/TILE_DATA).
-        stageTake("float");
+        // First float adopts the observed frame in place. The explicit
+        // core intentWrite persists the opaque float membership.
+        const { x, y, width, height } = wins[0]!.frameGeometry;
+        const floatFrame: [number, number, number, number] = [x, y, width, height];
+        (globalThis as Record<string, unknown>)["__takeResult"] = { op: "toggle-float", win: "win-a", rect: floatFrame };
         h.replyNext((accept) => {
             accept["windows"] = [
-                { ...tiledRow("win-a"), alloc: [162, 122, 475, 355], frame: [162, 122, 475, 355] },
+                { ...tiledRow("win-a", floatFrame), alloc: null, frame_auth: "untouched", member_auth: "untouched", floating: true },
                 tiledRow("win-b"),
             ];
             accept["intentDesired"] = [{ win: "win-a", data: "{\"v\":1,\"float\":true,\"stickyPrior\":null}" }];
@@ -678,7 +668,7 @@ describe("world command result entry", () => {
         const sent = [...h.calls].reverse().find((c) => c.method === "QueueWorldCommand");
         assert.ok(sent !== undefined);
         const cmd = (JSON.parse((sent as { payload: string }).payload) as Record<string, unknown>)["command"] as Record<string, unknown>;
-        assert.deepEqual(cmd, { op: "toggle-float", win: { currentFocus: true }, rect: [162, 122, 475, 355] });
+        assert.deepEqual(cmd, { op: "toggle-float", win: { currentFocus: true }, rect: floatFrame });
         const capture = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
         assert.ok(capture !== undefined);
         const envelope = JSON.parse((capture as { payload: string }).payload) as Record<string, unknown>;

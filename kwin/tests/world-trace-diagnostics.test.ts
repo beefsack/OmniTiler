@@ -296,9 +296,9 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
         const h = makeHarness();
         discover(h);
         // Six-press spam alternating float on/off on the focused subject.
-        // Float-on replies stay untouched (session placement, no core
-        // geometry write, member untouched so the float registers);
-        // unfloat replies carry controlled tile frame+member plans so the
+        // The first float adopts the tile frame without a write. Later
+        // float-on replies carry the remembered placement.
+        // Unfloat replies carry controlled tile frame+member plans so the
         // float clears and the converging writes record frame attempts.
         // Each cycle drains catchup captures and persist acks first:
         // park-first FIFO queues each press behind any debounce or flight
@@ -318,7 +318,7 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
             h.runTimers();
             assert.equal(descCalls().length, before + 1, `press ${press} sends exactly its flight`);
             const req = JSON.parse(descCalls()[descCalls().length - 1]!.payload) as Record<string, unknown>;
-            const frame = floating ? FLOAT_A : TILE_A;
+            const frame = floating && press > 1 ? FLOAT_A : TILE_A;
             descCalls()[descCalls().length - 1]!.callback(
                 acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, nextRev(), {
                     windows: [
@@ -330,7 +330,7 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
                         }),
                         winRow(WIN_B, { floating: false, frame_auth: "untouched", frame_hold: "", frame: TILE_B, alloc: TILE_B }),
                     ],
-                    ...(press === 2 ? { take: { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] }, takeFor: "2" } : {}),
+                    ...(press === 1 ? { take: { op: "toggle-float", win: WIN_A, rect: [...TILE_A] }, takeFor: "1" } : {}),
                 }),
             );
             answeredDesc += 1;
@@ -371,10 +371,9 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
             }
             assert.equal(descCalls().length, answeredDesc, `world idle after press ${press}`);
             if (floating) {
-                // Session placement positions the newly floated window (the
-                // untouched float reply writes no geometry): the next unfloat
-                // then carries this live frame and its controlled tile plan
-                // records a converging write.
+                // Simulate a user move after the first float, then mirror
+                // the restored placement on refloat. The next unfloat
+                // carries this live frame and its tile plan records a write.
                 const live = h.wins[0] as unknown as {
                     frameGeometry: { x: number; y: number; width: number; height: number };
                     clientGeometry: { x: number; y: number; width: number; height: number };
@@ -392,8 +391,8 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
             assert.ok(line.includes("win=currentFocus"), `press ${i + 1} carries the submitted marker: ${line}`);
             assert.ok(line.includes(`focusPress=${WIN_A}`), `press ${i + 1} records adapter focus: ${line}`);
         }
-        // Float-on carries no rect (session placement wins); unfloat carries
-        // the live float frame positioned after the float-on.
+        // Float-on carries no rect; unfloat carries the live frame after
+        // the user moved the float.
         assert.ok(cmds[0]!.includes("rect=-"), `float-on carries no rect: ${cmds[0]}`);
         assert.ok(cmds[1]!.includes(`rect=${FLOAT_A.join(",")}`), `unfloat carries the live float frame: ${cmds[1]}`);
         const subjects = traceLines(h, "subject").filter((l) => l.includes(`win=${WIN_A}`));

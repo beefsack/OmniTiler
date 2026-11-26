@@ -252,6 +252,7 @@ describe("world genuine-producer admission, close, float and refusal journeys", 
             await discover(h);
             await h.settle();
             const tiledBefore = new Map(h.wins.map((w) => [w.internalId, { ...frameOf(w) }]));
+            const writesBeforeFloat = h.geometryWrites.length;
             // Float-on through the production callback. The queue filing
             // settles first; only then does the batch capture dispatch (same
             // pump as the fifo engine tests: settle alone never suffices).
@@ -264,8 +265,8 @@ describe("world genuine-producer admission, close, float and refusal journeys", 
                 { currentFocus: true },
                 "float keeps the explicit execution-time marker",
             );
-            // Float-on carries no rect: the session-retained placement wins,
-            // never a recomputed center (kwin/src/world-native.ts float path).
+            // Float-on carries no intent-time rect. With no retained placement,
+            // core uses the tiled subject's execution-time observed frame.
             assert.equal(
                 (filed[0]?.body["command"] as Record<string, unknown>)["rect"],
                 null,
@@ -274,11 +275,6 @@ describe("world genuine-producer admission, close, float and refusal journeys", 
             await h.flush();
             h.runTimers();
             await h.settle();
-            // First-time geometry is the centered 60% work-area fallback
-            // (window-state decision; session centered_float_rect over the
-            // 1920x400 client-area work area, gap-projected): the real core
-            // publishes [389,85,1142,230] and the take result carries the
-            // same computed placement.
             const floatTakes = takeReadys(h);
             assert.equal(floatTakes.length, 1, "float settles its own take");
             assert.equal(floatTakes[0]?.["globalCmd"], "1", "float take rides sequence 1");
@@ -291,8 +287,13 @@ describe("world genuine-producer admission, close, float and refusal journeys", 
             assert.equal(floatRows.find((w) => w["win"] === "win-c")?.["floating"], false, "survivors stay tiled");
             appliedMatchesReply(h, floatReply);
             const floatFrame = frameOf(winById(h, "win-a"));
-            assert.deepEqual([floatFrame.x, floatFrame.y, floatFrame.w, floatFrame.h], [389, 85, 1142, 230], "float fallback placement exact");
-            assert.deepEqual(floatResult["rect"], [389, 85, 1142, 230], "take result carries the computed placement");
+            assert.deepEqual(floatFrame, tiledBefore.get("win-a"), "first float keeps the pre-float tiled frame");
+            assert.deepEqual(
+                h.geometryWrites.slice(writesBeforeFloat).filter((write) => write.startsWith("win-a@")),
+                [],
+                "first float does not write the subject frame",
+            );
+            assert.deepEqual(floatResult["rect"], [floatFrame.x, floatFrame.y, floatFrame.w, floatFrame.h], "take result carries the exact in-place placement");
             // Sibling reflow from the real publication: the tiled survivors
             // refill the row (win-c absorbs the share; win-b untouched).
             assert.ok(areaOf(frameOf(winById(h, "win-c"))) > areaOf(tiledBefore.get("win-c") as { w: number; h: number }), "refilling survivor strictly larger");
@@ -320,8 +321,6 @@ describe("world genuine-producer admission, close, float and refusal journeys", 
             const unfloatRows = unfloatReply["windows"] as Array<Record<string, unknown>>;
             assert.ok(unfloatRows.every((w) => w["floating"] === false), "unfloat returns the member to tile");
             appliedMatchesReply(h, unfloatReply);
-            const retiled = frameOf(winById(h, "win-a"));
-            assert.notDeepEqual(retiled, floatFrame, "unfloat leaves the float placement");
             // Fresh-admission pixel position is NOT asserted: on these
             // layouts the real core re-tiles win-a onto its pre-float slot,
             // so old-slot restoration is pixel-indistinguishable from fresh
@@ -744,14 +743,10 @@ describe("world genuine-producer sticky journeys", () => {
                 "post-actuation capture parks the settled target as Hold/unreadable",
             );
             appliedMatchesReply(h, lastDescribeReply(h));
-            // Tiled-origin sticky takes intentional-float placement
-            // (window-state decision): the centered 60% work-area fallback
-            // over the 1920x400 client area, matching the float journey
-            // above. The real core publishes [389,85,1142,230] with the
-            // one-shot frame token while the take still resolves null
-            // (sticky takes carry no command_result). The lone survivor
-            // refills the full single-tile row (gap arithmetic over the
-            // 1920x400 client area).
+            // Sticky-on has its own placement rule: it keeps the centered
+            // 60% fallback, unlike the ordinary first float above. The core
+            // publishes a one-shot frame token and the take resolves null.
+            // The lone survivor refills the full single-tile row.
             const stickyFrame = frameOf(winById(h, "win-a"));
             assert.deepEqual([stickyFrame.x, stickyFrame.y, stickyFrame.w, stickyFrame.h], [389, 85, 1142, 230], "sticky-on takes the centered fallback placement");
             assert.deepEqual(frameOf(winById(h, "win-b")), { x: 8, y: 8, w: 1904, h: 384 }, "lone survivor refills the full row");
