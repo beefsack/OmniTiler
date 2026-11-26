@@ -15,3 +15,14 @@ timed out without a final result.
 **Offline limits:** Per-drain holder refusal on a real desktop and first-run setup cost remain unverified; the offline checks establish neither native chord delivery nor workspace-action readiness.
 
 **Single-display readback (2026-11-26):** Signed `spaces-desktop-status` could read the native holder bank. This is a read-only preflight, not a holder refusal exercised by a native managed-send drain and not first-run Apply timing. The available mixed fixture arm does not establish a controller-owned source before launching its fixture windows; explicit Apply itself would mutate the session holder bank outside fixture-only scope. Neither native acceptance requirement was closed.
+
+**Signed one-send arm (2026-11-27): passed.** `fixture-leg --chord apply-send`
+in Compatible proved return and pinned a controller-owned source and a
+distinct empty owned destination before spawning. The sole fixture window
+joined the source. The fresh row mapped the destination to Desktop 4; one
+synthetic `send-4` reached the native managed-send drain. It refused at
+`holder-chord` (`holder-disabled`) with all four effect post counters zero.
+The source remained current, membership was unchanged, and the target was
+still empty. Teardown restored the starting Space and reaped the owned
+processes with no residue. No Apply, Revert or holder-bank writes ran.
+First-run Apply cost remains unmeasured.

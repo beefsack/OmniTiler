@@ -1303,6 +1303,12 @@ readbacks are retained separately from the repository.
   without launch-two input. The store fingerprint stayed unchanged and
   both product lifetimes and owned teardown were verified.
   [Evidence](archive/macos-guarded-two-launch-fixture.md#corrected-signed-m3-rerun-2026-11-27).
+- **Explicit Apply read-only one-send arm — passed.** The signed Compatible
+  arm pinned two controller-owned Spaces before spawning. Exactly one fixture
+  send reached the native drain, refused a disabled Desktop-N holder and
+  posted zero effects. Fresh membership was unchanged, and owned teardown
+  restored the starting Space. The holder bank was not modified.
+  [Evidence](archive/macos-explicit-apply.md).
 
 - **Sticky — stopped before mutation.** A signed SIP-on SkyLight
   connection resolved `SLSProcessAssignToAllSpaces`, a PID-scoped API
