@@ -1035,9 +1035,10 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
         .is_err()
     );
     assert!(parse_args(&argv(&["fixture-leg", "--chord", "focus-h"])).is_err());
-    // The product-armed fixture vocabulary parses: directional focus/move,
+    // Raw product-armed fixture-post chords parse: directional focus/move,
     // numbered selects/send-follows incl trailing 0, bound
-    // relative/previous selects.
+    // relative/previous selects, plus native float/orientation/workspace-tiling
+    // toggles. These raw posts are distinct from controller-only aliases.
     for chord in [
         "focus-h",
         "focus-j",
@@ -1060,6 +1061,9 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
         "rel-prev",
         "rel-next",
         "prev-toggle",
+        "float-g",
+        "orientation-o",
+        "workspace-tiling-y",
     ] {
         let r = parse_args(&argv(&[
             "fixture-post",
@@ -1080,13 +1084,14 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
         assert!(matches!(r.command, Command::FixturePost { .. }), "{chord}");
         assert!(r.may_mutate, "{chord} is write-intent");
     }
-    // Helper-only chords, TextEdit-only transports, stays, and arbitrary
-    // keys never parse on the fixture route.
+    // Controller-only aliases (float-placement, pager-switch), helper-only
+    // chords, TextEdit-only transports, stays, and arbitrary keys never
+    // parse as raw product-armed fixture-post chords.
     for bad in [
-        "float-g",
+        "float-placement",
+        "pager-switch",
         "grow-h",
         "shrink-h",
-        "orientation-o",
         "escape",
         "stay-1",
         "stay-2",
