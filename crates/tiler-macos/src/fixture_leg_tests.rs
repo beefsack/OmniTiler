@@ -459,3 +459,31 @@ fn bundle_overrides_keep_identity_checks() {
     assert!(err.contains("product bundle missing"), "{err}");
     let _ = std::fs::remove_dir_all(&parent);
 }
+
+#[test]
+fn apply_send_usage_refuses_before_any_effect() {
+    // Exactly one Compatible send: extra chords, Authentic (which writes
+    // holders), and the extra probes refuse as usage before a baseline,
+    // Space, or launch effect.
+    let extra = test_opts(vec![APPLY_SEND_CHORD, "focus-h"]);
+    let err = run_fixture_leg(extra).unwrap_err();
+    assert_eq!(err.0, 2);
+    assert!(err.1.contains("only"), "{}", err.1);
+    let mut authentic = test_opts(vec![APPLY_SEND_CHORD]);
+    authentic.preset = InputPreset::Authentic;
+    let err = run_fixture_leg(authentic).unwrap_err();
+    assert_eq!(err.0, 2);
+    assert!(err.1.contains("compatible"), "{}", err.1);
+    let mut hover = test_opts(vec![APPLY_SEND_CHORD]);
+    hover.hover_probe = true;
+    assert_eq!(run_fixture_leg(hover).unwrap_err().0, 2);
+    let mut corrupt = test_opts(vec![APPLY_SEND_CHORD]);
+    corrupt.corrupt_intent_store = true;
+    assert_eq!(run_fixture_leg(corrupt).unwrap_err().0, 2);
+    // The alias is a controller arm with a space-mutating admission scope
+    // (the computed send chord needs it); the post resolver never sees it.
+    assert_eq!(
+        crate::live_leg::required_scope(APPLY_SEND_CHORD),
+        Some(crate::live_leg::AdmissionScope::SpaceMutating)
+    );
+}

@@ -118,6 +118,91 @@ pub(crate) fn plan_owned_destinations(
     Ok((baseline_count + 1)..=top)
 }
 
+/// One-send arm pin: the exact controller-owned source and distinct owned
+/// target SIDs plus the target's Desktop-N ordinal (1-based native row
+/// position, which names both the send-follow chord digit and the held
+/// holder).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OneSendPin {
+    pub(crate) source: u64,
+    pub(crate) target: u64,
+    pub(crate) desktop: u32,
+    pub(crate) send_chord: String,
+}
+
+impl OneSendPin {
+    pub(crate) fn evidence(&self) -> serde_json::Value {
+        serde_json::json!({
+            "source_sid": self.source,
+            "target_sid": self.target,
+            "target_desktop": self.desktop,
+            "send_chord": self.send_chord,
+        })
+    }
+}
+
+/// Pin the one-send arm's exact owned source and distinct owned target on
+/// the fresh starting-display row. The source must be the controller-owned
+/// Space that is currently frontmost; the target must be a different
+/// controller-owned SID present exactly once in the row at a 1-based
+/// position within the Desktop-9 holder mapping. The send-follow chord is
+/// derived from that observed position, never from a hardcoded user
+/// ordinal. Pure; unit-tested. Refuses before any spawn or post effect.
+pub(crate) fn pin_one_send(
+    row: &crate::space_probe::SpaceTopologyDisplay,
+    owned: &[u64],
+    source: u64,
+    target: u64,
+) -> Result<OneSendPin, String> {
+    if source == 0 || target == 0 {
+        return Err("one-send: zero source/target SID; refusing".to_owned());
+    }
+    if source == target {
+        return Err(format!(
+            "one-send: pinned target SID {target} is not distinct from the pinned source; refusing"
+        ));
+    }
+    if row.current != source {
+        return Err(format!(
+            "one-send: pinned source SID {source} is not the current Space (observed {}); refusing",
+            row.current
+        ));
+    }
+    if !owned.contains(&source) {
+        return Err(format!(
+            "one-send: pinned source SID {source} is not controller-owned; refusing"
+        ));
+    }
+    if !owned.contains(&target) {
+        return Err(format!(
+            "one-send: pinned target SID {target} is not controller-owned; refusing"
+        ));
+    }
+    let occurrences = row.spaces.iter().filter(|sid| **sid == target).count();
+    if occurrences != 1 {
+        return Err(format!(
+            "one-send: pinned target SID {target} appears {occurrences} times in the fresh row; refusing"
+        ));
+    }
+    let target_ordinal = row
+        .spaces
+        .iter()
+        .position(|sid| *sid == target)
+        .map(|index| index + 1)
+        .expect("target occurrence proved above");
+    if target_ordinal > 9 {
+        return Err(format!(
+            "one-send: pinned target ordinal {target_ordinal} is past Desktop-9 (unmappable); refusing"
+        ));
+    }
+    Ok(OneSendPin {
+        source,
+        target,
+        desktop: target_ordinal as u32,
+        send_chord: format!("send-{target_ordinal}"),
+    })
+}
+
 /// Fresh occupancy inventory for the post-only owned-Space path: every
 /// non-fixture window whose membership includes a starting-display SID maps
 /// to that SID's 1-based ordinal within the row, and `n` is the highest such
@@ -571,6 +656,46 @@ mod tests {
         assert!(post_only_owned_ordinal(&nine).is_err());
         let no_chords: Vec<String> = Vec::new();
         assert!(plan_owned_destinations(&no_chords, 9).is_err());
+    }
+
+    #[test]
+    fn one_send_pin_refuses_unowned_source_and_non_distinct_target_before_effects() {
+        // A fresh row with one user baseline Space plus the controller's
+        // owned source (current) and distinct owned target.
+        let row = crate::space_probe::SpaceTopologyDisplay {
+            spaces: vec![11, 101, 102],
+            current: 101,
+        };
+        let owned = [101, 102];
+        // Source admitted only when current and controller-owned.
+        assert!(pin_one_send(&row, &owned, 101, 102).is_ok());
+        assert!(pin_one_send(&row, &[102], 101, 102).is_err());
+        assert!(pin_one_send(&row, &owned, 11, 102).is_err());
+        // The target must be distinct from the pinned source.
+        let err = pin_one_send(&row, &owned, 101, 101).unwrap_err();
+        assert!(err.contains("not distinct"), "{err}");
+        // Unowned and absent targets refuse too.
+        assert!(pin_one_send(&row, &owned, 101, 11).is_err());
+        assert!(pin_one_send(&row, &owned, 101, 999).is_err());
+        // Past Desktop-9 is unmappable, never guessed.
+        let ten = crate::space_probe::SpaceTopologyDisplay {
+            spaces: (1..=10).collect(),
+            current: 1,
+        };
+        assert!(pin_one_send(&ten, &[1, 10], 1, 10).is_err());
+        // The pinned chord digit comes from the observed target position,
+        // never a hardcoded user-Space ordinal.
+        let pin = pin_one_send(&row, &owned, 101, 102).expect("pins");
+        assert_eq!(pin.source, 101);
+        assert_eq!(pin.target, 102);
+        assert_eq!(pin.desktop, 3);
+        assert_eq!(pin.send_chord, "send-3");
+        // Then the existing gate admits exactly the two owned SIDs (never
+        // the user baseline) before any product launch.
+        let gate = crate::fixture_gate::FixtureSpaceGate::new(&owned, None).expect("gate builds");
+        assert!(gate.allows(pin.source));
+        assert!(gate.allows(pin.target));
+        assert!(!gate.allows(11));
     }
 
     #[test]

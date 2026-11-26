@@ -22,8 +22,9 @@
 
 use crate::config::ProbeModifier;
 use crate::fixture_owned_space::{
-    PostOnlyOwnedSpace, await_joined_on_owned_space, establish_post_only_owned_space,
-    plan_owned_destinations, post_only_placement_refusal,
+    OneSendPin, PostOnlyOwnedSpace, WindowMembership, await_joined_on_owned_space,
+    establish_post_only_owned_space, pin_one_send, plan_owned_destinations,
+    post_only_placement_refusal,
 };
 use crate::input_policy::InputPreset;
 use crate::live_leg::{
@@ -92,6 +93,14 @@ pub const FLOAT_PLACEMENT_CHORD: &str = "float-placement";
 
 /// Diagnostic-only alias for a pager rebuild across an owned-Space round trip.
 pub(crate) const PAGER_SWITCH_CHORD: &str = "pager-switch";
+
+/// Diagnostic-only arm for explicit-Apply verification: one Compatible
+/// send-follow against a controller-owned source and a distinct
+/// controller-owned target, expected to refuse at native Desktop-N holder
+/// resolution without posting. Runs alone; the controller derives the
+/// `send-N` chord from the freshly observed target ordinal (never a
+/// hardcoded user ordinal) and performs no settings writes.
+pub const APPLY_SEND_CHORD: &str = "apply-send";
 
 /// Operator settle window (harness only): milliseconds the leg holds before
 /// its first chord and again after its last chord, so an operator can drive
@@ -788,6 +797,31 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
             "pager-switch must run alone without a corrupt store".to_owned(),
         ));
     }
+    // The explicit-Apply one-send arm is exactly one Compatible send-follow
+    // with no other effect: it refuses every extra chord, an Authentic
+    // preset (which writes holders), and the diagnostic probes before any
+    // baseline, Space, or launch effect.
+    if opts.chords.iter().any(|chord| chord == APPLY_SEND_CHORD) {
+        if opts.chords.as_slice() != [APPLY_SEND_CHORD] {
+            return Err((
+                2,
+                "apply-send must be the only --chord (exactly one send)".to_owned(),
+            ));
+        }
+        if opts.preset != InputPreset::Compatible {
+            return Err((
+                2,
+                "apply-send needs --preset compatible (no holder writes)".to_owned(),
+            ));
+        }
+        if opts.hover_probe || opts.corrupt_intent_store || opts.focus_follows_cursor {
+            return Err((
+                2,
+                "apply-send refuses --hover-probe, --corrupt-intent-store and --focus-follows-cursor"
+                    .to_owned(),
+            ));
+        }
+    }
     if opts.chords.len() < 2
         && opts
             .chords
@@ -918,6 +952,262 @@ fn run_leg_body(
 /// unchanged.
 pub(crate) const FOCUS_SETTLE_MS: u64 = 500;
 
+/// Bounded wait for the one-send arm's product-side drain evidence
+/// (milliseconds): the product emits the effect refusal and the drain
+/// settlement from its own effect owner, so a missing terminal within this
+/// window is a refusal, never a retry.
+pub(crate) const ONE_SEND_EVIDENCE_WAIT_MS: u64 = 10_000;
+
+/// One-send arm pre-spawn state: the established owned source and the exact
+/// source/target pin.
+#[cfg(target_os = "macos")]
+struct OneSendSetup {
+    source: PostOnlyOwnedSpace,
+    pin: OneSendPin,
+}
+
+/// Read one Desktop-N holder read-only through the live session SPI
+/// (`true` = enabled). No writes, no plist, no settings adjustment; an
+/// unreadable holder refuses instead of guessing.
+#[cfg(target_os = "macos")]
+fn read_one_send_holder(desktop: u32) -> Result<bool, (i32, String)> {
+    use crate::desktop_shortcuts::{DesktopShortcutStore, LiveStore, desktop_symbolic_id};
+    let symbolic = desktop_symbolic_id(desktop).ok_or_else(|| {
+        (
+            1,
+            format!("fixture-leg one-send: Desktop-{desktop} has no symbolic holder; refusing"),
+        )
+    })?;
+    LiveStore::new().read(symbolic).map(|entry| entry.enabled).map_err(|e| {
+        (
+            1,
+            format!(
+                "fixture-leg one-send: Desktop-{desktop} holder unreadable ({e}); refusing without posting"
+            ),
+        )
+    })
+}
+
+/// Bounded product-stderr scan for the one-send arm: the per-drain effect
+/// refusal for exactly the pinned target must name the native holder stage
+/// with zero posts, plus its drain settlement; both lines are returned
+/// verbatim as evidence. Any other terminal for the target returns early so
+/// the caller refuses without retry. Only send/gate lines are captured.
+#[cfg(target_os = "macos")]
+fn await_one_send_refusal(stderr_log: &std::path::Path, target: u64) -> (bool, Vec<String>) {
+    let effect = format!("tiler-macos send effect refused target={target} ");
+    let settled = format!("tiler-macos send settled target={target} outcome=Refused complete=true");
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(ONE_SEND_EVIDENCE_WAIT_MS);
+    loop {
+        let lines: Vec<String> = std::fs::read_to_string(stderr_log)
+            .map(|raw| {
+                raw.lines()
+                    .filter(|line| {
+                        (line.starts_with("tiler-macos") && line.contains("send"))
+                            || line.contains("fixture gate")
+                    })
+                    .take(32)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let native = lines.iter().any(|line| {
+            line.starts_with(&effect)
+                && line.contains(" stage=holder-chord ")
+                && line.contains(" reason=holder-disabled ")
+                && line.contains(" dposts=md:0 mu:0 kd:0 ku:0")
+        });
+        let other = lines
+            .iter()
+            .any(|line| line.starts_with(&effect) && !native);
+        if (native && lines.iter().any(|line| line == &settled)) || other {
+            return (native, lines);
+        }
+        if std::time::Instant::now() >= deadline {
+            return (false, lines);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Bounded window evidence for one membership read (wid plus observed SIDs
+/// or the read failure; no titles).
+#[cfg(target_os = "macos")]
+fn windows_json(observed: &[WindowMembership]) -> serde_json::Value {
+    observed
+        .iter()
+        .map(|(wid, spaces)| match spaces {
+            Ok(spaces) => serde_json::json!({"wid": wid, "spaces": spaces}),
+            Err(error) => serde_json::json!({"wid": wid, "membership_error": error}),
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// Run the one-send arm after the product/driver bind: fresh pin/holder/
+/// membership recheck, exactly one focus plus one send-follow post, then
+/// the product's own per-drain holder refusal and unchanged membership as
+/// the acceptance evidence. Never retries a post.
+#[cfg(target_os = "macos")]
+fn run_one_send_arm(
+    leg: &mut LiveLeg<LiveLegTransport>,
+    driver: &crate::fixture_post::FixtureDriver<'_, crate::fixture_post::LiveTransport>,
+    joined: &[(String, u32)],
+    arm: &OneSendSetup,
+    product_dir: &std::path::Path,
+    modifier: ProbeModifier,
+) -> Result<serde_json::Value, (i32, String)> {
+    let refuse = |error: &str, extra: serde_json::Value| -> (i32, String) {
+        let mut body = serde_json::json!({
+            "stage": "one-send-arm",
+            "error": error,
+            "pin": arm.pin.evidence(),
+            "owned_source": arm.source.evidence(),
+        });
+        if let (Some(body), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
+            for (key, value) in extra {
+                body.insert(key.clone(), value.clone());
+            }
+        }
+        (1, body.to_string())
+    };
+    // Fresh recheck immediately before posting: the same exact pin, an
+    // empty distinct target, a still-disabled holder, and the joined
+    // windows still readable on the pinned owned source.
+    let before_row = leg.transport_mut().space_snapshot().map_err(|e| {
+        refuse(
+            "one-send: fresh row unreadable before posting; refusing",
+            serde_json::json!({"detail": e.to_string()}),
+        )
+    })?;
+    let row = before_row.displays.first().ok_or_else(|| {
+        refuse(
+            "one-send: fresh row has no display before posting; refusing",
+            serde_json::json!({}),
+        )
+    })?;
+    let pin = pin_one_send(
+        row,
+        &[arm.pin.source, arm.pin.target],
+        arm.pin.source,
+        arm.pin.target,
+    )
+    .map_err(|e| {
+        refuse(
+            &format!("one-send: pin drift before posting ({e})"),
+            serde_json::json!({}),
+        )
+    })?;
+    if pin != arm.pin {
+        return Err(refuse(
+            "one-send: source/target pin drifted before posting; refusing",
+            serde_json::json!({}),
+        ));
+    }
+    if read_one_send_holder(pin.desktop).map_err(|(_, e)| refuse(&e, serde_json::json!({})))? {
+        return Err(refuse(
+            "one-send: Desktop-N holder became enabled before posting; a native holder refusal is no longer guaranteed; refusing without posting or writing settings",
+            serde_json::json!({}),
+        ));
+    }
+    leg.transport_mut()
+        .space_require_empty(pin.target)
+        .map_err(|e| {
+            refuse(
+                "one-send: pinned owned target is not empty before posting; refusing",
+                serde_json::json!({"detail": e}),
+            )
+        })?;
+    await_joined_on_owned_space(joined, pin.source).map_err(|observed| {
+        refuse(
+            "one-send: joined fixture windows are not readable on the pinned owned source before posting; refusing",
+            serde_json::json!({"windows": windows_json(&observed)}),
+        )
+    })?;
+    let Some((caller, wid)) = joined.first() else {
+        return Err(refuse(
+            "one-send: no joined fixture window; refusing",
+            serde_json::json!({}),
+        ));
+    };
+    // Exactly one focus and exactly one product send-follow chord post
+    // (one key-down/up pair); no other input or settings effect.
+    driver.focus(caller, *wid)?;
+    settle_hold(FOCUS_SETTLE_MS)?;
+    let post: serde_json::Value =
+        serde_json::from_str(&driver.post(caller, *wid, &pin.send_chord, modifier)?).map_err(
+            |e| {
+                refuse(
+                    "one-send: post report unparsable; refusing without retry",
+                    serde_json::json!({"detail": e.to_string()}),
+                )
+            },
+        )?;
+    if post.get("outcome").and_then(serde_json::Value::as_str) != Some("posted") {
+        return Err(refuse(
+            "one-send: fixture chord post did not report posted; refusing without retry",
+            serde_json::json!({"post": post}),
+        ));
+    }
+    // Acceptance evidence is the product's own effect-owner drain refusal
+    // for this exact target plus its Refused settlement, read from the
+    // product stderr log.
+    let (accepted, product_lines) =
+        await_one_send_refusal(&product_dir.join("stderr.log"), pin.target);
+    if !accepted {
+        return Err(refuse(
+            "one-send: no per-drain native holder refusal observed; refusing without retry",
+            serde_json::json!({"post": post.clone(), "product_lines": product_lines}),
+        ));
+    }
+    // Unchanged membership after the refused drain: windows still on the
+    // pinned source, the distinct target still empty, the source still
+    // current (no moved window, no workspace effect).
+    let placement = await_joined_on_owned_space(joined, pin.source);
+    let target_empty = leg.transport_mut().space_require_empty(pin.target);
+    let source_current_after = leg
+        .transport_mut()
+        .space_snapshot()
+        .map(|topology| {
+            topology
+                .displays
+                .first()
+                .is_some_and(|row| row.current == pin.source)
+        })
+        .unwrap_or(false);
+    if placement.is_err() || target_empty.is_err() || !source_current_after {
+        let observed = placement.err().unwrap_or_default();
+        return Err(refuse(
+            "one-send: fixture membership or pinned source current changed after the post; refusing",
+            serde_json::json!({
+                "post": post,
+                "product_lines": product_lines,
+                "windows": windows_json(&observed),
+                "target_empty_after": target_empty.is_ok(),
+                "source_current_after": source_current_after,
+            }),
+        ));
+    }
+    Ok(serde_json::json!({
+        "chord": APPLY_SEND_CHORD,
+        "preset": "compatible",
+        "pin": pin.evidence(),
+        "owned_source": arm.source.evidence(),
+        "gate": {
+            "owned_sids": [pin.source, pin.target],
+            "starting_space_granted": false,
+        },
+        "holder_enabled": false,
+        "post": post,
+        "product_lines": product_lines,
+        "membership_unchanged": true,
+        "source_current_after": source_current_after,
+        "target_empty_after": true,
+        "workspace_effect_posts": 0,
+    }))
+}
+
 /// macOS-only leg body (see [`run_leg_body`]).
 #[cfg(target_os = "macos")]
 #[allow(clippy::too_many_lines)]
@@ -998,10 +1288,12 @@ fn run_leg_body_macos(
     // socket, then joined to native window IDs before anything posts.
     // Registration precedes action: unjoined callers refuse with no posts.
     let callers: Vec<String> = (0..opts.chords.len()).map(|i| format!("w{i}")).collect();
-    let needs_probe = opts
-        .chords
-        .iter()
-        .any(|chord| required_scope(chord) == Some(AdmissionScope::SpaceMutating));
+    let apply_send = opts.chords.as_slice() == [APPLY_SEND_CHORD];
+    let needs_probe = !apply_send
+        && opts
+            .chords
+            .iter()
+            .any(|chord| required_scope(chord) == Some(AdmissionScope::SpaceMutating));
     // Post-only legs driven by this controller run on one controller-owned
     // Space beyond the fresh occupancy inventory, so no chord can post on a
     // user Space. The return route is proven by execution first (it also
@@ -1017,7 +1309,74 @@ fn run_leg_body_macos(
     let mut starting_sid: Option<u64> = None;
     let mut owned_space: Option<PostOnlyOwnedSpace> = None;
     let mut pager_destination = None;
-    if post_only {
+    let mut one_send: Option<OneSendSetup> = None;
+    if apply_send {
+        // One-send explicit-Apply arm: prove the return route, establish
+        // and switch to a controller-owned source, append exactly one
+        // distinct owned target, then pin both from the fresh row. The
+        // target's observed row position names the send chord, so no user
+        // Space ordinal is ever hardcoded. The baseline starting Space is
+        // recorded by the establishment but deliberately not granted to the
+        // product: this arm's authority is exactly the two owned Spaces.
+        let established = establish_post_only_owned_space(leg)?;
+        owned_sids.push(established.sid);
+        let created = leg.transport_mut().space_create(0).map_err(|e| {
+            (
+                1,
+                format!("fixture-leg: one-send owned target creation refused ({e})"),
+            )
+        })?;
+        // Register before any later refusal so teardown removes exactly the
+        // owned target.
+        leg.note_owned_space(0, created.sid);
+        owned_sids.push(created.sid);
+        if let Some(shortfall) = created.mc.shortfall_text("one-send owned target create") {
+            return Err((
+                1,
+                format!("fixture-leg: one-send owned target creation: {shortfall}"),
+            ));
+        }
+        leg.transport_mut()
+            .space_require_empty(created.sid)
+            .map_err(|e| {
+                (
+                    1,
+                    format!("fixture-leg: one-send owned target is not empty ({e}); refusing"),
+                )
+            })?;
+        let after = leg.transport_mut().space_snapshot().map_err(|e| {
+            (
+                1,
+                format!("fixture-leg: one-send fresh row unreadable ({e}); refusing"),
+            )
+        })?;
+        let row = after.displays.first().ok_or_else(|| {
+            (
+                1,
+                "fixture-leg: one-send fresh row has no display; refusing".to_owned(),
+            )
+        })?;
+        let pin =
+            pin_one_send(row, &owned_sids, established.sid, created.sid).map_err(|e| (1, e))?;
+        // Read-only holder preflight: the arm's acceptance requires a native
+        // holder refusal, so an enabled holder stops before any spawn/post
+        // (this arm never writes settings, so it cannot make it refusal).
+        if read_one_send_holder(pin.desktop)? {
+            return Err((
+                1,
+                serde_json::json!({
+                    "stage": "one-send-holder",
+                    "error": "one-send: Desktop-N holder is enabled, so a native holder refusal is not guaranteed; refusing before spawn or post without writing settings",
+                    "pin": pin.evidence(),
+                })
+                .to_string(),
+            ));
+        }
+        one_send = Some(OneSendSetup {
+            source: established.evidence,
+            pin,
+        });
+    } else if post_only {
         let established = establish_post_only_owned_space(leg)?;
         owned_sids.push(established.sid);
         starting_sid = Some(established.starting_sid);
@@ -1055,6 +1414,23 @@ fn run_leg_body_macos(
                 "post-only fixture windows are not readable on the owned Space before product launch; refusing without posting",
                 None,
             )
+            .to_string(),
+        ));
+    }
+    // One-send placement is proven before the product launches too: every
+    // joined window must be readable on the pinned owned source.
+    if let Some(arm) = &one_send
+        && let Err(observed) = await_joined_on_owned_space(&joined, arm.pin.source)
+    {
+        return Err((
+            1,
+            serde_json::json!({
+                "stage": "one-send-arm",
+                "error": "one-send fixture windows are not readable on the pinned owned source before product launch; refusing without posting",
+                "pin": arm.pin.evidence(),
+                "owned_source": arm.source.evidence(),
+                "windows": windows_json(&observed),
+            })
             .to_string(),
         ));
     }
@@ -1202,6 +1578,18 @@ fn run_leg_body_macos(
                 .to_string(),
             ));
         }
+    }
+    // One-send arm: exactly one Compatible send-follow post after the same
+    // kind of fresh recheck, then the product's own drain evidence is read
+    // from its stderr log (never inferred from a wrapper exit).
+    if let Some(arm) = one_send {
+        let report = run_one_send_arm(leg, &driver, &joined, &arm, &product_dir, opts.modifier)?;
+        return Ok(LegReports {
+            chords: vec![report],
+            hover_probe: None,
+            owned_space: None,
+            corrupt_store: None,
+        });
     }
     if let Some((source, destination)) = pager_destination {
         let report =

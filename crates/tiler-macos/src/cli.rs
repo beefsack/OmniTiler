@@ -705,7 +705,12 @@ pub fn help_text() -> String {
               \x20 \x20 evidence, not slice-5 acceptance; --chord float-placement\n\
               \x20 \x20 samples first float and re-float with a second owned\n\
               \x20 \x20 window; use --chord pager-switch alone to observe the\n\
-              \x20 \x20 pager across a switch between two owned Spaces)\n\
+              \x20 \x20 pager across a switch between two owned Spaces; use\n\
+              \x20 \x20 --chord apply-send alone under Compatible for the\n\
+              \x20 \x20 explicit-Apply verification arm: one controller-derived\n\
+              \x20 \x20 send-follow to a pinned distinct owned target that must\n\
+              \x20 \x20 refuse at native Desktop-N holder resolution with zero\n\
+              \x20 \x20 workspace-effect posts and no settings writes)\n\
               \x20 fixture-restart --mode m3|m4 --signer REQUIREMENT [--windows N] [--floats N] [--seconds N] [--preset compatible|authentic]\n\
               \x20 \x20 (development-only guarded two-launch controller: one\n\
               \x20 \x20 authenticated fixture instance, its owned windows and one\n\
