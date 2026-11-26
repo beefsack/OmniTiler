@@ -90,3 +90,27 @@ unmaximize, and directional float half-snap need their own native proof.
   remains offline-only. Composed float unmaximize and directional float
   half-snap also remain offline-only: the existing aliases cannot deliver
   a multi-action sequence to the same floated window.
+
+## Signed F2 recovery sequences (2026-11-27)
+
+The gated fixture arm at `08a49fab` ran once. Offline gates passed
+1,777 library tests (3 ignored) and 152 integration tests.
+
+- **Held issuance and observation-only recovery passed.** The third
+  float reply was withheld once. The same subject stayed at the rotated
+  tile frame `(8,603,2224,558)` until an observation-only sibling focus.
+  That observation restored the exact AX/CG float base
+  `(1124,38,1108,1123)` with one subject setter. Re-focusing the subject
+  caused no repeat.
+- **Composed maximize/unmaximize sequence did not pass.** Maximize
+  requested `(0,30,2240,1139)`; AX and CG both observed
+  `(0,30,2240,1138)`, with two subject setters. Unmaximize itself
+  restored the exact float base with one setter and no echo. The
+  maximize discrepancy is observed; its cause is not established.
+- **Directional half-snap was not reached.** The controller gated it
+  on the full preceding sequence, which failed even though the base
+  frame was restored. No directional chord was posted.
+
+Product and fixture stopped cleanly, the starting Space was restored,
+and no owned residue remained. No rerun; complete native sequences
+remain dogfooding checks rather than another automated harness pass.

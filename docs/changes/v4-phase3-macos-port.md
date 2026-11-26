@@ -1284,6 +1284,14 @@ readbacks are retained separately from the repository.
   The controller has no issuing-reply suppression and no same-float
   sequences for composed unmaximize or a directional half-snap; those
   subproofs were not run. [Evidence](archive/macos-first-float-placement.md#retained-float-frame-signed-fixture-retest-2026-11-27).
+- **F2 follow-up — held issuance recovery passed; other sequences open.**
+  The same float converged to its exact AX/CG base with one setter on a
+  later observation after the held issuing reply, with zero repeat.
+  Unmaximize restored the exact base once without echo, but the preceding
+  maximize landed one point short and made two setter attempts. The
+  controller did not post the half-snap after that sequence failed.
+  Owned teardown was clean. The remaining native acceptance is deferred
+  to dogfooding. [Evidence](archive/macos-first-float-placement.md#signed-f2-recovery-sequences-2026-11-27).
 
 - **M3 — native acceptance failed.** Both float frames matched exactly in
   AX and CG; the two tiles rebuilt from stacked rows to side-by-side
