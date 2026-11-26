@@ -301,6 +301,10 @@ pub struct ReturnProof {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeardownReport {
     pub generation: u64,
+    /// True only when product absence is proven: the owned product stop
+    /// reaped the exact instance AND no requested product launch is still
+    /// pending. A pending launch reports false even when no owned product is
+    /// registered.
     pub product_reaped: bool,
     pub current_restored: bool,
     pub restored: Vec<(usize, u64)>,
@@ -331,7 +335,10 @@ pub struct TeardownReport {
 /// - `shutdown_fixture` re-verifies the registered executable/launch-date
 ///   identity, sends the nonce-gated shutdown, verifies the reap under a
 ///   genuine deadline, and removes only the owned run directory (never a
-///   signal to a drifted PID);
+///   signal to a drifted PID). `product_absent` is the caller's proven
+///   absence (owned product reaped and no pending product launch): only then
+///   may product-owned launch logs, terminal outcome and the private store
+///   be removed; otherwise they stay as residue;
 /// - `process_gone` proves one exact PID exited (unreadable refuses);
 /// - `awake_start`/`awake_stop` own the bounded exact awake child.
 pub trait LegTransport: BaselineReads + NativeSpaces {
@@ -340,7 +347,11 @@ pub trait LegTransport: BaselineReads + NativeSpaces {
     /// id over the leg-owned control socket. PID/WID ride along for the
     /// residue evidence only.
     fn close_fixture_window(&mut self, caller: &str, pid: u32, wid: u32) -> Result<(), String>;
-    fn shutdown_fixture(&mut self, record: &FixtureRecord) -> Result<(), String>;
+    fn shutdown_fixture(
+        &mut self,
+        record: &FixtureRecord,
+        product_absent: bool,
+    ) -> Result<(), String>;
     fn process_gone(&mut self, pid: u32) -> Result<bool, String>;
     fn awake_start(&mut self, seconds: u64) -> Result<(), String>;
     fn awake_stop(&mut self) -> Result<bool, String>;
@@ -529,7 +540,11 @@ impl LegTransport for LiveLegTransport {
         }
     }
 
-    fn shutdown_fixture(&mut self, record: &FixtureRecord) -> Result<(), String> {
+    fn shutdown_fixture(
+        &mut self,
+        record: &FixtureRecord,
+        product_absent: bool,
+    ) -> Result<(), String> {
         // Identity first: a relaunched or PID-reused process never receives
         // our shutdown (which would authorize a foreign server), and no
         // signal is ever sent to a drifted PID.
@@ -561,7 +576,7 @@ impl LegTransport for LiveLegTransport {
                 ));
             }
         }
-        remove_owned_run_dir(&record.run_dir)
+        remove_owned_run_dir_after_absence(&record.run_dir, product_absent)
     }
 
     fn process_gone(&mut self, pid: u32) -> Result<bool, String> {
@@ -615,6 +630,40 @@ fn read_nonce_from_run_dir(run_dir: &Path) -> Result<String, String> {
     Err("shutdown: no parsable nonce in the announcement file".to_owned())
 }
 
+/// Read one pending product's run-specific `tilestarted` identity from its
+/// own stdout log: the first `{"tilestarted":true,...}` line whose `runid`
+/// equals this run's `run-id`, carrying a live-range PID. Arbitrary JSON
+/// lines never authorize absence. A missing/unreadable log or a missing
+/// matching line is an error (the launch may still be starting), never
+/// proof. Pure file shape; unit-tested.
+fn read_product_tilestarted_pid(stdout_log: &Path, run_id: &str) -> Result<u32, String> {
+    let raw = std::fs::read_to_string(stdout_log).map_err(|e| {
+        format!("run-specific tilestarted identity unreadable ({e}); residue retained without proof")
+    })?;
+    for line in raw.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if value.get("tilestarted") != Some(&serde_json::Value::Bool(true))
+            || value.get("runid").and_then(serde_json::Value::as_str) != Some(run_id)
+        {
+            continue;
+        }
+        if let Some(pid) = value
+            .get("pid")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid > 1)
+        {
+            return Ok(pid);
+        }
+    }
+    Err(
+        "run-specific tilestarted identity absent from the product stdout log; residue retained without proof"
+            .to_owned(),
+    )
+}
+
 /// Known leaves of one product output directory (`--run-dir`): the stop
 /// request, terminal outcome plus its atomic-write temp, foreground logs,
 /// and the per-run ID. Shared by the single-launch product directory and
@@ -628,6 +677,30 @@ const PRODUCT_RUN_LEAVES: [&str; 6] = [
     "run-id",
 ];
 
+/// Fixture-owned top-level leaves of one run directory. The nested
+/// `product` subdirectory and its known leaves are product-owned.
+const FIXTURE_RUN_LEAVES: [&str; 3] = ["announcement.json", "stderr.log", "fixture.sock"];
+
+/// Remove one owned fixture run directory after its fixture shut down.
+/// Only proven product absence (the owned product reaped plus no pending
+/// product launch) authorizes the full known-leaves removal; otherwise only
+/// the fixture-owned leaves remove and the product-owned subdirectory
+/// (launch logs, terminal outcome, private store) is retained as residue so
+/// a still-present or pending product never loses state and the end stays
+/// receipted.
+fn remove_owned_run_dir_after_absence(run_dir: &Path, product_absent: bool) -> Result<(), String> {
+    if product_absent {
+        return remove_owned_run_dir(run_dir);
+    }
+    for leaf in FIXTURE_RUN_LEAVES {
+        remove_known_leaf(run_dir, leaf)?;
+    }
+    Err(
+        "shutdown: product absence unproven (present or pending); product-owned launch logs, terminal outcome and private store retained as residue"
+            .to_owned(),
+    )
+}
+
 /// Remove only the owned fixture run directory's known files plus the
 /// directory itself. Known leaves are the fixture announcement/log/socket
 /// plus the leg-created `product` subdirectory's known product leaves
@@ -636,9 +709,12 @@ const PRODUCT_RUN_LEAVES: [&str; 6] = [
 /// intent store. Every removal is symlink-guarded; an unknown leaf is
 /// residue (refused here, never broad-deleted) so the next leg's begin is
 /// blocked until inspection instead of silently dropping state. Never
-/// recursive beyond the owned leaves, never a pre-existing directory.
+/// recursive beyond the owned leaves, never a pre-existing directory. Only
+/// reached with proven product absence (see
+/// [`remove_owned_run_dir_after_absence`]); otherwise the product-owned
+/// leaves are never removed.
 fn remove_owned_run_dir(run_dir: &Path) -> Result<(), String> {
-    for leaf in ["announcement.json", "stderr.log", "fixture.sock"] {
+    for leaf in FIXTURE_RUN_LEAVES {
         remove_known_leaf(run_dir, leaf)?;
     }
     let product_dir = run_dir.join("product");
@@ -942,12 +1018,17 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
     /// or absence is independently proven (via
     /// [`LiveLeg::resolve_pending_absence`]). On unknown ownership the run
     /// is never killed; the retained run directory is recorded as residue.
+    /// A new pending product attempt also clears any terminal body retained
+    /// from a previous product launch: that body is not this run's evidence.
     pub fn note_pending_launch(&mut self, pending: PendingLaunch) {
         if !self
             .pending_launches
             .iter()
             .any(|entry| entry.run_dir == pending.run_dir && entry.what == pending.what)
         {
+            if pending.what == "product" {
+                self.product_outcome = None;
+            }
             self.pending_launches.push(pending);
         }
     }
@@ -958,12 +1039,18 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
     }
 
     /// Attempt to prove one pending run absent without touching foreign
-    /// state: the announcement carries no parsable PID or the announced PID
-    /// is independently gone, and the control socket file is absent. On
-    /// proof the pending entry clears and the owned run directory's known
-    /// leaves remove (unknown leaves keep the residue). Anything unprovable
-    /// keeps the entry: `finish` reports it as residue and retains the
-    /// receipt. Never signals, never kills.
+    /// state. A fixture resolves when it never announced (no announcement
+    /// file and no control socket) or when its announced PID is independently
+    /// gone with no socket left; an unparsable announcement keeps it. A
+    /// product resolves only from its own run-specific identity: the run's
+    /// `run-id` plus the matching `tilestarted` stdout line whose exact PID is
+    /// independently gone. A missing product output file or socket is never
+    /// proof (the launch may not have written yet), and unreadable product
+    /// identity keeps the entry. On proof only the pending entry clears: the
+    /// owned run directory and its leaves stay for the teardown and audit, and
+    /// product-owned logs, terminal outcome and private store are never
+    /// deleted here. Anything unprovable keeps the entry: `finish` reports it
+    /// as residue and retains the receipt. Never signals, never kills.
     pub fn resolve_pending_absence(&mut self, what: &'static str) -> Result<(), String> {
         let index = self
             .pending_launches
@@ -971,11 +1058,35 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             .position(|entry| entry.what == what)
             .ok_or_else(|| format!("no pending {what} launch to resolve"))?;
         let pending = self.pending_launches[index].clone();
-        let announcement_path = if what == "product" {
-            pending.run_dir.join("stdout.log")
-        } else {
-            pending.run_dir.join("announcement.json")
-        };
+        if what == "product" {
+            let run_id = std::fs::read_to_string(pending.run_dir.join("run-id")).map_err(|e| {
+                format!(
+                    "pending product launch run-id unreadable ({e}); residue retained without proof"
+                )
+            })?;
+            let run_id = run_id.trim();
+            if run_id.is_empty() {
+                return Err(
+                    "pending product launch run-id empty; residue retained without proof"
+                        .to_owned(),
+                );
+            }
+            let announced_pid =
+                read_product_tilestarted_pid(&pending.run_dir.join("stdout.log"), run_id)?;
+            return match self.transport.process_gone(announced_pid) {
+                Ok(true) => {
+                    self.pending_launches.remove(index);
+                    Ok(())
+                }
+                Ok(false) => Err(format!(
+                    "pending product launch still present (pid {announced_pid}); residue retained without signals"
+                )),
+                Err(e) => Err(format!(
+                    "pending product launch reap unreadable ({e}); residue retained"
+                )),
+            };
+        }
+        let announcement_path = pending.run_dir.join("announcement.json");
         let announced_pid = std::fs::read_to_string(&announcement_path)
             .ok()
             .and_then(|raw| {
@@ -1008,11 +1119,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                 // socket proves nothing launched under our ownership.
             }
         }
-        let socket_path = if what == "product" {
-            pending.run_dir.join("product.sock")
-        } else {
-            pending.run_dir.join("fixture.sock")
-        };
+        let socket_path = pending.run_dir.join("fixture.sock");
         if std::fs::symlink_metadata(&socket_path).is_ok() {
             return Err(format!(
                 "pending {what} launch socket still present; residue retained without signals"
@@ -1074,6 +1181,9 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         }
         self.owned_product = Some(record);
         self.product_child = Some(child);
+        // A new product instance invalidates any body retained from an
+        // earlier launch: the teardown report carries this run's evidence.
+        self.product_outcome = None;
         self.pending_launches
             .retain(|entry| entry.what != "product");
         Ok(())
@@ -1112,6 +1222,9 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             ));
         }
         self.owned_product = Some(record);
+        // A new product instance invalidates any body retained from an
+        // earlier launch: the teardown report carries this run's evidence.
+        self.product_outcome = None;
         self.pending_launches
             .retain(|entry| entry.what != "product");
         Ok(())
@@ -1505,7 +1618,10 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
     /// fixture windows, shut down and reap only the owned fixture, remove
     /// only leg-created empty Spaces, stop the awake companion, verify
     /// exactly the registered owned PIDs, and only then capture and compare
-    /// the teardown (after our own effects are removed).
+    /// the teardown (after our own effects are removed). Product-owned
+    /// launch logs, terminal outcome and private store are removed only when
+    /// product absence is proven (the owned stop reaped and no pending
+    /// product launch); otherwise they stay as residue.
     fn finish_inner(&mut self) -> TeardownReport {
         let mut residue = Vec::new();
         // 0. Launched-but-unbound runs: any post-open/pre-bind failure
@@ -1521,6 +1637,15 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         }
         // 1. Stop the exact primary product first.
         let product_reaped = self.stop_product(&mut residue);
+        // Product-owned state (launch logs, terminal outcome, private
+        // store) may only be removed once absence is proven: the owned stop
+        // reaped the exact instance AND no requested launch is still
+        // pending. Either half keeps the product-owned leaves as residue.
+        let pending_product = self
+            .pending_launches
+            .iter()
+            .any(|entry| entry.what == "product");
+        let product_absent = product_reaped && !pending_product;
         // 2. Restore the starting Space (no-op readback when already exact).
         let restore = restore_starting_currents(&mut *self.transport, &self.baseline.native);
         for failure in &restore.failed {
@@ -1543,17 +1668,20 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             }
         }
         // 4. Shut down and reap only the owned fixture (identity-verified,
-        // never a signal to a drifted PID).
+        // never a signal to a drifted PID). The fixture's run-directory
+        // removal is told whether product absence is proven: with a
+        // product still present or pending, product-owned logs and the
+        // private store stay as residue.
         if let Some(record) = self.owned_fixture.clone()
-            && let Err(e) = self.transport.shutdown_fixture(&record)
+            && let Err(e) = self.transport.shutdown_fixture(&record, product_absent)
         {
             residue.push(format!("owned fixture pid {} shutdown: {e}", record.pid));
         }
         // 4b. The private store is product-owned state, not fixture state:
-        // once the product is proven reaped, remove it even when fixture
+        // once product absence is proven, remove it even when fixture
         // shutdown failed. Receipts/logs stay for audit; an uncertain or
         // symlinked store stays residue rather than being broad-deleted.
-        if product_reaped
+        if product_absent
             && let Some(record) = self.owned_fixture.clone()
             && let Err(e) = remove_owned_intent_store(&record.run_dir.join("product"))
         {
@@ -1613,7 +1741,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         // retain for audit (retention blocks the next persist until
         // inspected, so residue is never silently dropped). A failure also
         // persists the residue artifact beside the receipt.
-        let clean = product_reaped
+        let clean = product_absent
             && current_restored
             && !mismatches.iter().any(BaselineMismatch::is_blocking)
             && residue.is_empty();
@@ -1628,7 +1756,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         } else {
             true
         };
-        let clean = product_reaped
+        let clean = product_absent
             && current_restored
             && !mismatches.iter().any(BaselineMismatch::is_blocking)
             && residue.is_empty();
@@ -1638,7 +1766,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                 self.generation,
                 &TeardownReport {
                     generation: self.generation,
-                    product_reaped,
+                    product_reaped: product_absent,
                     current_restored,
                     restored: restore.restored.clone(),
                     mismatches: mismatches.clone(),
@@ -1652,7 +1780,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         }
         TeardownReport {
             generation: self.generation,
-            product_reaped,
+            product_reaped: product_absent,
             current_restored,
             restored: restore.restored,
             mismatches,
@@ -1798,6 +1926,7 @@ mod tests {
         fail_space_at: Option<&'static str>,
         close_fails: Vec<(u32, u32)>,
         shutdown: Result<(), String>,
+        shutdown_product_absent: RefCell<Option<bool>>,
         gone: HashMap<u32, Result<bool, String>>,
         awake_stop_reaped: bool,
         receipt_ok: bool,
@@ -1819,6 +1948,7 @@ mod tests {
                 fail_space_at: None,
                 close_fails: Vec::new(),
                 shutdown: Ok(()),
+                shutdown_product_absent: RefCell::new(None),
                 gone: HashMap::new(),
                 awake_stop_reaped: true,
                 receipt_ok: true,
@@ -1978,8 +2108,13 @@ mod tests {
             }
             Ok(())
         }
-        fn shutdown_fixture(&mut self, record: &FixtureRecord) -> Result<(), String> {
+        fn shutdown_fixture(
+            &mut self,
+            record: &FixtureRecord,
+            product_absent: bool,
+        ) -> Result<(), String> {
             self.order.borrow_mut().push("shutdown");
+            *self.shutdown_product_absent.borrow_mut() = Some(product_absent);
             // Identity-bounded like production: a drifted record refuses
             // before any control-channel touch.
             if record.exe != "/live-exe" || record.launch != "launch-live" {
@@ -2406,6 +2541,111 @@ mod tests {
         }
     }
 
+    fn pending_product(dir: &std::path::Path) -> PendingLaunch {
+        PendingLaunch {
+            run_dir: dir.to_path_buf(),
+            expected_bundle: crate::BUNDLE_ID.to_owned(),
+            what: "product",
+        }
+    }
+
+    fn write_tilestarted(dir: &std::path::Path, run_id: &str, pid: u32) {
+        std::fs::write(
+            dir.join("stdout.log"),
+            format!("{{\"tilestarted\":true,\"pid\":{pid},\"runid\":\"{run_id}\"}}\n"),
+        )
+        .expect("tilestarted writes");
+    }
+
+    #[test]
+    fn product_pending_absence_requires_run_specific_tilestarted_identity() {
+        // A requested product open writes its own `run-id` and later a
+        // `tilestarted` line carrying the live PID and that run ID. Arbitrary
+        // JSON in stdout (or a foreign run's announcement) never proves this
+        // run absent: the request may still be starting.
+        let dir = test_dir("pending-product-identity");
+        let product = dir.join("product");
+        std::fs::create_dir_all(&product).expect("product dir creates");
+        std::fs::write(product.join("run-id"), "run-a\n").expect("run-id writes");
+        std::fs::write(product.join("stdout.log"), "{\"pid\":4242}\n").expect("stdout writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        transport.gone.insert(4242, Ok(true));
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.note_pending_launch(pending_product(&product));
+        let err = leg
+            .resolve_pending_absence("product")
+            .expect_err("arbitrary JSON never proves absence");
+        assert!(err.contains("tilestarted"), "unexpected: {err}");
+        assert_eq!(leg.pending_launches().len(), 1);
+        // A tilestarted line for another run is not this run's identity.
+        write_tilestarted(&product, "run-foreign", 4242);
+        let err = leg
+            .resolve_pending_absence("product")
+            .expect_err("a foreign run id never proves this run absent");
+        assert!(err.contains("tilestarted"), "unexpected: {err}");
+        assert_eq!(leg.pending_launches().len(), 1);
+        // The run-specific identity plus an independently gone PID proves
+        // absence; no output file or socket absence is required as proof.
+        write_tilestarted(&product, "run-a", 4242);
+        leg.resolve_pending_absence("product")
+            .expect("run-specific tilestarted identity plus gone pid proves absence");
+        assert!(leg.pending_launches().is_empty());
+        assert!(product.exists(), "resolution retains the owned run directory");
+        leg.finish().expect("clean finish passes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pending_product_absence_keeps_pending_when_identity_unreadable() {
+        // Missing or unreadable product identity keeps the launch pending:
+        // missing stdout is a startup race, never proof of absence. A live
+        // PID and an unreadable reap also keep it, with no signals.
+        let dir = test_dir("pending-product-unreadable");
+        let product = dir.join("product");
+        std::fs::create_dir_all(&product).expect("product dir creates");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.note_pending_launch(pending_product(&product));
+        // No run-id and no output at all: still pending.
+        let err = leg
+            .resolve_pending_absence("product")
+            .expect_err("missing run-id cannot prove absence");
+        assert!(err.contains("run-id"), "unexpected: {err}");
+        assert_eq!(leg.pending_launches().len(), 1);
+        // A readable run-id with no tilestarted line: still pending.
+        std::fs::write(product.join("run-id"), "run-b\n").expect("run-id writes");
+        let err = leg
+            .resolve_pending_absence("product")
+            .expect_err("missing stdout cannot prove absence");
+        assert!(err.contains("tilestarted"), "unexpected: {err}");
+        assert_eq!(leg.pending_launches().len(), 1);
+        // The run-specific identity announces a PID that is still present.
+        write_tilestarted(&product, "run-b", 4243);
+        leg.transport_mut().gone.insert(4243, Ok(false));
+        let err = leg
+            .resolve_pending_absence("product")
+            .expect_err("a live announced pid proves nothing");
+        assert!(err.contains("still present"), "unexpected: {err}");
+        assert!(err.contains("without signals"), "unexpected: {err}");
+        assert_eq!(leg.pending_launches().len(), 1);
+        // An unreadable reap keeps the launch pending.
+        leg.transport_mut()
+            .gone
+            .insert(4243, Err("injected reap refusal".to_owned()));
+        let err = leg
+            .resolve_pending_absence("product")
+            .expect_err("unreadable reap cannot prove absence");
+        assert!(err.contains("unreadable"), "unexpected: {err}");
+        assert_eq!(leg.pending_launches().len(), 1);
+        // Only the independently gone run-specific PID clears it.
+        leg.transport_mut().gone.insert(4243, Ok(true));
+        leg.resolve_pending_absence("product")
+            .expect("gone run-specific pid proves absence");
+        assert!(leg.pending_launches().is_empty());
+        leg.finish().expect("clean finish passes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn every_post_open_pre_bind_failure_cannot_clean() {
         // A launched-but-unbound run (open succeeded, then announcement /
@@ -2437,7 +2677,9 @@ mod tests {
     #[test]
     fn proven_pending_absence_clears_before_finish() {
         // No announcement, no socket: absence is independently proven, so
-        // the pending entry clears and the leg finishes clean.
+        // the pending entry clears and the leg finishes clean. Resolution
+        // clears only the pending entry: the owned run directory stays for
+        // the teardown, never a broad delete here.
         let dir = test_dir("pending-absent");
         let run = dir.join("run-absent");
         std::fs::create_dir_all(&run).expect("run dir creates");
@@ -2447,6 +2689,7 @@ mod tests {
         leg.resolve_pending_absence("fixture")
             .expect("absence proves without identity");
         assert!(leg.pending_launches().is_empty());
+        assert!(run.exists(), "resolution retains the owned run directory");
         leg.finish().expect("clean finish passes");
         assert!(!dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -2807,6 +3050,101 @@ mod tests {
             "terminal receipt stays"
         );
         assert!(launch.join("stop-requested").exists(), "stop request stays");
+        assert_eq!(
+            *transport.shutdown_product_absent.borrow(),
+            Some(true),
+            "reaped product with no pending launch proves absence"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fixture_run_dir_retirement_keeps_product_leaves_without_proof() {
+        // The fixture's own leaves may remove after its shutdown, but the
+        // product-owned subdirectory (launch logs, terminal outcome and
+        // private store) survives while absence is unproven, and the end is
+        // reported as residue. Proven absence removes the whole owned tree.
+        let dir = test_dir("run-dir-retirement");
+        let run = dir.join("run");
+        let product = run.join("product");
+        let store = product.join(crate::fixture_leg::ISOLATED_STORE_LEAF);
+        std::fs::create_dir_all(&store).expect("store dir creates");
+        for leaf in FIXTURE_RUN_LEAVES {
+            std::fs::write(run.join(leaf), "fixture\n").expect("fixture leaf writes");
+        }
+        for leaf in ["stdout.log", "stderr.log", "outcome.json", "run-id"] {
+            std::fs::write(product.join(leaf), "product\n").expect("product leaf writes");
+        }
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        let err = remove_owned_run_dir_after_absence(&run, false)
+            .expect_err("unproven absence must report residue");
+        assert!(err.contains("product absence unproven"), "unexpected: {err}");
+        for leaf in FIXTURE_RUN_LEAVES {
+            assert!(!run.join(leaf).exists(), "fixture leaf {leaf} removes");
+        }
+        for leaf in ["stdout.log", "stderr.log", "outcome.json", "run-id"] {
+            assert!(
+                product.join(leaf).exists(),
+                "product leaf {leaf} must be preserved"
+            );
+        }
+        assert!(
+            store.join("intent-v1-501-100021.json").exists(),
+            "private store must be preserved"
+        );
+        assert!(run.exists(), "run directory stays while product leaves exist");
+        remove_owned_run_dir_after_absence(&run, true).expect("proven absence removes the tree");
+        assert!(!run.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreaped_product_state_survives_fixture_shutdown() {
+        // A product whose exact reap is unreadable is not absent: the
+        // fixture shutdown is told so, and its launch logs, terminal body
+        // and private store stay as residue.
+        let dir = test_dir("product-unreaped-preserve");
+        let run = dir.join("run");
+        let product = run.join("product");
+        let store = product.join(crate::fixture_leg::ISOLATED_STORE_LEAF);
+        std::fs::create_dir_all(&store).expect("store dir creates");
+        std::fs::write(product.join("stdout.log"), "launch log\n").expect("log writes");
+        std::fs::write(product.join("run-id"), "run-unreaped\n").expect("run-id writes");
+        std::fs::write(
+            product.join("outcome.json"),
+            "{\"outcome\":\"stopped\",\"shutdown_clean\":true}",
+        )
+        .expect("outcome writes");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_fixture(FixtureRecord {
+            pid: 4242,
+            exe: "/live-exe".to_owned(),
+            launch: "launch-live".to_owned(),
+            socket_path: "/tmp/live-fixture.sock".to_owned(),
+            run_dir: run.clone(),
+        })
+        .expect("fixture registers");
+        leg.register_product_ls(restart_product(&product, 5104))
+            .expect("product registers");
+        leg.transport_mut()
+            .gone
+            .insert(5104, Err("injected reap refusal".to_owned()));
+        let err = leg.finish().expect_err("an unreaped product is residue");
+        assert!(err.1.contains("reap unreadable"), "unexpected: {}", err.1);
+        assert_eq!(
+            *transport.shutdown_product_absent.borrow(),
+            Some(false),
+            "fixture shutdown is told product absence is unproven"
+        );
+        assert!(product.join("stdout.log").exists(), "launch logs stay");
+        assert!(product.join("outcome.json").exists(), "terminal body stays");
+        assert!(
+            store.join("intent-v1-501-100021.json").exists(),
+            "private store stays"
+        );
+        assert!(dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2872,6 +3210,155 @@ mod tests {
         let err = leg.finish().unwrap_err();
         assert!(err.1.contains("outcome.json"), "unexpected: {}", err.1);
         assert!(dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pending_product_launch_preserves_private_store_and_logs() {
+        // A requested product launch that never bound its identity leaves
+        // the product possibly alive: teardown must not delete its private
+        // store or launch logs. Absence is unproven, so the end is unclean
+        // and the residue is retained beside the receipt.
+        let dir = test_dir("pending-product-preserve");
+        let run = dir.join("run");
+        let product = run.join("product");
+        let store = product.join(crate::fixture_leg::ISOLATED_STORE_LEAF);
+        std::fs::create_dir_all(&store).expect("store dir creates");
+        std::fs::write(store.join("intent-v1-501-100021.json"), "row\n").expect("row writes");
+        std::fs::write(product.join("stdout.log"), "launch log\n").expect("log writes");
+        std::fs::write(product.join("run-id"), "run-pending\n").expect("run-id writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_fixture(FixtureRecord {
+            pid: 4242,
+            exe: "/live-exe".to_owned(),
+            launch: "launch-live".to_owned(),
+            socket_path: "/tmp/live-fixture.sock".to_owned(),
+            run_dir: run.clone(),
+        })
+        .expect("fixture registers");
+        leg.note_pending_launch(PendingLaunch {
+            run_dir: product.clone(),
+            expected_bundle: crate::BUNDLE_ID.to_owned(),
+            what: "product",
+        });
+        assert!(!leg.has_owned_product());
+        let err = leg.finish().expect_err("pending product cannot clean");
+        assert!(
+            err.1.contains("pending product launch unverified"),
+            "unexpected: {}",
+            err.1
+        );
+        assert!(
+            store.join("intent-v1-501-100021.json").exists(),
+            "private store must be preserved while the product is pending"
+        );
+        assert!(
+            product.join("stdout.log").exists(),
+            "launch logs must be preserved while the product is pending"
+        );
+        assert_eq!(
+            *transport.shutdown_product_absent.borrow(),
+            Some(false),
+            "fixture shutdown is told product absence is unproven"
+        );
+        assert!(dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
+        assert!(dir.join(RESIDUE_FILE_NAME).exists());
+        let body: serde_json::Value = serde_json::from_str(&err.1).expect("teardown JSON");
+        assert_eq!(
+            body["product_reaped"],
+            serde_json::json!(false),
+            "a pending launch is not proven absent: {body}"
+        );
+        let artifact: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(RESIDUE_FILE_NAME)).expect("residue reads"),
+        )
+        .expect("residue parses");
+        assert_eq!(
+            artifact["product_reaped"],
+            serde_json::json!(false),
+            "the residue artifact records unproven absence: {artifact}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_product_registration_clears_previous_terminal_outcome() {
+        // The restart controller stops launch one (retaining its terminal
+        // body) and then registers launch two. The teardown report must
+        // carry launch two's body only: a stale retained body is not this
+        // product's evidence.
+        let dir = test_dir("product-outcome-register");
+        let first = dir.join("first");
+        let second = dir.join("second");
+        std::fs::create_dir_all(&first).expect("first dir creates");
+        std::fs::create_dir_all(&second).expect("second dir creates");
+        std::fs::write(
+            first.join("outcome.json"),
+            "{\"outcome\":\"stopped\",\"shutdown_clean\":true}",
+        )
+        .expect("first outcome writes");
+        std::fs::write(
+            second.join("outcome.json"),
+            "{\"outcome\":\"completed\",\"shutdown_clean\":true}",
+        )
+        .expect("second outcome writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_product_ls(restart_product(&first, 5101))
+            .expect("first product registers");
+        leg.stop_product_for_restart().expect("first stop is clean");
+        leg.register_product_ls(restart_product(&second, 5102))
+            .expect("second product registers");
+        let report = leg.finish().expect("clean finish passes");
+        assert_eq!(
+            report.product_outcome,
+            Some(serde_json::json!({
+                "outcome": "completed",
+                "shutdown_clean": true
+            })),
+            "the report carries only launch two's terminal body"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pending_product_launch_clears_previous_terminal_outcome() {
+        // A new pending product attempt after launch one's retained body
+        // makes that body stale: the unclean report carries no prior
+        // product's outcome as if it belonged to the pending run.
+        let dir = test_dir("product-outcome-pending");
+        let first = dir.join("first");
+        let pending = dir.join("pending");
+        std::fs::create_dir_all(&first).expect("first dir creates");
+        std::fs::create_dir_all(&pending).expect("pending dir creates");
+        std::fs::write(
+            first.join("outcome.json"),
+            "{\"outcome\":\"stopped\",\"shutdown_clean\":true}",
+        )
+        .expect("first outcome writes");
+        std::fs::write(pending.join("run-id"), "run-two\n").expect("run-id writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_product_ls(restart_product(&first, 5101))
+            .expect("first product registers");
+        leg.stop_product_for_restart().expect("first stop is clean");
+        leg.note_pending_launch(PendingLaunch {
+            run_dir: pending.clone(),
+            expected_bundle: crate::BUNDLE_ID.to_owned(),
+            what: "product",
+        });
+        let err = leg.finish().expect_err("pending product cannot clean");
+        let body: serde_json::Value = serde_json::from_str(&err.1).expect("teardown JSON");
+        assert_eq!(
+            body["product_reaped"],
+            serde_json::json!(false),
+            "a pending launch is not proven absent: {body}"
+        );
+        assert!(
+            body["product_outcome"].is_null(),
+            "stale prior outcome must not ride the pending launch: {body}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

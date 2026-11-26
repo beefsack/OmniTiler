@@ -2356,8 +2356,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
         "fixture-restart" => {
             // Development-only guarded two-launch controller. Shape only:
             // the runner revalidates before any effect. Mode is explicit;
-            // the default window count follows the mode, and `--floats`
-            // defaults to zero (M4 refuses a nonzero value).
+            // window and float defaults follow the mode (`--floats`: two
+            // for M3, zero for M4, which refuses a nonzero value).
             let mut mode: Option<crate::fixture_restart::RestartMode> = None;
             let mut seconds = 90u64;
             let mut windows: Option<usize> = None;

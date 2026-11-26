@@ -16,7 +16,7 @@
 //! polls it between steps and during hold slices and releases first.
 
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -25,12 +25,43 @@ use crate::space_drag_diag::{
     run_hold_only,
 };
 
+/// One diagnostic interrupt latch plus its arm lifecycle. `depth` counts the
+/// live [`InterruptArmed`] guards for this latch: only the outermost arm
+/// clears a stale flag, so a nested arm (for example a fixture post inside a
+/// fixture leg) can never discard an interrupt already latched for the outer
+/// run. The lifecycle is lock-protected so the depth check and the clear are
+/// one atomic step for concurrent arms.
+struct DiagnosticLatch {
+    flag: Arc<AtomicBool>,
+    depth: Mutex<usize>,
+}
+
+impl DiagnosticLatch {
+    /// Enter one live arm; only the outermost arm clears a stale latch.
+    fn enter(&self) {
+        let mut depth = self.depth.lock().unwrap_or_else(|error| error.into_inner());
+        if *depth == 0 {
+            self.flag.store(false, Ordering::SeqCst);
+        }
+        *depth += 1;
+    }
+
+    /// Leave one live arm. The latch itself is never cleared on leave.
+    fn leave(&self) {
+        let mut depth = self.depth.lock().unwrap_or_else(|error| error.into_inner());
+        *depth = (*depth).saturating_sub(1);
+    }
+}
+
 /// Process-wide diagnostic interrupt latch, set by SIGINT/SIGTERM while a
 /// diagnostic run arms it. Plain `static` (no unsafe): delivery is
 /// installed through the maintained `signal-hook` crate, which takes an
 /// `Arc` (hence the lazily-initialized shared flag).
-static DIAG_INTERRUPTED: std::sync::LazyLock<Arc<AtomicBool>> =
-    std::sync::LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+static DIAG_INTERRUPTED: std::sync::LazyLock<DiagnosticLatch> =
+    std::sync::LazyLock::new(|| DiagnosticLatch {
+        flag: Arc::new(AtomicBool::new(false)),
+        depth: Mutex::new(0),
+    });
 
 /// RAII signal arm: registers SIGINT/SIGTERM delivery into the latch on
 /// creation, unregisters on drop, on every exit path (including unwind).
@@ -39,28 +70,51 @@ static DIAG_INTERRUPTED: std::sync::LazyLock<Arc<AtomicBool>> =
 /// diagnostic route, which arms it around its synchronous down/up pair and
 /// checks [`diag_interrupted`] at explicit sequence points (no polling loop;
 /// no hold window exists to poll in, only the prove/post steps).
+///
+/// Arms nest: an inner arm (the fixture post path inside a fixture leg or the
+/// restart controller) leaves the outer latch untouched, so a SIGINT latched
+/// for the outer run still refuses the remaining work after the inner arm
+/// returns.
 pub(crate) struct InterruptArmed {
     ids: Option<(signal_hook::SigId, signal_hook::SigId)>,
+    latch: &'static DiagnosticLatch,
 }
 
 impl InterruptArmed {
     pub(crate) fn arm() -> Result<Self, String> {
-        DIAG_INTERRUPTED.store(false, Ordering::SeqCst);
-        let sigint =
-            signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&DIAG_INTERRUPTED))
-                .map_err(|e| {
-                    format!("SIGINT handler registration refused ({e}); aborting before any post")
-                })?;
-        let sigterm = signal_hook::flag::register(
+        Self::arm_latch(&DIAG_INTERRUPTED)
+    }
+
+    fn arm_latch(latch: &'static DiagnosticLatch) -> Result<Self, String> {
+        latch.enter();
+        let sigint = match signal_hook::flag::register(
+            signal_hook::consts::SIGINT,
+            Arc::clone(&latch.flag),
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                latch.leave();
+                return Err(format!(
+                    "SIGINT handler registration refused ({e}); aborting before any post"
+                ));
+            }
+        };
+        let sigterm = match signal_hook::flag::register(
             signal_hook::consts::SIGTERM,
-            Arc::clone(&DIAG_INTERRUPTED),
-        )
-        .map_err(|e| {
-            let _ = signal_hook::low_level::unregister(sigint);
-            format!("SIGTERM handler registration refused ({e}); aborting before any post")
-        })?;
+            Arc::clone(&latch.flag),
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = signal_hook::low_level::unregister(sigint);
+                latch.leave();
+                return Err(format!(
+                    "SIGTERM handler registration refused ({e}); aborting before any post"
+                ));
+            }
+        };
         Ok(Self {
             ids: Some((sigint, sigterm)),
+            latch,
         })
     }
 }
@@ -71,6 +125,7 @@ impl Drop for InterruptArmed {
             let _ = signal_hook::low_level::unregister(sigint);
             let _ = signal_hook::low_level::unregister(sigterm);
         }
+        self.latch.leave();
     }
 }
 
@@ -79,7 +134,14 @@ impl Drop for InterruptArmed {
 /// points and release first; the latch alone never releases (a signal
 /// handler cannot post - only async-signal-safe flag work runs there).
 pub(crate) fn diag_interrupted() -> bool {
-    DIAG_INTERRUPTED.load(Ordering::SeqCst)
+    DIAG_INTERRUPTED.flag.load(Ordering::SeqCst)
+}
+
+/// Test-only: latch the process-wide interrupt without delivering a real
+/// signal, so the nested-arm and pre-post boundary can be proven offline.
+#[cfg(test)]
+pub(crate) fn set_diag_interrupted_for_test(latched: bool) {
+    DIAG_INTERRUPTED.flag.store(latched, Ordering::SeqCst);
 }
 
 /// Portable live backend over the shared HID construction site
@@ -108,7 +170,7 @@ impl crate::space_drag_diag::DiagBackend for LiveDiagBackend {
     }
 
     fn interrupted(&mut self) -> bool {
-        DIAG_INTERRUPTED.load(Ordering::SeqCst)
+        DIAG_INTERRUPTED.flag.load(Ordering::SeqCst)
     }
 
     fn post_chord(
@@ -135,7 +197,7 @@ impl crate::space_drag_diag::DiagBackend for LiveDiagBackend {
     }
 
     fn gates(&mut self, edge: &str) -> Result<(), String> {
-        if DIAG_INTERRUPTED.load(Ordering::SeqCst) {
+        if DIAG_INTERRUPTED.flag.load(Ordering::SeqCst) {
             return Err(format!("{edge} refused: interrupted"));
         }
         crate::space_switch_edges::edge_synth_gates(edge).map_err(|e| e.to_string())
@@ -593,5 +655,47 @@ pub fn run_drag_diag_full(
             body["mutates"] = serde_json::json!(true);
             Err((1, body.to_string()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A latch private to these tests: concurrent arms elsewhere in the test
+    /// binary can neither clear nor observe it.
+    static TEST_LATCH: std::sync::LazyLock<DiagnosticLatch> =
+        std::sync::LazyLock::new(|| DiagnosticLatch {
+            flag: Arc::new(AtomicBool::new(false)),
+            depth: Mutex::new(0),
+        });
+
+    #[test]
+    fn nested_arm_never_clears_an_outer_latched_interrupt() {
+        let outer = InterruptArmed::arm_latch(&TEST_LATCH).expect("outer arm");
+        TEST_LATCH.flag.store(true, Ordering::SeqCst);
+        // A nested arm (the fixture post path) must keep the outer signal.
+        let inner = InterruptArmed::arm_latch(&TEST_LATCH).expect("inner arm");
+        assert!(
+            TEST_LATCH.flag.load(Ordering::SeqCst),
+            "a nested arm must not clear the outer latched interrupt"
+        );
+        drop(inner);
+        assert!(
+            TEST_LATCH.flag.load(Ordering::SeqCst),
+            "a nested drop must not clear the outer latched interrupt"
+        );
+        drop(outer);
+        assert!(
+            TEST_LATCH.flag.load(Ordering::SeqCst),
+            "the latch survives until the next outermost arm"
+        );
+        // Only the outermost arm clears a stale latch at the start of a run.
+        let fresh = InterruptArmed::arm_latch(&TEST_LATCH).expect("fresh arm");
+        assert!(
+            !TEST_LATCH.flag.load(Ordering::SeqCst),
+            "the outermost arm clears a stale latch"
+        );
+        drop(fresh);
     }
 }

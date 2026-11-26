@@ -36,6 +36,15 @@
 //! returns unknown with no replay and no automatic restore. Restoration is an
 //! explicit separate step (socket geometry or a second invocation), never an
 //! implicit second write, so the arbitration evidence stays intact.
+//!
+//! Embedded use (the guarded two-launch controller) keeps the same proof and
+//! single write but never arms the process-wide hard-exit watchdog: a forced
+//! dirty exit would skip the controller's owned teardown. That path enforces
+//! the same hard limit cooperatively at each proof/effect/poll boundary and
+//! returns an error instead. AX messaging, the socket exchange and
+//! `codesign` have their own timeouts. A synchronous call already in flight
+//! cannot be pre-empted; a lapsed wait sets the cancellation fence so the
+//! worker's pre-effect gate refuses a late write.
 
 #![forbid(unsafe_code)]
 
@@ -58,6 +67,80 @@ use crate::fixture_post::{
 const AX_WORKER_BOUND: Duration = Duration::from_secs(15);
 /// Hard lifetime for the whole diagnostic (proof plus worker plus report).
 const HARD_LIMIT: Duration = Duration::from_secs(60);
+
+/// Hard-exit ownership for one invocation. The standalone diagnostic owns
+/// the process and arms the shared watchdog (a hung pass exits dirty). An
+/// embedded invocation (the guarded two-launch controller) must never arm
+/// it: a forced dirty exit would skip the controller's owned teardown. That
+/// path instead checks a cooperative elapsed bound at each effect boundary
+/// and returns `Err`, leaving teardown and evidence to its caller.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameExitPolicy {
+    StandaloneWatchdog,
+    EmbeddedCooperative,
+}
+
+#[cfg(target_os = "macos")]
+impl FrameExitPolicy {
+    /// Only the standalone policy installs the hard-exit watchdog.
+    fn arms_hard_exit_watchdog(self) -> bool {
+        matches!(self, Self::StandaloneWatchdog)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn frame_exit_policy(arm_interrupt: bool) -> FrameExitPolicy {
+    if arm_interrupt {
+        FrameExitPolicy::StandaloneWatchdog
+    } else {
+        FrameExitPolicy::EmbeddedCooperative
+    }
+}
+
+/// Cooperative elapsed bound for the embedded path. A synchronous call
+/// already in flight cannot be interrupted. The invocation checks the
+/// deadline between calls and caps the wait for the AX worker by what
+/// remains; a lapsed wait sets the worker's cancellation fence.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+struct CooperativeBound {
+    started: Instant,
+    limit: Duration,
+}
+
+#[cfg(target_os = "macos")]
+impl CooperativeBound {
+    fn start(limit: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            limit,
+        }
+    }
+
+    fn elapsed_at(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.started)
+    }
+
+    fn remaining_at(&self, now: Instant) -> Duration {
+        self.limit.saturating_sub(self.elapsed_at(now))
+    }
+
+    fn check(&self, stage: &str) -> Result<(), String> {
+        self.check_at(Instant::now(), stage)
+    }
+
+    fn check_at(&self, now: Instant, stage: &str) -> Result<(), String> {
+        if self.elapsed_at(now) < self.limit {
+            Ok(())
+        } else {
+            Err(format!(
+                "cooperative {}s deadline exceeded at {stage} (no hard-exit watchdog); refusing without replay",
+                self.limit.as_secs()
+            ))
+        }
+    }
+}
 
 /// CLI entry parameters for one standalone frame write: the serve
 /// announcement file (socket/pid/nonce source), the selected fixture caller
@@ -278,8 +361,14 @@ fn frame_session_gates() -> Result<(), String> {
 /// unbounded), then a 2 s timeout on the retained target (refuses when
 /// unsettable: later reads on it must stay bounded).
 #[cfg(target_os = "macos")]
-fn join_ax_window(pid: u32, wid: u32) -> Result<crate::ffi::AxElement, String> {
+fn join_ax_window(
+    pid: u32,
+    wid: u32,
+    bound: Option<CooperativeBound>,
+) -> Result<crate::ffi::AxElement, String> {
     use crate::ffi::{AxElement, ax_error_name, ax_set_messaging_timeout, ax_window_id};
+    let check_bound = || bound.map_or(Ok(()), |bound| bound.check("AX window join"));
+    check_bound()?;
     let pid_i32 = i32::try_from(pid).map_err(|_| format!("frame join: pid {pid} out of range"))?;
     let app = AxElement::application(pid_i32)
         .ok_or_else(|| format!("frame join: no AX element for pid {pid}"))?;
@@ -294,6 +383,7 @@ fn join_ax_window(pid: u32, wid: u32) -> Result<crate::ffi::AxElement, String> {
     })?;
     let mut target: Option<AxElement> = None;
     for window in windows {
+        check_bound()?;
         if ax_set_messaging_timeout(&window, 2.0) != 0 {
             continue;
         }
@@ -302,6 +392,7 @@ fn join_ax_window(pid: u32, wid: u32) -> Result<crate::ffi::AxElement, String> {
             break;
         }
     }
+    check_bound()?;
     let Some(window) = target else {
         return Err(format!("frame join: window wid {wid} rejoin missed"));
     };
@@ -424,7 +515,10 @@ pub fn run_fixture_frame_write(args: &FixtureFrameWriteArgs) -> Result<String, (
 /// Controller entry for a caller that already holds the interrupt arm (the
 /// two-launch controller). The existing arm stays authoritative: this path
 /// never registers a nested handler or resets the latched SIGINT/SIGTERM
-/// flag before its single write.
+/// flag before its single write. It also never arms the process-wide
+/// hard-exit watchdog (a forced dirty exit would skip the controller's owned
+/// teardown): the same hard limit is enforced cooperatively at each
+/// proof/effect/poll boundary and refused with `Err` instead.
 #[cfg(target_os = "macos")]
 pub(crate) fn run_fixture_frame_write_under_interrupt(
     args: &FixtureFrameWriteArgs,
@@ -478,8 +572,26 @@ fn run_fixture_frame_write_impl(
         h: args.h,
     };
     check_frame_bounds(&requested).map_err(|e| (2, e))?;
-    let mut _watchdog = crate::watchdog::Watchdog::arm(HARD_LIMIT).map_err(|e| (1, e))?;
+    let exit_policy = frame_exit_policy(arm_interrupt);
+    // Standalone semantics are unchanged: the shared hard-exit watchdog
+    // bounds the whole pass. The embedded controller path never arms it;
+    // it enforces the same limit cooperatively at each boundary below so a
+    // lapse returns an error and the controller's teardown still runs.
+    let mut _watchdog = if exit_policy.arms_hard_exit_watchdog() {
+        Some(crate::watchdog::Watchdog::arm(HARD_LIMIT).map_err(|e| (1, e))?)
+    } else {
+        None
+    };
+    let cooperative = (exit_policy == FrameExitPolicy::EmbeddedCooperative)
+        .then(|| CooperativeBound::start(HARD_LIMIT));
+    let check_bound = |stage: &str| -> Result<(), (i32, String)> {
+        if let Some(bound) = cooperative {
+            bound.check(stage).map_err(|error| refuse("deadline", error))?;
+        }
+        Ok(())
+    };
     frame_session_gates().map_err(|e| refuse("session", e))?;
+    check_bound("session")?;
     let _interrupt = if arm_interrupt {
         Some(
             crate::space_drag_diag_live::InterruptArmed::arm()
@@ -497,6 +609,7 @@ fn run_fixture_frame_write_impl(
     })?;
     let announced = parse_fixture_announcement(raw.trim())
         .map_err(|e| (2, format!("announcement refused: {e}")))?;
+    check_bound("announcement")?;
     let pid = announced.pid;
     if pid <= 1 {
         return Err((
@@ -517,6 +630,7 @@ fn run_fixture_frame_write_impl(
         ));
     }
     let identity = fixture_process_identity(pid).map_err(|e| refuse("identity", e))?;
+    check_bound("identity")?;
     bundle_verdict(identity.bundle.as_deref())
         .map_err(|e| refuse("identity", format!("identity: {e}")))?;
     let exe = identity.exe.filter(|exe| !exe.is_empty()).ok_or_else(|| {
@@ -536,6 +650,7 @@ fn run_fixture_frame_write_impl(
             )
         })?;
     let tail = fixture_designated_tail(&exe).map_err(|e| refuse("signature", e))?;
+    check_bound("signature")?;
     if tail != args.signer.trim() {
         return Err(refuse(
             "signature",
@@ -550,6 +665,7 @@ fn run_fixture_frame_write_impl(
                 format!("socket: {e} (nonce proves the live run; stale or foreign runs refuse)"),
             )
         })?;
+    check_bound("socket")?;
     if snapshot.pid != pid {
         return Err(refuse(
             "socket",
@@ -560,6 +676,7 @@ fn run_fixture_frame_write_impl(
         ));
     }
     let cg_entry = cg_entry_for(args.wid).map_err(|e| refuse("proof", e))?;
+    check_bound("cg-entry")?;
     let cg_owner_before = cg_entry.as_ref().map(|(owner, _)| *owner);
     // When CG withholds the title (this reader lacks Screen Recording) but
     // the owner join already names the fixture pid, take one bounded AXTitle
@@ -568,7 +685,7 @@ fn run_fixture_frame_write_impl(
     // refuses: the fallback fills a withheld title, never an absent window,
     // and never a foreign pid's window.
     let ax_title: Option<String> = match &cg_entry {
-        Some((owner, None)) if *owner == pid => join_ax_window(pid, args.wid)
+        Some((owner, None)) if *owner == pid => join_ax_window(pid, args.wid, cooperative)
             .ok()
             .and_then(|window| {
                 crate::ffi::ax_string_attribute(&window, "AXTitle")
@@ -578,6 +695,7 @@ fn run_fixture_frame_write_impl(
             .filter(|title| !title.is_empty()),
         _ => None,
     };
+    check_bound("ax-title")?;
     let bound = ZoomAuthInputs {
         caller: args.caller.clone(),
         wid: args.wid,
@@ -606,6 +724,7 @@ fn run_fixture_frame_write_impl(
             "interrupted: SIGINT/SIGTERM latched; refusing write".to_owned(),
         ));
     }
+    check_bound("proof")?;
     let proof_us = proof_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     // The single AX worker owns every `AxElement` (construct, use, drop);
     // the main thread only waits bounded. The worker repeats the cheap proof
@@ -616,6 +735,7 @@ fn run_fixture_frame_write_impl(
     let worker_caller = args.caller.clone();
     let worker_wid = args.wid;
     let worker_signer = args.signer.clone();
+    check_bound("worker-spawn")?;
     // Best-effort cancellation fence: set when the main bound lapses so a
     // still-running worker refuses instead of writing late. It narrows but
     // cannot close the post-timeout write window of a synchronous AX set
@@ -647,8 +767,15 @@ fn run_fixture_frame_write_impl(
     // worker sets the fence and reports write state unknown (a late write
     // remains possible past the timeout); the invocation never replays. A
     // post-actuation leg failure still carries the full after-facts report
-    // with outcome unknown and exit 1.
-    let (label, error, outcome) = match done_rx.recv_timeout(AX_WORKER_BOUND) {
+    // with outcome unknown and exit 1. On the embedded path the wait is
+    // capped by the remaining cooperative bound, so a slow proof can never
+    // buy a full worker bound past the invocation limit; a lapse sets the
+    // same fence and the worker's pre-effect gate refuses to write.
+    let worker_wait = match cooperative {
+        Some(bound) => bound.remaining_at(Instant::now()).min(AX_WORKER_BOUND),
+        None => AX_WORKER_BOUND,
+    };
+    let (label, error, outcome) = match done_rx.recv_timeout(worker_wait) {
         Ok(Ok(outcome)) => ("written", None, outcome),
         Ok(Err(FrameWriteFailure::Unknown { outcome, error })) => {
             eprintln!("fixture-frame-write unknown after write: {error}");
@@ -657,10 +784,19 @@ fn run_fixture_frame_write_impl(
         Ok(Err(FrameWriteFailure::Refused(e))) => return Err(refuse("write", e)),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             cancelled.store(true, Ordering::SeqCst);
+            let detail = match cooperative {
+                Some(bound) => format!(
+                    "cooperative {}s deadline; {} ms remained of the worker wait",
+                    bound.limit.as_secs(),
+                    worker_wait.as_millis()
+                ),
+                None => "bounded 15s".to_owned(),
+            };
             return Err(refuse(
                 "ax-worker",
-                "AX worker timed out (bounded 15s); write state unknown (a late write remains possible), no replay; inspect the before/after facts before any retry"
-                    .to_owned(),
+                format!(
+                    "AX worker timed out ({detail}); write state unknown (a late write remains possible), no replay; inspect the before/after facts before any retry"
+                ),
             ));
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -704,7 +840,9 @@ fn run_fixture_frame_write_impl(
             .to_owned(),
     };
     let json = serde_json::to_string(&report).map_err(|e| (1, e.to_string()))?;
-    _watchdog.disarm();
+    if let Some(watchdog) = _watchdog.as_mut() {
+        watchdog.disarm();
+    }
     if label == "unknown" {
         return Err((1, json));
     }
@@ -781,7 +919,7 @@ fn frame_write_on_worker(
     use crate::fixture_zoom::{ZoomAuthInputs, check_zoom_authorization};
     // One shared bounded join: the retained `window` below is the exact
     // joined fixture window every later read uses.
-    let window = join_ax_window(pid, wid).map_err(FrameWriteFailure::Refused)?;
+    let window = join_ax_window(pid, wid, None).map_err(FrameWriteFailure::Refused)?;
     let pid_i32 = i32::try_from(pid)
         .map_err(|_| format!("frame worker: pid {pid} out of range"))
         .map_err(FrameWriteFailure::Refused)?;
@@ -1157,6 +1295,28 @@ mod tests {
         assert_eq!(attempted.size_status, SIZE_NOT_ATTEMPTED);
         assert!(attempted.error.is_some());
         assert_eq!(size_calls.get(), 0, "fence flip must block the size leg");
+    }
+
+    #[test]
+    fn embedded_cooperative_deadline_refuses_without_hard_exit_watchdog() {
+        // Standalone semantics keep the shared hard-exit watchdog; the
+        // embedded controller path must never arm it (a forced dirty exit
+        // would skip the controller's owned teardown) and instead returns
+        // Err from a cooperative elapsed bound at each effect boundary.
+        assert!(frame_exit_policy(true).arms_hard_exit_watchdog());
+        assert!(!frame_exit_policy(false).arms_hard_exit_watchdog());
+        let bound = CooperativeBound::start(HARD_LIMIT);
+        let at = |seconds: u64| bound.started + Duration::from_secs(seconds);
+        assert_eq!(bound.remaining_at(at(59)), Duration::from_secs(1));
+        assert!(bound.check_at(at(59), "worker-spawn").is_ok());
+        assert_eq!(bound.remaining_at(at(60)), Duration::ZERO);
+        let err = bound
+            .check_at(at(60), "worker-spawn")
+            .expect_err("the bound refuses at expiry");
+        assert!(err.contains("cooperative 60s deadline"), "unexpected: {err}");
+        assert!(err.contains("worker-spawn"), "unexpected: {err}");
+        assert!(err.contains("no hard-exit watchdog"), "unexpected: {err}");
+        assert!(bound.check_at(at(61), "after-worker").is_err());
     }
 
     #[test]

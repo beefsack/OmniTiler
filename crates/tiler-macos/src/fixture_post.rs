@@ -2265,6 +2265,10 @@ mod tests {
         fail_bypass_post: bool,
         interrupt: RefCell<bool>,
         latch_interrupt_after_down: bool,
+        /// When set, `interrupted` also observes the real diagnostic latch
+        /// (used only to prove the nested-arm boundary; every other test keeps
+        /// the injected flag isolated).
+        read_global_latch: bool,
     }
 
     impl ScriptTransport {
@@ -2292,6 +2296,7 @@ mod tests {
                 fail_bypass_post: false,
                 interrupt: RefCell::new(false),
                 latch_interrupt_after_down: false,
+                read_global_latch: false,
             }
         }
     }
@@ -2363,6 +2368,8 @@ mod tests {
         }
         fn interrupted(&self) -> bool {
             *self.interrupt.borrow()
+                || (self.read_global_latch
+                    && crate::space_drag_diag_live::diag_interrupted())
         }
     }
 
@@ -3336,6 +3343,55 @@ mod tests {
             err.1
         );
         assert!(drifting.posts.borrow().is_empty());
+    }
+
+    #[test]
+    fn latched_interrupt_before_down_refuses_with_nothing_posted_inside_a_nested_arm() {
+        // An outer run (a fixture leg or the restart controller) holds the
+        // interrupt arm; a SIGINT/SIGTERM latched it. The post's nested arm
+        // must preserve that latch, and the post must refuse at the pre-down
+        // sequence point with zero posts.
+        let _outer = crate::space_drag_diag_live::InterruptArmed::arm().expect("outer arm");
+        struct ResetLatch;
+        impl Drop for ResetLatch {
+            fn drop(&mut self) {
+                crate::space_drag_diag_live::set_diag_interrupted_for_test(false);
+            }
+        }
+        let _reset = ResetLatch;
+        crate::space_drag_diag_live::set_diag_interrupted_for_test(true);
+        let mut transport = ScriptTransport::passing();
+        transport.read_global_latch = true;
+        let driver = FixtureDriver::bind(
+            &transport,
+            &announcement(NONCE),
+            NONCE,
+            SIGNER,
+            test_admission(),
+        )
+        .expect("binds");
+        let err = driver
+            .post("a", 7, "focus-h", ProbeModifier::Ctrl)
+            .unwrap_err();
+        assert_eq!(err.0, 1);
+        assert!(
+            err.1.contains("\"stage\":\"interrupted\""),
+            "unexpected: {}",
+            err.1
+        );
+        assert!(
+            err.1.contains("released_bypass\":false"),
+            "unexpected: {}",
+            err.1
+        );
+        assert!(
+            transport.posts.borrow().is_empty(),
+            "a pre-down interrupt must post nothing"
+        );
+        assert!(
+            crate::space_drag_diag_live::diag_interrupted(),
+            "the nested arm must preserve the outer latched interrupt"
+        );
     }
 
     #[test]
