@@ -216,6 +216,29 @@ mise exec -- cargo test --locked -p tiler-macos --lib world_builder::tests::firs
 - The adapter incorrectly counted auxiliary AppKit/winit CG owner entries, which AX never lists, as unresolved windows. Completeness now checks roster candidates, as on the covering path; unrelated CG owner entries cannot prolong the hold once every retained candidate has live AX, exclusion, or fresh non-current home proof. Unreadable CG and unknown SLS still hold; the latter drops the stale home. Core and wire are unchanged.
 - The signed-fixture gate stays open. On the next leg capture correlated CG completeness, owner IDs and bounds, fresh SLS membership, roster IDs/homes, and re-home results. Require verified native arrival on the empty Space, a newer indicator rebuild with the destination current, the painted highlight, and no writes to the hidden fixture window. Unknown homes must still hold without writes.
 
+### Signed-fixture retest (2026-11-27)
+
+- On `aba030cd` (with `5f6d1b02`), the signed controller established owned
+  Desktop 3 with one fixture window and verified that owned Desktop 4 was
+  empty. Native current changed 3 → 4 → 3; complete indicator rebuilds
+  followed at generations 2 → 3 → 4, with the correct current ordinal
+  and one occupied row throughout.
+- During the eight AX-blank observations on the empty destination, the
+  product logged `published=0`, `non-covering-retained=1`, `applied=1`
+  and no scope hold. Independent CG/SLS samples joined the subject to
+  its original Space throughout; its settled frame stayed
+  `(8,38,2224,1123)`. Four auxiliary CG entries had empty SLS membership.
+  There were no subject writes while hidden; the first return frame was
+  skipped as redundant. The controller verified clean product stop,
+  starting Space and row restoration, and no residue or retained receipt.
+- This closes the prior empty-destination rebuild failure, not MX6
+  acceptance. The ordinary pager launch does not log product-internal CG
+  completeness, full roster homes, or per-window re-home verdicts, so the
+  external samples and applied counts are not a complete internal join.
+  The status-item capture rectangle could not be revalidated, so the
+  painted highlight was not captured. Unknown-home behavior, clicks,
+  painted unknown markers, and fullscreen/game suppression were not tested.
+
 ## Backlog detail moved 2026-11-01
 
 ### Original backlog lines 1733-1740

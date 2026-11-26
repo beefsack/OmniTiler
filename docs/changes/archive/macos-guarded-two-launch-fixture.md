@@ -49,4 +49,40 @@ For either command, require `outcome:completed`, independently verified absence 
 - **M3:** Require `m3-exact`. The first stop leaves exactly the intended durable float bindings and the captured pre-stop arrangement. With no product running, one signed AX write must move the selected tile to an inset that is not one of the original tiles; independent AX and CG observations confirm the nudge without moving any other window. The second launch restores each float's exact frame and both exact tile-rectangle multisets, so an unchanged nudge cannot pass.
 - **M4:** Require `m4-base-restored`. Launch one applies a distinct composed overlay, and a capture between the products proves that overlay is still in place. Launch two restores the exact tiled base in AX and CG before new input. Native `AXZoomed:true` or the presence of an intent row is a failure, not successful hydration.
 
-These commands are for a later signed run. Offline tests exercise guard and cleanup decisions but cannot establish native M3 or M4 behavior.
+Offline tests exercise guards and cleanup decisions; native acceptance
+requires the signed outcomes below.
+
+### Signed runs (2026-11-27)
+
+- **M3 refused at `restart-compare`.** Both retained float AX/CG frames
+  matched exactly. The settled tiles changed from `(8,38,2224,557)` and
+  `(8,603,2224,558)` to `(8,38,1108,1123)` and `(1124,38,1108,1123)`
+  in both AX and CG. The controller reached the comparison after
+  the binding, nudge, and hydration-store guards. Its refusal receipt
+  retained the frame arrays, but not the prerequisite evidence or
+  launch-one product logs.
+  Owned resources were gone after teardown, with no pending receipt.
+  Do not interpret the two exact float frames as `m3-exact`. The
+  [restart contract](../../decisions/persistence.md#orderly-restart-adoption)
+  requires layout re-adoption, not saved-layout restoration; no product
+  defect or change to the acceptance oracle is established by this run.
+- **M4 passed (`m4-base-restored`).** The overlay subject changed from
+  `(1124,38,1108,1123)` to `(0,30,2240,1138)` in AX and CG and stayed at
+  that overlay frame after launch one stopped. Launch two restored both
+  exact base multisets before any new input; `AXZoomed` was absent at
+  all four captures. The private store remained absent with zero rows
+  and the same fingerprint. Both stop checks and owned teardown passed,
+  with the starting Space restored and no residue or retained receipt.
+
+### M3 fixture correction
+
+Keep the restart oracle unchanged: exact float frames, exact tile
+multisets, and a verified inter-launch nudge. To avoid comparing a
+historical split against a fresh tree, launch with only the tiles that
+will survive, capture the natural AX/CG layout, then add and float the
+other fixture windows. Require the same AX and CG tile multisets again
+before stop, then use the original exact pre-stop versus post-restart
+comparison. Both launch logs and terminal outcomes remain available for
+audit after teardown, including refusals. The private store is removed
+only after product absence is independently proven. The correction
+does not change product layout or persistence.

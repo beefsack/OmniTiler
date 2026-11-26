@@ -75,3 +75,24 @@ Focused regressions, all in `crates/tiler-macos/src/world_dispatch.rs` `mod test
 - Real macOS fullscreen double-toggle with AX/frame-write tracing: zero subject geometry/focus/state writes while the overlay is retained, sibling reflow allowed, and exactly one deferred reveal at the durable placement after exit (no repeat on echo).
 - Native verification of the minimized/hidden veto release and close/lifetime clearing on a live session.
 - Windows adapter integration remains separately pending; ordinary macOS first-float-in-place remains the separate P1 item.
+
+### Approved signed-fixture procedure (2026-11-27)
+
+Start with the signed fixture on a controller-owned ordinary Space and
+prove an independent exit and return route before changing fullscreen
+state. Use the fixture window only, with borderless native fullscreen
+and no exclusive mode. Continue only with fresh `AXFullScreen` and
+native Space readback for the same window lifetime. Count subject
+frame, focus and state writes while fullscreen and read sibling reflow
+independently. On exit, require one reveal at the durable frame and no
+repeat on its echo. Stop on lost identity, permission, topology or
+exit route; restore only owned state. The approval is for this
+fixture journey, not MX6 fullscreen/game suppression.
+
+The fixture socket supports `borderless_fullscreen` and `windowed`.
+Those are requests, not native exit or return readbacks. The legacy
+`owned-fullscreen` command uses a different helper's spawn record and
+cannot authenticate the signed fixture. Its held-child exit route also
+does not apply to the LaunchServices fixture. Do not count either
+legacy helper behavior or a successful socket reply as the independent
+exit proof required by this procedure.

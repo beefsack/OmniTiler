@@ -59,6 +59,32 @@ The [sticky contract](../decisions/window-state.md#sticky-floating) is per windo
 
 **Recommendation — keep sticky unsupported and leave checks 6/32 unchanged.** No conforming SIP-on route surfaced. Before dropping the sticky parts, resolve the remaining negative evidence question and obtain explicit approval; no source-only impossibility or pass claim. If native verification is later authorized, compare exact membership sets and fresh visibility on two outputs, across a newly added managed Space and restart, including unstick with same-app sibling unaffected ([existing discriminator](macos-world-v2-port.md#sticky-per-display-verification-plan)). If an amendment is eventually approved, retain check 6's maximize and physical hold/release requirements; replace check 32's positive sticky assertion with an unsupported/no-mutation/no-adoption requirement rather than marking it passed.
 
+### Bounded signed-fixture probe (2026-11-27)
+
+- SIP was enabled. The signed diagnostic's normal SkyLight connection
+  resolved `SLSProcessAssignToAllSpaces`. Its known ABI takes a connection
+  and PID, not a window ID; the process-wide entry point was not invoked.
+  The per-window tag readers/writers and SLS membership reader also resolved.
+- **Stopped before the tag write.** The sidecar could not bind the active
+  product through its LaunchServices process-argument check. By the time it
+  tried to join the fixture window, the controller had already finished and
+  closed it; there was no authenticated target and no tag mutation. The
+  controller restored the original topology and left no owned residue.
+- No foreign tag efficacy or post-switch membership was measured. The
+  current unsupported behavior and checks 6 and 32 are unchanged; the
+  conditional gate amendment was not triggered.
+- The launcher did not forward the settle environment through `open`,
+  and the sidecar waited on process arguments unavailable through
+  LaunchServices. The pager returned and tore down automatically with
+  no probe handshake. The restore guard relied on an AX title join
+  that can disappear off-Space, and skipped restore if the immediate
+  post-write tag read was unreadable. Fixing the trigger alone would
+  not make that restore safe.
+- A bounded retry needs synchronous controller ownership of the tag
+  set, the exact away destination and return, fresh SLS membership
+  reads before and after the switch, and an unconditional one-bit
+  restore while owner identity is proven.
+
 ## Project-owned native fullscreen
 
 The leading route is to **set** `AXFullScreen` to an explicit boolean using public [`AXUIElementSetAttributeValue`](https://developer.apple.com/documentation/applicationservices/1460434-axuielementsetattributevalue); the state attribute's name is undocumented and is not the documented [`kAXFullScreenButtonAttribute`](https://developer.apple.com/documentation/applicationservices/kaxfullscreenbuttonattribute). Other apps can expose either attribute, neither, or a disabled button. Using public AX transport is SIP-on with Accessibility; private `_AXUIElementGetWindow` is sometimes used to join to CG identity, not to enter fullscreen. Request acceptance is not a settled native Space or an exact windowed restore.

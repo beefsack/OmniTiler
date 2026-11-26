@@ -1259,6 +1259,52 @@ posting available, the session unlocked and Secure Input inactive.
   application and matched the preserved native topology; the inspected
   baseline and residue were archived after recovery.
 
+## Signed-fixture native legs (2026-11-27)
+
+Single-display desktop, source `aba030cd`. The controller/product
+(`io.github.omnitiler.macos.probe`) and fixture
+(`io.github.omnitiler.live-fixture`) were built and verified with the
+persistent development signer. Signed preflight returned Accessibility
+and post-event access, an unlocked graphical session, inactive Secure
+Input, and available SLS symbols. Full artifact identities and raw
+readbacks are retained separately from the repository.
+
+- **MX6 — native switch and rebuild verified; overall acceptance open.**
+  Owned occupied → verified-empty → occupied switching changed the native
+  current ordinal 3 → 4 → 3 and produced indicator generations 2 → 3 → 4.
+  Fresh CG/SLS samples kept the subject on its original Space, with zero
+  hidden subject writes. The controller restored the original topology with
+  no residue. The product-internal per-observation join and the painted
+  highlight were not captured. [Evidence](macos-core-trailing-pager.md#signed-fixture-retest-2026-11-27).
+
+- **F2 — first float and remembered re-float verified.** Exact AX/CG
+  frame unchanged with zero subject setters on the first float, then
+  exactly restored from a distinct rotated tile with one setter on
+  re-float. Two subsequent observations did not repeat the setter.
+  The controller has no issuing-reply suppression and no same-float
+  sequences for composed unmaximize or a directional half-snap; those
+  subproofs were not run. [Evidence](archive/macos-first-float-placement.md#retained-float-frame-signed-fixture-retest-2026-11-27).
+
+- **M3 — native acceptance failed.** Both float frames matched exactly in
+  AX and CG; the two tiles rebuilt from stacked rows to side-by-side
+  columns, changing both rectangle multisets. The hardened controller
+  refused at `restart-compare`; cleanup left no pending receipt. The
+  restart contract requires re-adoption, not layout persistence.
+- **M4 — passed.** A distinct composed overlay survived the first clean
+  stop; the second launch restored both exact native base multisets,
+  before new input, with `AXZoomed` absent and the private store
+  unchanged and empty. Both stops were verified and owned teardown
+  restored the starting Space with no residue.
+  [M3 and M4 evidence](archive/macos-guarded-two-launch-fixture.md#signed-runs-2026-11-27).
+
+- **Sticky — stopped before mutation.** A signed SIP-on SkyLight
+  connection resolved `SLSProcessAssignToAllSpaces`, a PID-scoped API
+  that was not called. The sidecar could not bind the live fixture window
+  before its controller tore down; no tag was set and tag efficacy remains
+  unmeasured. The topology was restored, with no owned residue. No retry
+  was attempted with a sidecar that could not guarantee tag restoration.
+  [Evidence](macos-0.1-native-spaces-prior-art.md#bounded-signed-fixture-probe-2026-11-27).
+
 ## Transferable KDE lessons
 
 - Fail closed: unknown never matches; setter acceptance is not native settlement ([runner oracles](v4-phase2-kde-scenario-runner.md#selected-design)).
@@ -1283,15 +1329,15 @@ posting available, the session unlocked and Secure Input inactive.
   the signed fixture (2026-11-24), and malformed-store startup degrades cleanly
   (2026-11-25). Numeric launch-date stability and recoverable write failure
   are proved in one login (2026-11-26). Skipped-publication recovery,
-  tightened native restart geometry and re-login namespace rejection remain.
-  The guarded two-launch fixture controller landed offline in `de681e19`;
-  the signed [restart leg](archive/macos-guarded-two-launch-fixture.md#later-signed-run)
-  remains to be run. No store adoption is established by finite CG ID churn
-  experiments.
-- M4's product route is decided, not reopened here; native apply/restore is
-  proved on the signed fixture (2026-11-24). Physical Ctrl+M delivery, paint,
-  native Zoom/drift interaction, external move/resize clear, fullscreen
-  replacement, send/output/work-area changes and restart-to-base remain.
+  exact tile-rebuild acceptance and re-login namespace rejection remain.
+  The hardened signed restart [matched the floats but refused the tile
+  multiset](archive/macos-guarded-two-launch-fixture.md#signed-runs-2026-11-27).
+  No store adoption is established by finite CG ID churn experiments.
+- M4's product route is decided, not reopened here; signed-fixture native
+  apply/restore (2026-11-24) and restart-to-base (2026-11-27) passed.
+  Physical Ctrl+M delivery, paint, native Zoom/drift interaction, external
+  move/resize clear, fullscreen replacement, and send/output/work-area
+  changes remain.
   M5 causal creation, M6 retirement consumer and M2 lifetime continuity still
   need native proof.
 - M8 target-display/Space arrival, M9 connector normalization and identical-monitor

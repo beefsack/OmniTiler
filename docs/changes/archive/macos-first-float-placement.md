@@ -75,3 +75,18 @@ lane. An ordinary snapshot without an operation still authorizes no writes,
 and an in-place first float still requires no setter. The signed evidence
 above predates that replacement; latest-world recovery, composed float
 unmaximize, and directional float half-snap need their own native proof.
+
+## Retained float-frame signed-fixture retest (2026-11-27)
+
+- With `7e462765` present, the first float kept the exact tiled AX/CG
+  frame `(1124,38,1108,1123)` with zero subject setters and one sibling
+  setter. Retile/rotate placed the subject at `(8,603,2224,558)`.
+  Re-float restored the exact remembered AX/CG frame with one subject
+  setter and one sibling setter. The next two observations caused no
+  duplicate setter. Owned Space and product cleanup completed with no
+  residue or retained receipt.
+- The issuing reply was consumed normally. The signed controller cannot
+  suppress it, so observation-only recovery after a held/skipped reply
+  remains offline-only. Composed float unmaximize and directional float
+  half-snap also remain offline-only: the existing aliases cannot deliver
+  a multi-action sequence to the same floated window.
