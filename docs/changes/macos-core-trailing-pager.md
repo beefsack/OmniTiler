@@ -239,6 +239,16 @@ mise exec -- cargo test --locked -p tiler-macos --lib world_builder::tests::firs
   painted highlight was not captured. Unknown-home behavior, clicks,
   painted unknown markers, and fullscreen/game suppression were not tested.
 
+- **Visual-only follow-up stopped before the pager leg.** Screen capture
+  permission was available, but native window inventory exposed only the
+  entire menu bar, not a product-owned status-item rectangle or capture ID.
+  The existing pager controller returns as soon as the empty-destination
+  rebuild is observed, with no capture dwell. No screenshot was taken
+  and no diagnostic fields were added. The earlier native switch/rebuild
+  evidence stands; check the highlight by watching the product item
+  while physically switching between the identified occupied and empty
+  Spaces in scoped dogfooding.
+
 ## Backlog detail moved 2026-11-01
 
 ### Original backlog lines 1733-1740

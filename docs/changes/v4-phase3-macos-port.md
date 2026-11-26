@@ -1276,6 +1276,10 @@ readbacks are retained separately from the repository.
   hidden subject writes. The controller restored the original topology with
   no residue. The product-internal per-observation join and the painted
   highlight were not captured. [Evidence](macos-core-trailing-pager.md#signed-fixture-retest-2026-11-27).
+  The visual-only follow-up did not rerun the pager: no exact capture
+  rectangle or ID was available outside the product, and the automatic
+  return leaves no capture dwell. No screenshot or diagnostic additions;
+  verify painted highlight in scoped dogfooding.
 
 - **F2 — first float and remembered re-float verified.** Exact AX/CG
   frame unchanged with zero subject setters on the first float, then
