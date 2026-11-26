@@ -2437,16 +2437,17 @@ fn consume_world_reply(
             overlay_skipped += 1;
         }
     }
-    // Untouched float snapshots never authorize a write on their own. A
-    // fresh rect-less ToggleFloat can carry an explicit, one-shot placement
-    // at a different frame (re-float into remembered geometry).
-    let float_ticket = match ticket_command {
-        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: WindowSubject::CurrentFocus,
-            float_rect: None,
-        })) => ticket_command_seq,
-        _ => None,
-    };
+    // Explicit float placements: a stable `frame_operation` token is the
+    // only write authority on an `Untouched` floating row (the core
+    // publishes no frame authority there). Every core `RetainedFloat`
+    // producer rides this lane — explicit re-float, composed-maximize float
+    // unmaximize, directional float half-snaps and refused-half-snap base
+    // restores — and the token may first appear on an observation-only
+    // reply when the issuing reply was skipped or held. Ordinary first
+    // floats in place stay write-free: `allows_explicit_float_frame`
+    // refuses while the observed frame already equals the target, and its
+    // fullscreen/minimized/hidden vetoes keep deferred overlays out of this
+    // lane. Scope holds never authorize a write either.
     let mut frames: Vec<(String, Rect)> = Vec::new();
     let mut frame_ops: Vec<(String, String)> = Vec::new();
     for row in &reply.windows {
@@ -2455,13 +2456,7 @@ fn consume_world_reply(
         if !controlled
             && !(row.frame_authority == ScopeAuthority::Untouched
                 && row.floating
-                && float_ticket.is_some_and(|seq| {
-                    row.command_seq == Some(seq)
-                        && operation
-                            .and_then(|op| op.strip_prefix("op-"))
-                            .and_then(|seq| seq.parse().ok())
-                            == Some(seq)
-                }))
+                && operation.is_some_and(|operation| !operation.is_empty()))
         {
             continue;
         }
@@ -15974,6 +15969,705 @@ mod tests {
                 .map(|entry| ff_rect(entry.x, entry.y, entry.w, entry.h)),
             Some(remembered),
             "the retained plan keeps the remembered geometry"
+        );
+    }
+
+    /// Latest-world convergence for explicit float placement: when the
+    /// issuing reply is skipped or held before emission, the next accepted
+    /// observation-only reply still republishes the core's retained
+    /// placement token and must actuate it exactly once. The old bespoke
+    /// `ToggleFloat`/command-seq ticket dropped the target permanently.
+    #[test]
+    fn macos_float_lane_skipped_ticket_observation_only_restores_once() {
+        let (command, token) = ff_toggle_float_command();
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = mf_engine();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4,
+                        ticket: Option<(&WorldCommand, u64)>| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                ticket.map(|(command, _)| command),
+                ticket.map(|(_, seq)| seq),
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        let observe = |retained: &mut RetainedCore, wid: u32, frame: Rect, floating: bool| {
+            let app = retained.apps.get_mut(&FF_PID).expect("fixture app");
+            let window = app
+                .windows
+                .iter_mut()
+                .find(|window| window.wid == wid)
+                .expect("fixture window");
+            (window.x, window.y, window.w, window.h) = (frame.x, frame.y, frame.w, frame.h);
+            window.floating = floating;
+        };
+        let observed_fact = |window: &str, frame: Rect| {
+            let mut fact = mf_fact(window, frame.x, false);
+            fact.rect = Some(frame);
+            fact
+        };
+
+        // Seed: two tiled windows on the current Space.
+        let observed_tile_frame = ff_rect(100, 0, 40, 90);
+        let seed = ff_accepted(
+            &mut engine,
+            &mf_report(
+                1,
+                vec![
+                    observed_fact(FF_SIBLING, ff_rect(0, 0, 40, 90)),
+                    observed_fact(FF_SUBJECT, observed_tile_frame),
+                ],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &seed, None);
+
+        // 1. First Ctrl+G floats in place at the reported current frame.
+        retained.observed_focus = Some(WindowId(FF_SUBJECT.to_owned()));
+        retained.observed_focus_known = true;
+        if let Some(app) = retained.apps.get_mut(&FF_PID) {
+            app.focused_wid = Some(8);
+        }
+        let first = ff_accepted(
+            &mut engine,
+            &mf_report(
+                2,
+                vec![
+                    observed_fact(FF_SIBLING, ff_rect(0, 0, 40, 90)),
+                    observed_fact(FF_SUBJECT, observed_tile_frame),
+                ],
+                FF_SUBJECT,
+                Some(2),
+                Some(command.clone()),
+            ),
+        );
+        let remembered = ff_row(&first, FF_SUBJECT)
+            .effective_frame
+            .expect("the first float publishes its placement");
+        assert_eq!(remembered, observed_tile_frame);
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &first, Some((&command, 2)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "the in-place first float stays write-free: {after:?} vs {before:?}"
+        );
+        let first_sibling = ff_row(&first, FF_SIBLING)
+            .effective_frame
+            .expect("sibling reflow frame");
+        observe(&mut retained, 7, first_sibling, false);
+        observe(&mut retained, 8, remembered, true);
+
+        // 2. Second Ctrl+G retiles the subject; settle at its tile frame.
+        let unfloat = ff_accepted(
+            &mut engine,
+            &mf_report(
+                3,
+                vec![
+                    observed_fact(FF_SIBLING, first_sibling),
+                    observed_fact(FF_SUBJECT, remembered),
+                ],
+                FF_SUBJECT,
+                Some(3),
+                Some(command.clone()),
+            ),
+        );
+        let tile_frame = ff_row(&unfloat, FF_SUBJECT)
+            .effective_frame
+            .expect("the unfloat publishes the tiled frame");
+        assert_ne!(tile_frame, remembered);
+        dispatch(&mut session, &mut retained, &unfloat, Some((&command, 3)));
+        let unfloat_sibling = ff_row(&unfloat, FF_SIBLING)
+            .effective_frame
+            .expect("sibling reflow frame");
+        observe(&mut retained, 7, unfloat_sibling, false);
+        observe(&mut retained, 8, tile_frame, false);
+
+        // 3. Third Ctrl+G re-floats at the remembered geometry. The
+        //    issuing reply is skipped entirely (the held-emission analogue:
+        //    the adapter never reaches this frame lane), leaving the token
+        //    unspent.
+        let refloat = ff_accepted(
+            &mut engine,
+            &mf_report(
+                4,
+                vec![
+                    observed_fact(FF_SIBLING, unfloat_sibling),
+                    observed_fact(FF_SUBJECT, tile_frame),
+                ],
+                FF_SUBJECT,
+                Some(4),
+                Some(command.clone()),
+            ),
+        );
+        assert_eq!(
+            ff_row(&refloat, FF_SUBJECT).frame_operation.as_deref(),
+            Some("op-4"),
+            "the issuing reply keeps the unspent placement token"
+        );
+
+        // 4. A later observation-only reply republishes the retained
+        //    placement; it must restore the remembered geometry exactly
+        //    once without the command ticket.
+        let quiet = ff_accepted(
+            &mut engine,
+            &mf_report(
+                5,
+                vec![
+                    observed_fact(FF_SIBLING, unfloat_sibling),
+                    observed_fact(FF_SUBJECT, tile_frame),
+                ],
+                FF_SUBJECT,
+                None,
+                None,
+            ),
+        );
+        let quiet_subject = ff_row(&quiet, FF_SUBJECT);
+        assert!(
+            quiet_subject.floating,
+            "the float desire survives: {quiet_subject:?}"
+        );
+        assert_eq!(
+            quiet_subject.frame_operation.as_deref(),
+            Some("op-4"),
+            "the observation-only reply keeps the placement token: {quiet_subject:?}"
+        );
+        let quiet_target = quiet_subject
+            .effective_frame
+            .expect("the observation-only reply carries the retained target");
+        assert_eq!(
+            quiet_target, remembered,
+            "the retained target is the remembered float geometry: {quiet_subject:?}"
+        );
+        assert_eq!(
+            quiet_subject.frame_authority,
+            ScopeAuthority::Untouched,
+            "an explicit float placement needs the frame lane: {quiet_subject:?}"
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &quiet, None);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the observation-only reply stages the sibling plus the remembered \
+             subject frame: {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-4"),
+            "the observation-only reply restores the remembered geometry exactly once"
+        );
+        assert_eq!(
+            lock_shared(&shared)
+                .last_desired
+                .iter()
+                .find(|entry| entry.window == FF_SUBJECT)
+                .map(|entry| ff_rect(entry.x, entry.y, entry.w, entry.h)),
+            Some(remembered),
+            "the staged subject frame targets the remembered geometry"
+        );
+
+        // 5. The same observation-only reply again never repeats the
+        //    placement.
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &quiet, None);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "a duplicate observation-only reply stages only the sibling: \
+             {after:?} vs {before:?}"
+        );
+
+        // 6. Native echo at the remembered geometry retires the token and
+        //    stages no subject write.
+        observe(&mut retained, 8, remembered, true);
+        let echo = ff_accepted(
+            &mut engine,
+            &mf_report(
+                6,
+                vec![
+                    observed_fact(FF_SIBLING, unfloat_sibling),
+                    observed_fact(FF_SUBJECT, remembered),
+                ],
+                FF_SUBJECT,
+                None,
+                None,
+            ),
+        );
+        assert_eq!(
+            ff_row(&echo, FF_SUBJECT).frame_operation, None,
+            "the proven placement retires its token"
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &echo, None);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "the echo stages only the sibling: {after:?} vs {before:?}"
+        );
+        assert_eq!(
+            lock_shared(&shared)
+                .last_desired
+                .iter()
+                .find(|entry| entry.window == FF_SUBJECT)
+                .map(|entry| ff_rect(entry.x, entry.y, entry.w, entry.h)),
+            Some(remembered),
+            "the retained plan keeps the remembered geometry"
+        );
+    }
+
+    /// Composed-maximize float unmaximize rides the same core `Untouched` +
+    /// `frame_operation` lane as explicit re-float. The issuing command is
+    /// `ToggleMaximize`, never `ToggleFloat`, so the retained base must
+    /// still move exactly once.
+    #[test]
+    fn macos_float_lane_composed_maximize_unmaximize_restores_base() {
+        let (float_command, token) = ff_toggle_float_command();
+        let max_command = WorldCommand::ToggleMaximize {
+            window: WindowSubject::CurrentFocus,
+        };
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = mf_engine();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4,
+                        ticket: Option<(&WorldCommand, u64)>| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                ticket.map(|(command, _)| command),
+                ticket.map(|(_, seq)| seq),
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        let observe = |retained: &mut RetainedCore, wid: u32, frame: Rect, floating: bool| {
+            let app = retained.apps.get_mut(&FF_PID).expect("fixture app");
+            let window = app
+                .windows
+                .iter_mut()
+                .find(|window| window.wid == wid)
+                .expect("fixture window");
+            (window.x, window.y, window.w, window.h) = (frame.x, frame.y, frame.w, frame.h);
+            window.floating = floating;
+        };
+        let observed_fact = |window: &str, frame: Rect| {
+            let mut fact = mf_fact(window, frame.x, false);
+            fact.rect = Some(frame);
+            fact
+        };
+        let work_area = ff_rect(0, 0, 800, 600);
+
+        // Seed and float in place.
+        let observed_tile_frame = ff_rect(100, 0, 40, 90);
+        let seed = ff_accepted(
+            &mut engine,
+            &mf_report(
+                1,
+                vec![
+                    observed_fact(FF_SIBLING, ff_rect(0, 0, 40, 90)),
+                    observed_fact(FF_SUBJECT, observed_tile_frame),
+                ],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &seed, None);
+        retained.observed_focus = Some(WindowId(FF_SUBJECT.to_owned()));
+        retained.observed_focus_known = true;
+        if let Some(app) = retained.apps.get_mut(&FF_PID) {
+            app.focused_wid = Some(8);
+        }
+        let floated = ff_accepted(
+            &mut engine,
+            &mf_report(
+                2,
+                vec![
+                    observed_fact(FF_SIBLING, ff_rect(0, 0, 40, 90)),
+                    observed_fact(FF_SUBJECT, observed_tile_frame),
+                ],
+                FF_SUBJECT,
+                Some(2),
+                Some(float_command.clone()),
+            ),
+        );
+        let remembered = ff_row(&floated, FF_SUBJECT)
+            .effective_frame
+            .expect("float base");
+        dispatch(
+            &mut session,
+            &mut retained,
+            &floated,
+            Some((&float_command, 2)),
+        );
+        let floated_sibling = ff_row(&floated, FF_SIBLING)
+            .effective_frame
+            .expect("sibling reflow frame");
+        observe(&mut retained, 7, floated_sibling, false);
+        observe(&mut retained, 8, remembered, true);
+        // Settle the placement at its base before composing the maximize.
+        let settle = ff_accepted(
+            &mut engine,
+            &mf_report(
+                3,
+                vec![
+                    observed_fact(FF_SIBLING, floated_sibling),
+                    observed_fact(FF_SUBJECT, remembered),
+                ],
+                FF_SUBJECT,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &settle, None);
+
+        // Composed maximize on: the subject becomes a Controlled work-area
+        // row; the float base stays retained core-side.
+        let max_on = ff_accepted(
+            &mut engine,
+            &mf_report(
+                4,
+                vec![
+                    observed_fact(FF_SIBLING, floated_sibling),
+                    observed_fact(FF_SUBJECT, remembered),
+                ],
+                FF_SUBJECT,
+                Some(4),
+                Some(max_command.clone()),
+            ),
+        );
+        let on_row = ff_row(&max_on, FF_SUBJECT);
+        assert_eq!(
+            on_row.effective_frame,
+            Some(work_area),
+            "the composed maximize selects the work area: {on_row:?}"
+        );
+        assert_eq!(
+            on_row.frame_authority,
+            ScopeAuthority::Controlled,
+            "the composed frame rides the controlled tile lane: {on_row:?}"
+        );
+        dispatch(
+            &mut session,
+            &mut retained,
+            &max_on,
+            Some((&max_command, 4)),
+        );
+        observe(&mut retained, 8, work_area, true);
+
+        // Composed maximize off restores the float base through the uniform
+        // placement lane, with `ToggleMaximize` as the issuing command.
+        let max_off = ff_accepted(
+            &mut engine,
+            &mf_report(
+                5,
+                vec![
+                    observed_fact(FF_SIBLING, floated_sibling),
+                    observed_fact(FF_SUBJECT, work_area),
+                ],
+                FF_SUBJECT,
+                Some(5),
+                Some(max_command.clone()),
+            ),
+        );
+        let off_row = ff_row(&max_off, FF_SUBJECT);
+        assert!(
+            off_row.floating,
+            "the unmaximized subject keeps its float membership: {off_row:?}"
+        );
+        assert_eq!(
+            off_row.effective_frame,
+            Some(remembered),
+            "the unmaximize restores the retained float base: {off_row:?}"
+        );
+        assert_eq!(
+            off_row.frame_operation.as_deref(),
+            Some("op-5"),
+            "the unmaximize mints the existing one-shot placement token: {off_row:?}"
+        );
+        assert_eq!(
+            off_row.frame_authority,
+            ScopeAuthority::Untouched,
+            "the restore needs the adapter frame lane: {off_row:?}"
+        );
+        let before = ff_counters(&shared);
+        dispatch(
+            &mut session,
+            &mut retained,
+            &max_off,
+            Some((&max_command, 5)),
+        );
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the unmaximize stages the sibling plus the remembered subject frame: \
+             {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-5"),
+            "the unmaximize write spent the placement token exactly once"
+        );
+        assert_eq!(
+            lock_shared(&shared)
+                .last_desired
+                .iter()
+                .find(|entry| entry.window == FF_SUBJECT)
+                .map(|entry| ff_rect(entry.x, entry.y, entry.w, entry.h)),
+            Some(remembered),
+            "the staged subject frame targets the retained base"
+        );
+
+        // Duplicate replies never repeat the placement.
+        let before = ff_counters(&shared);
+        dispatch(
+            &mut session,
+            &mut retained,
+            &max_off,
+            Some((&max_command, 5)),
+        );
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "a duplicate unmaximize reply stages only the sibling: {after:?} vs {before:?}"
+        );
+    }
+
+    /// Directional float half-snap rides the same `Untouched` +
+    /// `frame_operation` lane. The issuing command is `MoveDirectional`, so
+    /// the authorized half must move exactly once.
+    #[test]
+    fn macos_float_lane_directional_half_snap_moves_once() {
+        let (float_command, token) = ff_toggle_float_command();
+        let move_command = WorldCommand::MoveDirectional {
+            window: WindowSubject::CurrentFocus,
+            direction: tiler_core::directional::Direction::Right,
+            same_axis: tiler_core::directional::SameAxisMove::default(),
+        };
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = mf_engine();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4,
+                        ticket: Option<(&WorldCommand, u64)>| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                ticket.map(|(command, _)| command),
+                ticket.map(|(_, seq)| seq),
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        let observe = |retained: &mut RetainedCore, wid: u32, frame: Rect, floating: bool| {
+            let app = retained.apps.get_mut(&FF_PID).expect("fixture app");
+            let window = app
+                .windows
+                .iter_mut()
+                .find(|window| window.wid == wid)
+                .expect("fixture window");
+            (window.x, window.y, window.w, window.h) = (frame.x, frame.y, frame.w, frame.h);
+            window.floating = floating;
+        };
+        let observed_fact = |window: &str, frame: Rect| {
+            let mut fact = mf_fact(window, frame.x, false);
+            fact.rect = Some(frame);
+            fact
+        };
+
+        // Seed and float in place.
+        let observed_tile_frame = ff_rect(100, 0, 40, 90);
+        let seed = ff_accepted(
+            &mut engine,
+            &mf_report(
+                1,
+                vec![
+                    observed_fact(FF_SIBLING, ff_rect(0, 0, 40, 90)),
+                    observed_fact(FF_SUBJECT, observed_tile_frame),
+                ],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &seed, None);
+        retained.observed_focus = Some(WindowId(FF_SUBJECT.to_owned()));
+        retained.observed_focus_known = true;
+        if let Some(app) = retained.apps.get_mut(&FF_PID) {
+            app.focused_wid = Some(8);
+        }
+        let floated = ff_accepted(
+            &mut engine,
+            &mf_report(
+                2,
+                vec![
+                    observed_fact(FF_SIBLING, ff_rect(0, 0, 40, 90)),
+                    observed_fact(FF_SUBJECT, observed_tile_frame),
+                ],
+                FF_SUBJECT,
+                Some(2),
+                Some(float_command.clone()),
+            ),
+        );
+        let remembered = ff_row(&floated, FF_SUBJECT)
+            .effective_frame
+            .expect("float base");
+        dispatch(
+            &mut session,
+            &mut retained,
+            &floated,
+            Some((&float_command, 2)),
+        );
+        let floated_sibling = ff_row(&floated, FF_SIBLING)
+            .effective_frame
+            .expect("sibling reflow frame");
+        observe(&mut retained, 7, floated_sibling, false);
+        observe(&mut retained, 8, remembered, true);
+        let settle = ff_accepted(
+            &mut engine,
+            &mf_report(
+                3,
+                vec![
+                    observed_fact(FF_SIBLING, floated_sibling),
+                    observed_fact(FF_SUBJECT, remembered),
+                ],
+                FF_SUBJECT,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &settle, None);
+
+        // Directional move on the float: core authorizes the right half.
+        let moved = ff_accepted(
+            &mut engine,
+            &mf_report(
+                4,
+                vec![
+                    observed_fact(FF_SIBLING, floated_sibling),
+                    observed_fact(FF_SUBJECT, remembered),
+                ],
+                FF_SUBJECT,
+                Some(4),
+                Some(move_command.clone()),
+            ),
+        );
+        let row = ff_row(&moved, FF_SUBJECT);
+        assert!(
+            row.floating,
+            "the half-snap keeps float membership: {row:?}"
+        );
+        let half = row
+            .effective_frame
+            .expect("the half-snap publishes its authorized frame");
+        let expected_half =
+            tiler_core::world_directional::float_half_snap_rect(ff_rect(0, 0, 800, 600), 8, "right")
+                .expect("right half snap");
+        assert_eq!(
+            half, expected_half,
+            "the core-published half is the authorized right half: {row:?}"
+        );
+        assert_ne!(half, remembered, "the half-snap moves the float: {row:?}");
+        assert_eq!(
+            row.frame_operation.as_deref(),
+            Some("op-4"),
+            "the half-snap retains its one-shot placement token: {row:?}"
+        );
+        assert_eq!(
+            row.frame_authority,
+            ScopeAuthority::Untouched,
+            "the half-snap needs the adapter frame lane: {row:?}"
+        );
+        let before = ff_counters(&shared);
+        dispatch(
+            &mut session,
+            &mut retained,
+            &moved,
+            Some((&move_command, 4)),
+        );
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the half-snap stages the sibling plus the subject half: {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-4"),
+            "the half-snap write spent the placement token exactly once"
+        );
+        assert_eq!(
+            lock_shared(&shared)
+                .last_desired
+                .iter()
+                .find(|entry| entry.window == FF_SUBJECT)
+                .map(|entry| ff_rect(entry.x, entry.y, entry.w, entry.h)),
+            Some(half),
+            "the staged subject frame targets the authorized half"
+        );
+
+        // Duplicate replies never repeat the placement.
+        let before = ff_counters(&shared);
+        dispatch(
+            &mut session,
+            &mut retained,
+            &moved,
+            Some((&move_command, 4)),
+        );
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "a duplicate half-snap reply stages only the sibling: {after:?} vs {before:?}"
         );
     }
 

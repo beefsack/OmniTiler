@@ -67,5 +67,11 @@ Focused regressions:
 
 - `fixture-leg --chord float-placement --chord focus-h --seconds 75 --signer REQUIREMENT` drove the native tap on one controller-owned Space. The first rect-less float left the subject's exact AX and CG frames at the tiled preimage. The product logged zero frame-set attempts for the subject and one for the sibling, whose frame expanded. Ten tap edges matched and five commands forwarded.
 - Before the adapter correction, retiling and then rotating the same subject created a demonstrably different tile slot. The next Ctrl+G reflowed the sibling again but left the subject at its rotated tile frame, not at the retained first-float frame. The controller stopped cleanly, restored the starting Space, and left no residue.
-- The adapter now stages a one-shot core frame operation only on the current, matching rect-less `ToggleFloat` ticket when it carries a different frame for the visible subject. Ordinary float snapshots still do not authorize writes; an in-place first float leaves the token unspent, and the fullscreen reveal and durable-store paths are unchanged. The real-core regression first failed with only the sibling staged (one row instead of two).
+- The historical correction staged a one-shot core frame operation only on the current, matching rect-less `ToggleFloat` ticket when it carried a different frame for the visible subject. The real-core regression first failed with only the sibling staged (one row instead of two).
 - The corrected signed leg repeated the same sequence with ten matched/suppressed edges and five forwarded inputs. First float: zero subject setters and one sibling setter. Re-float: one subject setter and one sibling setter, with the subject's native AX and CG positions and sizes returning exactly to its first-float bounds, not the rotated tile. Product shutdown was clean and restored the starting Space without residue or a retained receipt.
+
+The ticket-specific gate has since been replaced by the retained v4 float-frame
+lane. An ordinary snapshot without an operation still authorizes no writes,
+and an in-place first float still requires no setter. The signed evidence
+above predates that replacement; latest-world recovery, composed float
+unmaximize, and directional float half-snap need their own native proof.
