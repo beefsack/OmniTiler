@@ -14831,8 +14831,8 @@ mod tests {
     #[test]
     fn fullscreen_toggle_float_deferred_reveal_echo_veto_and_close() {
         // The deferred placement writes once, never repeats a matching
-        // frame, is vetoed by retained native minimized truth, and clears
-        // when the lifetime leaves adapter truth.
+        // frame, is vetoed by the core's genuine minimized republish, and
+        // clears when the lifetime leaves adapter truth.
         let fallback = ff_rect(160, 120, 480, 360);
         let fullscreen_frame = ff_rect(0, 0, 800, 600);
         let (_, token) = ff_toggle_float_command();
@@ -14935,8 +14935,10 @@ mod tests {
             session.pending_fullscreen_float_placements
         );
 
-        // Leg B: retained native minimized truth vetoes the reveal until it
-        // clears; then exactly one write lands.
+        // Leg B: the core's genuine minimized republish vetoes the reveal
+        // until the lifetime restores; then exactly one write lands. A
+        // minimized WindowFact makes the core shape the veto row itself, so
+        // the test never hand-patches a reply.
         let FfFixture {
             shared,
             mut session,
@@ -14967,45 +14969,50 @@ mod tests {
         };
         ff_set_subject_fullscreen(&mut retained, false);
         ff_set_subject_observed(&mut retained, fullscreen_frame);
+        // Agreeing retained native truth: the adapter observed the subject
+        // minimized, exactly as the reported fact says.
         ff_set_roster_minimized(&mut retained, true);
-        let mut exited = ff_fact(FF_SUBJECT, 100);
-        exited.transient = Some(true);
-        exited.rect = Some(fullscreen_frame);
-        let mut vetoed = ff_accepted(
+        let mut minimized = ff_fact(FF_SUBJECT, 100);
+        minimized.transient = Some(true);
+        minimized.rect = Some(fullscreen_frame);
+        minimized.minimized = Some(true);
+        let vetoed = ff_accepted(
             &mut engine,
             &ff_report(
                 3,
-                vec![ff_fact(FF_SIBLING, 0), exited],
+                vec![ff_fact(FF_SIBLING, 0), minimized],
                 FF_SIBLING,
                 None,
                 None,
             ),
         );
-        // Production minimized/host-hidden republish: the float row is no
-        // longer floating, has no geometry/token, and carries a Hold.
-        for row in &mut vetoed.windows {
-            if row.lifetime.0 == FF_SUBJECT {
-                row.floating = false;
-                row.allocation = None;
-                row.effective_frame = None;
-                row.frame_operation = None;
-                row.command_seq = None;
-                row.frame_authority = tiler_core::world_report::ScopeAuthority::Hold(
-                    tiler_core::world_report::HoldReason::Minimized,
-                );
-                row.membership_authority = tiler_core::world_report::ScopeAuthority::Hold(
-                    tiler_core::world_report::HoldReason::Minimized,
-                );
-            }
-        }
+        let veto_row = ff_row(&vetoed, FF_SUBJECT);
         assert!(
-            !ff_row(&vetoed, FF_SUBJECT).floating
-                && ff_row(&vetoed, FF_SUBJECT)
-                    .frame_authority
-                    .hold_reason()
-                    .is_some(),
-            "the minimized held shape is in place: {:?}",
-            vetoed.windows
+            !veto_row.floating,
+            "the minimized republish drops the float: {veto_row:?}"
+        );
+        assert_eq!(
+            veto_row.allocation, None,
+            "no managed geometry while minimized: {veto_row:?}"
+        );
+        assert_eq!(
+            veto_row.effective_frame, None,
+            "no effective frame while minimized: {veto_row:?}"
+        );
+        assert_eq!(
+            veto_row.frame_operation, None,
+            "no placement token while minimized: {veto_row:?}"
+        );
+        assert_eq!(
+            veto_row.command_seq, None,
+            "no command correlation while minimized: {veto_row:?}"
+        );
+        assert_eq!(
+            veto_row.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Hold(
+                tiler_core::world_report::HoldReason::Minimized
+            ),
+            "the core holds the minimized subject's frame: {veto_row:?}"
         );
         let before = ff_counters(&shared);
         dispatch(&mut session, &mut retained, &vetoed);
@@ -15024,20 +15031,41 @@ mod tests {
             "the veto keeps the placement pending: {:?}",
             session.pending_fullscreen_float_placements
         );
-        // Minimized truth clears: exactly one write lands.
+        // Minimized truth clears: the core republishes the float with its
+        // unspent placement token, so exactly one subject write lands.
         ff_set_roster_minimized(&mut retained, false);
-        let mut exited = ff_fact(FF_SUBJECT, 100);
-        exited.transient = Some(true);
-        exited.rect = Some(fullscreen_frame);
+        let mut restored = ff_fact(FF_SUBJECT, 100);
+        restored.transient = Some(true);
+        restored.rect = Some(fullscreen_frame);
         let revealed = ff_accepted(
             &mut engine,
             &ff_report(
                 4,
-                vec![ff_fact(FF_SIBLING, 0), exited],
+                vec![ff_fact(FF_SIBLING, 0), restored],
                 FF_SIBLING,
                 None,
                 None,
             ),
+        );
+        let reveal_row = ff_row(&revealed, FF_SUBJECT);
+        assert!(
+            reveal_row.floating,
+            "the restored lifetime republishes as a float: {reveal_row:?}"
+        );
+        assert_eq!(
+            reveal_row.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "the restored float carries no frame authority: {reveal_row:?}"
+        );
+        assert_eq!(
+            reveal_row.effective_frame,
+            Some(fallback),
+            "the restored float keeps the durable placement: {reveal_row:?}"
+        );
+        assert_eq!(
+            reveal_row.frame_operation.as_deref(),
+            Some("op-2"),
+            "the restored float keeps the unspent placement token: {reveal_row:?}"
         );
         let before = ff_counters(&shared);
         dispatch(&mut session, &mut retained, &revealed);
