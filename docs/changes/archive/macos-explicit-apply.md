@@ -12,4 +12,6 @@
 passes. Workspace formatting and strict Clippy passed. The integration run
 timed out without a final result.
 
-**Native limits:** No live run was performed. Per-drain holder refusal on a real desktop and first-run setup cost remain unverified; the offline checks establish neither native chord delivery nor workspace-action readiness.
+**Offline limits:** Per-drain holder refusal on a real desktop and first-run setup cost remain unverified; the offline checks establish neither native chord delivery nor workspace-action readiness.
+
+**Single-display readback (2026-11-26):** Signed `spaces-desktop-status` could read the native holder bank. This is a read-only preflight, not a holder refusal exercised by a native managed-send drain and not first-run Apply timing. The available mixed fixture arm does not establish a controller-owned source before launching its fixture windows; explicit Apply itself would mutate the session holder bank outside fixture-only scope. Neither native acceptance requirement was closed.

@@ -1239,6 +1239,27 @@ posting available, the session unlocked and Secure Input inactive.
   awake companion were reaped, and no residue or receipt remained. This
   corroborates the already accepted synthetic apply/restore leg, not
   physical delivery, paint, restart-to-base or final slice-5 acceptance.
+- **M3 isolated durable-write hold and recovery.** `fixture-leg --chord
+  float-g --chord float-g --chord focus-h --seconds 75 --signer REQUIREMENT`
+  ran with three fixture windows. After the first float wrote one
+  intent entry, the leg's private namespace file alone was set to `0400`.
+  The second float produced `intent-write-held`, with no frame emission.
+  Digest, inode, mtime and size were unchanged. Immediately restoring
+  `0600` let the next accepted observation persist two entries via one
+  atomic replacement and reflow the remaining tile with one exact native
+  frame attempt. A following accepted observation and a focus input did
+  not rewrite the file: digest, inode, mtime, size and mode still matched
+  five seconds later. All six tap edges matched, three inputs were
+  forwarded, and shutdown restored the original Space without residue.
+  An earlier arm held successfully but restored the mode too late to
+  observe a subsequent accepted report. This is not skipped-publication
+  recovery or a restart comparison.
+- One launch during that experiment refused before window creation because
+  its LaunchServices bundle identity was not yet readable. After a fresh
+  executable, bundle, launch-time and authenticated socket join, the empty
+  fixture was shut down gracefully. Independent readback found no fixture
+  application and matched the preserved native topology; the inspected
+  baseline and residue were archived after recovery.
 
 ## Transferable KDE lessons
 
@@ -1261,9 +1282,10 @@ posting available, the session unlocked and Secure Input inactive.
   verification, pre-admission import, desired-versus-durable reconciliation and
   recoverable hold; store adoption and orderly-restart persistence are proved on
   the signed fixture (2026-11-24), and malformed-store startup degrades cleanly
-  (2026-11-25). Numeric launch-date stability, write-failure recovery, and
-  re-login namespace rejection remain. No store adoption is established by
-  finite CG ID churn experiments.
+  (2026-11-25). Numeric launch-date stability and recoverable write failure
+  are proved in one login (2026-11-26); skipped-publication recovery,
+  tightened restart geometry and re-login namespace rejection remain. No store
+  adoption is established by finite CG ID churn experiments.
 - M4's product route is decided, not reopened here; native apply/restore is
   proved on the signed fixture (2026-11-24). Physical Ctrl+M delivery, paint,
   native Zoom/drift interaction, external move/resize clear, fullscreen

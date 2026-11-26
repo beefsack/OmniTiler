@@ -1,8 +1,8 @@
 # macOS Current-Workspace Tiling Toggle
 
-- **Status:** Complete (2026-11-25), offline verification only.
+- **Status:** Offline implementation complete (2026-11-25); compatible signed-fixture tap evidence recorded (2026-11-26).
 - **Source:** [macOS v4 open-decisions review](../macos-v4-open-decisions-review.md) Check 20 (0.1 Must-Pass) — `ToggleWorkspaceTiling` / `Ctrl+Y` / menu-bar toggle equivalent.
-- **Boundary:** No native, fixture, or AppKit visual verification.
+- **Boundary:** No physical shortcut or AppKit visual verification.
 
 ## Goal
 
@@ -64,10 +64,14 @@ Focused regressions:
 - The checkmark repaint trigger is a monotonic revision over applied-reply desires/pager changes, not a new poll or timer; existing `last_indicator_snapshot()` (4-tuple) and driver `needs_tick`/`apply` wrappers stay stable for tests.
 - The drain loop lives in an AppKit-free `drain_toggle_clicks` seam so the exactly-once acceptance counting is regression-tested at the path the live guard uses; no behavioural change and still one `toggle_submitted()` per accepted click (review claim of a double count was checked against source and did not hold).
 
+## Signed-fixture tap evidence (2026-11-26)
+
+- One owned Space, `fixture-leg --chord workspace-tiling-y --chord workspace-tiling-y --preset compatible --seconds 75 --signer REQUIREMENT`: four native tap edges matched and were suppressed, two `toggle-workspace-tiling` actions reached the runtime, and two core replies accepted (zero frame rows on the float-mode reply, two on the restored tile-mode reply). The indicator driver reported five updates and zero clicks. Shutdown reaped the product, restored the starting Space, and left no residue.
+- The `authentic` preset attempt refused startup (`input source refused startup: failed-backend`); the post-only receipts did not establish delivery in that run. Its controller also restored the starting Space with no residue.
+
 ## Verification limits
 
-- **No native/AppKit visual proof was performed.** The menu item is constructed and rendered by code covered by type checking and pure tests; its actual AppKit appearance, checkmark rendering, and click delivery were not observed. No fixture or live leg ran.
-- Behaviour of the real native tap (chord consumption on a live session) is likewise unobserved.
+- The compatible run proves synthetic Ctrl-role+Y delivery, not a physical shortcut or AppKit menu appearance, rendered checkmark, or click. Indicator update counts do not prove any of those visual/interaction checks.
 
 ## Known Check-20 remainder
 
