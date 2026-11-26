@@ -1,8 +1,8 @@
-# macOS First-Float Placement (Offline)
+# macOS First-Float Placement
 
-- **Status:** Complete (2026-11-25), offline verification only.
+- **Status:** Offline implementation (2026-11-25), followed by signed-fixture acceptance and a macOS re-float correction (2026-11-26).
 - **Source:** [macOS v4 open-decisions review](../macos-v4-open-decisions-review.md) Package 3, P1 — first-float placement verification, per [world-rendering.md](../../decisions/world-rendering.md#float-toggle-intent-and-output-targeting).
-- **Boundary:** No native or live testing. Signed-fixture proof remains.
+- **Boundary:** Single-display signed fixture; Windows fresh post-placement facts remain separate.
 
 ## Goal
 
@@ -61,5 +61,11 @@ Focused regressions:
 
 ## Verification limits
 
-- No native, signed-fixture, or live leg ran. The macOS proof uses the real core, the real capability handshake, the production command map, and the production reply consumer, but synthetic facts and replies.
-- The signed-fixture proof of the live toggle (AX/CG frame read before and after, no subject write) remains open, as does Windows fresh-post-placement-facts parity.
+- The 2026-11-25 macOS proof used the real core, capability handshake, command map, and reply consumer, but synthetic facts and replies. The following signed-fixture proof is macOS-only; Windows fresh post-placement facts remain a separate parity check.
+
+## Signed-fixture evidence (2026-11-26)
+
+- `fixture-leg --chord float-placement --chord focus-h --seconds 75 --signer REQUIREMENT` drove the native tap on one controller-owned Space. The first rect-less float left the subject's exact AX and CG frames at the tiled preimage. The product logged zero frame-set attempts for the subject and one for the sibling, whose frame expanded. Ten tap edges matched and five commands forwarded.
+- Before the adapter correction, retiling and then rotating the same subject created a demonstrably different tile slot. The next Ctrl+G reflowed the sibling again but left the subject at its rotated tile frame, not at the retained first-float frame. The controller stopped cleanly, restored the starting Space, and left no residue.
+- The adapter now stages a one-shot core frame operation only on the current, matching rect-less `ToggleFloat` ticket when it carries a different frame for the visible subject. Ordinary float snapshots still do not authorize writes; an in-place first float leaves the token unspent, and the fullscreen reveal and durable-store paths are unchanged. The real-core regression first failed with only the sibling staged (one row instead of two).
+- The corrected signed leg repeated the same sequence with ten matched/suppressed edges and five forwarded inputs. First float: zero subject setters and one sibling setter. Re-float: one subject setter and one sibling setter, with the subject's native AX and CG positions and sizes returning exactly to its first-float bounds, not the rotated tile. Product shutdown was clean and restored the starting Space without residue or a retained receipt.

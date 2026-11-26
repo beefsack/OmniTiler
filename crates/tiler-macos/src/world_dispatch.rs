@@ -107,6 +107,35 @@ fn is_retained_fullscreen(retained: &RetainedCore, window: &str) -> bool {
         .is_some_and(|w| w.fullscreen)
 }
 
+/// Never send an explicit float placement into a retained overlay or a
+/// hidden lifetime. An in-place float leaves its token unspent.
+fn allows_explicit_float_frame(retained: &RetainedCore, window: &str, frame: Rect) -> bool {
+    let Some((pid, wid)) = parse_window_id(window) else {
+        return false;
+    };
+    let Some(app) = retained.apps.get(&pid) else {
+        return false;
+    };
+    if retained
+        .minimized
+        .get(window)
+        .is_some_and(|entry| entry.minimized || entry.host_hidden || entry.sticky)
+        || app
+            .roster
+            .get(&wid)
+            .is_some_and(|entry| entry.minimized_meta || entry.hidden_meta)
+    {
+        return false;
+    }
+    app.windows
+        .iter()
+        .find(|entry| entry.wid == wid)
+        .is_some_and(|entry| {
+            !entry.fullscreen
+                && (entry.x, entry.y, entry.w, entry.h) != (frame.x, frame.y, frame.w, frame.h)
+        })
+}
+
 /// Record-only half of the deferred fullscreen-float lane: an applied
 /// `ToggleFloat` reply under retained fullscreen stages the pending
 /// placement for later reveal. Used by the normal consume path and by the
@@ -2408,23 +2437,45 @@ fn consume_world_reply(
             overlay_skipped += 1;
         }
     }
-    // Emission: Controlled frame authority plus an effective frame in a
-    // current scope. Explicit placement tokens (`frame_operation`) write
-    // exactly once (spent set); ordinary floats/overlays/holds never
-    // write — holds preserve native state.
+    // Untouched float snapshots never authorize a write on their own. A
+    // fresh rect-less ToggleFloat can carry an explicit, one-shot placement
+    // at a different frame (re-float into remembered geometry).
+    let float_ticket = match ticket_command {
+        Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: WindowSubject::CurrentFocus,
+            float_rect: None,
+        })) => ticket_command_seq,
+        _ => None,
+    };
     let mut frames: Vec<(String, Rect)> = Vec::new();
     let mut frame_ops: Vec<(String, String)> = Vec::new();
     for row in &reply.windows {
-        if row.frame_authority != ScopeAuthority::Controlled {
-            continue;
-        }
+        let operation = row.frame_operation.as_deref();
         let Some(frame) = row.effective_frame else {
             continue;
         };
         if !current.contains(&(row.output.0.clone(), row.workspace.clone())) {
             continue;
         }
-        if let Some(operation) = row.frame_operation.clone().as_deref() {
+        if row.frame_authority != ScopeAuthority::Controlled
+            && !(row.frame_authority == ScopeAuthority::Untouched
+                && row.floating
+                && float_ticket.is_some_and(|seq| {
+                    row.command_seq == Some(seq)
+                        && operation
+                            .and_then(|op| op.strip_prefix("op-"))
+                            .and_then(|seq| seq.parse().ok())
+                            == Some(seq)
+                })
+                && !reply.scopes.iter().any(|scope| {
+                    scope.authority.hold_reason().is_some()
+                        && scope.scope.covers_workspace(&row.output, &row.workspace)
+                })
+                && allows_explicit_float_frame(retained, &row.lifetime.0, frame))
+        {
+            continue;
+        }
+        if let Some(operation) = operation {
             if !session.spend_frame_op(operation) {
                 continue;
             }
@@ -15562,6 +15613,360 @@ mod tests {
         assert!(
             session.spend_frame_op("op-2"),
             "the placement token stays unspent (no subject write)"
+        );
+    }
+
+    #[test]
+    fn macos_refloat_stages_remembered_geometry_once() {
+        // The native repro: Ctrl+G floats in place (no AX/CG change), Ctrl+G
+        // retiles, then Ctrl+G must return the subject to the remembered
+        // float geometry instead of leaving it at the current tile frame.
+        // Production sources ToggleFloat from the semantic-action map: an
+        // implicit CurrentFocus subject and no rect.
+        let (command, token) = ff_toggle_float_command();
+        assert_eq!(token, "toggle-float", "production op token");
+        assert!(
+            matches!(
+                &command,
+                WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: WindowSubject::CurrentFocus,
+                    float_rect: None,
+                })
+            ),
+            "production ToggleFloat keeps the implicit subject and no rect: {command:?}"
+        );
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = mf_engine();
+        let dispatch = |session: &mut WorldSession,
+                        retained: &mut RetainedCore,
+                        reply: &tiler_core::world_report::WorldReplyV4,
+                        ticket: Option<(&WorldCommand, u64)>| {
+            consume_world_reply(
+                session,
+                retained,
+                &shared,
+                &focus_queue,
+                16,
+                reply,
+                &[],
+                ticket.map(|(command, _)| command),
+                ticket.map(|(_, seq)| seq),
+                token,
+                "accepted",
+                0,
+                0,
+                0,
+                0,
+            );
+        };
+        // Retained native truth one converged macOS step behind each reply:
+        // the adapter reports the frame and float bit it actually observes.
+        let observe = |retained: &mut RetainedCore, wid: u32, frame: Rect, floating: bool| {
+            let app = retained.apps.get_mut(&FF_PID).expect("fixture app");
+            let window = app
+                .windows
+                .iter_mut()
+                .find(|window| window.wid == wid)
+                .expect("fixture window");
+            (window.x, window.y, window.w, window.h) = (frame.x, frame.y, frame.w, frame.h);
+            window.floating = floating;
+        };
+        let observed_fact = |window: &str, frame: Rect| {
+            let mut fact = mf_fact(window, frame.x, false);
+            fact.rect = Some(frame);
+            fact
+        };
+
+        // Seed: two tiled windows on the current Space. The frame the
+        // fixture observes for the subject is distinct from core's tile
+        // slot, exactly like the first-float regression above.
+        let observed_tile_frame = ff_rect(100, 0, 40, 90);
+        let seed = ff_accepted(
+            &mut engine,
+            &mf_report(
+                1,
+                vec![
+                    observed_fact(FF_SIBLING, ff_rect(0, 0, 40, 90)),
+                    observed_fact(FF_SUBJECT, observed_tile_frame),
+                ],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &seed, None);
+        assert_ne!(
+            ff_row(&seed, FF_SUBJECT)
+                .allocation
+                .expect("core allocated the subject tile"),
+            observed_tile_frame,
+            "fixture truth: the observed subject frame differs from core's tile slot"
+        );
+
+        // 1. First Ctrl+G: the rect-less toggle adopts the subject's current
+        //    frame, so the float lands in place with no AX/CG write.
+        retained.observed_focus = Some(WindowId(FF_SUBJECT.to_owned()));
+        retained.observed_focus_known = true;
+        if let Some(app) = retained.apps.get_mut(&FF_PID) {
+            app.focused_wid = Some(8);
+        }
+        let first = ff_accepted(
+            &mut engine,
+            &mf_report(
+                2,
+                vec![
+                    observed_fact(FF_SIBLING, ff_rect(0, 0, 40, 90)),
+                    observed_fact(FF_SUBJECT, observed_tile_frame),
+                ],
+                FF_SUBJECT,
+                Some(2),
+                Some(command.clone()),
+            ),
+        );
+        let first_subject = ff_row(&first, FF_SUBJECT);
+        assert!(
+            first_subject.floating,
+            "the first toggle floats: {first_subject:?}"
+        );
+        let remembered = first_subject
+            .effective_frame
+            .expect("the first float publishes its placement");
+        assert_eq!(
+            remembered, observed_tile_frame,
+            "the first float keeps the current frame in place: {first_subject:?}"
+        );
+        assert_eq!(
+            first_subject.frame_operation.as_deref(),
+            Some("op-2"),
+            "the in-place placement keeps its token for later correlation: {first_subject:?}"
+        );
+        assert_eq!(
+            gated_names(&first),
+            vec![FF_SIBLING],
+            "the in-place subject fails the write gate: {:?}",
+            first.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &first, Some((&command, 2)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "the first float stages only the sibling reflow: {after:?} vs {before:?}"
+        );
+        assert!(
+            session.spend_frame_op("op-2"),
+            "the in-place first float spent no subject write"
+        );
+        let first_sibling = ff_row(&first, FF_SIBLING)
+            .effective_frame
+            .expect("sibling reflow frame");
+        observe(&mut retained, 7, first_sibling, false);
+        observe(&mut retained, 8, remembered, true);
+
+        // 2. Second Ctrl+G: unfloat retiles the subject. The published tile
+        //    frame is the adapter's reported current frame from here on.
+        let unfloat = ff_accepted(
+            &mut engine,
+            &mf_report(
+                3,
+                vec![
+                    observed_fact(FF_SIBLING, first_sibling),
+                    observed_fact(FF_SUBJECT, remembered),
+                ],
+                FF_SUBJECT,
+                Some(3),
+                Some(command.clone()),
+            ),
+        );
+        let tile_row = ff_row(&unfloat, FF_SUBJECT);
+        assert!(!tile_row.floating, "the second toggle retiles: {tile_row:?}");
+        assert_eq!(
+            tile_row.frame_operation, None,
+            "the retiled row carries no placement token: {tile_row:?}"
+        );
+        let tile_frame = tile_row
+            .effective_frame
+            .expect("the unfloat publishes the tiled frame");
+        assert_eq!(
+            Some(tile_frame),
+            tile_row.allocation,
+            "the tiled row publishes its allocation: {tile_row:?}"
+        );
+        assert_ne!(
+            tile_frame, remembered,
+            "the reported current tile frame after unfloat is distinct from the \
+             remembered float geometry"
+        );
+        let mut unfloat_gated = gated_names(&unfloat);
+        unfloat_gated.sort_unstable();
+        assert_eq!(
+            unfloat_gated,
+            vec![FF_SIBLING, FF_SUBJECT],
+            "the retile writes both tiles: {:?}",
+            unfloat.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &unfloat, Some((&command, 3)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the unfloat stages the subject tile and the sibling reflow: {after:?} vs {before:?}"
+        );
+        let unfloat_sibling = ff_row(&unfloat, FF_SIBLING)
+            .effective_frame
+            .expect("sibling reflow frame");
+        observe(&mut retained, 7, unfloat_sibling, false);
+        observe(&mut retained, 8, tile_frame, false);
+
+        // 3. Third Ctrl+G: core restores the remembered float geometry,
+        //    which differs from the currently reported tile frame.
+        let refloat = ff_accepted(
+            &mut engine,
+            &mf_report(
+                4,
+                vec![
+                    observed_fact(FF_SIBLING, unfloat_sibling),
+                    observed_fact(FF_SUBJECT, tile_frame),
+                ],
+                FF_SUBJECT,
+                Some(4),
+                Some(command.clone()),
+            ),
+        );
+        let refloat_subject = ff_row(&refloat, FF_SUBJECT);
+        assert!(
+            refloat_subject.floating,
+            "the third toggle re-floats: {refloat_subject:?}"
+        );
+        assert_eq!(
+            refloat_subject.effective_frame,
+            Some(remembered),
+            "the re-float restores the remembered geometry, not the current tile frame: \
+             {refloat_subject:?}"
+        );
+        assert_eq!(
+            refloat_subject.frame_operation.as_deref(),
+            Some("op-4"),
+            "the re-float placement token is minted for this command: {refloat_subject:?}"
+        );
+        assert_eq!(
+            refloat_subject.command_seq,
+            Some(4),
+            "the re-float row correlates the command: {refloat_subject:?}"
+        );
+        assert_eq!(
+            refloat
+                .windows
+                .iter()
+                .filter(|row| row.frame_operation.as_deref() == Some("op-4"))
+                .count(),
+            1,
+            "exactly one row carries the re-float token: {:?}",
+            refloat.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &refloat, Some((&command, 4)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the re-float stages the sibling reflow plus exactly one subject frame at \
+             the remembered geometry: {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-4"),
+            "the re-float subject write spent the placement token exactly once"
+        );
+        assert_eq!(
+            lock_shared(&shared)
+                .last_desired
+                .iter()
+                .find(|entry| entry.window == FF_SUBJECT)
+                .map(|entry| ff_rect(entry.x, entry.y, entry.w, entry.h)),
+            Some(remembered),
+            "the staged subject frame targets the remembered geometry"
+        );
+        let refloat_sibling = ff_row(&refloat, FF_SIBLING)
+            .effective_frame
+            .expect("sibling reflow frame");
+
+        // 4. A duplicate of the same applied reply never repeats the subject
+        //    write: the token is spent even before native echoes.
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &refloat, Some((&command, 4)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "a duplicate reply stages only the sibling, never the subject: {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-4"),
+            "the duplicate reply never re-spends the placement token"
+        );
+
+        // 5. Native echo at the remembered geometry: observation-only proves
+        //    the placement and stages no subject write.
+        observe(&mut retained, 8, remembered, true);
+        let echo = ff_accepted(
+            &mut engine,
+            &mf_report(
+                5,
+                vec![
+                    observed_fact(FF_SIBLING, refloat_sibling),
+                    observed_fact(FF_SUBJECT, remembered),
+                ],
+                FF_SUBJECT,
+                None,
+                None,
+            ),
+        );
+        let echo_subject = ff_row(&echo, FF_SUBJECT);
+        assert!(
+            echo_subject.floating,
+            "the observed placement keeps the float: {echo_subject:?}"
+        );
+        assert_eq!(
+            echo_subject.effective_frame,
+            Some(remembered),
+            "the echo keeps the remembered geometry: {echo_subject:?}"
+        );
+        assert_eq!(
+            echo_subject.frame_operation, None,
+            "the proven placement retires its token: {echo_subject:?}"
+        );
+        assert_eq!(
+            gated_names(&echo),
+            vec![FF_SIBLING],
+            "the observation-only subject is write-free: {:?}",
+            echo.windows
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, &echo, None);
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "an observation-only echo stages only the sibling: {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-4"),
+            "the observation-only echo adds no subject write"
+        );
+        assert_eq!(
+            lock_shared(&shared)
+                .last_desired
+                .iter()
+                .find(|entry| entry.window == FF_SUBJECT)
+                .map(|entry| ff_rect(entry.x, entry.y, entry.w, entry.h)),
+            Some(remembered),
+            "the retained plan keeps the remembered geometry"
         );
     }
 
