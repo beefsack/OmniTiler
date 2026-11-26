@@ -88,6 +88,20 @@
   requirement. Native two-display arrangement validation is pending
   ([topology evidence](archive/macos-full-display-topology.md)).
 
+### Per-output pager physical check
+
+Per-output rendering and exact SIP-on selection are a separate 0.1
+consistency blocker, not a substitution for MX6. Once a carrier is approved
+and implemented, follow the [bounded signed-fixture procedure](macos-per-output-indicator.md#bounded-physical-check-after-implementation).
+On two extended physical displays with separate Spaces, set different
+currents and click each display's pager while the other display has fixture
+focus. Independently verify the exact native destination on the clicked
+display, the unchanged current on the other display, and both painted
+markers. Include an empty destination, disconnect/rehome/reconnect and
+arrangement or scale reanchor, refusal of unproven attribution, fullscreen
+suppression/return, and teardown restoring the original desktops. No
+two-display pass has been recorded; the gate counts and MX6 remain unchanged.
+
 ### Original checks 1-53
 
 | ID | Class | Shared check | Map | macOS assertion / host equivalent | Evidence and exact remaining acceptance |
