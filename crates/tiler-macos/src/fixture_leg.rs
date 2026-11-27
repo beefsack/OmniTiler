@@ -1804,18 +1804,8 @@ pub(crate) fn spawn_owned_windows(
     nonce: &str,
     callers: &[String],
 ) -> Result<(), String> {
-    spawn_owned_windows_at(socket, nonce, callers, None)
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn spawn_owned_windows_at(
-    socket: &str,
-    nonce: &str,
-    callers: &[String],
-    position: Option<[i32; 2]>,
-) -> Result<(), String> {
     let ids: Vec<&str> = callers.iter().map(String::as_str).collect();
-    let reply = crate::fixture_post::send_fixture_spawn_at(socket, nonce, &ids, position)
+    let reply = crate::fixture_post::send_fixture_spawn(socket, nonce, &ids)
         .map_err(|e| format!("fixture-leg: window spawn refused ({e})"))?;
     let windows = reply
         .get("result")

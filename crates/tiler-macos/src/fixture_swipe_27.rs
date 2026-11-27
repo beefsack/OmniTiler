@@ -9,7 +9,7 @@ use tiler_core::workspace_scope::{
     PreviousTarget, ScopeHistory, resolve_numbered, resolve_relative_step,
 };
 
-use crate::fixture_leg::{SWIPE_27_E1_CHORD, join_fixture_windows, spawn_owned_windows_at};
+use crate::fixture_leg::{SWIPE_27_E1_CHORD, join_fixture_windows, spawn_owned_windows};
 use crate::fixture_owned_space::{await_joined_on_owned_space, establish_post_only_owned_space_on};
 use crate::fixture_post::{FixtureDriver, LiveTransport};
 use crate::live_leg::{LiveLeg, LiveLegTransport};
@@ -70,8 +70,8 @@ impl DisplayPin {
             cg_id = external.cg_id;
             uuid = external.uuid.clone().ok_or("external UUID unreadable")?;
             let bounds = CGDisplay::new(cg_id).bounds();
-            // Winit converts the initial frame using the current main screen's
-            // backing scale. Fit within the other display under either scale.
+            // Winit converts runtime positions using the window's current
+            // scale. Fit on the target display under either scale.
             let place = |origin: f64, size: f64, window: f64| {
                 let lo = (origin * a.scale).max(origin * b.scale).ceil();
                 let hi = ((origin + size) * a.scale)
@@ -140,24 +140,43 @@ fn goto(leg: &mut LiveLeg<LiveLegTransport>, row: usize, sid: u64) -> Result<(),
 fn spawn(
     leg: &mut LiveLeg<LiveLegTransport>,
     pid: u32,
-    socket: &str,
-    nonce: &str,
+    (socket, nonce): (&str, &str),
     caller: &str,
     sid: u64,
-    position: Option<[i32; 2]>,
+    pin: &DisplayPin,
+    driver: &FixtureDriver<'_, LiveTransport>,
 ) -> Result<(String, u32), String> {
     let callers = [caller.to_owned()];
-    spawn_owned_windows_at(socket, nonce, &callers, position)?;
+    spawn_owned_windows(socket, nonce, &callers)?;
     let joined = join_fixture_windows(pid, socket, nonce, &callers)?;
     for (caller, wid) in &joined {
         leg.note_owned_window(caller, pid, *wid);
     }
-    await_joined_on_owned_space(&joined, sid)
-        .map_err(|_| format!("fixture window {caller} not on owned Space {sid}"))?;
-    joined
+    let [window] = joined.as_slice() else {
+        return Err(format!("fixture window {caller} did not join uniquely"));
+    };
+    if let Some(position) = pin.position {
+        let before = snapshot()?;
+        driver.place_window(window, position, || {
+            if before
+                .displays
+                .get(pin.row)
+                .and_then(|row| row.identifier.as_deref())
+                != Some(&pin.uuid)
+                || observe(&before, pin)? != sid
+            {
+                return Err(format!("target display no longer on owned Space {sid}"));
+            }
+            Ok(())
+        })?;
+    }
+    await_joined_on_owned_space(&joined, sid).map_err(|observed| {
+        format!("fixture window {caller} not on owned Space {sid}: {observed:?}")
+    })?;
+    Ok(joined
         .into_iter()
         .next()
-        .ok_or_else(|| format!("fixture window {caller} unjoined"))
+        .expect("the joined slice has one window"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -252,7 +271,14 @@ pub(crate) fn run(
     let row = pin.row;
     let established = establish_post_only_owned_space_on(leg, row)?;
     let source = established.sid;
-    let a = spawn(leg, pid, socket, nonce, "swipe-a", source, pin.position).map_err(setup)?;
+    let driver = FixtureDriver::bind(
+        &LiveTransport,
+        announcement,
+        nonce,
+        signer,
+        leg.admit(pid, Some(chord))?,
+    )?;
+    let a = spawn(leg, pid, (socket, nonce), "swipe-a", source, &pin, &driver).map_err(setup)?;
     let created = leg.transport_mut().space_create(row).map_err(setup)?;
     let dest = created.sid;
     leg.note_owned_space(row, dest);
@@ -263,19 +289,12 @@ pub(crate) fn run(
         .space_require_empty(dest)
         .map_err(setup)?;
     goto(leg, row, dest).map_err(setup)?;
-    let b = spawn(leg, pid, socket, nonce, "swipe-b", dest, pin.position).map_err(setup)?;
+    let b = spawn(leg, pid, (socket, nonce), "swipe-b", dest, &pin, &driver).map_err(setup)?;
     goto(leg, row, source).map_err(setup)?;
     let before = snapshot().map_err(setup)?;
     let mut expected = entry;
     expected.displays[row].spaces.extend([source, dest]);
     validate_goto_effect(&expected, &before, row, source).map_err(|e| setup(e.to_string()))?;
-    let driver = FixtureDriver::bind(
-        &LiveTransport,
-        announcement,
-        nonce,
-        signer,
-        leg.admit(pid, Some(chord))?,
-    )?;
     let ring: Vec<_> = before.displays[row]
         .spaces
         .iter()

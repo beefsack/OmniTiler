@@ -68,14 +68,18 @@ restored the starting current and ordered topology with no residue. This
 is candidate encoding and same-display routing evidence, not E1;
 the pointer started on the target display and the product was not launched.
 
-The signed two-display E1 run stopped before posting a gesture. With the
-pointer on the other display, the pinned target display passed the owned
-Space return probe and reached its owned source SID. The signed fixture
-window did not acquire membership on that SID after placement, so the
-probe refused before testing the CGEvent location. Teardown completed and
-removed the restoration receipt. This is a fixture-placement failure, not
-evidence that Dock ignores event location. Product dispatch stays fenced;
-there is no E1 latency, indicator-click, or keyboard result.
+The first signed E1 run stopped before posting: initial frame placement
+did not give the fixture window membership on the target display's owned
+Space. The second run used the nonce-gated fixture socket frame setter
+while each owned target-display Space was current and proved each exact
+window membership independently. With SIP on, it posted one three-event
+batch at the target display's CGEvent location while the pointer stayed
+on the other display. Only the target reached the exact requested SID,
+in 80 ms, and held it for another 400 ms without bounce or sampled
+Mission Control presentation. The pointer and other display's current
+were unchanged; teardown restored the starting topology without residue.
+This proves the candidate's event-location targeting, not product input
+delivery.
 
 ## Fn/Globe as a tiler modifier
 

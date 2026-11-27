@@ -170,15 +170,6 @@ pub fn send_fixture_spawn(
     nonce: &str,
     ids: &[&str],
 ) -> Result<serde_json::Value, String> {
-    send_fixture_spawn_at(socket_path, nonce, ids, None)
-}
-
-pub(crate) fn send_fixture_spawn_at(
-    socket_path: &str,
-    nonce: &str,
-    ids: &[&str],
-    position: Option<[i32; 2]>,
-) -> Result<serde_json::Value, String> {
     if ids.is_empty() {
         return Err("spawn: no caller ids; refusing an empty spawn".to_owned());
     }
@@ -187,15 +178,8 @@ pub(crate) fn send_fixture_spawn_at(
             return Err("spawn: caller id malformed; refusing".to_owned());
         }
     }
-    let windows: Vec<_> = ids
-        .iter()
-        .map(|id| match position {
-            Some(position) => serde_json::json!({
-                "id": id, "position_outer_px": position, "size_px": [400, 300],
-            }),
-            None => serde_json::json!({"id": id}),
-        })
-        .collect();
+    let windows: Vec<serde_json::Value> =
+        ids.iter().map(|id| serde_json::json!({"id": id})).collect();
     let request = serde_json::json!({
         "v": 1,
         "request_id": SOCKET_SPAWN_REQUEST_ID,
@@ -1598,6 +1582,56 @@ impl<'a, T: FixtureTransport> std::fmt::Debug for FixtureDriver<'a, T> {
         f.debug_struct("FixtureDriver")
             .field("pid", &self.session.pid)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl FixtureDriver<'_, LiveTransport> {
+    /// Move only the proved fixture incarnation through the nonce-gated
+    /// frame setter. The caller must independently prove native placement.
+    pub(crate) fn place_window(
+        &self,
+        (caller, wid): &(String, u32),
+        position: [i32; 2],
+        require_destination_current: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        const REQUEST: &str = "fixture-harness-place";
+        if !self.admission.is_live() || !caller_id_valid(caller) || *wid == 0 {
+            return Err("frame set requires live admission and a valid fixture window".to_owned());
+        }
+        self.prove_full(caller, *wid, "frame-set-full")?;
+        self.prove_commit(caller, *wid, "frame-set-commit", false)?;
+        require_destination_current()?;
+        let reply = socket_round_trip(
+            &self.session.socket_path,
+            &serde_json::json!({
+                "v": 1, "request_id": REQUEST, "nonce": self.session.nonce,
+                "op": "set", "ids": [caller],
+                "patch": {"size_px": [400, 300], "position_outer_px": position},
+            }),
+            REQUEST,
+        )?;
+        let [entry] = reply["result"]["windows"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        else {
+            return Err("fixture frame response lacks the unique caller".to_owned());
+        };
+        let accepted = reply["ok"].as_bool() == Some(true)
+            && entry["id"].as_str() == Some(caller.as_str())
+            && entry["ok"].as_bool() == Some(true)
+            && entry["fields"].as_array().is_some_and(|fields| {
+                ["size_px", "position_outer_px"].into_iter().all(|field| {
+                    fields.iter().any(|item| {
+                        item["field"].as_str() == Some(field)
+                            && item["status"].as_str() == Some("accepted")
+                    })
+                })
+            });
+        accepted
+            .then_some(())
+            .ok_or_else(|| "fixture socket did not accept the exact frame write".to_owned())
     }
 }
 
