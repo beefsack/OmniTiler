@@ -7752,6 +7752,10 @@ mod macos {
         sender: std::sync::mpsc::SyncSender<IndicatorClick>,
         item: objc2::rc::Retained<objc2_app_kit::NSStatusItem>,
         menu: objc2::rc::Retained<objc2_app_kit::NSMenu>,
+        /// Exact-run stop file watched while this menu tracks (`None`
+        /// outside a launcher run): set once by
+        /// [`WorkspaceIndicator::watch_stop_file`] before presentation.
+        stop_file: std::cell::OnceCell<std::path::PathBuf>,
     }
 
     // SAFETY: plain-data ivars carried to `set_ivars` (the render state,
@@ -7921,6 +7925,24 @@ mod macos {
                 // left clicks; menuDidClose detaches after tracking ends,
                 // including macOS 27's out-of-process presentation.
                 ivars.item.setMenu(Some(&ivars.menu));
+                // AppKit tracks this menu in a nested event-tracking run
+                // loop, so the tile main loop cannot observe the exact-run
+                // stop file there. The guard's common-mode timer does, and
+                // cancels this exact menu so control returns to the bounded
+                // stopped shutdown (terminal outcome publish). Fail closed
+                // when a stop file exists but the poll refused: an untracked
+                // blocking menu could starve graceful stop again.
+                let stop_guard = IndicatorMenuStopGuard::install(
+                    &ivars.menu,
+                    ivars.stop_file.get().map(std::path::PathBuf::as_path),
+                );
+                if ivars.stop_file.get().is_some() && !stop_guard.is_armed() {
+                    ivars.item.setMenu(None);
+                    eprintln!(
+                        "tiler-macos dev indicator menu refused reason=stop-poll-unavailable complete=false",
+                    );
+                    return;
+                }
                 // SAFETY: delivered only on the main run loop with the
                 // status button retained across the tracking call.
                 unsafe { button.performClick(None) };
@@ -7955,6 +7977,159 @@ mod macos {
             #[unsafe(method(menuDidClose:))]
             fn menu_did_close(&self, _menu: &objc2_app_kit::NSMenu) {
                 self.ivars().item.setMenu(None);
+            }
+        }
+    }
+
+    /// Stop-file poll cadence while the mirror menu tracks (milliseconds,
+    /// main thread only): one `stat` per interval so an exact-run stop is
+    /// noticed inside AppKit's nested event-tracking run loop, where the
+    /// tile main loop is suspended.
+    const INDICATOR_MENU_STOP_POLL_MS: u64 = 100;
+
+    /// Main-thread callout context of one menu-tracking stop timer: the
+    /// exact presented menu plus the run's stop file. Owned by
+    /// [`IndicatorMenuStopGuard`]'s box; the timer is invalidated before
+    /// the box is freed, so no callout can outlive it.
+    struct IndicatorMenuStopContext {
+        menu: objc2::rc::Retained<objc2_app_kit::NSMenu>,
+        stop_file: std::path::PathBuf,
+        /// Dev line already emitted (cancel retries stay silent).
+        reported: std::cell::Cell<bool>,
+    }
+
+    /// One in-tracking stop poll: stat the exact run's stop file; when it
+    /// appears, cancel this exact menu's tracking so `performClick`
+    /// returns to the tile main loop, whose next iteration takes the
+    /// ordinary bounded stopped shutdown (terminal outcome publish).
+    /// Minimal by construction (one `exists`, one AppKit call, at most one
+    /// dev line; no AX, no panic).
+    unsafe extern "C-unwind" fn indicator_menu_stop_callback(
+        _timer: *mut objc2_core_foundation::CFRunLoopTimer,
+        info: *mut std::ffi::c_void,
+    ) {
+        if info.is_null() {
+            return;
+        }
+        // SAFETY: `info` is the live `Box<IndicatorMenuStopContext>`
+        // installed by `IndicatorMenuStopGuard::install`, reclaimed only
+        // after this timer is invalidated on the main thread.
+        let context = unsafe { &*(info as *const IndicatorMenuStopContext) };
+        if !context.stop_file.exists() {
+            return;
+        }
+        if !context.reported.replace(true) {
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "tiler-macos dev indicator menu cancelled reason=stop-requested complete=true",
+            );
+        }
+        // Retried every interval until tracking returns to the main loop:
+        // a closed/untracked menu is a no-op, and `menuDidClose` detaches
+        // it exactly as on any other close.
+        context.menu.cancelTrackingWithoutAnimation();
+    }
+
+    /// Main-thread guard for exactly one menu presentation: a repeating
+    /// timer in the run loop's COMMON modes (the default and
+    /// event-tracking modes AppKit uses for menu tracking) so the
+    /// exact-run stop file is observed while the tile main loop is
+    /// suspended inside `performClick`. Dropped as soon as tracking
+    /// returns, invalidating the timer before freeing its context.
+    struct IndicatorMenuStopGuard {
+        timer: Option<objc2_core_foundation::CFRetained<objc2_core_foundation::CFRunLoopTimer>>,
+        context: *mut IndicatorMenuStopContext,
+    }
+
+    impl IndicatorMenuStopGuard {
+        /// Arm for `menu`'s presentation; unarmed when the run has no exact
+        /// stop file (non-product runs keep the plain path) or when the
+        /// timer/run loop setup refuses (the presentation site then fails
+        /// closed rather than track a menu that could starve a stop).
+        fn install(
+            menu: &objc2_app_kit::NSMenu,
+            stop_file: Option<&std::path::Path>,
+        ) -> Self {
+            let unarmed = Self {
+                timer: None,
+                context: std::ptr::null_mut(),
+            };
+            let Some(stop_file) = stop_file else {
+                return unarmed;
+            };
+            use objc2_core_foundation::{
+                CFAbsoluteTimeGetCurrent, CFRunLoop, CFRunLoopTimer, CFRunLoopTimerContext,
+                kCFRunLoopCommonModes,
+            };
+            let context = Box::into_raw(Box::new(IndicatorMenuStopContext {
+                menu: objc2::rc::Retained::from(menu),
+                stop_file: stop_file.to_path_buf(),
+                reported: std::cell::Cell::new(false),
+            }));
+            // SAFETY: plain CF context record; `retain`/`release` are
+            // `None`, so CF only copies the record and never touches
+            // `info` outside the callout.
+            let mut cf_context = CFRunLoopTimerContext {
+                version: 0,
+                info: context.cast(),
+                retain: None,
+                release: None,
+                copyDescription: None,
+            };
+            // SAFETY: the callout only dereferences the live context box
+            // (freed by the guard after invalidation); the fire date is
+            // now, so a stop published before presentation is observed on
+            // the first pass instead of one interval later.
+            let timer = unsafe {
+                CFRunLoopTimer::new(
+                    None,
+                    CFAbsoluteTimeGetCurrent(),
+                    INDICATOR_MENU_STOP_POLL_MS as f64 / 1000.0,
+                    0,
+                    0,
+                    Some(indicator_menu_stop_callback),
+                    &mut cf_context,
+                )
+            };
+            let (Some(timer), Some(rl)) = (timer, CFRunLoop::current()) else {
+                // SAFETY: no timer was installed, so no callout can read
+                // the box.
+                unsafe { drop(Box::from_raw(context)) };
+                return unarmed;
+            };
+            // SAFETY: extern-static common-mode read (same pattern as the
+            // main wake source); the static is a framework constant.
+            let mode = unsafe { kCFRunLoopCommonModes };
+            rl.add_timer(Some(&timer), mode);
+            Self {
+                timer: Some(timer),
+                context,
+            }
+        }
+
+        /// Whether the in-tracking stop poll actually armed (only then may a
+        /// run with a stop file present a menu).
+        fn is_armed(&self) -> bool {
+            self.timer.is_some()
+        }
+    }
+
+    impl Drop for IndicatorMenuStopGuard {
+        fn drop(&mut self) {
+            if let Some(timer) = self.timer.as_ref() {
+                timer.invalidate();
+                if let Some(rl) = objc2_core_foundation::CFRunLoop::current() {
+                    // SAFETY: extern-static common-mode read (same pattern
+                    // as install); removal is best-effort teardown.
+                    let mode = unsafe { objc2_core_foundation::kCFRunLoopCommonModes };
+                    rl.remove_timer(Some(timer), mode);
+                }
+            }
+            if !self.context.is_null() {
+                // SAFETY: every path above invalidated the timer first (or
+                // never installed one), so no callout can read the box.
+                unsafe { drop(Box::from_raw(self.context)) };
             }
         }
     }
@@ -8067,6 +8242,7 @@ mod macos {
                         sender: clicks,
                         item: item.clone(),
                         menu: menu.clone(),
+                        stop_file: std::cell::OnceCell::new(),
                     }))),
                     init
                 ]
@@ -8117,6 +8293,15 @@ mod macos {
                 menu_delegate,
                 mtm,
             })
+        }
+
+        /// Bind the exact run's stop file to menu presentation: while the
+        /// mirror menu tracks, a common-mode main-thread timer stats this
+        /// file and cancels that menu on the stop, so the bounded stopped
+        /// shutdown still publishes the terminal outcome. First call wins
+        /// (one path per run); later calls are no-ops.
+        pub fn watch_stop_file(&self, stop_file: std::path::PathBuf) {
+            let _ = self.action_target.ivars().stop_file.set(stop_file);
         }
 
         /// Retitle the status item through its button (the direct item

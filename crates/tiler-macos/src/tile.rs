@@ -945,13 +945,22 @@ mod native {
         }
     }
 
+    /// Stop file for this exact run: `<run_dir>/stop-requested`. Shared by
+    /// the main-loop poll and the indicator's in-tracking menu poll, so the
+    /// two can never disagree about which file ends the run; `None` and
+    /// empty run dirs never stop this way.
+    fn run_stop_file(run_dir: &Option<String>) -> Option<std::path::PathBuf> {
+        run_dir
+            .as_deref()
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| std::path::Path::new(dir).join("stop-requested"))
+    }
+
     /// True when the launcher published a stop for this exact run: the
-    /// `<run_dir>/stop-requested` file exists. Std-only polling (one stat
-    /// per main-loop cadence); `None` run dirs never stop this way.
+    /// [`run_stop_file`] exists. Std-only polling (one stat per main-loop
+    /// cadence).
     fn stop_requested(run_dir: &Option<String>) -> bool {
-        run_dir.as_ref().is_some_and(|dir| {
-            !dir.is_empty() && std::path::Path::new(dir).join("stop-requested").exists()
-        })
+        run_stop_file(run_dir).is_some_and(|file| file.exists())
     }
 
     /// Owned production border carrier on the tile main thread: created on
@@ -1206,6 +1215,11 @@ mod native {
         toggle_rx:
             Option<std::sync::mpsc::Receiver<crate::workspace_indicator::IndicatorToggleClick>>,
         handle: Option<crate::ffi::WorkspaceIndicator>,
+        /// Exact-run stop file ([`run_stop_file`]) bound into every handle
+        /// this guard creates: the presentation path arms a common-mode
+        /// poll for it, so a stop requested while the mirror menu tracks
+        /// still ends the run through the bounded stopped shutdown.
+        stop_file: Option<std::path::PathBuf>,
         icons: std::collections::HashMap<String, objc2::rc::Retained<objc2_app_kit::NSImage>>,
         driver: crate::workspace_indicator::IndicatorDriver,
     }
@@ -1236,9 +1250,18 @@ mod native {
                 toggle_tx,
                 toggle_rx,
                 handle: None,
+                stop_file: None,
                 icons: std::collections::HashMap::new(),
                 driver,
             }
+        }
+
+        /// Bind the exact run's stop file once (before the first tick): the
+        /// handle's menu presentation watches it in common run-loop modes,
+        /// where AppKit's nested menu tracking keeps the main loop from
+        /// polling it directly.
+        pub(crate) fn set_stop_file(&mut self, stop_file: Option<std::path::PathBuf>) {
+            self.stop_file = stop_file;
         }
 
         fn armed(&self) -> bool {
@@ -1648,7 +1671,12 @@ mod native {
                     return;
                 };
                 match crate::ffi::WorkspaceIndicator::create(self.mtm, "", tx, toggle_tx) {
-                    Ok(handle) => self.handle = Some(handle),
+                    Ok(handle) => {
+                        if let Some(stop_file) = self.stop_file.clone() {
+                            handle.watch_stop_file(stop_file);
+                        }
+                        self.handle = Some(handle);
+                    }
                     Err(reason) => {
                         eprintln!(
                             "tiler-macos dev indicator create refused reason={} complete=false",
@@ -2443,6 +2471,11 @@ mod native {
         // cadence snapshot plus engine observation counts (no polling of
         // its own). Clicks drain through the guarded engine lane.
         let mut indicator = IndicatorGuard::new(mtm, request.indicator);
+        // Exact-run stop, menu-tracking leg: the same file the main-loop
+        // poll reads, bound to the status item's mirror-menu presentation
+        // (AppKit tracks that menu in a nested event-tracking run loop,
+        // where this loop cannot poll it).
+        indicator.set_stop_file(run_stop_file(&request.run_dir));
         // Diagnostic-only trailing-click injection state (single-shot per
         // run: exactly one rendered trailing binding loops back, then the
         // normal drain fences it fresh).
@@ -4398,6 +4431,33 @@ mod native {
             // survives to assert).
             let mut watchdog = Watchdog::arm(Duration::from_secs(60)).expect("arm");
             watchdog.disarm();
+        }
+
+        #[test]
+        fn run_stop_file_is_the_exact_run_directory_join() {
+            // The main-loop poll and the indicator's in-tracking menu poll
+            // must read ONE file: absent and empty run dirs never stop
+            // either path (such presentations arm no timer at all).
+            assert_eq!(run_stop_file(&None), None);
+            assert_eq!(run_stop_file(&Some(String::new())), None);
+            static TMP_COUNTER: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let unique = format!(
+                "{}-{}",
+                std::process::id(),
+                TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            );
+            let dir = std::env::temp_dir().join(format!("omnitiler-menu-stop-{unique}"));
+            std::fs::create_dir(&dir).expect("temporary run directory");
+            let run_dir = Some(dir.to_string_lossy().into_owned());
+            assert_eq!(run_stop_file(&run_dir), Some(dir.join("stop-requested")));
+            // The exact file the menu poll stats is the one the main-loop
+            // poll reports: absent first, then present.
+            assert!(!stop_requested(&run_dir));
+            std::fs::write(dir.join("stop-requested"), []).expect("stop request");
+            assert!(stop_requested(&run_dir));
+            assert!(run_stop_file(&run_dir).expect("stop file").exists());
+            std::fs::remove_dir_all(&dir).expect("remove directory");
         }
 
         #[test]
