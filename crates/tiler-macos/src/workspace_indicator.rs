@@ -10,8 +10,8 @@
 //! accessibility and alternate clicks. Selection reuses the guarded engine
 //! lane ([`crate::workspace_select`]): a segment click submits the same
 //! armed [`crate::runtime_types::InputSemanticAction`] the tap submits, so
-//! the unarmed, single-display, gate, drift, and verified-arrival rules all
-//! apply unchanged. No synthetic trailing workspace is ever added, no
+//! the unarmed, output identity, capability, drift, and verified-arrival
+//! rules all apply unchanged. No synthetic trailing workspace is ever added, no
 //! trailing lifecycle is managed, and no preference file is written.
 //!
 //! Appearance policy (rendered natively in [`crate::ffi`], read back from
@@ -73,6 +73,9 @@ use crate::runtime_types::InputSemanticAction;
 /// admission. Mission Control still handles eligible existing-Space switches.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn native_capability_notice(macos_major: Option<u32>) -> Option<String> {
+    if crate::space_switch_candidate_27::candidate_27_allowed(macos_major).is_ok() {
+        return None;
+    }
     crate::space_switch_edges::gesture_payload_allowed(macos_major)
         .err()
         .map(|reason| {
@@ -2164,7 +2167,8 @@ mod tests {
     #[test]
     fn native_capability_notice_preserves_gate_reason() {
         assert!(native_capability_notice(Some(26)).is_none());
-        for major in [Some(27), Some(28), None] {
+        assert!(native_capability_notice(Some(27)).is_none());
+        for major in [Some(28), None] {
             let reason = crate::space_switch_edges::gesture_payload_allowed(major).unwrap_err();
             let notice = native_capability_notice(major).unwrap();
             assert!(notice.starts_with("Native workspaces unavailable on this macOS"));

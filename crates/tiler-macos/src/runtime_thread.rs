@@ -8842,6 +8842,104 @@ mod trailing_join_tests {
         assert!(state.take_trailing_proof().is_none());
     }
 
+    /// Two separate displays on macOS major 27 admit one existing-Space
+    /// keyboard select through the reply-bound drain: only the exact
+    /// target SID is selected, no creation/trailing proof is taken, and
+    /// pre-27, unknown, or unadvertised backends keep the single-display
+    /// refusal with zero native touch. Trailing select-or-create never
+    /// rides the route.
+    #[test]
+    fn two_display_keyboard_select_drains_exact_target_only_on_27() {
+        use crate::workspace_select::{SelectGates, SelectionState, drain_claimed_select_with_os};
+        let gates = SelectGates {
+            session_unlocked: true,
+            secure_active: false,
+            lock_screen: false,
+        };
+        let claim = || {
+            let mut claim = ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 });
+            claim.operation_id = Some("op-2d".to_owned());
+            claim.select_target_output = Some("macos-display-1".to_owned());
+            claim.select_target_workspace = Some("ws-2".to_owned());
+            claim.select_native_binding = Some("space-277".to_owned());
+            claim.select_baseline_sid = Some(1);
+            claim
+        };
+        let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
+        backend.displays = 2;
+        backend.multi_keyboard = true;
+        let mut state = SelectionState::default();
+        let success =
+            drain_claimed_select_with_os(&mut state, &mut backend, claim(), &gates, true, Some(27))
+                .expect("two-display keyboard select drains its exact target");
+        assert_eq!(backend.selects, vec![277], "exact reply-bound SID only");
+        assert_eq!((success.pre, success.post), (Some(1), Some(277)));
+        assert_eq!(success.effect.created, None);
+        assert_eq!(backend.creates, 0);
+        assert!(state.take_trailing_proof().is_none());
+        // Pre-27, post-27, and unknown majors refuse without actuation.
+        for major in [Some(26), Some(28), None] {
+            let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
+            backend.displays = 2;
+            backend.multi_keyboard = true;
+            let mut state = SelectionState::default();
+            let failure = drain_claimed_select_with_os(
+                &mut state,
+                &mut backend,
+                claim(),
+                &gates,
+                true,
+                major,
+            )
+            .expect_err("non-27 refuses");
+            assert!(
+                failure.reason.contains("exactly one native display"),
+                "{major:?}: {}",
+                failure.reason
+            );
+            assert!(backend.selects.is_empty());
+            assert_eq!(backend.creates, 0);
+        }
+        // Without the backend advertisement the single-display rule stays.
+        let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
+        backend.displays = 2;
+        let mut state = SelectionState::default();
+        let failure =
+            drain_claimed_select_with_os(&mut state, &mut backend, claim(), &gates, true, Some(27))
+                .expect_err("unadvertised backend refuses");
+        assert!(failure.reason.contains("exactly one native display"));
+        assert!(backend.selects.is_empty());
+        // Trailing select-or-create never rides the two-display keyboard
+        // route, even with a bound SID: refused before any append/select.
+        let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
+        backend.displays = 2;
+        backend.multi_keyboard = true;
+        let mut trailing = ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 0 });
+        trailing.operation_id = Some("op-trail".to_owned());
+        trailing.select_target_output = Some("macos-display-1".to_owned());
+        trailing.select_target_workspace = Some("ws-new".to_owned());
+        trailing.select_native_binding = Some("space-277".to_owned());
+        trailing.select_baseline_sid = Some(1);
+        let mut state = SelectionState::default();
+        let failure = drain_claimed_select_with_os(
+            &mut state,
+            &mut backend,
+            trailing,
+            &gates,
+            true,
+            Some(27),
+        )
+        .expect_err("trailing stays single-display");
+        assert!(
+            failure.reason.contains("exactly one native display"),
+            "{}",
+            failure.reason
+        );
+        assert!(backend.selects.is_empty());
+        assert_eq!(backend.creates, 0);
+        assert!(state.take_trailing_proof().is_none());
+    }
+
     #[test]
     fn stale_dispatch_binds_no_plan_and_drain_touches_nothing() {
         // Watermark-move regression: a racing input advances the shared
@@ -11421,6 +11519,12 @@ mod trailing_join_tests {
         next_sid: u64,
         selects: Vec<u64>,
         creates: usize,
+        /// Scripted native display count for the multi-display admission
+        /// tests (production takes fresh rows); 1 keeps every other test
+        /// on the single-display rule.
+        displays: usize,
+        /// Scripted advertisement of the pinned two-display keyboard route.
+        multi_keyboard: bool,
     }
 
     impl FakeBackend {
@@ -11434,6 +11538,8 @@ mod trailing_join_tests {
                 next_sid: spaces.iter().copied().max().unwrap_or(0) + 1,
                 selects: Vec::new(),
                 creates: 0,
+                displays: 1,
+                multi_keyboard: false,
             }
         }
     }
@@ -11448,7 +11554,11 @@ mod trailing_join_tests {
         }
 
         fn display_count(&mut self) -> Result<usize, String> {
-            Ok(1)
+            Ok(self.displays)
+        }
+
+        fn multi_display_keyboard_select(&mut self) -> bool {
+            self.multi_keyboard
         }
 
         fn revision(&mut self) -> Option<u64> {

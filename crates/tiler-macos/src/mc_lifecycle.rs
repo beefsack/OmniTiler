@@ -1005,8 +1005,8 @@ pub(crate) mod live {
     /// fresh SLS locate + AppKit read. The pinned row must still own the
     /// target before open and after the fresh re-read; any display move,
     /// membership drift, or CG/UUID mismatch refuses before the press.
-    /// Used only by the serialized select owner for grouped indicator
-    /// clicks on several displays.
+    /// Used by the serialized select owner for grouped indicator clicks
+    /// and for eligible macOS 27 zero-post fallbacks.
     pub fn mc_goto_sid_pinned(
         sid: u64,
         display_index: usize,

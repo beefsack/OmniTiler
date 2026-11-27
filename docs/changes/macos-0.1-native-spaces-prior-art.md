@@ -14,14 +14,12 @@ and **OmniWM v0.8.0** (26+/arm64, read-only native Space inventory with
 fullscreen excluded from managed switching).
 No native pass or product change follows from the review itself.
 
-- `crates/tiler-macos/src/space_switch_edges.rs:41,95` refuses the pinned
-  Dock-swipe payload on macOS >=27 (the rift augmented payload needs an exact
-  observed family select). In the current baseline on 27 all switches fall
-  back to Mission Control AX under the [managed Spaces decision](../decisions/macos.md#managed-native-spaces-input-and-transfers);
-  the [2026-11-27 amendment](macos-0.1-gate-proposal.md#gate-amendment-2026-11-27)
-  requires separate proof and pre-dispatch selection, otherwise refusal.
-  The MC AX route uses fixed 300 ms stabilization (`crates/tiler-macos/src/mc_probe.rs:70`,
-  `crates/tiler-macos/src/mc_lifecycle.rs:612`).
+- At the review baseline, macOS 27 refused the pinned pre-27 Dock-swipe
+  payload. Switches fell back to Mission Control AX under the
+  [managed Spaces decision](../decisions/macos.md#managed-native-spaces-input-and-transfers);
+  its fixed stabilization delay was 300 ms. The
+  [2026-11-27 amendment](macos-0.1-gate-proposal.md#gate-amendment-2026-11-27)
+  required independent live proof before enabling the augmented payload.
 - Measured switch latency is ~1.0–1.1 s on 27 with two extended displays
   ([indicator record](macos-workspace-indicator.md#two-extended-displays-2026-11-27-before-the-click-model-fix));
   the 50–62 ms figures predate 27 ([managed workspaces](macos-managed-workspaces.md#send-latency-work-2026-10-20))
@@ -44,7 +42,7 @@ No native pass or product change follows from the review itself.
   tag during serialization, so the final event is tagged after reconstruction.
   The wire-format checks verify the appended 4205 bytes; the public event API
   cannot read that field back, so these do not prove Dock acceptance or
-  production routing. The augmented payload remains probe-only.
+  production routing.
 - Prove numbered, relative and previous selection on one display's owned
   Spaces with the signed fixture before enabling the new payload. For E1,
   prove exact target-only arrival with the pointer initially on the other
@@ -80,6 +78,26 @@ Mission Control presentation. The pointer and other display's current
 were unchanged; teardown restored the starting topology without residue.
 This proves the candidate's event-location targeting, not product input
 delivery.
+
+The signed two-display product keyboard leg posted one three-event gesture
+batch to the engine reply's exact output. The relative shortcut settled in
+113–123 ms in the native owner; independent readback first saw the exact SID
+in 245–251 ms including fixture keyboard authorization, and held it for 400 ms
+without bounce or a sampled Mission Control surface, pointer movement, or a
+change to the other current Space. This enables the augmented route for
+existing-Space keyboard selects only. The indicator leg delivered a
+Control-click to the verified product status item and opened its menu rather
+than selecting a Space; it does not qualify the gesture route. Grouped
+indicator clicks keep their pinned Mission Control path.
+
+The signed Mission Control pair used the same fresh owned-Space switch and
+exact SID/close proof before and after replacing the fixed delay. The switch
+took 1,050 ms before and 757 ms with child-readiness polling. Other measured
+goto legs in those runs were 1,066–1,093 ms before and 750–765 ms after.
+The polled run refused its later keyboard post because the new fixture
+window was not on the owned Space; the timed Mission Control switch and
+return had their own exact readbacks. The bound and `AXExposeExit` proof
+remain in place; these figures are Mission Control, not swipe timings.
 
 ## Fn/Globe as a tiler modifier
 

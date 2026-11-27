@@ -163,6 +163,17 @@ pub trait SelectionBackend {
     fn multi_display_output_select(&mut self) -> bool {
         false
     }
+    /// Whether this backend can actuate one existing-Space keyboard select
+    /// (numbered `1..9`, relative, previous) against a target pinned to one
+    /// of exactly TWO separate displays. The serialized owner backend
+    /// advertises it only with two published displays, separate-Spaces mode
+    /// proven on, and a pinned CG display id; every other backend keeps the
+    /// default and therefore the single-display rule. The OS gate
+    /// (candidate 27) is applied by the drain itself, and creation/trailing
+    /// never take this route.
+    fn multi_display_keyboard_select(&mut self) -> bool {
+        false
+    }
     fn empty(&mut self, sid: u64) -> Result<bool, String>;
     /// One create dispatch only; caller independently adopts an exact append.
     ///
@@ -695,7 +706,8 @@ pub(crate) fn parse_native_binding(binding: &str) -> Option<u64> {
 
 /// Capability-explicit full-claim drain: the production route above with
 /// `trailing_enabled` threaded from the single capability gate (tests pass
-/// an explicit local). Core owns targeting/history/reuse-vs-create; the
+/// an explicit local), and the live macOS major passed through the exact
+/// candidate-27 predicate. Core owns targeting/history/reuse-vs-create; the
 /// drain only looks up the reply-issued binding live (fenced against the
 /// live display identity) and creates at most once under an explicit,
 /// unspent creation desire. Every path returns its typed setter plus
@@ -712,6 +724,28 @@ pub(crate) fn drain_claimed_select_with(
     claim: crate::runtime_types::ClaimedSelect,
     gates: &SelectGates,
     trailing_enabled: bool,
+) -> Result<SelectSuccess, SelectFailure> {
+    drain_claimed_select_with_os(
+        state,
+        backend,
+        claim,
+        gates,
+        trailing_enabled,
+        crate::ffi::macos_major(),
+    )
+}
+
+/// Capability- and OS-explicit drain: production passes the live macOS
+/// major through [`crate::space_switch_candidate_27::candidate_27_allowed`]
+/// (exactly 27 admits); offline tests pass a literal so the two-display
+/// keyboard admission is scriptable without touching the host version.
+pub(crate) fn drain_claimed_select_with_os(
+    state: &mut SelectionState,
+    backend: &mut impl SelectionBackend,
+    claim: crate::runtime_types::ClaimedSelect,
+    gates: &SelectGates,
+    trailing_enabled: bool,
+    os_major: Option<u32>,
 ) -> Result<SelectSuccess, SelectFailure> {
     // A new execution supersedes any unclaimed append record: each leg
     // appends at most once, and `take_trailing_proof` clears after every
@@ -759,17 +793,32 @@ pub(crate) fn drain_claimed_select_with(
     // output-pinned route (the serialized owner backend: its click names
     // the exact output and workspace it rendered, dispatch resolves that
     // output to one display index, and the exact output fence below
-    // re-proves it). The shared drain never infers that capability from
-    // the action alone. Zero displays always refuse; a display
-    // plugged/unplugged mid-drain is still caught by the exact-row checks
-    // below.
+    // re-proves it). Existing-Space keyboard navigation (numbered 1..9,
+    // relative, previous) may arm exactly TWO separate displays only on
+    // macOS major 27 and only through a backend that advertises the pinned
+    // keyboard route; the reply target output must still be the pinned
+    // display (the same exact output fence below), and the creation leg
+    // keeps the single-display rule. The shared drain never infers any of
+    // that capability from the action alone. Zero displays always refuse;
+    // a display plugged/unplugged mid-drain is still caught by the
+    // exact-row checks below.
     let output_pinned_indicator = matches!(
         claim.action,
         crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace { .. }
     );
+    let keyboard_existing_select =
+        crate::workspace_input::is_multi_display_keyboard_select(&claim.action);
+    let mut keyboard_two_display = false;
     match backend.display_count() {
         Ok(1) => {}
         Ok(n) if output_pinned_indicator && n > 1 && backend.multi_display_output_select() => {}
+        Ok(2)
+            if keyboard_existing_select
+                && backend.multi_display_keyboard_select()
+                && crate::space_switch_candidate_27::candidate_27_allowed(os_major).is_ok() =>
+        {
+            keyboard_two_display = true;
+        }
         Ok(n) => {
             return Err(refused_bare(format!(
                 "product select refuses: expected exactly one native display, found {n}"
@@ -800,6 +849,15 @@ pub(crate) fn drain_claimed_select_with(
             "select refuses: no retained view target; no actuation".to_owned(),
         ));
     };
+    // Existing-Space only: on the two-display keyboard route an unbound
+    // reply target is the creation leg, which stays single-display (never
+    // broadened here; trailing index 0 never reaches this arm at all).
+    if keyboard_two_display && claim.select_native_binding.is_none() {
+        return Err(refused_bare(
+            "product select refuses: multi-display keyboard select requires an existing Space; creation and trailing stay single-display"
+                .to_owned(),
+        ));
+    }
     // Logical output identity fence against the live display: the plan
     // must name the display this backend actuates, never another output.
     if let Err(reason) = backend.check_output(&target_output) {

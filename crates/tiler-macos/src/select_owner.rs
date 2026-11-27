@@ -136,6 +136,71 @@ pub(crate) fn multi_indicator_submit_display(
     crate::topology::display_index_for_output(&published.displays, rows, output)
 }
 
+/// Pure route gate for existing-Space keyboard selects on exactly two
+/// separate displays: the publication must name exactly two displays, the
+/// separate-Spaces mode must be proven on, and the OS major must pass
+/// [`crate::space_switch_candidate_27::candidate_27_allowed`] (exactly 27;
+/// pre-27 and unknown refuse). Offline tests pass a literal major.
+#[must_use]
+pub(crate) fn keyboard_two_display_route_allowed(
+    display_count: usize,
+    separate: Option<bool>,
+    os_major: Option<u32>,
+) -> bool {
+    display_count == 2
+        && separate == Some(true)
+        && crate::space_switch_candidate_27::candidate_27_allowed(os_major).is_ok()
+}
+
+/// Resolve the exact published display one keyboard existing-Space select
+/// targets. This is the production submit seam for the two-separate-display
+/// route: the action must be the keyboard shape (numbered 1..9, relative,
+/// previous — never a trailing select-or-create, indicator row, or send),
+/// the publication must be exactly two separate displays on macOS 27, and
+/// the claim's reply-bound target output must join exactly one published
+/// `(CG display id, managed UUID)` and one fresh SLS row. Returns the fresh
+/// row index plus the pinned pair; any mismatch or ambiguity refuses before
+/// a job is submitted (never a positional guess, never cross-output).
+pub(crate) fn multi_keyboard_submit_display(
+    claim: &ClaimedSelect,
+    published: &crate::runtime_shared::PublishedDisplayInputs,
+    rows: &[crate::ffi::SlsDisplayRow],
+    os_major: Option<u32>,
+) -> Result<(usize, u32, String), String> {
+    if !crate::workspace_input::is_multi_display_keyboard_select(&claim.action) {
+        return Err(
+            "multi-display keyboard route refuses a non-keyboard-select action; no actuation"
+                .to_owned(),
+        );
+    }
+    let Some(output) = claim.select_target_output.as_deref() else {
+        return Err(
+            "multi-display keyboard route refuses: claim has no reply target output; no actuation"
+                .to_owned(),
+        );
+    };
+    if claim.select_target_workspace.is_none() {
+        return Err(
+            "multi-display keyboard route refuses: claim has no reply target workspace; no actuation"
+                .to_owned(),
+        );
+    }
+    if claim.select_native_binding.is_none() {
+        return Err(
+            "multi-display keyboard route refuses: claim has no existing Space binding; creation and trailing stay single-display"
+                .to_owned(),
+        );
+    }
+    if !keyboard_two_display_route_allowed(published.displays.len(), published.separate, os_major) {
+        return Err(format!(
+            "multi-display keyboard route refuses: expected exactly two separate displays on macOS 27 (found {} displays, separate={:?}, macOS major={os_major:?}); no actuation",
+            published.displays.len(),
+            published.separate
+        ));
+    }
+    crate::topology::display_index_for_output(&published.displays, rows, output)
+}
+
 /// Verify a direct per-display Mission Control select against full native
 /// snapshots: the target Space must live in the pinned display's group and
 /// be current there after dispatch, every other display's Space membership
@@ -425,6 +490,7 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
         job.claim.operation_id.clone(),
         job.submitted_at,
         job.fixture_gate.clone(),
+        &job.claim.action,
     );
     let result = crate::workspace_select::drain_claimed_select_with(
         state,

@@ -3714,12 +3714,51 @@ mod native {
                     ) && published
                         .as_ref()
                         .is_some_and(|published| published.displays.len() > 1);
+                    // Existing-Space keyboard navigation (numbered 1..9,
+                    // relative, previous) on exactly two published displays
+                    // takes the pinned per-output route only when the
+                    // reply already bound a target output; the submit helper
+                    // then proves two separate displays on macOS 27 and
+                    // resolves that exact output, never a positional guess.
+                    let keyboard_two_display_route =
+                        crate::workspace_input::is_multi_display_keyboard_select(&claim.action)
+                            && claim.select_target_output.is_some()
+                            && published
+                                .as_ref()
+                                .is_some_and(|published| published.displays.len() == 2);
                     let submit = match (last_snapshot.as_ref(), published, wake) {
                         (Some(live_snapshot), Some(published), Some(wake)) if grouped_route => {
                             match crate::select_owner::multi_indicator_submit_display(
                                 &claim,
                                 &published,
                                 &live_snapshot.rows,
+                            ) {
+                                Ok((display_index, pinned_cgid, pinned_uuid)) => {
+                                    select_controller.submit(
+                                        &claim,
+                                        crate::select_owner::SelectSubmit {
+                                            display_index,
+                                            pinned_cgid,
+                                            pinned_uuid: &pinned_uuid,
+                                            published_displays: &published.displays,
+                                            published_separate: published.separate,
+                                            trailing_enabled:
+                                                crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                                            wake: &wake,
+                                        },
+                                    )
+                                }
+                                Err(reason) => Err(reason),
+                            }
+                        }
+                        (Some(live_snapshot), Some(published), Some(wake))
+                            if keyboard_two_display_route =>
+                        {
+                            match crate::select_owner::multi_keyboard_submit_display(
+                                &claim,
+                                &published,
+                                &live_snapshot.rows,
+                                crate::ffi::macos_major(),
                             ) {
                                 Ok((display_index, pinned_cgid, pinned_uuid)) => {
                                     select_controller.submit(
@@ -3779,13 +3818,16 @@ mod native {
                     match submit {
                         Ok(()) => {
                             eprintln!(
-                                "tiler-macos dev select action={} submitted route={} complete=false",
+                                "tiler-macos dev select action={} submitted route={} output={} complete=false",
                                 id,
                                 if grouped_route {
                                     "mc-pinned"
+                                } else if keyboard_two_display_route {
+                                    "dock-swipe-pinned"
                                 } else {
                                     "dock-swipe"
                                 },
+                                claim.select_target_output.as_deref().unwrap_or("none"),
                             );
                         }
                         Err(reason) => {

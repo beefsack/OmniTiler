@@ -121,6 +121,10 @@ pub trait SwipePoster: Send {
     /// display's current Space; scripted test posters record/allow it.
     /// Refusal posts nothing; releases never call it.
     fn fence(&mut self, display_id: &str) -> Result<(), String>;
+
+    fn live_targeted_route(&self) -> bool {
+        false
+    }
 }
 
 /// Injectable live-gate seam: fresh session reads on the calling (owner)
@@ -365,6 +369,10 @@ impl SwipePoster for LiveSwipePoster {
         // first gesture post: exactly focused nonfullscreen window/app plus
         // that display's ordinary current Space. A refusal posts nothing.
         crate::space_synthetic_gate::require_swipe_target(0, Some(display_id))
+    }
+
+    fn live_targeted_route(&self) -> bool {
+        cfg!(target_os = "macos")
     }
 }
 
@@ -1059,6 +1067,11 @@ pub(crate) struct OwnerSelectBackend<T: SwipeTopology, P: SwipePoster> {
     /// major so the scripted seams exercise the payload itself rather than
     /// this host's refusal gate (which has its own test).
     os_major: Option<u32>,
+    // The augmented route has live keyboard acceptance only.
+    targeted_keyboard_select: bool,
+    // A target-row-only read cannot confirm a posted swipe that did not
+    // prove the complete all-display postimage. The core holds it pending.
+    unproven_swipe_27: bool,
 }
 
 /// Production owner backend over live seams.
@@ -1085,6 +1098,8 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
             t_base: args.t_base,
             fixture_gate: args.fixture_gate,
             os_major: crate::ffi::macos_major(),
+            targeted_keyboard_select: false,
+            unproven_swipe_27: false,
         }
     }
 
@@ -1134,6 +1149,7 @@ impl OwnerSelectBackend<LiveSwipeTopology, LiveSwipePoster> {
         op: Option<String>,
         t_base: Instant,
         fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+        action: &crate::runtime_types::InputSemanticAction,
     ) -> Self {
         let topo = LiveSwipeTopology::pinned(
             legs.display_index,
@@ -1142,7 +1158,7 @@ impl OwnerSelectBackend<LiveSwipeTopology, LiveSwipePoster> {
             &legs.published_displays,
             legs.published_separate,
         );
-        Self::pinned_with(OwnerBackendArgs {
+        let mut backend = Self::pinned_with(OwnerBackendArgs {
             legs,
             latch,
             cancel,
@@ -1155,24 +1171,147 @@ impl OwnerSelectBackend<LiveSwipeTopology, LiveSwipePoster> {
             op,
             t_base,
             fixture_gate,
-        })
+        });
+        backend.targeted_keyboard_select =
+            crate::workspace_input::is_multi_display_keyboard_select(action);
+        backend
     }
 }
 
 impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
-    /// Grouped indicator select on several displays: one direct, pinned
-    /// Mission Control Space press on the clicked display instead of the
-    /// global Dock swipe (which independently refuses several displays).
-    /// All reads are fresh SLS/unlocked/AX gates on this owner thread; no
-    /// AppKit read and no fallback/replay. Full pre/post snapshots prove
-    /// the target arrived and every non-target display stayed untouched;
-    /// anything else is a typed refusal or throw.
-    fn select_multi_display(
+    #[cfg(target_os = "macos")]
+    fn select_targeted_27(
         &mut self,
         before: &SelectionSnapshot,
         sid: u64,
     ) -> Result<(), DispatchError> {
-        if self.legs.published_separate != Some(true) {
+        use crate::mc_lifecycle::live::{fresh_snapshot, mc_closed_verified};
+        use crate::mc_probe::validate_goto_effect;
+
+        let refuse = DispatchError::refused;
+        let count = self.legs.published_displays.len();
+        let target = self.legs.display_index;
+        let uuid = self.legs.pinned_uuid.as_str();
+        let cgid = self.legs.pinned_cgid;
+        let pre = fresh_snapshot().map_err(|err| refuse(err.to_string()))?;
+        let pinned = pre
+            .displays
+            .get(target)
+            .filter(|row| row.identifier.as_deref() == Some(uuid));
+        if pre.displays.len() != count
+            || !matches!(count, 1 | 2)
+            || (count == 2 && self.legs.published_separate != Some(true))
+            || crate::ffi::cg_display_uuid(cgid).as_deref() != Some(uuid)
+            || !pinned.is_some_and(|row| row.current == Some(before.current))
+            || pre
+                .displays
+                .iter()
+                .any(|row| row.current.is_none() || row.identifier.is_none())
+            || (count == 2 && pre.displays[0].identifier == pre.displays[1].identifier)
+        {
+            return Err(refuse(
+                "Dock swipe has no fresh exact target display".to_owned(),
+            ));
+        }
+        let row = self.topo.fresh_full_row().map_err(refuse)?;
+        if row.display_id != before.display
+            || row.display_id != uuid
+            || row.full_order != pre.displays[target].spaces
+            || row.user_spaces != before.spaces
+            || row.current != before.current
+            || !row.user_spaces.contains(&sid)
+        {
+            return Err(refuse(
+                "Dock swipe target row changed before dispatch".to_owned(),
+            ));
+        }
+        let (sign, steps) = swipe_plan(&row.full_order, row.current, sid).map_err(refuse)?;
+        let plan =
+            crate::space_switch_candidate_27::prepare_gesture_27(sign, steps).map_err(refuse)?;
+        let bounds = objc2_core_graphics::CGDisplayBounds(cgid);
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            return Err(refuse(
+                "Dock swipe target has no positive display bounds".to_owned(),
+            ));
+        }
+        plan.locate(objc2_core_foundation::CGPoint::new(
+            bounds.origin.x + bounds.size.width / 2.0,
+            bounds.origin.y + bounds.size.height / 2.0,
+        ));
+        let cancelled = || self.cancel.load(Ordering::SeqCst) || self.latch.cancelled();
+        let mut observed = self.latch.generation();
+        let posted = plan
+            .post_after(|| {
+                if cancelled() {
+                    return Err("Dock swipe cancelled before dispatch".to_owned());
+                }
+                if crate::ffi::cg_display_uuid(cgid).as_deref() != Some(uuid)
+                    || objc2_core_graphics::CGDisplayBounds(cgid) != bounds
+                    || !mc_closed_verified().map_err(|err| err.to_string())?
+                {
+                    return Err(
+                        "Dock swipe target or Mission Control changed before dispatch".to_owned(),
+                    );
+                }
+                let fresh = fresh_snapshot().map_err(|err| err.to_string())?;
+                validate_goto_effect(&pre, &fresh, target, before.current)
+                    .map_err(|err| err.to_string())?;
+                crate::space_synthetic_gate::require_swipe_target(target, Some(uuid))?;
+                if cancelled() {
+                    return Err("Dock swipe cancelled before dispatch".to_owned());
+                }
+                Ok(())
+            })
+            .map_err(refuse)?;
+        self.unproven_swipe_27 = true;
+        let op = self.op.as_deref().unwrap_or("none");
+        eprintln!(
+            "tiler-macos select route=dock-swipe-27 phase=posted op={op} source={} target={sid} events={posted}",
+            row.current
+        );
+        let deadline = Instant::now() + self.legs.settle_deadline;
+        loop {
+            if cancelled() {
+                return Err(DispatchError::accepted(
+                    "Dock swipe cancelled after posting; no replay",
+                ));
+            }
+            if let Ok(after) = fresh_snapshot() {
+                let current = after.displays.get(target).and_then(|row| row.current);
+                if let Some(current) = current {
+                    validate_goto_effect(&pre, &after, target, current)
+                        .map_err(|err| DispatchError::accepted(err.to_string()))?;
+                    if current == sid && !cancelled() {
+                        self.unproven_swipe_27 = false;
+                        let elapsed = self.t_base.elapsed().as_millis();
+                        eprintln!(
+                            "tiler-macos select route=dock-swipe-27 phase=settled op={op} target={sid} elapsed_ms={elapsed}"
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(DispatchError::accepted(
+                    "Dock swipe arrival unproven; no replay",
+                ));
+            }
+            if let LatchWait::Advanced(next) = self.latch.wait(observed, remaining) {
+                observed = next;
+            }
+        }
+    }
+
+    /// The existing output-pinned MC AX route, also used as a zero-post
+    /// fallback by the proven macOS 27 targeted swipe.
+    fn select_pinned_mc(
+        &mut self,
+        before: &SelectionSnapshot,
+        sid: u64,
+    ) -> Result<(), DispatchError> {
+        let count = self.legs.published_displays.len();
+        if count > 1 && self.legs.published_separate != Some(true) {
             return Err(DispatchError::refused(
                 "multi-display indicator select refuses: separate-Spaces mode unreadable or disabled; no actuation",
             ));
@@ -1207,6 +1346,14 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
                 "multi-display indicator select refuses: pre-dispatch full snapshot unreadable ({e}); no actuation"
             ))
         })?;
+        if pre.displays.len() != count
+            || self.snapshot().map_err(DispatchError::refused)? != *before
+            || !before.spaces.contains(&sid)
+        {
+            return Err(DispatchError::refused(
+                "pinned Mission Control row drifted before dispatch",
+            ));
+        }
         let mut target = None;
         for (index, display) in pre.displays.iter().enumerate() {
             if display.identifier.as_deref() != Some(self.legs.pinned_uuid.as_str()) {
@@ -1224,6 +1371,11 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
                 "multi-display indicator select refuses: pinned UUID has no fresh row; no actuation",
             )
         })?;
+        if target != self.legs.display_index {
+            return Err(DispatchError::refused(
+                "pinned Mission Control display moved before dispatch",
+            ));
+        }
         if pre.displays[target].current != Some(before.current) {
             return Err(DispatchError::refused(
                 "multi-display indicator select refuses: pinned current moved before dispatch; no actuation",
@@ -1270,6 +1422,9 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
 
 impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T, P> {
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+        if self.unproven_swipe_27 {
+            return Err("posted Dock swipe lacks exact all-display confirmation".to_owned());
+        }
         let row = self.topo.fresh_full_row()?;
         Ok(SelectionSnapshot {
             display: row.display_id,
@@ -1284,6 +1439,17 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
 
     fn multi_display_output_select(&mut self) -> bool {
         self.legs.published_displays.len() > 1 && self.legs.pinned_cgid != 0
+    }
+
+    fn multi_display_keyboard_select(&mut self) -> bool {
+        self.targeted_keyboard_select
+            && self.poster.live_targeted_route()
+            && self.legs.pinned_cgid != 0
+            && crate::select_owner::keyboard_two_display_route_allowed(
+                self.legs.published_displays.len(),
+                self.legs.published_separate,
+                self.os_major,
+            )
     }
 
     fn revision(&mut self) -> Option<u64> {
@@ -1423,9 +1589,27 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
         if self.exit_armed {
             self.exit_armed = false;
             self.exit_gate.await_exit(&self.cancel)?;
+        } else {
+            #[cfg(target_os = "macos")]
+            if self.targeted_keyboard_select
+                && self.poster.live_targeted_route()
+                && crate::space_switch_candidate_27::candidate_27_allowed(self.os_major).is_ok()
+                && matches!(self.legs.published_displays.len(), 1 | 2)
+            {
+                match self.select_targeted_27(before, sid) {
+                    Err(err) if err.setter == tiler_core::world_report::FrameSetter::Refused => {
+                        if !matches!(crate::mc_lifecycle::live::mc_closed_verified(), Ok(true)) {
+                            return Err(err);
+                        }
+                        eprintln!("tiler-macos select route=mc-pinned reason={}", err.reason);
+                        return self.select_pinned_mc(before, sid);
+                    }
+                    result => return result,
+                }
+            }
         }
         if self.legs.published_displays.len() > 1 {
-            return self.select_multi_display(before, sid);
+            return self.select_pinned_mc(before, sid);
         }
         // Owner-fresh gates (never the stale submit-time snapshot), the
         // per-job settle latch, and the shared cancellation flag travel

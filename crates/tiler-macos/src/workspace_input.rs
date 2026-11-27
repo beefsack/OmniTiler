@@ -533,6 +533,24 @@ pub const fn is_armed_select_with(action: &InputSemanticAction, trailing_enabled
     }
 }
 
+/// Keyboard existing-Space select shapes eligible for the two-separate-
+/// display product route: numbered `1..9`, relative (either polarity), and
+/// the previous toggle. Excludes the trailing `index 0` select-or-create
+/// (creation and trailing stay single-display), every indicator row (its
+/// own clicked-output route), every send/stay/output shape, and every basic
+/// action, so the multi-display admission never broadens beyond
+/// existing-Space keyboard navigation.
+#[must_use]
+pub const fn is_multi_display_keyboard_select(action: &InputSemanticAction) -> bool {
+    match *action {
+        InputSemanticAction::WorkspaceSelect { index } => index >= 1 && index <= 9,
+        InputSemanticAction::WorkspaceRelative { .. } | InputSemanticAction::WorkspacePrevious => {
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Send-shape predicate for the numbered send product path:
 /// `WorkspaceSend` with `index` 0-9 follow plus `index` 1-9 stay:
 /// follows ride the

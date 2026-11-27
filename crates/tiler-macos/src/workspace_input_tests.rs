@@ -1100,3 +1100,58 @@ fn product_select_matrix_is_duplicate_free_with_exact_arms() {
         }
     }
 }
+
+#[test]
+fn multi_display_keyboard_shape_is_existing_space_navigation_only() {
+    // Numbered existing-Space 1..9, both relative polarities, and the
+    // previous toggle are the only keyboard shapes eligible for the
+    // two-separate-display route.
+    for index in 1..=9 {
+        assert!(
+            is_multi_display_keyboard_select(&InputSemanticAction::WorkspaceSelect { index }),
+            "numbered {index}"
+        );
+    }
+    for prev in [true, false] {
+        assert!(is_multi_display_keyboard_select(
+            &InputSemanticAction::WorkspaceRelative { prev }
+        ));
+    }
+    assert!(is_multi_display_keyboard_select(
+        &InputSemanticAction::WorkspacePrevious
+    ));
+    // Trailing select-or-create (index 0) never broadens, nor do indicator
+    // rows, sends/stays, output sends, or basic actions.
+    for action in [
+        InputSemanticAction::WorkspaceSelect { index: 0 },
+        InputSemanticAction::IndicatorSelectWorkspace {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-1".to_owned(),
+        },
+        InputSemanticAction::WorkspaceSend {
+            index: 1,
+            follow: true,
+        },
+        InputSemanticAction::WorkspaceSend {
+            index: 1,
+            follow: false,
+        },
+        InputSemanticAction::WorkspaceSendRelative {
+            prev: true,
+            follow: true,
+        },
+        InputSemanticAction::WorkspaceOutput {
+            direction: InputDirection::Right,
+            follow: true,
+        },
+        InputSemanticAction::FocusStep {
+            direction: InputDirection::Left,
+        },
+        InputSemanticAction::ToggleFloat,
+    ] {
+        assert!(
+            !is_multi_display_keyboard_select(&action),
+            "{action:?} must not take the keyboard two-display route"
+        );
+    }
+}

@@ -1067,6 +1067,191 @@ fn multi_indicator_submit_pins_the_exact_clicked_output() {
 }
 
 #[test]
+fn multi_keyboard_submit_pins_the_exact_reply_target_output_on_two_displays() {
+    let published = crate::runtime_shared::PublishedDisplayInputs {
+        displays: vec![
+            geometry(7, Some("display-a")),
+            geometry(2, Some("display-b")),
+        ],
+        separate: Some(true),
+    };
+    // Shuffled against display order: display B is fresh row 1, so a
+    // positional guess cannot pass.
+    let rows = vec![
+        sls_row(Some("display-a"), &[11, 12], Some(11)),
+        sls_row(Some("display-b"), &[31, 32], Some(31)),
+    ];
+    // The pure gate admits exactly two separate displays on major 27 only.
+    assert!(crate::select_owner::keyboard_two_display_route_allowed(
+        2,
+        Some(true),
+        Some(27)
+    ));
+    for major in [Some(15), Some(26), Some(28), None] {
+        assert!(
+            !crate::select_owner::keyboard_two_display_route_allowed(2, Some(true), major),
+            "{major:?} refuses"
+        );
+    }
+    assert!(!crate::select_owner::keyboard_two_display_route_allowed(
+        1,
+        Some(true),
+        Some(27)
+    ));
+    assert!(!crate::select_owner::keyboard_two_display_route_allowed(
+        3,
+        Some(true),
+        Some(27)
+    ));
+    for separate in [Some(false), None] {
+        assert!(
+            !crate::select_owner::keyboard_two_display_route_allowed(2, separate, Some(27)),
+            "{separate:?} refuses"
+        );
+    }
+    // Numbered, relative, and previous keyboard shapes pin the exact
+    // reply-bound output's own fresh row.
+    for action in [
+        InputSemanticAction::WorkspaceSelect { index: 2 },
+        InputSemanticAction::WorkspaceRelative { prev: true },
+        InputSemanticAction::WorkspaceRelative { prev: false },
+        InputSemanticAction::WorkspacePrevious,
+    ] {
+        let mut claim = tap_claim(action.clone(), "op-k");
+        claim.select_target_output = Some("macos-display-2".to_owned());
+        claim.select_target_workspace = Some("ws-32".to_owned());
+        claim.select_native_binding = Some("space-32".to_owned());
+        assert_eq!(
+            crate::select_owner::multi_keyboard_submit_display(&claim, &published, &rows, Some(27)),
+            Ok((1, 2, "display-b".to_owned())),
+            "{action:?}"
+        );
+    }
+    let mut claim = tap_claim(InputSemanticAction::WorkspaceSelect { index: 2 }, "op-k");
+    claim.select_target_output = Some("macos-display-2".to_owned());
+    claim.select_target_workspace = Some("ws-32".to_owned());
+    claim.select_native_binding = Some("space-32".to_owned());
+    // Pre-27, unknown, and post-27 majors keep the route refused.
+    for major in [Some(15), Some(26), Some(28), None] {
+        assert!(
+            crate::select_owner::multi_keyboard_submit_display(&claim, &published, &rows, major)
+                .is_err(),
+            "{major:?} refuses"
+        );
+    }
+    // Unified or unreadable separate-Spaces mode refuses.
+    let mut unified = published.clone();
+    unified.separate = Some(false);
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(&claim, &unified, &rows, Some(27))
+            .is_err()
+    );
+    let mut unknown_mode = published.clone();
+    unknown_mode.separate = None;
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(&claim, &unknown_mode, &rows, Some(27))
+            .is_err()
+    );
+    // Single and three-display publications never take this route.
+    let single = crate::runtime_shared::PublishedDisplayInputs {
+        displays: vec![geometry(2, Some("display-b"))],
+        separate: Some(true),
+    };
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(&claim, &single, &rows, Some(27))
+            .is_err()
+    );
+    let three = crate::runtime_shared::PublishedDisplayInputs {
+        displays: vec![
+            geometry(7, Some("display-a")),
+            geometry(2, Some("display-b")),
+            geometry(3, Some("display-c")),
+        ],
+        separate: Some(true),
+    };
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(&claim, &three, &rows, Some(27))
+            .is_err()
+    );
+    // Trailing select-or-create, indicator rows, and sends never take the
+    // keyboard route (creation/trailing/cross-output stay closed).
+    for action in [
+        InputSemanticAction::WorkspaceSelect { index: 0 },
+        InputSemanticAction::IndicatorSelectWorkspace {
+            output: "macos-display-2".to_owned(),
+            workspace: "ws-32".to_owned(),
+        },
+        InputSemanticAction::WorkspaceSend {
+            index: 1,
+            follow: true,
+        },
+    ] {
+        let mut other = tap_claim(action.clone(), "op-k");
+        other.select_target_output = Some("macos-display-2".to_owned());
+        other.select_target_workspace = Some("ws-32".to_owned());
+        assert!(
+            crate::select_owner::multi_keyboard_submit_display(&other, &published, &rows, Some(27))
+                .is_err(),
+            "{action:?} refuses the keyboard route"
+        );
+    }
+    // A claim without the reply target output/workspace refuses; an
+    // unknown output or duplicate fresh rows refuse ambiguity.
+    let mut unbound = claim.clone();
+    unbound.select_target_output = None;
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(&unbound, &published, &rows, Some(27))
+            .is_err()
+    );
+    let mut no_binding = claim.clone();
+    no_binding.select_native_binding = None;
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(
+            &no_binding,
+            &published,
+            &rows,
+            Some(27)
+        )
+        .is_err()
+    );
+    let mut no_workspace = claim.clone();
+    no_workspace.select_target_workspace = None;
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(
+            &no_workspace,
+            &published,
+            &rows,
+            Some(27)
+        )
+        .is_err()
+    );
+    let mut unknown_output = claim.clone();
+    unknown_output.select_target_output = Some("macos-display-3".to_owned());
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(
+            &unknown_output,
+            &published,
+            &rows,
+            Some(27)
+        )
+        .is_err()
+    );
+    let duplicate_rows = vec![
+        sls_row(Some("display-b"), &[31], Some(31)),
+        sls_row(Some("display-b"), &[32], Some(32)),
+    ];
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(
+            &claim,
+            &published,
+            &duplicate_rows,
+            Some(27)
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn multi_select_arrival_requires_target_and_untouched_non_targets() {
     use crate::mc_probe::{DisplaySpaces, TopologySnapshot};
     let spaces = |uuid: &str, spaces: &[u64], current: u64| DisplaySpaces {

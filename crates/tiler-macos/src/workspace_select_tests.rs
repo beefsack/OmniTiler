@@ -7,6 +7,7 @@ struct Fake {
     row: SelectionSnapshot,
     displays: usize,
     multi_output_select: bool,
+    multi_keyboard_select: bool,
     revision: Option<u64>,
     output: String,
     empty: Result<bool, String>,
@@ -25,6 +26,7 @@ impl Default for Fake {
             },
             displays: 1,
             multi_output_select: false,
+            multi_keyboard_select: false,
             revision: None,
             output: "macos-display-1".to_owned(),
             empty: Ok(true),
@@ -47,6 +49,9 @@ impl SelectionBackend for Fake {
     }
     fn multi_display_output_select(&mut self) -> bool {
         self.multi_output_select
+    }
+    fn multi_display_keyboard_select(&mut self) -> bool {
+        self.multi_keyboard_select
     }
     fn check_output(&mut self, output: &str) -> Result<(), String> {
         if output == self.output {
@@ -1529,4 +1534,311 @@ fn core_previous_drives_reply_drain_without_local_history() {
     assert_eq!(success.effect.baseline, Some(3));
     assert!(success.effect.changed);
     assert_eq!(fake.selects, vec![20]);
+}
+
+/// Two-display keyboard row fake pinned to the exact reply target output:
+/// only that output's own row moves.
+fn keyboard_two_display_fake() -> Fake {
+    Fake {
+        displays: 2,
+        multi_keyboard_select: true,
+        output: "macos-display-2".to_owned(),
+        row: SelectionSnapshot {
+            display: "display-b".to_owned(),
+            spaces: vec![31, 32],
+            current: 31,
+        },
+        ..Fake::default()
+    }
+}
+
+/// Existing-Space keyboard selects (numbered 1..9, relative, previous)
+/// admit exactly two displays only on macOS major 27 through a backend
+/// advertising the pinned keyboard route; the drain actuates the exact
+/// reply-bound target output and nothing else.
+#[test]
+fn keyboard_existing_select_admits_two_displays_only_on_macos_27() {
+    for action in [
+        Action::WorkspaceSelect { index: 2 },
+        Action::WorkspaceRelative { prev: true },
+        Action::WorkspaceRelative { prev: false },
+        Action::WorkspacePrevious,
+    ] {
+        let mut fake = keyboard_two_display_fake();
+        let mut state = SelectionState::default();
+        let claim = plan_claim(
+            action.clone(),
+            "op-k",
+            "macos-display-2",
+            "ws-32",
+            Some("space-32"),
+            None,
+            Some(31),
+        );
+        let success = drain_claimed_select_with_os(
+            &mut state,
+            &mut fake,
+            claim,
+            &open_gates(),
+            true,
+            Some(27),
+        )
+        .unwrap_or_else(|e| panic!("{action:?} admits on macOS 27: {}", e.reason));
+        assert_eq!(fake.selects, vec![32], "{action:?} targets its exact row");
+        assert_eq!((success.effect.from, success.effect.target), (31, 32));
+        assert!(state.take_trailing_proof().is_none());
+    }
+    // Pre-27, unknown, and post-27 majors keep the legacy single-display
+    // refusal with zero native touch.
+    for major in [Some(15), Some(26), Some(28), None] {
+        let mut fake = keyboard_two_display_fake();
+        let mut state = SelectionState::default();
+        let claim = plan_claim(
+            Action::WorkspaceSelect { index: 2 },
+            "op-k",
+            "macos-display-2",
+            "ws-32",
+            Some("space-32"),
+            None,
+            Some(31),
+        );
+        let failure =
+            drain_claimed_select_with_os(&mut state, &mut fake, claim, &open_gates(), true, major)
+                .expect_err("non-27 majors refuse");
+        assert!(
+            failure.reason.contains("exactly one native display"),
+            "{major:?}: {}",
+            failure.reason
+        );
+        assert_eq!(failure.setter, FrameSetter::Refused);
+        assert!(fake.selects.is_empty(), "{major:?}: no select posted");
+        assert_eq!(fake.creates, 0, "{major:?}: no creation");
+    }
+    // The capability is backend-explicit: without it (or with three
+    // displays) the single-display rule stays.
+    let mut no_capability = Fake {
+        displays: 2,
+        multi_keyboard_select: false,
+        output: "macos-display-2".to_owned(),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-k",
+        "macos-display-2",
+        "ws-32",
+        Some("space-32"),
+        None,
+        Some(31),
+    );
+    assert!(
+        drain_claimed_select_with_os(
+            &mut state,
+            &mut no_capability,
+            claim,
+            &open_gates(),
+            true,
+            Some(27),
+        )
+        .is_err_and(|failure| failure.reason.contains("exactly one native display"))
+    );
+    assert!(no_capability.selects.is_empty());
+    let mut three_displays = Fake {
+        displays: 3,
+        ..keyboard_two_display_fake()
+    };
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-k",
+        "macos-display-2",
+        "ws-32",
+        Some("space-32"),
+        None,
+        Some(31),
+    );
+    assert!(
+        drain_claimed_select_with_os(
+            &mut state,
+            &mut three_displays,
+            claim,
+            &open_gates(),
+            true,
+            Some(27),
+        )
+        .is_err_and(|failure| failure.reason.contains("exactly one native display"))
+    );
+    assert!(three_displays.selects.is_empty());
+}
+
+/// The two-display keyboard route never broadens creation or trailing:
+/// an unbound target (creation leg) refuses, trailing index 0 stays on the
+/// single-display rule, and sends stay unarmed.
+#[test]
+fn keyboard_two_display_route_never_broadens_creation_trailing_or_sends() {
+    // Unbound target with an explicit creation desire: the creation leg
+    // must never actuate on two displays.
+    let mut fake = keyboard_two_display_fake();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-k",
+        "macos-display-2",
+        "ws-32",
+        None,
+        Some(("op-native-1", "ws-32", "macos-display-2")),
+        Some(31),
+    );
+    let failure =
+        drain_claimed_select_with_os(&mut state, &mut fake, claim, &open_gates(), true, Some(27))
+            .expect_err("unbound two-display keyboard select refuses");
+    assert!(
+        failure.reason.contains("requires an existing Space"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(failure.setter, FrameSetter::Refused);
+    assert_eq!(fake.creates, 0, "no native append on two displays");
+    assert!(fake.selects.is_empty());
+    assert!(state.take_trailing_proof().is_none());
+    // Trailing select-or-create (index 0) never takes the keyboard route
+    // even with a bound SID.
+    let mut fake = keyboard_two_display_fake();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-k",
+        "macos-display-2",
+        "ws-32",
+        Some("space-32"),
+        None,
+        Some(31),
+    );
+    let failure =
+        drain_claimed_select_with_os(&mut state, &mut fake, claim, &open_gates(), true, Some(27))
+            .expect_err("trailing select keeps the single-display rule");
+    assert!(
+        failure.reason.contains("exactly one native display"),
+        "{}",
+        failure.reason
+    );
+    assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
+    // Send-shaped claims stay unarmed before any display rule.
+    let mut fake = keyboard_two_display_fake();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSend {
+            index: 1,
+            follow: true,
+        },
+        "op-k",
+        "macos-display-2",
+        "ws-32",
+        Some("space-32"),
+        None,
+        Some(31),
+    );
+    let failure =
+        drain_claimed_select_with_os(&mut state, &mut fake, claim, &open_gates(), true, Some(27))
+            .expect_err("sends never ride the select drain");
+    assert!(failure.reason.contains("unarmed"), "{}", failure.reason);
+    assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
+}
+
+/// The indicator capability never admits keyboard rows and the keyboard
+/// capability never admits indicator rows: the two multi-display routes
+/// stay disjoint (exact output-pinned clicks vs existing-Space keyboard
+/// navigation).
+#[test]
+fn multi_display_routes_do_not_cross_admit() {
+    let mut keyboard_only = keyboard_two_display_fake();
+    let mut state = SelectionState::default();
+    let indicator = plan_claim(
+        Action::IndicatorSelectWorkspace {
+            output: "macos-display-2".to_owned(),
+            workspace: "ws-32".to_owned(),
+        },
+        "op-i",
+        "macos-display-2",
+        "ws-32",
+        Some("space-32"),
+        None,
+        Some(31),
+    );
+    assert!(
+        drain_claimed_select_with_os(
+            &mut state,
+            &mut keyboard_only,
+            indicator,
+            &open_gates(),
+            true,
+            Some(27),
+        )
+        .is_err_and(|failure| failure.reason.contains("exactly one native display")),
+        "keyboard capability does not admit indicator rows"
+    );
+    assert!(keyboard_only.selects.is_empty());
+    let mut indicator_only = Fake {
+        displays: 2,
+        multi_output_select: true,
+        output: "macos-display-2".to_owned(),
+        row: SelectionSnapshot {
+            display: "display-b".to_owned(),
+            spaces: vec![31, 32],
+            current: 31,
+        },
+        ..Fake::default()
+    };
+    let keyboard = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-k",
+        "macos-display-2",
+        "ws-32",
+        Some("space-32"),
+        None,
+        Some(31),
+    );
+    assert!(
+        drain_claimed_select_with_os(
+            &mut state,
+            &mut indicator_only,
+            keyboard,
+            &open_gates(),
+            true,
+            Some(27),
+        )
+        .is_err_and(|failure| failure.reason.contains("exactly one native display")),
+        "indicator capability does not admit keyboard rows"
+    );
+    assert!(indicator_only.selects.is_empty());
+}
+
+/// The two-display keyboard admission still fences the reply target
+/// output: a claim naming another output refuses before any effect.
+#[test]
+fn keyboard_two_display_requires_exact_reply_target_output() {
+    let mut fake = keyboard_two_display_fake();
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-k",
+        "macos-display-1",
+        "ws-1",
+        Some("space-32"),
+        None,
+        Some(31),
+    );
+    let failure =
+        drain_claimed_select_with_os(&mut state, &mut fake, claim, &open_gates(), true, Some(27))
+            .expect_err("cross-output target refuses");
+    assert!(
+        failure.reason.contains("is not the pinned display")
+            || failure.reason.contains("not the live display"),
+        "{}",
+        failure.reason
+    );
+    assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
 }

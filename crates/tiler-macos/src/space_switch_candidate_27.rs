@@ -1,16 +1,12 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
-//! Probe-only macOS 27+ Dock-swipe candidate: serialized session-tap gesture
-//! with the IOHID payload in CGEvent data field 4205.
-//!
-//! This module is the internal, explicitly-opted candidate entry for a
-//! guarded probe. It is deliberately NOT wired into any product dispatch
-//! route: [`crate::space_switch_edges::gesture_payload_allowed`] still
-//! refuses macOS >= 27 for the product path, pending the signed proof
-//! described in `docs/changes/macos-0.1-native-spaces-prior-art.md`
-//! ("Follow-through: Dock swipe and Mission Control"). Nothing here mutates
-//! a preference; the native gesture setting is only read.
+//! macOS 27 Dock swipe: serialized session-tap gestures with the IOHID
+//! payload in CGEvent data field 4205. Only the existing-Space select owner
+//! uses this product route; the older encoder still refuses 27 and newer.
+//! The signed proofs are recorded in `docs/changes/macos-0.1-native-spaces-prior-art.md`
+//! ("Follow-through: Dock swipe and Mission Control"). Gesture preferences
+//! are read, never changed.
 //!
 //! Prior art (tagged local checkouts; line numbers in the tagged files):
 //! - WhichSpace v1.5.0 (`07deeea8`) `WhichSpace/SpaceSwitcher.swift`:
@@ -47,10 +43,10 @@
 //! Pre-27 behavior is untouched: [`crate::space_switch_edges::gesture_event`]
 //! and `post_gesture_pairs` keep the pinned yabai 6-field branch.
 //!
-//! This candidate never warps the pointer, opens Mission Control, or selects
-//! a fullscreen Space. The fixture may set the event location for E1, as in
-//! WhichSpace v1.5.0 `postSwipeGesture` (:955-957); this does not enable a
-//! product route. The caller owns the focused-window and arrival proofs.
+//! This encoder never warps the pointer, opens Mission Control, or selects
+//! a fullscreen Space. The owner sets the event location to the pinned
+//! display, as in WhichSpace v1.5.0 `postSwipeGesture` (:955-957), and owns
+//! the focused-window and exact arrival proofs.
 
 use crate::space_switch_edges::{
     GESTURE_FIELD_HID_TYPE, GESTURE_FIELD_MOTION, GESTURE_FIELD_PHASE, GESTURE_FIELD_PROGRESS,
@@ -368,7 +364,7 @@ pub(crate) struct PreparedGesture27 {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)] // Guarded-probe API; no product route may call it yet.
+#[allow(dead_code)] // The guarded probe also reads the prepared plan's metadata.
 impl PreparedGesture27 {
     /// Set the reconstructed event location without moving the pointer.
     pub(crate) fn locate(&self, location: objc2_core_foundation::CGPoint) {
@@ -393,9 +389,9 @@ impl PreparedGesture27 {
     /// 2, and so on (WhichSpace v1.5.0 `postSwipeGesture` per step).
     ///
     /// Before the first post this rechecks the shared synthetic gates and the
-    /// held-button precondition, then runs `boundary` (the probe's exact
-    /// held-helper/oracle check). Any failure posts nothing. The plan is
-    /// consumed: one dispatch, no replay.
+    /// held-button precondition, then runs the caller's final focus and
+    /// topology boundary. Any failure posts nothing. The plan is consumed:
+    /// one dispatch, no replay.
     pub(crate) fn post_after(
         self,
         boundary: impl FnOnce() -> Result<(), String>,
@@ -420,7 +416,7 @@ impl PreparedGesture27 {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[allow(dead_code)] // Guarded-probe API stub; no product route may call it.
+#[allow(dead_code)] // Non-macOS has no native dispatch.
 impl PreparedGesture27 {
     pub(crate) fn post_after(
         self,
@@ -434,11 +430,6 @@ impl PreparedGesture27 {
 /// posts. `sign` follows [`crate::space_switch_edges::swipe_plan`] /
 /// `gesture_sign`: positive means the target sits at a higher native index.
 /// `pairs` is the absolute index distance.
-///
-/// Probe-only entry: not reachable from product dispatch. Consumers must be
-/// explicit that they are testing the 27+ candidate, and the product gate in
-/// [`crate::space_switch_edges::gesture_payload_allowed`] still refuses 27+.
-#[allow(dead_code)] // Guarded-probe entry point; no product route may call it yet.
 pub(crate) fn prepare_with(
     pre: &Gesture27Preconditions,
     sign: f64,
