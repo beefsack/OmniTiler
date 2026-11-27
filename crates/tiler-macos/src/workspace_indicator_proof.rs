@@ -1546,7 +1546,7 @@ mod live {
     fn post_tagged_edge(point: (f64, f64), down: bool) -> Result<u64, String> {
         use objc2_core_foundation::CGPoint;
         use objc2_core_graphics::{
-            CGEvent, CGEventField, CGEventTapLocation, CGEventType, CGMouseButton,
+            CGEvent, CGEventField, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton,
         };
         let ty = if down {
             CGEventType::LeftMouseDown
@@ -1563,6 +1563,7 @@ mod live {
             CGMouseButton::Left,
         )
         .ok_or_else(|| "CGEventCreateMouseEvent returned null".to_owned())?;
+        CGEvent::set_flags(Some(&event), CGEventFlags(0));
         CGEvent::set_integer_value_field(
             Some(&event),
             CGEventField::EventSourceUserData,
