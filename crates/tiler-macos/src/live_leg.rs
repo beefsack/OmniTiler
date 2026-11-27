@@ -307,6 +307,18 @@ pub struct ReturnProof {
     pub mc_open_after: Option<bool>,
 }
 
+/// Fullscreen-probe teardown handoff recorded after its explicit windowed
+/// request; `finish` withholds destructive fixture steps unless proved safe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FixtureFullscreenExit {
+    /// The exact detached SID left every row and current.
+    Retired,
+    /// The SID lingers; one pinned baseline select was proved to land.
+    Fallback,
+    /// Neither proof holds; the fixture, windows and Spaces stay untouched.
+    Unsafe(String),
+}
+
 /// Terminal teardown report: restoration evidence plus residue. IDs and
 /// counts only; never titles, paths, nonces, or requirement text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1107,6 +1119,7 @@ pub struct LiveLeg<'a, T: LegTransport> {
     owned_windows: Vec<OwnedWindow>,
     owned_spaces: Vec<(usize, u64)>,
     fixture_fullscreen_sid: Option<u64>,
+    fixture_fullscreen_exit: Option<FixtureFullscreenExit>,
     owned_pids: Vec<u32>,
     /// Retained product exit-time `outcome.json` body: read while the
     /// product stops, before the owned run directory removal, and reported
@@ -1172,6 +1185,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             owned_windows: Vec::new(),
             owned_spaces: Vec::new(),
             fixture_fullscreen_sid: None,
+            fixture_fullscreen_exit: None,
             owned_pids: Vec::new(),
             product_outcome: None,
             retain_product_evidence: false,
@@ -1518,6 +1532,11 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         self.fixture_fullscreen_sid = Some(sid);
     }
 
+    /// Record the probe's teardown handoff; `finish` gates on it.
+    pub(crate) fn note_fixture_fullscreen_exit(&mut self, exit: FixtureFullscreenExit) {
+        self.fixture_fullscreen_exit = Some(exit);
+    }
+
     /// Pump the fixture main run loop until a fresh SLS read proves the
     /// exact detached SID has left every row and current. A notification
     /// alone does not prove the asynchronously retired Space is gone.
@@ -1837,14 +1856,18 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
     /// Full teardown pipeline. Every applicable step runs even when earlier
     /// steps fail; failures collect as residue. Order: stop the exact
     /// primary product first (the return below must work after the primary
-    /// exits), restore the starting Space, close exactly the registered
-    /// fixture windows, shut down and reap only the owned fixture, remove
-    /// only leg-created empty Spaces, stop the awake companion, verify
-    /// exactly the registered owned PIDs, and only then capture and compare
-    /// the teardown (after our own effects are removed). Product-owned
-    /// launch logs, terminal outcome and private store are removed only when
-    /// product absence is proven (the owned stop reaped and no pending
-    /// product launch); otherwise they stay as residue.
+    /// exits), prove the fullscreen probe's detached Space retired or was
+    /// left through the pinned baseline switch before any fixture effect,
+    /// restore the starting Space, close exactly the registered fixture
+    /// windows, shut down and reap only the owned fixture (retiring a
+    /// fallback's lingering SID before Space removal), remove only
+    /// leg-created empty Spaces, stop the awake companion, verify exactly
+    /// the registered owned PIDs, and only then capture and compare the
+    /// teardown (after our own effects are removed). An unresolved
+    /// fullscreen handoff withholds every destructive fixture step.
+    /// Product-owned launch logs, terminal outcome and private store are
+    /// removed only when product absence is proven (the owned stop reaped
+    /// and no pending product launch); otherwise they stay as residue.
     fn finish_inner(&mut self) -> TeardownReport {
         let mut residue = Vec::new();
         // 0. Launched-but-unbound runs: any post-open/pre-bind failure
@@ -1869,21 +1892,59 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             .iter()
             .any(|entry| entry.what == "product");
         let product_absent = product_reaped && !pending_product;
-        // Ordinary legs return first. A fullscreen probe may have failed
-        // its explicit exit; in that case close the owned fixture before
-        // touching ordinary Spaces, then independently prove the SID gone.
-        let mut restore = self.fixture_fullscreen_sid.is_none()
-            .then(|| self.restore_leg_currents(&mut residue));
+        // 2. The probe's teardown handoff: only a proved retirement or a
+        // proved pinned switch away licenses close/shutdown/removal; an
+        // unresolved handoff leaves every destructive fixture step untouched.
+        let mut restore = None;
+        let mut fixture_teardown = true;
+        let mut retire_after_shutdown = None;
+        match (self.fixture_fullscreen_sid, self.fixture_fullscreen_exit.clone()) {
+            (None, None) | (_, Some(FixtureFullscreenExit::Retired)) => {
+                restore = Some(self.restore_leg_currents(&mut residue));
+            }
+            (Some(sid), None) => {
+                residue.push(format!("fullscreen teardown: SID {sid} has no exit proof"));
+                fixture_teardown = false;
+            }
+            (Some(sid), Some(FixtureFullscreenExit::Fallback)) => {
+                if self.transport.space_snapshot().is_ok_and(|topology| {
+                    topology.displays.len() == self.baseline.native.displays.len()
+                        && self.baseline.native.displays.iter().zip(&topology.displays)
+                            .all(|(baseline, live)| live.current == baseline.current && live.current != sid)
+                }) {
+                    retire_after_shutdown = Some(sid);
+                } else {
+                    residue.push("fullscreen teardown: baseline current changed after fallback".to_owned());
+                    fixture_teardown = false;
+                }
+            }
+            (_, Some(FixtureFullscreenExit::Unsafe(reason))) => {
+                residue.push(format!("fullscreen teardown: {reason}"));
+                fixture_teardown = false;
+            }
+            (None, Some(FixtureFullscreenExit::Fallback)) => {
+                residue.push("fullscreen teardown: fallback without a detached SID; refusing".to_owned());
+                fixture_teardown = false;
+            }
+        }
+        if self.fixture_fullscreen_exit.is_some()
+            && restore.as_ref().is_some_and(|report| !report.clean())
+        {
+            residue.push("fullscreen teardown: starting current not proved exact; refusing".to_owned());
+            fixture_teardown = false;
+        }
         // 3. Close exactly the registered run-owned fixture windows.
-        for window in self.owned_windows.clone() {
-            if let Err(e) =
-                self.transport
-                    .close_fixture_window(&window.caller, window.pid, window.wid)
-            {
-                residue.push(format!(
-                    "owned window pid {} wid {} close refused: {e}",
-                    window.pid, window.wid
-                ));
+        if fixture_teardown {
+            for window in self.owned_windows.clone() {
+                if let Err(e) =
+                    self.transport
+                        .close_fixture_window(&window.caller, window.pid, window.wid)
+                {
+                    residue.push(format!(
+                        "owned window pid {} wid {} close refused: {e}",
+                        window.pid, window.wid
+                    ));
+                }
             }
         }
         // 4. Shut down and reap only the owned fixture (identity-verified,
@@ -1891,7 +1952,8 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         // removal is told whether product absence is proven: with a
         // product still present or pending, product-owned logs and the
         // private store stay as residue.
-        if let Some(record) = self.owned_fixture.clone()
+        if fixture_teardown
+            && let Some(record) = self.owned_fixture.clone()
             && let Err(e) = self.transport.shutdown_fixture(
                 &record,
                 product_absent,
@@ -1900,21 +1962,25 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         {
             residue.push(format!("owned fixture pid {} shutdown: {e}", record.pid));
         }
-        let spaces_ready = if let Some(sid) = self.fixture_fullscreen_sid {
-            match self.await_fixture_fullscreen_exit(sid) {
-                Ok(()) => {
-                    restore = Some(self.restore_leg_currents(&mut residue));
-                    true
-                }
-                Err(e) => {
-                    residue.push(format!("fullscreen teardown: {e}"));
-                    false
-                }
+        // A fallback moved away but its detached SID may linger until the
+        // fixture stops: retire that exact SID only after shutdown, then
+        // allow only the empty owned-Space removal and the after-read.
+        let spaces_ready = if fixture_teardown {
+            match retire_after_shutdown {
+                Some(sid) => match self.await_fixture_fullscreen_exit(sid) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        residue.push(format!("fullscreen teardown: {e}"));
+                        false
+                    }
+                },
+                None => true,
             }
         } else {
-            true
+            false
         };
-        let current_restored = restore.as_ref().is_some_and(crate::space_probe::RestoreReport::clean);
+        let current_restored = retire_after_shutdown.is_some()
+            || restore.as_ref().is_some_and(crate::space_probe::RestoreReport::clean);
         let restored = restore.map_or_else(Vec::new, |report| report.restored);
         // 4b. The private store is product-owned state, not fixture state:
         // once product absence is proven, remove it even when fixture
@@ -2170,6 +2236,8 @@ mod tests {
         fail_space_at: Option<&'static str>,
         close_fails: Vec<(u32, u32)>,
         shutdown: Result<(), String>,
+        /// Detached fullscreen SID the modeled fixture retires on stop.
+        retire_sid_on_shutdown: Option<u64>,
         shutdown_product_absent: RefCell<Option<bool>>,
         shutdown_retain_evidence: RefCell<Option<bool>>,
         gone: HashMap<u32, Result<bool, String>>,
@@ -2193,6 +2261,7 @@ mod tests {
                 fail_space_at: None,
                 close_fails: Vec::new(),
                 shutdown: Ok(()),
+                retire_sid_on_shutdown: None,
                 shutdown_product_absent: RefCell::new(None),
                 shutdown_retain_evidence: RefCell::new(None),
                 gone: HashMap::new(),
@@ -2370,6 +2439,11 @@ mod tests {
                     "shutdown: fixture pid {} identity drift; refusing",
                     record.pid
                 ));
+            }
+            if let Some(sid) = self.retire_sid_on_shutdown {
+                for row in &mut self.spaces {
+                    row.retain(|candidate| *candidate != sid);
+                }
             }
             self.shutdown.clone()
         }
@@ -2720,6 +2794,80 @@ mod tests {
             "finish order is restore -> close owned -> shutdown -> stop awake: {order:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fixture_fullscreen_teardown_orders_each_handoff() {
+        // Retired: restore re-read/dispatch before close. Fallback: baseline
+        // readback before close, SID retired after shutdown. Unsafe: every
+        // destructive fixture step withheld.
+        for (name, spaces, current, exit, retire) in [
+            ("retired", vec![vec![11, 22, 555]], 22, Some(FixtureFullscreenExit::Retired), None),
+            (
+                "fallback",
+                vec![vec![11, 22, 555, 777]],
+                11,
+                Some(FixtureFullscreenExit::Fallback),
+                Some(777),
+            ),
+            (
+                "unsafe",
+                vec![vec![11, 22, 555, 777]],
+                777,
+                Some(FixtureFullscreenExit::Unsafe("pinned baseline switch refused".to_owned())),
+                None,
+            ),
+            ("unrecorded", vec![vec![11, 22, 555, 777]], 777, None, None),
+            ("fallback drift", vec![vec![11, 22, 555, 777]], 777, Some(FixtureFullscreenExit::Fallback), None),
+        ] {
+            let dir = test_dir(&format!("fullscreen-{name}"));
+            let mut transport = ScriptLeg::passing(dir.clone());
+            transport.spaces = spaces;
+            transport.current = vec![current];
+            transport.retire_sid_on_shutdown = retire;
+            let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+            leg.register_fixture(test_fixture()).expect("registers");
+            leg.note_owned_window("a", 4242, 81);
+            leg.note_owned_pid(4242);
+            leg.note_owned_space(0, 555);
+            leg.note_fixture_fullscreen(777);
+            if let Some(exit) = exit {
+                leg.note_fixture_fullscreen_exit(exit);
+            }
+            let outcome = leg.finish();
+            let order = transport.order.borrow().clone();
+            let receipt = dir.join(crate::live_baseline::BASELINE_FILE_NAME);
+            let at = |marker: &str, from: usize| {
+                order[from..].iter().position(|step| *step == marker).map(|index| index + from)
+                    .unwrap_or_else(|| panic!("{name}: missing {marker}: {order:?}"))
+            };
+            if matches!(name, "unsafe" | "unrecorded" | "fallback drift") {
+                let err = outcome.unwrap_err();
+                assert!(err.1.contains("fullscreen teardown"), "{name}: {}", err.1);
+                assert!(
+                    ["close", "shutdown", "empty", "remove", "goto"]
+                        .iter()
+                        .all(|marker| !order.contains(marker)),
+                    "{name}: destructive step ran while detached: {order:?}"
+                );
+                assert!(order.contains(&"awake-stop") && receipt.exists(), "{name}: {order:?}");
+            } else {
+                let report = outcome.unwrap_or_else(|e| panic!("{name}: {}", e.1));
+                assert!(report.current_restored && report.residue.is_empty() && !receipt.exists(), "{name}: {:?}", report.residue);
+                let (close, shutdown, remove) = (at("close", 0), at("shutdown", 0), at("remove", 0));
+                assert!(close < shutdown && shutdown < remove && remove < at("awake-stop", 0), "{name}: {order:?}");
+                assert!(order[..close].contains(&"snapshot"), "{name}: restore readback: {order:?}");
+                if name == "retired" {
+                    assert_eq!(report.restored, vec![(0, 11)]);
+                    assert!(at("goto", 0) < close, "{name}: {order:?}");
+                } else {
+                    assert!(report.restored.is_empty(), "{name}");
+                    let retired = at("snapshot", shutdown + 1);
+                    assert!(retired < at("empty", retired + 1), "{name}: {order:?}");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

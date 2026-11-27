@@ -12,7 +12,7 @@ use tiler_core::workspace_scope::{
 use crate::fixture_leg::{SWIPE_27_E1_CHORD, join_fixture_windows, spawn_owned_windows};
 use crate::fixture_owned_space::{await_joined_on_owned_space, establish_post_only_owned_space_on};
 use crate::fixture_post::{FixtureDriver, LiveTransport};
-use crate::live_leg::{LiveLeg, LiveLegTransport};
+use crate::live_leg::{FixtureFullscreenExit, LiveLeg, LiveLegTransport};
 use crate::mc_lifecycle::{live, require_user_temp};
 use crate::mc_probe::{TopologySnapshot, validate_goto_effect};
 use crate::space_probe::NativeSpaces;
@@ -253,6 +253,152 @@ fn swipe(
     }
 }
 
+/// Switch away from the lingering detached Space with exactly one pinned
+/// Mission Control select of the leg's original baseline current (never the
+/// temp setup Space, never replayed).
+fn fallback_to_baseline(
+    leg: &LiveLeg<LiveLegTransport>,
+    driver: &FixtureDriver<'_, LiveTransport>,
+    pid: u32,
+    pin: &DisplayPin,
+    (caller, wid): &(String, u32),
+    before: &TopologySnapshot,
+    sid: u64,
+) -> Result<(), String> {
+    use crate::ffi::{self, SlsSpaceType};
+    let target = leg
+        .baseline()
+        .native
+        .displays
+        .iter()
+        .find(|row| row.index == pin.row)
+        .map(|row| row.current)
+        .ok_or("baseline lacks the pinned starting current")?;
+    if target == sid {
+        return Err("baseline starting current is the detached SID".to_owned());
+    }
+    let prior = snapshot()?;
+    let mut retired = prior.clone();
+    let Some(row) = retired.displays.get_mut(pin.row) else {
+        return Err("pinned display missing from the switch preimage".to_owned());
+    };
+    row.spaces.retain(|space| *space != sid);
+    row.current = Some(target);
+    validate_goto_effect(before, &retired, pin.row, target).map_err(|e| e.to_string())?;
+    if prior.displays.iter().map(|row| row.spaces.iter().filter(|&&s| s == sid).count()).sum::<usize>()
+        > usize::from(prior.locate(sid).is_some_and(|(row, _)| row == pin.row))
+    {
+        return Err("detached SID is ambiguous or moved off the pinned display".to_owned());
+    }
+    let Some(pinned) = prior.displays.get(pin.row) else {
+        return Err("pinned display missing from the switch preimage".to_owned());
+    };
+    let prove_sid = || {
+        if ffi::sls_space_type(sid)? != SlsSpaceType::Fullscreen
+            || ffi::sls_spaces_for_window(*wid)? != [sid]
+            || !ffi::cg_window_list_basic()?
+                .iter()
+                .any(|window| window.wid == *wid && window.pid == pid)
+        {
+            return Err("detached SID is not the exact owned fixture fullscreen Space".to_owned());
+        }
+        Ok(())
+    };
+    // No dispatch when a fresh read already proves the baseline current and
+    // no detached current, with the exact SID lingering only in place.
+    if pinned.current == Some(target) {
+        if pinned.spaces.contains(&sid) {
+            prove_sid()?;
+        }
+        return Ok(());
+    }
+    if pinned.current != Some(sid) || prior.locate(target).map(|(row, _)| row) != Some(pin.row) {
+        return Err("pinned source is not the detached SID on the baseline display".to_owned());
+    }
+    let check_source = || {
+        if snapshot()?.displays.get(pin.row).and_then(|row| row.current) != Some(sid) {
+            return Err("detached SID is no longer the pinned current".to_owned());
+        }
+        prove_sid()?;
+        driver.prove_source_incarnation(caller, *wid)
+    };
+    let mut budget = crate::mc_probe::ActionBudget::new(45);
+    let outcome = live::fixture_goto_pinned(
+        target,
+        (pin.row, pin.cg_id, &pin.uuid),
+        &prior,
+        &mut budget,
+        check_source,
+    )
+    .map_err(|e| e.to_string())?;
+    if outcome.mc_open || outcome.close_error.is_some() {
+        return Err("pinned baseline switch lacks an exact Mission Control close".to_owned());
+    }
+    let mut latest = outcome
+        .after
+        .ok_or("pinned baseline switch left no post-press snapshot")?;
+    let started = Instant::now();
+    loop {
+        // The same ordered topology, except the tracked SID may retire.
+        match validate_goto_effect(&prior, &latest, pin.row, target)
+            .or_else(|_| validate_goto_effect(&retired, &latest, pin.row, target))
+        {
+            Ok(()) => return Ok(()),
+            Err(e) if started.elapsed() >= DEADLINE => return Err(e.to_string()),
+            Err(_) => {}
+        }
+        ffi::pump_runloop_once(25);
+        latest = snapshot()?;
+    }
+}
+
+/// Explicit windowed request for the exact owned fixture window first,
+/// bounded SLS retirement next, then one guarded pinned switch to the leg
+/// baseline on shortfall.
+fn exit_fullscreen(
+    leg: &mut LiveLeg<LiveLegTransport>,
+    driver: &FixtureDriver<'_, LiveTransport>,
+    pid: u32,
+    pin: &DisplayPin,
+    window: &(String, u32),
+    before: &TopologySnapshot,
+    detached: Option<u64>,
+) -> Result<(), String> {
+    if let Some(error) = driver.set_probe_fullscreen(window, false).err() {
+        eprintln!("fixture fullscreen windowed request refused: {error}");
+    }
+    let Some(sid) = detached else {
+        // No observed entry: no SID to await, so destructive teardown stays
+        // withheld (conservative).
+        let reason = "fullscreen entry unobserved; exit unproven".to_owned();
+        leg.note_fixture_fullscreen_exit(FixtureFullscreenExit::Unsafe(reason.clone()));
+        return Err(reason);
+    };
+    if leg.await_fixture_fullscreen_exit(sid).is_ok() {
+        leg.note_fixture_fullscreen_exit(FixtureFullscreenExit::Retired);
+        return Ok(());
+    }
+    match fallback_to_baseline(leg, driver, pid, pin, window, before, sid) {
+        Ok(()) => {
+            leg.note_fixture_fullscreen_exit(FixtureFullscreenExit::Fallback);
+            Ok(())
+        }
+        Err(switch) => {
+            // The Space may retire while the refused switch is reported;
+            // re-prove that before declaring the state unsafe.
+            if leg.await_fixture_fullscreen_exit(sid).is_ok() {
+                leg.note_fixture_fullscreen_exit(FixtureFullscreenExit::Retired);
+                return Ok(());
+            }
+            let reason = format!(
+                "fullscreen SID {sid} did not retire; pinned baseline switch refused: {switch}"
+            );
+            leg.note_fixture_fullscreen_exit(FixtureFullscreenExit::Unsafe(reason.clone()));
+            Err(reason)
+        }
+    }
+}
+
 fn prove_fullscreen(
     leg: &mut LiveLeg<LiveLegTransport>,
     driver: &FixtureDriver<'_, LiveTransport>,
@@ -381,12 +527,10 @@ fn prove_fullscreen(
         drop(guard);
         Ok(serde_json::json!({"arm":"fullscreen-host","same_fullscreen_sid":fullscreen,"switches":evidence}))
     })();
-    let exit = driver.set_probe_fullscreen(a, false).and_then(|()| {
-        detached.map_or(Ok(()), |sid| leg.await_fixture_fullscreen_exit(sid))
-    });
-    match (result, exit) {
+    match (result, exit_fullscreen(leg, driver, pid, pin, a, before, detached)) {
         (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(exit)) => Err(exit),
         (Err(error), Err(exit)) => Err(format!("{error}; fixture fullscreen exit refused: {exit}")),
     }
 }

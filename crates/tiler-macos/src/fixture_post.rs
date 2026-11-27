@@ -1875,6 +1875,17 @@ impl<'a, T: FixtureTransport> FixtureDriver<'a, T> {
         self.prove_commit(caller, wid, "gesture-commit", true)
     }
 
+    /// Re-prove the exact signed/socket window incarnation and its selected
+    /// attribution without demanding foreground. Read-only: no post.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn prove_source_incarnation(&self, caller: &str, wid: u32) -> Result<(), String> {
+        if !self.admission.is_live() || !caller_id_valid(caller) || wid == 0 {
+            return Err("fixture source requires live admission and a valid window".to_owned());
+        }
+        self.prove_full(caller, wid, "source-full")?;
+        self.prove_selected(wid, "source-selected")
+    }
+
     /// Harness-owned bypass release for a held key: exactly one gateless
     /// cleared-flags key-up through the injected transport, then the guard
     /// is disarmed whatever the outcome (bounded: no retries, and `Drop`
