@@ -1210,8 +1210,10 @@ fn is_focused_fullscreen(retained: &RetainedCore, focused_global: &str) -> bool 
     retained
         .apps
         .get(&pid)
-        .and_then(|app| app.windows.iter().find(|w| w.wid == wid))
-        .is_some_and(|w| w.fullscreen)
+        .and_then(|app| app.roster.get(&wid))
+        .is_some_and(|entry| {
+            entry.excluded.is_none() && !entry.minimized_meta && entry.fullscreen_meta
+        })
 }
 
 /// Whether a classifier exclusion mints a retained hidden-lane lifetime

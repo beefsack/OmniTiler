@@ -2326,6 +2326,43 @@ fn retained_with_tiled(pid: u32, wid: u32, frame: Rect) -> RetainedCore {
     retained
 }
 
+#[test]
+fn presentation_suspends_for_unhomed_native_fullscreen_focus() {
+    let (pid, wid) = (1001, 1);
+    let mut retained = retained_with_tiled(
+        pid,
+        wid,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 1440,
+            h: 900,
+        },
+    );
+    let focused = WindowId(window_id(pid, wid));
+    retained.window_domains.remove(&focused.0);
+    retained.observed_focus = Some(focused);
+    retained.observed_focus_known = true;
+    let app = retained.apps.get_mut(&pid).unwrap();
+    app.windows.clear();
+    let entry = app.roster.get_mut(&wid).unwrap();
+    entry.spaces.clear();
+    entry.fullscreen_meta = true;
+    entry.observed.as_mut().unwrap().fullscreen = true;
+
+    let mut session = cursor_session();
+    let report = next_report(&mut session, &retained, 1);
+    assert!(matches!(
+        &report.presentation,
+        tiler_core::world_report::PresentationRowV4::Valid(ingress)
+            if ingress.foreground_fullscreen == Some(true)
+    ));
+    assert_eq!(
+        accepted_reply(&mut session, &report).presentation.suspended_output,
+        Some(domain_key().output)
+    );
+}
+
 fn desire_row<'a>(
     reply: &'a tiler_core::world_report::WorldReplyV4,
     window: &str,
