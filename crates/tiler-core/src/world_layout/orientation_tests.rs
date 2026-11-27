@@ -555,24 +555,91 @@ fn floating_subject_and_focus_mismatch_refuse() {
 }
 
 #[test]
-fn overlay_flagged_focus_never_reaches_proposal() {
-    let mut layout = pair_layout();
+fn fullscreen_focus_flips_parent_while_maximized_and_sticky_refuse() {
     let k = key();
-    let before = layout.tree(&k).expect("tree").clone();
-    let mut windows = vec![tiled_observed("win-a"), tiled_observed("win-b")];
-    windows[1].fullscreen = true;
-    let err = layout
+    let mut layout = pair_layout();
+    layout.set_fixed_size_admission(true);
+
+    // A focused tiled fullscreen member keeps its reserved leaf, so the
+    // ordinary parent flip applies with no exception or membership change.
+    let mut windows = complete_observed(&layout, Vec::new());
+    for entry in &mut windows {
+        if entry.window == win("win-b") {
+            entry.fullscreen = true;
+        }
+    }
+    let outcome = layout
         .toggle_orientation(&k, &win("win-b"), &win("win-b"), &windows)
-        .expect_err("flagged observation must refuse");
+        .expect("focused fullscreen member flips its parent");
+    assert_eq!(root_axis(&layout), Axis::Vertical);
+    assert_eq!(outcome.window, win("win-b"));
+    assert!(
+        layout
+            .leaves(&k)
+            .expect("leaves")
+            .contains_key(&win("win-b")),
+        "fullscreen member keeps its reserved leaf"
+    );
+    assert!(
+        !layout.is_exception(&k, &win("win-b")),
+        "fullscreen member must stay tiled"
+    );
+    let rect_of = |outcome: &OrientationOutcome, window: &str| {
+        outcome
+            .geometry
+            .iter()
+            .find(|entry| entry.window.0 == window)
+            .unwrap_or_else(|| panic!("geometry for {window}"))
+            .rect
+    };
     assert_eq!(
-        err,
-        LayoutFailure::Semantics(RefusalKind::PartialObservation)
+        rect_of(&outcome, "win-a"),
+        Rect {
+            x: 0,
+            y: 0,
+            w: 1200,
+            h: 400
+        }
     );
     assert_eq!(
-        layout.tree(&k).expect("tree"),
-        &before,
-        "refusal mutates nothing"
+        rect_of(&outcome, "win-b"),
+        Rect {
+            x: 0,
+            y: 400,
+            w: 1200,
+            h: 400
+        }
     );
+
+    // Maximized (non-fullscreen) and sticky tiled overlays still refuse and
+    // mutate nothing: their overlay owns the member unlike the fullscreen
+    // reserved slot.
+    let before = layout.tree(&k).expect("tree").clone();
+    for overlay in ["maximized", "sticky"] {
+        let mut observed = complete_observed(&layout, Vec::new());
+        for entry in &mut observed {
+            if entry.window == win("win-b") {
+                if overlay == "maximized" {
+                    entry.maximized = true;
+                } else {
+                    entry.sticky = true;
+                }
+            }
+        }
+        let err = layout
+            .toggle_orientation(&k, &win("win-b"), &win("win-b"), &observed)
+            .expect_err("overlay member must still refuse");
+        assert_eq!(
+            err,
+            LayoutFailure::Semantics(RefusalKind::NotTiled),
+            "{overlay}"
+        );
+        assert_eq!(
+            layout.tree(&k).expect("tree"),
+            &before,
+            "{overlay} refusal mutates nothing"
+        );
+    }
 }
 
 #[test]

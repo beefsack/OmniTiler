@@ -42,6 +42,8 @@ When OmniTiler does fail, the desktop must stay usable. Prefer failing open: let
 
 OmniTiler manages games and full-screen applications like any other window: they belong to workspaces and the user's explicit actions apply to them. It must never degrade them. A full-screen window, exclusive or borderless, is never tiled, resized, refocused, overlaid with borders or highlights, or has its input intercepted unless the user asks. Nothing OmniTiler does may look like cheating to anti-cheat systems. A windowed game is an ordinary window.
 
+Full-screen windows can be restored and made full-screen again, and the user can switch to and from them like any other window. Use the same keys and avoid special cases beyond the safety rules above.
+
 The target is aspirationally zero performance impact. Where a platform makes
 zero impossible, the residual cost must be provably minimal and imperceivable,
 and the project must be able to demonstrate what that cost is.

@@ -70,6 +70,9 @@ this model):
     breaks it.
   - Explicit user actions apply to fullscreen windows as to any window, and
     always reach core ([Layering](#layering)).
+  - Fullscreen windows remain workspace members. The user can switch to and
+    from them, restore them and make them fullscreen again. Use the same keys
+    and avoid special cases beyond the safety rules here.
   - Anti-cheat safety: nothing the tiler does to another process may look
     like cheating to anti-cheat systems
      ([mechanism limits](decisions/gaming.md#anti-cheat-mechanism-limits)).

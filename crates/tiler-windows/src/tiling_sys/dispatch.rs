@@ -317,9 +317,11 @@ pub(super) fn dispatch_float_intent(
 /// `ToggleOrientation` on the retained session, then sibling reflow through
 /// the shared write path. No focus or view mutation: focus stays on the same
 /// window and the workspace never switches. Lone root, float/sticky
-/// subjects, missing focus, floating workspaces, and focused overlays settle
-/// with no writes; sibling overlays reproject as reserved slots and skip
-/// native writes through the existing writable fence.
+/// subjects, missing focus, floating workspaces, and focused maximized
+/// overlays settle with no writes; a focused fullscreen subject flips its
+/// parent while its own row keeps the overlay's no-write fence, and sibling
+/// overlays reproject as reserved slots and skip native writes through the
+/// existing writable fence.
 pub(super) fn dispatch_orientation_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -424,8 +426,11 @@ pub(super) fn dispatch_orientation_intent(
         log_json_at(&log_path, line);
         return;
     }
-    // Focused overlays refuse before any Engine mutation: a maximized or
-    // fullscreen focused window keeps its native state and its reserved slot.
+    // Focused maximized overlays refuse before any Engine mutation: a
+    // maximized non-fullscreen focused window keeps its native state and its
+    // reserved slot. A focused fullscreen member dispatches: the core flips
+    // the reserved parent split while the fullscreen row keeps its no-write
+    // fence.
     if let Some(refusal) = orientation_overlay_refusal(&observed, &retained, &member_key) {
         let mut line = settle(refusal);
         line["origin"] = serde_json::Value::from(origin.token.clone());

@@ -789,6 +789,9 @@ rectangles where geometry is load-bearing.
   add an implicit fullscreen exit or restore.
 - Observe: Whether the action applies, B's fullscreen flag and membership,
   focus, and the resulting layout; record native state separately from focus.
+  For (c), record B's logical tile allocation and A's applied frame while B
+  is still fullscreen, then explicitly exit fullscreen and check B's restored
+  tile frame.
 - Then COSMIC (`epoch-1.11.0`): fullscreen move forwards the fullscreen target
   as `MoveFurther` (`src/shell/mod.rs:4374-4384`), not an in-tree move.
   Output forwarding (`src/input/actions.rs:813-850`) has no destination in
@@ -847,10 +850,12 @@ rectangles where geometry is load-bearing.
 - Then Ours KDE: NORMATIVE existing directional-move fence; explicit workspace
   switch/return preserves fullscreen and host-owned return requests focus on
   the remembered fullscreen cover through existing arrival fencing. Parent
-  orientation toggle refuses without changing the tree. Workspace tiling
-  off/on preserves native fullscreen without subject frame/state or automatic
-  focus writes; ordinary siblings may reflow. Shared command regressions cover
-  both born-fullscreen and retained tiled-overlay cases; native outcomes TBD.
+  orientation toggle changes `H[A,B*]` to `V[A,B*]` and reflows A. B remains
+  fullscreen without a native write and takes its updated tile allocation on
+  explicit exit. Workspace tiling off/on preserves native fullscreen without
+  subject frame/state or automatic focus writes; ordinary siblings may
+  reflow. Shared command regressions cover born-fullscreen workspace actions
+  and the retained tiled-overlay orientation leg; native outcomes TBD.
 - Then Ours Windows: same shared state-preservation target. Native-free
   suppression keeps its existing fullscreen safety gate; explicit return can
   request legacy direct focus, never new fullscreen suppression authority.
@@ -864,10 +869,9 @@ rectangles where geometry is load-bearing.
   Focus-steal-on-map reuses
   [R-INS-06](insertion.md#r-ins-06-open-over-an-overlay-maximized-plus-fresh-fullscreen-variant)
   (focused fullscreen B before ordinary C maps).
-- Variant hook: REQ-MAX-12 decided under the standing Tier 1 alignment rule
-  (User 2026-11-13). Retain fullscreen across switch/return (all four inspected
-  paths). ASSUMPTION: choose existing parent-orientation no-op over i3/sway's
-  parent mutation in the even split; no new setting for this small safety
-  behavior, potentially configurable later. Workspace tiling preservation is
-  supported by COSMIC and the existing gaming principle. Alternate layout
-  selection remains parked. [Decision](../../decisions/window-state.md#fullscreen-workspace-and-layout-actions).
+- Variant hook: Retain fullscreen across switch/return (all four inspected
+  paths; standing Tier 1 alignment rule, User 2026-11-13). User 2026-11-27
+  selected parent mutation like i3 4.25.1 and sway 1.12, replacing the prior
+  no-op assumption in the even split. COSMIC epoch-1.11.0 supports workspace
+  tiling preservation. Alternate layout selection remains parked.
+  [Decision](../../decisions/window-state.md#fullscreen-workspace-and-layout-actions).

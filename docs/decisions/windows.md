@@ -17,6 +17,7 @@
 
 ### Switch and intent decisions
 - Decision: staged switch is a narrow prototype: batch nonactivating arrivals, prove visible, one-shot focus, prove foreground, then hide departures. Arrival-ready authority applies only explicit workspace selection; existing game/fullscreen/unreadable foreground/exact-desktop/final full-view proofs remain, no general bypass. Measure end-to-end and phase latency; regression fails prototype. Failed/unproven staged focus finishes explicitly failed/unproven; account each visibility result, no departure hide under staged authority without foreground proof; only approved fallback hide under fresh gates, else leave visible/blocked. No retry/wait.
+- ASSUMPTION: these gates apply to native writes and completion, not command ingress. Explicit workspace selection dispatches even with fullscreen present; it does not grant authority to hide, raise or otherwise change a protected fullscreen window.
 - Why: not recorded.
 - Assumes / revisit if: R2 authority is only for a still-current explicit intent positively proved never claimed/primed/dispatched; retire old id atomically, at most one dispatch, remint/recheck selection-origin/exact-desktop proof. Use only if visible-proof wait crosses revisions; stop if hard to prove, broader changes needed, or side effects. Unknown-foreground A/B remains deferred pending prototype and physical Alt-Tab SWITCHEND capture.
 - Status: active, 2026-10-28

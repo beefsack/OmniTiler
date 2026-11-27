@@ -36,7 +36,7 @@
 - Evidence: [Stage 5 outcome](../changes/kde-world-v2-port.md#stage-5-renderer-causal-freshness-accepted-offline-2026-10-27).
 
 ### Focused-fullscreen presentation suspension
-- Decision: unconditionally suppress borders, underlays, overlays and drop preview on the output whose focused surface is fullscreen, on every platform. Require truthful fullscreen facts, no app/game/size heuristics. Fullscreen windows otherwise remain ordinary: workspace sends move them, switches hide them and window shortcuts act on them. Publish the suspended output and remaining-output pager content; KDE drops matching previews and invalidates native surfaces on entry/exit. Game suspension is separate.
+- Decision: unconditionally suppress borders, underlays, overlays and drop preview on the output whose focused surface is fullscreen, on every platform. Require truthful fullscreen facts, no app/game/size heuristics. ASSUMPTION: presentation suspension does not gate ordinary explicit commands or grant native hide/show authority; honor the existing [workspace and layout](window-state.md#fullscreen-workspace-and-layout-actions) and [send](window-state.md#workspace-sends-of-fullscreenmaximized-members) fences. Publish the suspended output and remaining-output pager content; KDE drops matching previews and invalidates native surfaces on entry/exit. Game suspension is separate.
 - Why: not recorded.
 - Assumes / revisit if: each host supplies truthful fullscreen facts; no app-name or size heuristics.
 - Rejected: construction opt-in and Windows all-output `paused` lane. Alt+Enter remains unbound; fullscreen-exit command is separate.

@@ -306,12 +306,16 @@ pub const fn sticky_toggle_refusal(fullscreen: bool, maximized: bool) -> Option<
     }
 }
 
-/// Orientation-toggle refusal for an overlay target (R-LAY-01; KDE gates the
-/// same way under `toggle-orient-refused-*` tokens). Fullscreen wins.
+/// Orientation-toggle refusal for an overlay target (R-LAY-01; KDE reports the
+/// maximized token under `toggle-orient-refused-*` vocabulary). A focused
+/// fullscreen member keeps its reserved tiled leaf, so the parent-axis flip is
+/// model-only for it: no frame/state/focus/raise/membership write rides on the
+/// action. Fullscreen therefore permits the route; a maximized non-fullscreen
+/// overlay still refuses because its overlay owns the member.
 #[must_use]
 pub const fn orientation_toggle_refusal(fullscreen: bool, maximized: bool) -> Option<&'static str> {
     if fullscreen {
-        Some("orientation-refused-fullscreen")
+        None
     } else if maximized {
         Some("orientation-refused-maximize")
     } else {
@@ -498,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_refusals_share_fullscreen_precedence() {
+    fn toggle_refusal_precedence_pins() {
         for fullscreen in [false, true] {
             for maximized in [false, true] {
                 assert_eq!(
@@ -521,11 +525,11 @@ mod tests {
                         None
                     }
                 );
+                // Fullscreen keeps a flippable reserved leaf; only a
+                // maximized non-fullscreen overlay refuses orientation.
                 assert_eq!(
                     orientation_toggle_refusal(fullscreen, maximized),
-                    if fullscreen {
-                        Some("orientation-refused-fullscreen")
-                    } else if maximized {
+                    if !fullscreen && maximized {
                         Some("orientation-refused-maximize")
                     } else {
                         None

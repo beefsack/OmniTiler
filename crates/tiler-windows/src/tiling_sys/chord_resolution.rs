@@ -135,7 +135,9 @@ pub(super) fn settle_chord_reject(
 
 /// Overlay refusal for one orientation target, orientation vocabulary: the
 /// live observed fullscreen flag plus a fresh zoom read when visible, else the
-/// retained overlay flags plus a fresh zoom read.
+/// retained overlay flags plus a fresh zoom read. Fullscreen permits the
+/// parent flip (its reserved slot reflows with no member writes); a maximized
+/// non-fullscreen overlay still refuses.
 pub(super) fn orientation_overlay_refusal(
     observed: &[ObservedWindow],
     retained: &[RetainedRow],

@@ -6,7 +6,9 @@
 //!   `awaitShown` route.
 //! - Native-free route preserves existing safety/visibility gates (rejects
 //!   fullscreen from `selection_route_eligible` and `Controlled` visibility).
-//! - Focused fullscreen parent orientation toggle refuses/no-ops.
+//! - Focused fullscreen parent orientation toggle flips the reserved parent
+//!   split with no subject frame/state/focus/visibility/raise writes and the
+//!   correct post-exit rect; its distinct move fence still refuses.
 //! - Workspace tiling toggle off/on preserves fullscreen with no subject
 //!   geometry/fullscreen/focus automatic effect.
 //! - Existing fullscreen move fence remains intact.
@@ -18,9 +20,9 @@ use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    CommandRejectKind, CommandResult, NativeObservation, NativeOccupancy, NativeWorkspaceFact,
-    PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport, TilingMode,
-    WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
+    NativeObservation, NativeOccupancy, NativeWorkspaceFact, PresentationIngressV4,
+    PresentationRowV4, ScopeAuthority, ScreenReport, TilingMode, WORLD_CONTRACT_VERSION_V4,
+    WindowDesire, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 const N1: &str = "native-1";
@@ -401,12 +403,15 @@ fn host_owned_workspace_switch_and_return_preserves_fullscreen_and_focuses_cover
 }
 
 #[test]
-fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
+fn host_owned_focused_fullscreen_toggle_orientation_flips_parent_and_move_still_refuses() {
     let mut engine = host_owned_fs_engine();
 
     // Start with two tiled windows w1 and w2 on N1 so w1 has a parent group.
-    let w1_tiled = host_fact("w1", "out-a", rect(0, 0, 400, 560), N1, false);
-    let w2_tiled = host_fact("w2", "out-a", rect(400, 0, 400, 560), N1, false);
+    // The engine's default inner/outer gap is 8, so the work area (0,0,800,560)
+    // insets to (8,8,784,544) and an equal pair splits with one inner gap:
+    // w1 tiles the left 388-wide half, w2 the right.
+    let w1_tiled = host_fact("w1", "out-a", rect(8, 8, 388, 544), N1, false);
+    let w2_tiled = host_fact("w2", "out-a", rect(404, 8, 388, 544), N1, false);
     let boot = build_report(
         1,
         vec![w1_tiled, w2_tiled.clone()],
@@ -417,9 +422,14 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
     );
     let boot_reply = accepted(&mut engine, &boot);
     let w2_initial_alloc = desire(&boot_reply, "w2").allocation;
-    assert!(w2_initial_alloc.is_some(), "w2 initially tiled");
+    assert_eq!(
+        w2_initial_alloc,
+        Some(rect(404, 8, 388, 544)),
+        "w2 initially tiles the right half"
+    );
 
-    // w1 enters fullscreen (observed fullscreen=true while focused).
+    // w1 enters fullscreen (observed fullscreen=true while focused). Its
+    // reserved left-half leaf survives under the native overlay.
     let w1_fs = host_fact("w1", "out-a", rect(0, 0, 800, 600), N1, true);
     let fs_obs = build_report(
         2,
@@ -431,8 +441,15 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
     );
     let fs_reply = accepted(&mut engine, &fs_obs);
     let w2_before_toggle = desire(&fs_reply, "w2").allocation;
+    assert_eq!(
+        w2_before_toggle,
+        Some(rect(404, 8, 388, 544)),
+        "sibling keeps its slot while w1 is fullscreen"
+    );
 
-    // Focused fullscreen parent orientation toggle must refuse / no-op.
+    // Focused fullscreen parent orientation toggle is an ordinary parent
+    // split mutation: the reserved tree flips, the sibling reflows, and the
+    // fullscreen member receives no frame/state/focus/visibility/raise write.
     let toggle_orient = build_report(
         3,
         vec![w1_fs.clone(), w2_tiled.clone()],
@@ -450,34 +467,74 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
         tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted toggle_orient, got {other:?}"),
     };
-    assert!(
-        !toggle_reply.command_consumed,
-        "fullscreen ToggleOrientation must not consume as accepted mutation: {toggle_reply:?}"
+    assert_eq!(
+        toggle_settlements,
+        vec![tiler_core::world_report::BatchSettlement {
+            seq: 1,
+            result: None,
+        }],
+        "accepted orientation settles with no command result: {toggle_settlements:?}"
+    );
+
+    // Sibling w2 takes the new bottom half and receives the native frame
+    // request through the ordinary write path.
+    let w2_toggle = desire(&toggle_reply, "w2");
+    assert_eq!(
+        w2_toggle.allocation,
+        Some(rect(8, 284, 784, 268)),
+        "sibling reserved slot flips to the bottom half"
     );
     assert_eq!(
-        toggle_settlements.first().and_then(|s| s.result.clone()),
-        Some(CommandResult::Rejected {
-            kind: CommandRejectKind::OperationRefused,
-        })
+        w2_toggle.effective_frame,
+        Some(rect(8, 284, 784, 268)),
+        "sibling native frame follows the flipped split"
     );
-    assert_eq!(desire(&toggle_reply, "w2").allocation, w2_before_toggle);
+    assert_eq!(
+        w2_toggle.frame_authority,
+        ScopeAuthority::Controlled,
+        "sibling frame is core-controlled"
+    );
+
+    // The fullscreen member keeps the reserved top half but publishes no
+    // frame, state, focus, visibility, or raise/membership transition.
     let w1_toggle = desire(&toggle_reply, "w1");
+    assert_eq!(
+        w1_toggle.allocation,
+        Some(rect(8, 8, 784, 268)),
+        "fullscreen reserved slot flips with its parent; allocation is never a write"
+    );
     assert_eq!(w1_toggle.effective_frame, None);
     assert_eq!(w1_toggle.frame_authority, ScopeAuthority::Untouched);
     assert!(w1_toggle.state.is_empty());
-    assert_eq!(toggle_reply.focus_request, None);
+    assert_eq!(w1_toggle.frame_operation, None);
+    assert_eq!(w1_toggle.visibility, None);
+    assert_eq!(w1_toggle.visibility_authority, ScopeAuthority::Untouched);
+    assert!(!w1_toggle.floating);
+    assert_eq!(
+        toggle_reply.focus_request, None,
+        "orientation never focuses, raises, or activates the fullscreen member"
+    );
 
-    // Subsequent observation confirms w2 allocation is unchanged and w1 stays fullscreen/frameless.
+    // Subsequent observation confirms the flipped slots and the fullscreen
+    // row's no-write fence survive convergence.
+    let w2_after = host_fact("w2", "out-a", rect(8, 284, 784, 268), N1, false);
     let after_toggle = build_report(
         4,
-        vec![w1_fs.clone(), w2_tiled.clone()],
+        vec![w1_fs.clone(), w2_after.clone()],
         vec![native_obs("out-a", &[N1], Some(N1))],
         "w1",
         None,
         None,
     );
     let after_reply = accepted(&mut engine, &after_toggle);
-    assert_eq!(desire(&after_reply, "w2").allocation, w2_before_toggle);
+    assert_eq!(
+        desire(&after_reply, "w2").allocation,
+        Some(rect(8, 284, 784, 268))
+    );
+    assert_eq!(
+        desire(&after_reply, "w2").effective_frame,
+        Some(rect(8, 284, 784, 268))
+    );
     let w1_after = desire(&after_reply, "w1");
     assert_eq!(w1_after.effective_frame, None);
     assert_eq!(w1_after.frame_authority, ScopeAuthority::Untouched);
@@ -486,7 +543,7 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
     // Keep existing fullscreen move fence: MoveDirectional on focused fullscreen w1 refuses.
     let move_fs = build_report(
         5,
-        vec![w1_fs, w2_tiled],
+        vec![w1_fs.clone(), w2_after.clone()],
         vec![native_obs("out-a", &[N1], Some(N1))],
         "w1",
         Some(2),
@@ -508,8 +565,41 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
             .is_some(),
         "MoveDirectional on fullscreen produces directional refusal result: {move_settlements:?}"
     );
-    assert_eq!(desire(&move_reply, "w2").allocation, w2_before_toggle);
+    assert_eq!(
+        desire(&move_reply, "w2").allocation,
+        Some(rect(8, 284, 784, 268))
+    );
     assert!(desire(&move_reply, "w1").state.is_empty());
+
+    // Fullscreen exit publishes the correct flipped rect for the previously
+    // fullscreen member and leaves the sibling in place.
+    let w1_exited = host_fact("w1", "out-a", rect(0, 0, 800, 600), N1, false);
+    let exit_fs = build_report(
+        6,
+        vec![w1_exited, w2_after],
+        vec![native_obs("out-a", &[N1], Some(N1))],
+        "w1",
+        None,
+        None,
+    );
+    let exit_reply = accepted(&mut engine, &exit_fs);
+    let w1_exit = desire(&exit_reply, "w1");
+    assert_eq!(
+        w1_exit.effective_frame,
+        Some(rect(8, 8, 784, 268)),
+        "exit lands in the retained top-half slot of the flipped split"
+    );
+    assert_eq!(
+        w1_exit.frame_authority,
+        ScopeAuthority::Controlled,
+        "exit re-establishes an ordinary controlled tile frame"
+    );
+    assert_eq!(
+        desire(&exit_reply, "w2").effective_frame,
+        Some(rect(8, 284, 784, 268))
+    );
+    assert!(w1_exit.state.is_empty());
+    assert_eq!(exit_reply.focus_request, None);
 }
 
 #[test]

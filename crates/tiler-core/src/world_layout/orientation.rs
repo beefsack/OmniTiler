@@ -25,10 +25,15 @@ impl WorldLayout {
     /// `observed_focus` is the effective focus window for this domain; focus
     /// sync and the commit settle tail run on a local clone only, so a refusal
     /// leaves retained layout untouched. `observed` must cover the domain's
-    /// complete known tiled-plus-exception set. On success the candidate is
-    /// installed, the per-domain accepted revision advances by exactly one,
-    /// and a typed geometry/focus/group outcome is returned. No native
-    /// acceptance is claimed.
+    /// complete known tiled-plus-exception set. A focused tiled member carrying
+    /// the native fullscreen overlay keeps its reserved leaf and flips like an
+    /// ordinary member: the flip only re-plans sibling geometry, and the
+    /// publisher still withholds every frame/state/focus/raise/membership
+    /// write from the fullscreen member. Slotless fullscreen exceptions,
+    /// maximized, sticky, and floating members keep refusing. On success the
+    /// candidate is installed, the per-domain accepted revision advances by
+    /// exactly one, and a typed geometry/focus/group outcome is returned. No
+    /// native acceptance is claimed.
     #[cfg(test)]
     pub(crate) fn toggle_orientation(
         &mut self,
@@ -120,10 +125,17 @@ impl WorldLayout {
         if subject != &focused_window {
             return Err(refuse(RefusalKind::FocusMismatch));
         }
-        if let Some(entry) = observed.iter().find(|w| w.window == focused_window)
-            && entry.flags().any()
-        {
-            return Err(refuse(RefusalKind::NotTiled));
+        if let Some(entry) = observed.iter().find(|w| w.window == focused_window) {
+            // A tiled fullscreen member retains its reserved leaf, so the
+            // parent flip is model-only for it. Maximized (unless fullscreen
+            // owns the overlay), sticky, and floating members have no
+            // ordinary tiled slot to flip.
+            let overlay_blocks_flip = entry.floating
+                || entry.sticky
+                || (entry.maximized && !entry.fullscreen);
+            if overlay_blocks_flip {
+                return Err(refuse(RefusalKind::NotTiled));
+            }
         }
 
         let Some(mut tree) = candidate.tree.take() else {
