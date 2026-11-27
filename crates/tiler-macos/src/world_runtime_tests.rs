@@ -10,7 +10,8 @@ use tiler_core::geometry::Rect;
 use tiler_core::session::DomainKey;
 
 use crate::runtime::{InputSemanticAction, NativeContext, ObservedWindow, window_id};
-use crate::runtime_core::{RetainedApp, RetainedCore};
+use crate::runtime_core::{RetainedApp, RetainedCore, RosterEntry};
+use crate::runtime_thread::{EngineJob, Inbox};
 use crate::runtime_types::{
     AxCompletion, NativeDomain, PHASE1_GAP, PHASE1_OUTER_GAP, ScopedBackendSnapshot,
 };
@@ -720,7 +721,10 @@ fn completion_setters_never_claim_arrival() {
     // here); partial writes and timeouts are ambiguous (`Threw`, never
     // blindly repeated); proven failures are explicit refusals.
     assert_eq!(
-        completion_setter(&AxCompletion::Applied { elapsed_ms: 3 }),
+        completion_setter(&AxCompletion::Applied {
+            elapsed_ms: 3,
+            readback_xywh: None
+        }),
         FrameSetter::Accepted
     );
     assert_eq!(
@@ -740,12 +744,20 @@ fn completion_setters_never_claim_arrival() {
         }),
         FrameSetter::Refused
     );
+    // A pre-call fence maps like a refusal but is short-circuited by the
+    // staging path, so it never becomes a row.
+    assert_eq!(
+        completion_setter(&AxCompletion::FencedNoCall {
+            reason: "fence refused".to_owned()
+        }),
+        FrameSetter::Refused
+    );
     assert_eq!(
         completion_setter(&AxCompletion::Timeout { timeout_ms: 50 }),
         FrameSetter::Threw
     );
-    // The immediate post-write readback rides partial completions only;
-    // everything else reports unreadable, never guessed.
+    // The immediate post-write readback rides both settled and partial
+    // completions; a genuinely unreadable one reports none, never guessed.
     assert_eq!(
         completion_readback(&AxCompletion::PartialApplied {
             elapsed_ms: 3,
@@ -763,8 +775,34 @@ fn completion_setters_never_claim_arrival() {
         })
     );
     assert_eq!(
-        completion_readback(&AxCompletion::Applied { elapsed_ms: 3 }),
+        completion_readback(&AxCompletion::Applied {
+            elapsed_ms: 3,
+            readback_xywh: Some((1, 2, 30, 40))
+        }),
+        Some(tiler_core::geometry::Rect {
+            x: 1,
+            y: 2,
+            w: 30,
+            h: 40
+        })
+    );
+    assert_eq!(
+        completion_readback(&AxCompletion::Applied {
+            elapsed_ms: 3,
+            readback_xywh: None
+        }),
         None
+    );
+    // A non-carriable AppKit readback (outside the wire rectangle) rides
+    // as unreadable: the staging choke point must never emit a rect the
+    // report validator would reject.
+    assert_eq!(
+        completion_readback(&AxCompletion::Applied {
+            elapsed_ms: 3,
+            readback_xywh: Some((0, 0, 0, 40))
+        }),
+        None,
+        "a non-carriable readback is unreadable, never clamped"
     );
 }
 
@@ -804,14 +842,15 @@ fn select_output_prefers_focus_home_then_first_current() {
 }
 
 #[test]
-fn ordinary_frame_traffic_never_occupies_write_correlation() {
+fn ordinary_frame_traffic_never_occupies_placement_correlation() {
     use std::sync::Arc;
 
     use crate::focus_route::FocusRoute;
     use crate::world_sequencer::ObservationClock;
-    // Placement rows (explicit `frame_operation` tokens) are the only
-    // rows that settle anything core-side, so they are the only rows
-    // tracked: ordinary frame traffic must neither insert nor evict.
+    // Placement rows (explicit `frame_operation` tokens) settle one-shot
+    // core tokens, so they keep their own correlation space: ordinary
+    // layout traffic correlates in the separate layout lane and must
+    // neither insert into nor evict that space.
     let mut session = WorldSession::new(
         false,
         FocusRoute::Slps,
@@ -832,24 +871,28 @@ fn ordinary_frame_traffic_never_occupies_write_correlation() {
         Some("op-7"),
     );
     for cmd in 2..=5_000u64 {
-        track_write(
+        track_layout_write(
             &mut session,
             1001,
             cmd,
-            "1001_1",
+            "1001_2",
             tiler_core::geometry::Rect {
                 x: 0,
                 y: 0,
                 w: 100,
                 h: 100,
             },
-            None,
         );
     }
+    assert!(
+        session.pending_layout_writes.len() <= FRAME_CORRELATION_CAP,
+        "the layout lane is bounded independently"
+    );
     // The lone placement entry survives unbounded ordinary traffic. The
     // retained app generation fences stale completions: the live
     // generation stages, a relaunched PID drops.
     let retained = retained_with_window(1001, 7, &domain_key());
+    let attempt_ms = Some(crate::input_eligibility::now_ms());
     assert!(
         stage_write_feedback(
             &mut session,
@@ -857,9 +900,21 @@ fn ordinary_frame_traffic_never_occupies_write_correlation() {
             1001,
             1,
             1,
-            &AxCompletion::Applied { elapsed_ms: 3 }
+            &AxCompletion::Applied {
+                elapsed_ms: 3,
+                readback_xywh: None
+            },
+            attempt_ms,
         ),
         "placement feedback stages from proven completion"
+    );
+    assert_eq!(
+        session.pending_frames["1001_1"].purpose,
+        tiler_core::world_report::FramePurpose::FloatPlacement {
+            operation_id: "op-7".to_owned(),
+            prewrite: None,
+        },
+        "placement lane keeps the token purpose"
     );
     // Unknown completions stage nothing (never false success).
     assert!(
@@ -869,9 +924,13 @@ fn ordinary_frame_traffic_never_occupies_write_correlation() {
             1001,
             1,
             9_999,
-            &AxCompletion::Applied { elapsed_ms: 3 }
+            &AxCompletion::Applied {
+                elapsed_ms: 3,
+                readback_xywh: None
+            },
+            attempt_ms,
         ),
-        "ordinary rows leave no correlation behind"
+        "unknown commands leave no correlation behind"
     );
     // Stale generations drop even with a live correlation entry: a
     // relaunched PID never settles under an old command.
@@ -895,7 +954,11 @@ fn ordinary_frame_traffic_never_occupies_write_correlation() {
             1001,
             2,
             77,
-            &AxCompletion::Applied { elapsed_ms: 3 }
+            &AxCompletion::Applied {
+                elapsed_ms: 3,
+                readback_xywh: None
+            },
+            attempt_ms,
         ),
         "stale generation drops without staging"
     );
@@ -2095,5 +2158,882 @@ fn cursor_hit_withheld_when_the_window_is_not_emitted() {
     assert!(
         session.cursor_sample().is_some(),
         "sample is never consumed"
+    );
+}
+
+fn accepted_reply(
+    session: &mut WorldSession,
+    report: &tiler_core::world_report::WorldReportV4,
+) -> tiler_core::world_report::WorldReplyV4 {
+    match tiler_protocol::world_admission::handle_report_checked(session.engine_mut(), report, &[])
+        .outcome
+    {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted reply, got {other:?}"),
+    }
+}
+
+/// Builds the producer report exactly as the dispatch loop does, stamping
+/// the real process clock (`monotonic_ms`) the way native context does.
+fn next_report(
+    session: &mut WorldSession,
+    retained: &RetainedCore,
+    seq: u64,
+) -> tiler_core::world_report::WorldReportV4 {
+    build_dispatch_report(
+        session,
+        retained,
+        &DispatchContext::Native(std::sync::Arc::new(cursor_ctx())),
+        &[],
+        seq,
+        seq,
+        None,
+        None,
+        None,
+        &format!("req-{seq}"),
+    )
+    .expect("native context reports")
+}
+
+/// Records an observed frame as the worker's post-apply write did: both the
+/// app-row projection and the raw roster fact.
+fn observe_frame(retained: &mut RetainedCore, pid: u32, wid: u32, frame: Rect) {
+    let app = retained.apps.get_mut(&pid).expect("retained app");
+    let observed = app
+        .windows
+        .iter_mut()
+        .find(|window| window.wid == wid)
+        .expect("retained window");
+    observed.x = frame.x;
+    observed.y = frame.y;
+    observed.w = frame.w;
+    observed.h = frame.h;
+    if let Some(entry) = app.roster.get_mut(&wid) {
+        entry.observed = Some(ObservedWindow {
+            wid,
+            x: frame.x,
+            y: frame.y,
+            w: frame.w,
+            h: frame.h,
+            floating: false,
+            fullscreen: false,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+        });
+    }
+}
+
+/// Applies one owner observation the way the scoped-observation job does:
+/// the app's sequence advances and the observed frame lands, so a report
+/// built after it pairs attempts with facts no older than the write.
+fn apply_owner_observation(retained: &mut RetainedCore, pid: u32, wid: u32, frame: Rect) {
+    observe_frame(retained, pid, wid, frame);
+    retained.apps.get_mut(&pid).expect("retained app").seq_last += 1;
+}
+
+/// Adds a second tiled member to the same workspace so the tiled
+/// allocation genuinely changes.
+fn add_second_member(retained: &mut RetainedCore, pid: u32, wid: u32) {
+    let frame = Rect {
+        x: 400,
+        y: 0,
+        w: 100,
+        h: 100,
+    };
+    let window = ObservedWindow {
+        wid,
+        x: frame.x,
+        y: frame.y,
+        w: frame.w,
+        h: frame.h,
+        floating: false,
+        fullscreen: false,
+        hints: tiler_core::size_hints::WindowSizeHints::none(),
+    };
+    retained
+        .window_domains
+        .insert(window_id(pid, wid), domain_key());
+    let app = retained.apps.get_mut(&pid).expect("retained app");
+    app.windows.push(window);
+    app.roster.insert(
+        wid,
+        RosterEntry {
+            observed: Some(window),
+            spaces: vec![11],
+            fullscreen_meta: false,
+            minimized_meta: false,
+            hidden_meta: false,
+            excluded: None,
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+            modal: Some(false),
+            resizable: Some(true),
+            layer: Some(0),
+            app_id: Some("com.example.app".to_owned()),
+            activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+        },
+    );
+}
+
+/// One plain tiled window in retained truth: the app-row projection the
+/// report reads membership from plus the raw neutral facts the core needs
+/// to classify the row as ordinary tiled (no native inference, no policy
+/// echoes).
+fn retained_with_tiled(pid: u32, wid: u32, frame: Rect) -> RetainedCore {
+    let window = ObservedWindow {
+        wid,
+        x: frame.x,
+        y: frame.y,
+        w: frame.w,
+        h: frame.h,
+        floating: false,
+        fullscreen: false,
+        hints: tiler_core::size_hints::WindowSizeHints::none(),
+    };
+    let mut retained = RetainedCore::default();
+    retained
+        .window_domains
+        .insert(window_id(pid, wid), domain_key());
+    retained.apps.insert(
+        pid,
+        RetainedApp {
+            generation: 1,
+            seq_last: 1,
+            cmd_counter: 0,
+            windows: vec![window],
+            focused_wid: Some(wid),
+            roster: BTreeMap::from([(
+                wid,
+                RosterEntry {
+                    observed: Some(window),
+                    spaces: vec![11],
+                    fullscreen_meta: false,
+                    minimized_meta: false,
+                    hidden_meta: false,
+                    excluded: None,
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: Some("com.example.app".to_owned()),
+                    activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+                },
+            )]),
+            roster_incomplete: false,
+            roster_cause: String::new(),
+        },
+    );
+    retained
+}
+
+fn desire_row<'a>(
+    reply: &'a tiler_core::world_report::WorldReplyV4,
+    window: &str,
+) -> &'a tiler_core::world_report::WindowDesire {
+    reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == window)
+        .unwrap_or_else(|| panic!("desire row for {window}"))
+}
+
+#[test]
+fn controlled_layout_write_stages_one_attempt_for_core_policy() {
+    // A Controlled (tokenless) frame command is a real native call: without
+    // a `FramePurpose::Layout` attempt the shared clamp memory and burst
+    // budget are unreachable on macOS (core `settle_frames` only consumes
+    // reported attempts), so a natively clamped app is rewritten once per
+    // unrelated report for as long as the desire stands.
+    let mut session = cursor_session();
+    let mut retained = retained_with_tiled(
+        1001,
+        7,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        },
+    );
+    let report = next_report(&mut session, &retained, 1);
+    assert!(
+        tiler_core::world_report_v4_checks::validate_report_v4_reason(&report).is_none(),
+        "producer report validates"
+    );
+    assert!(report.frames.is_empty(), "no write has happened yet");
+    let reply = accepted_reply(&mut session, &report);
+    let row = desire_row(&reply, "1001_7");
+    assert_eq!(
+        row.frame_authority,
+        tiler_core::world_report::ScopeAuthority::Controlled
+    );
+    let desired = row.effective_frame.expect("controlled frame");
+
+    // The adapter wrote that frame exactly once; the app's own toolkit
+    // clamped the requested height by one point, which the bounded
+    // post-write readback proves.
+    let clamped = Rect {
+        h: desired.h - 1,
+        ..desired
+    };
+    let cmd_id = 1;
+    track_layout_write(&mut session, 1001, cmd_id, "1001_7", desired);
+    let called_ms = crate::input_eligibility::now_ms();
+    assert!(
+        stage_write_feedback(
+            &mut session,
+            &retained,
+            1001,
+            1,
+            cmd_id,
+            &AxCompletion::Applied {
+                elapsed_ms: 3,
+                readback_xywh: Some((clamped.x, clamped.y, clamped.w, clamped.h)),
+            },
+            Some(called_ms),
+        ),
+        "a Controlled layout write must stage one attempt for core policy"
+    );
+    // The worker's post-apply observation lands after the AX result.
+    observe_frame(&mut retained, 1001, 7, clamped);
+
+    let report = next_report(&mut session, &retained, 2);
+    assert!(
+        tiler_core::world_report_v4_checks::validate_report_v4_reason(&report).is_none(),
+        "a layout attempt with its readback still passes the real validator"
+    );
+    assert_eq!(report.frames.len(), 1, "one attempt row, one window");
+    let attempt = &report.frames[0];
+    assert_eq!(attempt.window.0, "1001_7");
+    assert_eq!(attempt.target, desired, "attempt carries the desired frame");
+    assert_eq!(
+        attempt.readback,
+        Some(clamped),
+        "the accepted-but-clamped write carries real readback"
+    );
+    assert_eq!(
+        attempt.disposition,
+        tiler_core::world_report::FrameSetter::Accepted
+    );
+    assert_eq!(
+        attempt.purpose,
+        tiler_core::world_report::FramePurpose::Layout
+    );
+    assert_eq!(
+        attempt.attempt_ms,
+        Some(called_ms),
+        "attempt_ms is the process clock, never the per-call duration"
+    );
+
+    // Core learns the one-point clamp: the identical (desired, observed)
+    // pair is held, so an unrelated report no longer rewrites it.
+    let reply = accepted_reply(&mut session, &report);
+    let row = desire_row(&reply, "1001_7");
+    assert_eq!(
+        row.frame_authority,
+        tiler_core::world_report::ScopeAuthority::Hold(
+            tiler_core::world_report::HoldReason::ConstraintClamp
+        ),
+        "a one-point native clamp is held instead of rewritten"
+    );
+    assert_eq!(row.effective_frame, Some(desired), "desire stays intact");
+
+    // Unrelated reports (cursor heartbeat, then focus truth) hold the same
+    // suppressed pair: no rewrite is authorized.
+    assert!(session.note_cursor_sample(CursorSample {
+        seq: 1,
+        point: (5, 6),
+        hit: Some(WindowId("1001_7".to_owned())),
+    }));
+    let report = next_report(&mut session, &retained, 3);
+    assert!(report.frames.is_empty(), "no attempt staged for a hold");
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Hold(
+            tiler_core::world_report::HoldReason::ConstraintClamp
+        ),
+        "a cursor heartbeat never re-authorizes the clamped write"
+    );
+    retained.observed_focus = Some(WindowId("1001_7".to_owned()));
+    let report = next_report(&mut session, &retained, 4);
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Hold(
+            tiler_core::world_report::HoldReason::ConstraintClamp
+        ),
+        "a focus-only report never re-authorizes the clamped write"
+    );
+
+    // A genuine observed change (the app moves) re-arms the retry: the
+    // suppressed pair is gone, so the Controlled lane authorizes again.
+    let moved = Rect {
+        x: clamped.x + 17,
+        ..clamped
+    };
+    observe_frame(&mut retained, 1001, 7, moved);
+    let report = next_report(&mut session, &retained, 5);
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Controlled,
+        "a genuine observation change retries the write"
+    );
+
+    // A genuine desired change (a sibling joins the workspace) also
+    // re-arms: the new target is a fresh pair, never the suppressed one.
+    let report = next_report(&mut session, &retained, 6);
+    let reply = accepted_reply(&mut session, &report);
+    let before = desire_row(&reply, "1001_7")
+        .effective_frame
+        .expect("controlled frame");
+    add_second_member(&mut retained, 1001, 8);
+    let report = next_report(&mut session, &retained, 7);
+    let reply = accepted_reply(&mut session, &report);
+    let row = desire_row(&reply, "1001_7");
+    assert_eq!(
+        row.frame_authority,
+        tiler_core::world_report::ScopeAuthority::Controlled,
+        "a genuine desired change retries the write"
+    );
+    assert_ne!(
+        row.effective_frame,
+        Some(before),
+        "a sibling changes the tiled allocation"
+    );
+}
+
+#[test]
+fn pair_admission_keeps_the_clamp_ahead_of_interleaved_reports() {
+    // The owning worker stages `EngineJob::AxResult` right after a native
+    // write, while the post-batch read that proves the write landed is
+    // published later. `Inbox::try_send_observation` appends the batch's
+    // completions and that read atomically (results first, then the read,
+    // one slot reserved for it), so no other queued job can be processed
+    // between them. Without the pair an unrelated report landing in the gap
+    // drains the attempt against the pre-write rect: the core discards the
+    // clamp (`tiler-core/src/world_frames.rs`), advances the attempt
+    // watermark, and rewrites the natively held window on every later
+    // report.
+    let mut session = cursor_session();
+    let mut retained = retained_with_tiled(
+        1001,
+        7,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        },
+    );
+    let report = next_report(&mut session, &retained, 1);
+    let reply = accepted_reply(&mut session, &report);
+    let desired = desire_row(&reply, "1001_7")
+        .effective_frame
+        .expect("controlled frame");
+    // The app clamps the requested height by one point; its readback proves
+    // it and the post-batch read observes that clamped frame.
+    let clamped = Rect {
+        h: desired.h - 1,
+        ..desired
+    };
+    fn observed(wid: u32, frame: Rect) -> ObservedWindow {
+        ObservedWindow {
+            wid,
+            x: frame.x,
+            y: frame.y,
+            w: frame.w,
+            h: frame.h,
+            floating: false,
+            fullscreen: false,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+        }
+    }
+    fn scoped_read(seq: u64, clamped: Rect) -> EngineJob {
+        EngineJob::ScopedObservation {
+            pid: 1001,
+            generation: 1,
+            seq,
+            snapshot: ScopedBackendSnapshot {
+                windows: vec![observed(7, clamped)],
+                focused_wid: Some(7),
+                focus_cg_owned: true,
+                focus_evidence: None,
+                sys_focus: None,
+                global_focus: None,
+                meta: Vec::new(),
+                excluded: 0,
+                excluded_reasons: Vec::new(),
+                cg_complete: true,
+                cg_owner_wids: vec![7],
+                cg_alive: Vec::new(),
+                revision: 1,
+            },
+            trace_id: 0,
+            intake_us: 0,
+            enqueue_us: 0,
+        }
+    }
+    fn completion(cmd_id: u64, clamped: Rect) -> EngineJob {
+        EngineJob::AxResult {
+            pid: 1001,
+            generation: 1,
+            cmd_id,
+            completion: AxCompletion::Applied {
+                elapsed_ms: 3,
+                readback_xywh: Some((clamped.x, clamped.y, clamped.w, clamped.h)),
+            },
+            attempt_ms: Some(crate::input_eligibility::now_ms()),
+        }
+    }
+    fn cursor(seq: u64, owner: Option<(u32, u32)>) -> EngineJob {
+        EngineJob::CursorSample {
+            seq,
+            point: (5, 6),
+            owner,
+        }
+    }
+
+    // Capacity pressure never reorders the pair: the read keeps the slot
+    // reserved for it and the excess feedback comes back to the worker.
+    let tight = Inbox::new(2);
+    let mut overflow = vec![completion(8, clamped), completion(9, clamped)];
+    assert!(tight.try_send_observation(scoped_read(2, clamped), &mut overflow));
+    assert_eq!(
+        overflow.len(),
+        1,
+        "the post-batch read reserves its slot; excess results return",
+    );
+
+    let inbox = Inbox::new(4);
+    // An unrelated report is already queued before the pair.
+    assert!(inbox.try_send_data(cursor(1, Some((1001, 7)))));
+    // The batch's completion and the read that proves it are admitted
+    // together: results first, then the read, adjacent under one lock.
+    let cmd_id = 1;
+    track_layout_write(&mut session, 1001, cmd_id, "1001_7", desired);
+    let mut preceding = vec![completion(cmd_id, clamped)];
+    assert!(inbox.try_send_observation(scoped_read(2, clamped), &mut preceding));
+    assert!(preceding.is_empty(), "the pair admits every queued result");
+    // A later unrelated report follows the pair.
+    assert!(inbox.try_send_data(cursor(2, None)));
+
+    // Engine drain in strict FIFO order, through the real builder and core.
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    assert!(matches!(
+        inbox.recv(&stop),
+        Some(EngineJob::CursorSample { seq: 1, .. })
+    ));
+    // The report queued before the pair cannot ride the attempt: its facts
+    // predate the write, so the attempt has not staged at this point.
+    let report = next_report(&mut session, &retained, 2);
+    assert!(
+        report.frames.is_empty(),
+        "a report queued before the pair never sees the attempt"
+    );
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Controlled,
+        "nothing was learned before the pair"
+    );
+
+    // The completion stages first, exactly as the `AxResult` arm does.
+    let queued = inbox.recv(&stop).expect("result queued");
+    let EngineJob::AxResult {
+        cmd_id: queued_cmd,
+        completion,
+        attempt_ms,
+        ..
+    } = queued
+    else {
+        panic!("the pair queues its results first");
+    };
+    assert_eq!(queued_cmd, cmd_id);
+    assert!(stage_write_feedback(
+        &mut session,
+        &retained,
+        1001,
+        1,
+        queued_cmd,
+        &completion,
+        attempt_ms,
+    ));
+
+    // The read that proves the clamp is the very next job: the engine
+    // applies it and its own report drains the attempt with fresh facts.
+    let queued = inbox.recv(&stop).expect("read queued");
+    let EngineJob::ScopedObservation {
+        seq,
+        snapshot: read,
+        ..
+    } = queued
+    else {
+        panic!("the read stays adjacent to its results");
+    };
+    assert_eq!(seq, 2, "the pair keeps the read next to its results");
+    assert_eq!(read.windows.len(), 1);
+    assert_eq!(
+        (
+            read.windows[0].x,
+            read.windows[0].y,
+            read.windows[0].w,
+            read.windows[0].h
+        ),
+        (clamped.x, clamped.y, clamped.w, clamped.h),
+        "the paired read carries the app's clamped frame"
+    );
+    apply_owner_observation(&mut retained, 1001, 7, clamped);
+    let report = next_report(&mut session, &retained, 3);
+    assert_eq!(
+        report.frames.len(),
+        1,
+        "the staged attempt rides the report the paired read produces"
+    );
+    assert_eq!(report.frames[0].readback, Some(clamped));
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Hold(
+            tiler_core::world_report::HoldReason::ConstraintClamp
+        ),
+        "the one-point clamp is held after the paired read"
+    );
+
+    // The unrelated report following the pair never rewrites the held pair.
+    assert!(matches!(
+        inbox.recv(&stop),
+        Some(EngineJob::CursorSample { seq: 2, .. })
+    ));
+    let report = next_report(&mut session, &retained, 4);
+    assert!(
+        report.frames.is_empty(),
+        "a held pair re-authorizes no write"
+    );
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Hold(
+            tiler_core::world_report::HoldReason::ConstraintClamp
+        ),
+        "the hold survives the following report"
+    );
+
+    // A genuine observed change retries the write.
+    let moved = Rect {
+        x: clamped.x + 17,
+        ..clamped
+    };
+    apply_owner_observation(&mut retained, 1001, 7, moved);
+    let report = next_report(&mut session, &retained, 5);
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Controlled,
+        "a genuine observation change retries the write"
+    );
+}
+
+#[test]
+fn burst_quiet_rearm_uses_the_report_clock() {
+    // The burst budget shares the same process clock: two consumed
+    // attempts on one unchanged desired target latch only until the core
+    // can prove a >=500ms quiet gap in observed frame changes. Without a
+    // real `monotonic_ms` (and a real `attempt_ms` on the same epoch) the
+    // gate could never re-arm on macOS.
+    let mut session = cursor_session();
+    let site = Rect {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+    };
+    let mut retained = retained_with_tiled(1001, 7, site);
+    let report = next_report(&mut session, &retained, 1);
+    let reply = accepted_reply(&mut session, &report);
+    let desired = desire_row(&reply, "1001_7")
+        .effective_frame
+        .expect("controlled frame");
+    // Position-only drift: the size already matches the desire, so an
+    // exact-readback write clears the clamp lane and only the burst budget
+    // counts (never a size clamp; core never pins position-only drift).
+    let drifted = Rect {
+        x: desired.x + 1,
+        ..desired
+    };
+    observe_frame(&mut retained, 1001, 7, drifted);
+    for cmd_id in 1..=2u64 {
+        track_layout_write(&mut session, 1001, cmd_id, "1001_7", desired);
+        assert!(
+            stage_write_feedback(
+                &mut session,
+                &retained,
+                1001,
+                1,
+                cmd_id,
+                &AxCompletion::Applied {
+                    elapsed_ms: 1,
+                    readback_xywh: Some((desired.x, desired.y, desired.w, desired.h)),
+                },
+                Some(crate::input_eligibility::now_ms()),
+            ),
+            "each write stages its attempt"
+        );
+        let report = next_report(&mut session, &retained, 1 + cmd_id);
+        assert!(tiler_core::world_report_v4_checks::validate_report_v4_reason(&report).is_none());
+        let reply = accepted_reply(&mut session, &report);
+        let authority = desire_row(&reply, "1001_7").frame_authority;
+        if cmd_id == 1 {
+            assert_eq!(
+                authority,
+                tiler_core::world_report::ScopeAuthority::Controlled,
+                "one burst attempt still permits the retry"
+            );
+        } else {
+            assert_eq!(
+                authority,
+                tiler_core::world_report::ScopeAuthority::Hold(
+                    tiler_core::world_report::HoldReason::ConstraintClamp
+                ),
+                "two attempts inside one burst hold the unchanged target"
+            );
+        }
+    }
+    // A real quiet gap plus a genuine observed change re-arms the budget.
+    std::thread::sleep(std::time::Duration::from_millis(520));
+    let shifted = Rect {
+        x: desired.x + 2,
+        ..desired
+    };
+    observe_frame(&mut retained, 1001, 7, shifted);
+    let report = next_report(&mut session, &retained, 9);
+    assert!(report.monotonic_ms > 0, "the report carries the real clock");
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Controlled,
+        "a proven quiet gap re-arms the burst budget"
+    );
+}
+
+#[test]
+fn refused_layout_write_backs_off_on_the_process_clock() {
+    // A refused Controlled write rides the core's transient lane. It can
+    // only suppress a retry when its `attempt_ms` shares the report clock
+    // epoch: under the old per-call duration (a few ms) the backoff
+    // comparison was always satisfied and macOS retried every report.
+    let mut session = cursor_session();
+    let retained = retained_with_tiled(
+        1001,
+        7,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        },
+    );
+    let report = next_report(&mut session, &retained, 1);
+    let reply = accepted_reply(&mut session, &report);
+    let desired = desire_row(&reply, "1001_7")
+        .effective_frame
+        .expect("controlled frame");
+    track_layout_write(&mut session, 1001, 1, "1001_7", desired);
+    assert!(stage_write_feedback(
+        &mut session,
+        &retained,
+        1001,
+        1,
+        1,
+        &AxCompletion::Failed {
+            reason: "AXError".to_owned()
+        },
+        Some(crate::input_eligibility::now_ms()),
+    ));
+    let report = next_report(&mut session, &retained, 2);
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(
+        desire_row(&reply, "1001_7").frame_authority,
+        tiler_core::world_report::ScopeAuthority::Hold(
+            tiler_core::world_report::HoldReason::ConstraintClamp
+        ),
+        "a refusal inside its backoff window is not retried"
+    );
+}
+
+#[test]
+fn layout_completion_never_displaces_a_staged_placement_row() {
+    // One window owns one frame authority per report (the wire validator
+    // refuses `duplicate-frame`): a placement row settles a token the
+    // adapter already spent and always wins the collision, while the
+    // displaced layout row is advisory feedback the core re-learns from the
+    // next observation.
+    let mut session = cursor_session();
+    let site = Rect {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+    };
+    let mut retained = retained_with_tiled(1001, 7, site);
+    add_second_member(&mut retained, 1001, 8);
+    let stamp = Some(crate::input_eligibility::now_ms());
+    let placement_target = Rect {
+        x: 10,
+        y: 20,
+        w: 300,
+        h: 200,
+    };
+    track_write(
+        &mut session,
+        1001,
+        1,
+        "1001_7",
+        placement_target,
+        Some("op-3"),
+    );
+    assert!(stage_write_feedback(
+        &mut session,
+        &retained,
+        1001,
+        1,
+        1,
+        &AxCompletion::Applied {
+            elapsed_ms: 2,
+            readback_xywh: Some((10, 20, 299, 200)),
+        },
+        stamp,
+    ));
+    // An ordinary layout completion for the same window lands before the
+    // next dispatch, plus one for the sibling window.
+    track_layout_write(&mut session, 1001, 2, "1001_7", site);
+    assert!(stage_write_feedback(
+        &mut session,
+        &retained,
+        1001,
+        1,
+        2,
+        &AxCompletion::Applied {
+            elapsed_ms: 2,
+            readback_xywh: Some((site.x, site.y, site.w, site.h)),
+        },
+        stamp,
+    ));
+    track_layout_write(&mut session, 1001, 3, "1001_8", site);
+    assert!(stage_write_feedback(
+        &mut session,
+        &retained,
+        1001,
+        1,
+        3,
+        &AxCompletion::Applied {
+            elapsed_ms: 2,
+            readback_xywh: Some((site.x, site.y, site.w, site.h)),
+        },
+        stamp,
+    ));
+    let report = next_report(&mut session, &retained, 1);
+    assert!(
+        tiler_core::world_report_v4_checks::validate_report_v4_reason(&report).is_none(),
+        "the collision merge passes the real validator"
+    );
+    assert_eq!(
+        report.frames.len(),
+        2,
+        "one row per window: the placement row plus the free layout row"
+    );
+    let collided = report
+        .frames
+        .iter()
+        .find(|row| row.window.0 == "1001_7")
+        .expect("collided window row");
+    assert_eq!(
+        collided.purpose,
+        tiler_core::world_report::FramePurpose::FloatPlacement {
+            operation_id: "op-3".to_owned(),
+            prewrite: None,
+        },
+        "placement evidence wins the same-window collision"
+    );
+    assert_eq!(collided.target, placement_target);
+    assert_eq!(
+        collided.readback,
+        Some(Rect {
+            x: 10,
+            y: 20,
+            w: 299,
+            h: 200
+        })
+    );
+    let free = report
+        .frames
+        .iter()
+        .find(|row| row.window.0 == "1001_8")
+        .expect("uncollided layout row");
+    assert_eq!(
+        free.purpose,
+        tiler_core::world_report::FramePurpose::Layout,
+        "layout rows ride when no placement owns the window"
+    );
+}
+
+#[test]
+fn pre_call_fence_stages_no_attempt_and_voids_the_correlation() {
+    // A write fenced before any AX setter stages no attempt: it can never
+    // spend core burst or transient budget. The correlation is consumed,
+    // so a later completion for the same command cannot resurrect it.
+    let mut session = cursor_session();
+    let retained = retained_with_tiled(
+        1001,
+        7,
+        Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        },
+    );
+    let target = Rect {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+    };
+    track_layout_write(&mut session, 1001, 1, "1001_7", target);
+    assert!(
+        !stage_write_feedback(
+            &mut session,
+            &retained,
+            1001,
+            1,
+            1,
+            &AxCompletion::FencedNoCall {
+                reason: "topology revision moved".to_owned()
+            },
+            Some(crate::input_eligibility::now_ms()),
+        ),
+        "a pre-call fence stages nothing"
+    );
+    assert!(
+        !stage_write_feedback(
+            &mut session,
+            &retained,
+            1001,
+            1,
+            1,
+            &AxCompletion::Applied {
+                elapsed_ms: 1,
+                readback_xywh: Some((target.x, target.y, target.w, target.h))
+            },
+            Some(crate::input_eligibility::now_ms()),
+        ),
+        "the pre-call fence consumed the correlation"
+    );
+    let report = next_report(&mut session, &retained, 1);
+    assert!(tiler_core::world_report_v4_checks::validate_report_v4_reason(&report).is_none());
+    assert!(
+        report.frames.is_empty(),
+        "no frame attempt rides for a write that never called AX"
     );
 }

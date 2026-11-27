@@ -117,8 +117,8 @@ remain dogfooding checks rather than another automated harness pass.
 ### Offline diagnosis of the maximize discrepancy
 
 - The composed overlay takes the integer work area, without tiling gaps.
-  macOS gets it from `NSScreen.visibleFrame` and rounds to points
-  (`topology.rs`, `PointsRect::to_rect`; `world_builder.rs`, `ScreenReport.work_area`).
+  At the time, macOS rounded the `NSScreen.visibleFrame` origin and size
+  independently (`topology.rs`, `PointsRect::to_rect`).
   The tiled preimage corroborates the height: `38 + 1123 + 8 - 30 = 1139`.
   The adapter passes the requested height to AX unchanged. The fixture's
   spawn supplies only IDs, so it sets no app min/max or resize increment.
@@ -126,13 +126,17 @@ remain dogfooding checks rather than another automated harness pass.
   the raw visible frame, so it cannot distinguish rounding at that earlier
   conversion from an AppKit/WindowServer frame constraint.
 - The fixture counted two whole `tile frame-set` transactions, not the
-  size and position legs of one transaction. The code path that explains
-  the count is an initial overlay write followed by a replan on a changed
-  snapshot that still differs from the desired work area. Equal subsequent
-  snapshots are dropped; ordinary overlay writes do not carry the float
-  placement token and do not use the core's attempt-based clamp memory.
+  size and position legs of one transaction. The macOS adapter did not
+  report `Layout` attempts for Controlled rows, including tiled windows and
+  composed-maximize overlays. Without that evidence core could not
+  recognize a clamp for either kind of row or enforce its tiled-frame
+  attempt budget. Unrelated observations could drive more AX writes
+  against the same unchanged pair.
   The aggregate did not retain individual attempt outcomes or timing.
-- No product defect was established. The fixture did not miscount, so
-  its exact-arrival and one-attempt checks remain unchanged. Exact native
-  maximize remains unproved; directional half-snap was skipped by the
-  preceding sequence's gate, not by a failed base restore.
+- This was an adapter feedback defect, separate from the unresolved native
+  cause of the one-point shortfall. Independent rounding could also extend
+  the integer work area beyond the visible frame; the old log cannot show
+  whether it did so in this run. The fixture did not miscount, and its
+  exact-arrival and one-attempt checks remain unchanged. Directional
+  half-snap was skipped by the preceding sequence's gate, not by a failed
+  base restore.

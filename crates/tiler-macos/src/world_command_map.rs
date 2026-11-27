@@ -1374,11 +1374,21 @@ mod trailing_command_tests {
         let spare = trailing.into_iter().next().expect("trailing spare");
         // Project the REAL reply pager plus its REAL desires: the spare
         // row selects like a bound row and carries the real spare id.
-        let native_last = first.native[0]
+        let native_spaces: Vec<u64> = first.native[0]
             .native_order
-            .last()
-            .and_then(|binding| parse_native_binding(binding))
-            .expect("fixture native last parses");
+            .iter()
+            .filter_map(|binding| parse_native_binding(binding))
+            .collect();
+        let native_current = first.native[0]
+            .current_native
+            .as_deref()
+            .and_then(parse_native_binding)
+            .expect("fixture native current parses");
+        let native = crate::workspace_select::SelectionSnapshot {
+            display: "screen-1".to_owned(),
+            spaces: native_spaces,
+            current: native_current,
+        };
         let projection = project_core_indicator(
             &reply1.presentation.pager,
             &reply1.workspaces,
@@ -1386,7 +1396,7 @@ mod trailing_command_tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            native_last,
+            &native,
         )
         .expect("real spare reply projects");
         let rendered = projection

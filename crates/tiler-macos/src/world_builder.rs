@@ -1137,11 +1137,11 @@ mod tests {
                 },
                 visible: DisplayRect {
                     x: 1512.4,
-                    y: 32.0,
+                    y: 32.5,
                     w: 1512.0,
-                    h: 925.0,
+                    h: 924.0,
                 },
-                scale: 2.0,
+                scale: 1.0,
             },
         ];
         let rows = vec![
@@ -1168,10 +1168,20 @@ mod tests {
         // 1:1 rounding lands the fractional seam on the exact shared edge.
         assert_eq!(report.screens[0].full_rect, Some(rect(0, 0, 1512, 982)));
         assert_eq!(report.screens[1].full_rect, Some(rect(1512, 0, 1512, 982)));
-        // Domain work areas stay the converted visible work areas (menu inset
-        // survives conversion: AppKit y=32 of 982pt -> CG y=25).
+        // The mixed-scale secondary's visible frame is fractional in CG:
+        // AppKit (1512.4, 32.5, 1512, 924) with primary height 982 converts
+        // to y=25.5, max-y=949.5, x=1512.4, max-x=3024.4. FULL keeps 1:1
+        // rounding (1512,0,1512,982) because full frames are adjacency
+        // authority; the work area must round *inward* so it never claims
+        // pixels outside visibleFrame: (1513,26,1511,923).
         let first_work = report.screens[0].work_area.expect("work area");
         assert_eq!((first_work.x, first_work.y), (0, 25));
+        let second_work = report.screens[1].work_area.expect("work area");
+        assert_eq!(
+            (second_work.x, second_work.y, second_work.w, second_work.h),
+            (1513, 26, 1511, 923),
+            "work area must round inward inside the fractional visible frame",
+        );
         // Display identity follows the CG id through shuffled rows; Space
         // order and the focused display never move geometry.
         assert_eq!(report.screens[0].output.0, "macos-display-1");

@@ -52,6 +52,14 @@ struct Applied {
 #[derive(Default)]
 struct FakeState {
     applied: Vec<Applied>,
+    /// Native AX frame retained per window: a successful setter call leaves
+    /// the frame the app owns, so later reads report it instead of the
+    /// pre-write shape the test declared (see [`observed_windows`]).
+    frames: BTreeMap<u32, (i32, i32, i32, i32)>,
+    /// Modelled app height ceilings per window: the app's own toolkit limit
+    /// narrows every taller request to this height (a native clamp, reported
+    /// truthfully in the readback — never a lie about the call).
+    height_ceilings: BTreeMap<u32, i32>,
     /// Autonomous scoped observation inboxes, one per pid, installed before
     /// launch and taken by the owning worker at creation (the production
     /// backend route: classifier exclusions and minimized facts ride the
@@ -84,14 +92,29 @@ struct FakeBackend {
 impl AxBackend for FakeBackend {
     fn apply_frame(&mut self, cmd: &FrameCommand) -> AxCompletion {
         let (lock, wake) = &*self.state;
-        lock.lock().expect("mutex").applied.push(Applied {
-            window: cmd.window.clone(),
-            cmd_id: cmd.cmd_id,
-            rect: (cmd.x, cmd.y, cmd.w, cmd.h),
-        });
+        let rect = {
+            let mut state = lock.lock().expect("mutex");
+            // A modelled app ceiling lands the frame at the app's own height:
+            // the accepted call still reports exactly what it left behind.
+            let h = state
+                .height_ceilings
+                .get(&cmd.wid)
+                .map_or(cmd.h, |ceiling| cmd.h.min(*ceiling));
+            let rect = (cmd.x, cmd.y, cmd.w, h);
+            state.applied.push(Applied {
+                window: cmd.window.clone(),
+                cmd_id: cmd.cmd_id,
+                rect,
+            });
+            state.frames.insert(cmd.wid, rect);
+            rect
+        };
         // The record itself wakes positive waiters: no polling, no sleep.
         wake.notify_all();
-        AxCompletion::Applied { elapsed_ms: 0 }
+        AxCompletion::Applied {
+            elapsed_ms: 0,
+            readback_xywh: Some(rect),
+        }
     }
 
     fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {
@@ -254,6 +277,115 @@ fn partial_zero_hints() -> WindowSizeHints {
     }
 }
 
+/// Read the frame retained by a setter or changed by [`move_native`].
+/// A window without either kind of update keeps its classifier frame.
+fn observed_windows(fixture: &Fixture, items: &[ClassifiedWindow]) -> Vec<ObservedWindow> {
+    let state = fixture.state.0.lock().expect("mutex");
+    items
+        .iter()
+        .filter_map(ClassifiedWindow::to_observed)
+        .map(|mut window| {
+            if let Some(&(x, y, w, h)) = state.frames.get(&window.wid) {
+                window.x = x;
+                window.y = y;
+                window.w = w;
+                window.h = h;
+            }
+            window
+        })
+        .collect()
+}
+
+/// Model a genuine exogenous native frame change (the user or the app moved
+/// the window): later reports read this frame back instead of the retained
+/// setter frame.
+fn move_native(fixture: &Fixture, wid: u32, rect: (i32, i32, i32, i32)) {
+    fixture
+        .state
+        .0
+        .lock()
+        .expect("mutex")
+        .frames
+        .insert(wid, rect);
+}
+
+/// Model one app's own height ceiling: every taller setter call lands at
+/// `height` and reads that back (the app's toolkit constraint, never a
+/// failed call).
+fn hold_native_height(fixture: &Fixture, wid: u32, height: i32) {
+    fixture
+        .state
+        .0
+        .lock()
+        .expect("mutex")
+        .height_ceilings
+        .insert(wid, height);
+}
+
+/// Native setter calls recorded for one window, in dispatch order.
+fn applied_records(fixture: &Fixture, window: &str) -> Vec<Applied> {
+    fixture
+        .state
+        .0
+        .lock()
+        .expect("mutex")
+        .applied
+        .iter()
+        .filter(|record| record.window == window)
+        .cloned()
+        .collect()
+}
+
+/// Wait until at least `count` native setter calls have landed for one
+/// window (the fake's record is the proof; the condition parks on its own
+/// wake, never a poll).
+fn wait_applied_count(fixture: &Fixture, window: &str, count: usize) -> Vec<Applied> {
+    let (lock, wake) = &*fixture.state;
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    let mut guard = lock.lock().expect("mutex");
+    loop {
+        let records: Vec<Applied> = guard
+            .applied
+            .iter()
+            .filter(|record| record.window == window)
+            .cloned()
+            .collect();
+        if records.len() >= count {
+            return records;
+        }
+        let now = std::time::Instant::now();
+        assert!(
+            now < deadline,
+            "no applied frame #{count} for {window}: {} landed",
+            records.len()
+        );
+        guard = wake
+            .wait_timeout_while(guard, deadline - now, |state| {
+                state.applied.iter().filter(|r| r.window == window).count() < count
+            })
+            .expect("mutex")
+            .0;
+    }
+}
+
+/// Causal fence for an honest dispatch result: parks until the engine has
+/// consumed the worker's completed write, so the next submitted report
+/// carries the staged attempt (staging and report building both ride the
+/// engine thread). A completion-only result never publishes an observation,
+/// so the applied record alone does not prove the engine saw it.
+fn wait_completions(fixture: &Fixture, token: &str, count: u64) {
+    assert!(
+        fixture
+            .handle
+            .wait_diagnostics_for_test(WAIT_TIMEOUT, |diagnostics| {
+                diagnostics.completions.get(token).copied().unwrap_or(0) >= count
+            })
+            .is_some(),
+        "engine never settled {count} {token} completion(s): {:?}",
+        fixture.handle.diagnostics().completions
+    );
+}
+
 fn submit(fixture: &Fixture, pid: u32, generation: u64, seq: u64, items: &[ClassifiedWindow]) {
     submit_focused(fixture, pid, generation, seq, items, None);
 }
@@ -270,10 +402,7 @@ fn submit_focused(
     items: &[ClassifiedWindow],
     focused_wid: Option<u32>,
 ) {
-    let observed: Vec<ObservedWindow> = items
-        .iter()
-        .filter_map(ClassifiedWindow::to_observed)
-        .collect();
+    let observed: Vec<ObservedWindow> = observed_windows(fixture, items);
     // Native topology: manual observations are scoped snapshots homed by
     // exact Space membership (11), with neutral truthful metadata and the
     // same agreeing global-focus legs the classifier fixtures attest.
@@ -1371,6 +1500,113 @@ fn nonzero_layer_floating_panel_takes_no_allocation() {
     );
     wait_applied(&fixture, "1001_10");
     assert_no_applied(&fixture, "1001_13");
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn one_point_native_clamp_holds_and_rearms_on_observed_change() {
+    // A Controlled write is a real native call, so its accepted-but-clamped
+    // readback feeds core clamp memory: the app keeps its own height
+    // ceiling of one point, and the identical `(desired, observed)` pair is
+    // then held instead of rewritten on every unrelated report. Only a
+    // genuine observed change re-authorizes one native write.
+    let fixture = start(RuntimeConfig::default());
+    let generation = fixture.handle.launch_app(APP_A).expect("launch");
+    let desired = (8, 8, 1904, 1064);
+    let clamped = (8, 8, 1904, 1063);
+    hold_native_height(&fixture, 11, clamped.3);
+
+    submit(
+        &fixture,
+        APP_A,
+        generation,
+        1,
+        &[tile(11, 0, 0, 1920, 1080)],
+    );
+    assert_eq!(desired_rect(&fixture, "1001_11"), Some(desired));
+    let first = wait_applied_count(&fixture, "1001_11", 1);
+    assert_eq!(
+        first[0].rect, clamped,
+        "the app keeps its own height ceiling; the readback is exact"
+    );
+    wait_completions(&fixture, "applied", 1);
+    let emitted = fixture.handle.diagnostics().frames_emitted;
+    assert_eq!(emitted, 1, "the first Controlled write is emitted once");
+
+    // The next report observes the frame the app kept: the completion is an
+    // accepted-but-clamped write for this exact pair, so the rewrite is
+    // withheld in the same report (desire stays intact as plan truth).
+    submit(
+        &fixture,
+        APP_A,
+        generation,
+        2,
+        &[tile(11, 0, 0, 1920, 1080)],
+    );
+    assert_eq!(
+        desired_rect(&fixture, "1001_11"),
+        Some(desired),
+        "a clamped pair never alters the desired frame"
+    );
+    assert_eq!(
+        fixture.handle.diagnostics().frames_emitted,
+        emitted,
+        "a proven one-point clamp authorizes no second write"
+    );
+    assert_eq!(
+        applied_records(&fixture, "1001_11").len(),
+        1,
+        "no native setter call for the held pair"
+    );
+
+    // An unrelated report (a sheet arrives as a float member, taking no
+    // write of its own) never re-authorizes the held pair: suppression is
+    // keyed on the exact `(desired, observed)` pair, not on report novelty.
+    let sheet = classify_window(
+        frame(13, 480, 270, 960, 540),
+        &AxFacts {
+            role: Some(ROLE_SHEET.to_owned()),
+            ..AxFacts::standard()
+        },
+        &CgFacts::normal(),
+        &AppFacts::regular(),
+    );
+    submit(
+        &fixture,
+        APP_A,
+        generation,
+        3,
+        &[tile(11, 0, 0, 1920, 1080), sheet.clone()],
+    );
+    assert_eq!(
+        desired_names(&fixture),
+        vec!["1001_11"],
+        "the floater takes no allocation"
+    );
+    assert_eq!(
+        fixture.handle.diagnostics().frames_emitted,
+        emitted,
+        "an unrelated report stays held"
+    );
+    assert_eq!(applied_records(&fixture, "1001_11").len(), 1);
+
+    // A genuine observed change (the user drags the window) re-arms exactly
+    // one write: the suppressed pair is gone.
+    move_native(&fixture, 11, (25, 8, 1904, 1063));
+    submit(
+        &fixture,
+        APP_A,
+        generation,
+        4,
+        &[tile(11, 0, 0, 1920, 1080), sheet],
+    );
+    assert_eq!(
+        fixture.handle.diagnostics().frames_emitted,
+        emitted + 1,
+        "the changed observation retries the write"
+    );
+    let retried = wait_applied_count(&fixture, "1001_11", 2);
+    assert_eq!(retried[1].rect, clamped, "the app ceiling still wins");
     shutdown_clean(&fixture);
 }
 

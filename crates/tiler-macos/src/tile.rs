@@ -779,14 +779,27 @@ mod native {
         launch_date: Option<String>,
     }
 
-    /// One live topology snapshot from the main thread: NSScreen/CG work
-    /// areas plus scale plus SLS rows plus the separate-Spaces mode. Reads
-    /// only; a failed read fails closed (the stale context fences plans).
-    fn snapshot_live() -> Result<TopologySnapshot, String> {
+    /// One live topology snapshot plus the raw main-thread display rows
+    /// (for the raw `visibleFrame` diagnostic at publication). Reads only;
+    /// a failed read fails closed (the stale context fences plans).
+    fn snapshot_live() -> Result<(TopologySnapshot, Vec<crate::ffi::NsDisplay>), String> {
         let ns = crate::ffi::ns_display_snapshot().map_err(|e| format!("display snapshot: {e}"))?;
         let rows = crate::ffi::sls_display_rows().map_err(|e| format!("space rows: {e}"))?;
         let separate = crate::ffi::ns_separate_spaces();
-        Ok(build_snapshot(&ns, &rows, separate))
+        let snapshot = build_snapshot(&ns, &rows, separate);
+        Ok((snapshot, ns))
+    }
+
+    /// Raw AppKit `visibleFrame` floats, one stderr line per display,
+    /// emitted only when topology is published. `{}` is `Display` formatting:
+    /// fractional edges print unquantized.
+    fn log_topology_visible_frames(ns: &[crate::ffi::NsDisplay]) {
+        for d in ns {
+            eprintln!(
+                "tiler-macos topology visibleFrame cg_id={} scale={} x={} y={} w={} h={}",
+                d.cg_id, d.scale, d.visible.x, d.visible.y, d.visible.w, d.visible.h,
+            );
+        }
     }
 
     /// Idle wait for gate-held iterations (locked/unknown session,
@@ -1062,6 +1075,14 @@ mod native {
     /// test. Core spare rows render their own core ordinal exactly like
     /// any workspace segment (never `"+"`/`"+?"`); the legacy
     /// trailing slot never carries miniatures.
+    /// Core rows additionally carry per-output GROUPS: one shared item
+    /// renders every display's rows in arrangement order, separated by a
+    /// non-clickable divider at each output change. The divider carries no
+    /// title, no miniatures, no route (`position` 0, disabled), and its
+    /// click payload can never resolve a row; it exists only as a render
+    /// boundary, so a click still names exactly one row's output/Space.
+    /// Titles render each row's OWN ordinal (per-group the same as the
+    /// legacy single-display position).
     pub(crate) fn assemble_segment_rows(
         rows: &[crate::workspace_indicator::IndicatorRow],
         trailing: Option<(
@@ -1074,43 +1095,72 @@ mod native {
         generation: u64,
         revision: u64,
     ) -> Vec<crate::ffi::SegmentRow> {
-        let mut out: Vec<crate::ffi::SegmentRow> = rows
+        let mut out: Vec<crate::ffi::SegmentRow> =
+            Vec::with_capacity(rows.len() + rows.len().saturating_sub(1));
+        let mut previous_output: Option<&str> = None;
+        for (row, icon) in rows
             .iter()
             .zip(icons.iter().chain(std::iter::repeat(&None)))
-            .map(|(row, icon)| {
-                let miniatures = pager
-                    .iter()
-                    .find(|(position, _)| *position == row.position)
-                    .map(|(_, minis)| minis.clone())
-                    .unwrap_or_default();
-                let title = crate::workspace_indicator::segment_title(row.position, row.occupancy);
-                crate::ffi::SegmentRow {
-                    position: row.position,
-                    title,
-                    current: row.current,
-                    enabled: row.selectable,
-                    occupancy: row.occupancy,
-                    miniatures,
-                    icon: icon.clone(),
-                    click: crate::workspace_indicator::IndicatorClick {
-                        kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
-                        position: row.position,
-                        expected_sid: row.sid,
-                        ui_generation: generation,
-                        topology_revision: revision,
-                    },
+        {
+            if let Some(core) = row.core.as_ref() {
+                if previous_output.is_some_and(|previous| previous != core.output.as_str()) {
+                    out.push(crate::ffi::SegmentRow {
+                        position: 0,
+                        ordinal: 0,
+                        title: String::new(),
+                        current: false,
+                        enabled: false,
+                        occupancy: crate::workspace_indicator::SpaceOccupancy::Empty,
+                        miniatures: Vec::new(),
+                        icon: None,
+                        separator: true,
+                        click: crate::workspace_indicator::IndicatorClick {
+                            kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
+                            position: 0,
+                            expected_sid: 0,
+                            ui_generation: generation,
+                            topology_revision: revision,
+                        },
+                    });
                 }
-            })
-            .collect();
+                previous_output = Some(core.output.as_str());
+            }
+            let miniatures = pager
+                .iter()
+                .find(|(position, _)| *position == row.position)
+                .map(|(_, minis)| minis.clone())
+                .unwrap_or_default();
+            let title = crate::workspace_indicator::segment_title(row.ordinal, row.occupancy);
+            out.push(crate::ffi::SegmentRow {
+                position: row.position,
+                ordinal: row.ordinal,
+                title,
+                current: row.current,
+                enabled: row.selectable,
+                occupancy: row.occupancy,
+                miniatures,
+                icon: icon.clone(),
+                separator: false,
+                click: crate::workspace_indicator::IndicatorClick {
+                    kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
+                    position: row.position,
+                    expected_sid: row.sid,
+                    ui_generation: generation,
+                    topology_revision: revision,
+                },
+            });
+        }
         if let Some((slot, last_occupancy, native_last)) = trailing {
             out.push(crate::ffi::SegmentRow {
                 position: slot.position,
+                ordinal: slot.position,
                 title: crate::workspace_indicator::trailing_segment_title(slot, last_occupancy),
                 current: false,
                 enabled: last_occupancy == crate::workspace_indicator::SpaceOccupancy::Occupied,
                 occupancy: last_occupancy,
                 miniatures: Vec::new(),
                 icon: None,
+                separator: false,
                 click: crate::workspace_indicator::IndicatorClick {
                     kind: crate::workspace_indicator::IndicatorClickKind::Trailing,
                     position: slot.position,
@@ -1295,80 +1345,143 @@ mod native {
                 crate::workspace_indicator::SpaceOccupancy,
                 u64,
             )> = None;
-            let projection = match crate::workspace_select::user_row_from_rows(rows, 0) {
-                Ok(row) => {
-                    let (domains, complete) = Self::retained_domains(&report, revision);
-                    let summary = crate::workspace_indicator::summarize_retained(
-                        &row.spaces,
-                        &domains,
-                        complete,
-                        frontmost_pid,
-                    );
-                    let occupancy_of = |sid: u64| {
-                        summary
-                            .iter()
-                            .zip(row.spaces.iter())
-                            .find(|(_, s)| **s == sid)
-                            .map(|((o, _), _)| *o)
-                            .unwrap_or(crate::workspace_indicator::SpaceOccupancy::Unknown)
-                    };
-                    let representative_of = |sid: u64| {
-                        summary
-                            .iter()
-                            .zip(row.spaces.iter())
-                            .find(|(_, s)| **s == sid)
-                            .and_then(|((_, r), _)| *r)
-                            .and_then(|(pid, _)| {
-                                i32::try_from(pid)
-                                    .ok()
-                                    .and_then(crate::ffi::bundle_id_for_pid)
-                            })
-                    };
-                    // Core-order rows only. An empty/missing pager means no
-                    // coherent core reply (paused, suspended, no reply yet):
-                    // hide safely, never fabricate native rows under a game.
-                    // The legacy native projection survives only for
-                    // dedicated read-only diag/tests, never production.
-                    if presentation.pager.is_empty() {
-                        crate::workspace_indicator::IndicatorProjection {
-                            visible: false,
-                            hidden_reason: Some(
-                                "no coherent core pager reply; refusing native inference"
-                                    .to_owned(),
-                            ),
-                            title: String::new(),
-                            rows: Vec::new(),
-                            tiling: None,
-                        }
-                    } else {
-                        let native_last = row.spaces.last().copied().unwrap_or(0);
-                        crate::workspace_indicator::project_core_indicator(
-                            &presentation.pager,
-                            desires,
-                            rows.len(),
-                            self.options.mode,
-                            &occupancy_of,
-                            &representative_of,
-                            native_last,
-                        )
-                        .unwrap_or_else(|reason| {
+            // Resolve every SLS row's user-Space read once: the single
+            // display path uses index 0 exactly as before, while the
+            // grouped path joins per output and treats an unprovable read
+            // as a safe-hide for that group only.
+            let user_rows: Vec<Result<crate::workspace_select::SelectionSnapshot, String>> = (0
+                ..rows.len())
+                .map(|index| crate::workspace_select::user_row_from_rows(rows, index))
+                .collect();
+            let all_spaces: Vec<u64> = user_rows
+                .iter()
+                .flatten()
+                .flat_map(|row| row.spaces.iter().copied())
+                .collect();
+            let (domains, complete) = Self::retained_domains(&report, revision);
+            let summary = crate::workspace_indicator::summarize_retained(
+                &all_spaces,
+                &domains,
+                complete,
+                frontmost_pid,
+            );
+            let occupancy_of = |sid: u64| {
+                summary
+                    .iter()
+                    .zip(all_spaces.iter())
+                    .find(|(_, s)| **s == sid)
+                    .map(|((o, _), _)| *o)
+                    .unwrap_or(crate::workspace_indicator::SpaceOccupancy::Unknown)
+            };
+            let representative_of = |sid: u64| {
+                summary
+                    .iter()
+                    .zip(all_spaces.iter())
+                    .find(|(_, s)| **s == sid)
+                    .and_then(|((_, r), _)| *r)
+                    .and_then(|(pid, _)| {
+                        i32::try_from(pid)
+                            .ok()
+                            .and_then(crate::ffi::bundle_id_for_pid)
+                    })
+            };
+            // One shared item over every current display: the native
+            // arrangement is read here (inside the needs-tick gate) and
+            // joins the coherent core pager reply by exact output key. A
+            // single display with one SLS row keeps the original
+            // single-display projection verbatim (no separator, same
+            // title, same spare arming); anything else takes the grouped
+            // path, where unproven output-to-Space scope safe-hides that
+            // group instead of guessing.
+            let ns_displays = crate::ffi::ns_display_snapshot();
+            let single_display = ns_displays
+                .as_ref()
+                .is_ok_and(|ns| ns.len() == 1 && rows.len() == 1);
+            let projection = if single_display {
+                match &user_rows[0] {
+                    Ok(row) => {
+                        // Core-order rows only. An empty/missing pager means no
+                        // coherent core reply (paused, suspended, no reply yet):
+                        // hide safely, never fabricate native rows under a game.
+                        // The legacy native projection survives only for
+                        // dedicated read-only diag/tests, never production.
+                        if presentation.pager.is_empty() {
                             crate::workspace_indicator::IndicatorProjection {
                                 visible: false,
-                                hidden_reason: Some(reason),
+                                hidden_reason: Some(
+                                    "no coherent core pager reply; refusing native inference"
+                                        .to_owned(),
+                                ),
                                 title: String::new(),
                                 rows: Vec::new(),
                                 tiling: None,
                             }
-                        })
+                        } else {
+                            crate::workspace_indicator::project_core_indicator(
+                                &presentation.pager,
+                                desires,
+                                rows.len(),
+                                self.options.mode,
+                                &occupancy_of,
+                                &representative_of,
+                                row,
+                            )
+                            .unwrap_or_else(|reason| {
+                                crate::workspace_indicator::IndicatorProjection {
+                                    visible: false,
+                                    hidden_reason: Some(reason),
+                                    title: String::new(),
+                                    rows: Vec::new(),
+                                    tiling: None,
+                                }
+                            })
+                        }
                     }
+                    Err(reason) => crate::workspace_indicator::IndicatorProjection {
+                        visible: false,
+                        hidden_reason: Some(reason.clone()),
+                        title: String::new(),
+                        rows: Vec::new(),
+                        tiling: None,
+                    },
                 }
-                Err(reason) => crate::workspace_indicator::IndicatorProjection {
+            } else if presentation.pager.is_empty() {
+                // Multi-display or unreadable native identity with no core
+                // reply: hide safely, never infer native rows.
+                crate::workspace_indicator::IndicatorProjection {
                     visible: false,
-                    hidden_reason: Some(reason),
+                    hidden_reason: Some(
+                        "no coherent core pager reply; refusing native inference".to_owned(),
+                    ),
                     title: String::new(),
                     rows: Vec::new(),
                     tiling: None,
-                },
+                }
+            } else {
+                let ns = ns_displays.unwrap_or_default();
+                let scoped: Vec<Option<crate::workspace_select::SelectionSnapshot>> = user_rows
+                    .iter()
+                    .map(|row| row.as_ref().ok().cloned())
+                    .collect();
+                crate::workspace_indicator::project_grouped_core_indicator(
+                    &presentation.pager,
+                    desires,
+                    &ns,
+                    rows,
+                    &scoped,
+                    self.options.mode,
+                    &occupancy_of,
+                    &representative_of,
+                )
+                .unwrap_or_else(|reason| {
+                    crate::workspace_indicator::IndicatorProjection {
+                        visible: false,
+                        hidden_reason: Some(reason),
+                        title: String::new(),
+                        rows: Vec::new(),
+                        tiling: None,
+                    }
+                })
             };
             // Representative icons resolve here (main-thread bundle cache,
             // only when the flag is on): the pager band layout below needs
@@ -1405,8 +1518,8 @@ mod native {
                 .zip(icons.iter())
                 .map(|(row, icon)| {
                     let title =
-                        crate::workspace_indicator::segment_title(row.position, row.occupancy);
-                    let wide = row.position >= 10 || title.ends_with('?');
+                        crate::workspace_indicator::segment_title(row.ordinal, row.occupancy);
+                    let wide = row.ordinal >= 10 || title.ends_with('?');
                     let band_w =
                         crate::workspace_indicator::segment_column_width(icon.is_some(), wide);
                     let minis = match row.core.as_ref() {
@@ -1619,7 +1732,8 @@ mod native {
         /// never SIDs). Positions and outcome tokens in the log only.
         fn drain_clicks(
             &mut self,
-            fresh: &crate::workspace_select::SelectionSnapshot,
+            fresh: Option<&crate::workspace_select::SelectionSnapshot>,
+            fresh_rows: &[crate::ffi::SlsDisplayRow],
             fresh_revision: u64,
             runtime: &crate::runtime::RuntimeHandle,
         ) {
@@ -1660,15 +1774,22 @@ mod native {
                         click,
                         current_generation,
                         fresh_revision,
+                        fresh_rows,
                         runtime,
                     ),
-                    None => crate::workspace_indicator::resolve_indicator_click(
-                        click,
-                        current_generation,
-                        &fresh.spaces,
-                        fresh_revision,
-                        crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
-                    ),
+                    None => match fresh {
+                        Some(fresh) => crate::workspace_indicator::resolve_indicator_click(
+                            click,
+                            current_generation,
+                            &fresh.spaces,
+                            fresh_revision,
+                            crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                        ),
+                        None => Err(
+                            "legacy workspace click discarded: native row unreadable; no select dispatched"
+                                .to_owned(),
+                        ),
+                    },
                 };
                 match action {
                     Ok(action) => {
@@ -1762,10 +1883,11 @@ mod native {
             click: crate::workspace_indicator::IndicatorClick,
             current_generation: u64,
             fresh_revision: u64,
+            fresh_rows: &[crate::ffi::SlsDisplayRow],
             runtime: &crate::runtime::RuntimeHandle,
         ) -> Result<crate::runtime_types::InputSemanticAction, String> {
             let (presentation, _, desires, snapshot_generation) = runtime.last_indicator_snapshot();
-            crate::workspace_indicator::verify_core_row_click(
+            let action = crate::workspace_indicator::verify_core_row_click(
                 click,
                 rendered,
                 current_generation,
@@ -1774,7 +1896,59 @@ mod native {
                 &presentation,
                 &desires,
                 &snapshot_generation,
-            )
+            )?;
+            // Grouped rows must still name a native SID that belongs to the
+            // clicked output's fresh user row: a rehome, stale held binding,
+            // or arrangement change refuses before the engine is asked.
+            // Single-display rows keep their existing verification path.
+            let published = runtime.published_display_inputs();
+            if let crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace {
+                output,
+                ..
+            } = &action
+                && published
+                    .as_ref()
+                    .is_some_and(|published| published.displays.len() > 1)
+            {
+                let Some(core) = rendered.core.as_ref() else {
+                    return Err(
+                        "grouped workspace click discarded: rendered row has no core identity; no select dispatched"
+                            .to_owned(),
+                    );
+                };
+                if !core.spare {
+                    let published = published.as_ref().ok_or_else(|| {
+                        "grouped workspace click discarded: published display legs unavailable; no select dispatched"
+                            .to_owned()
+                    })?;
+                    let (display, _, _) = crate::topology::display_index_for_output(
+                        &published.displays,
+                        fresh_rows,
+                        output,
+                    )?;
+                    let row =
+                        crate::workspace_select::user_row_from_rows(fresh_rows, display).map_err(
+                            |reason| {
+                                format!(
+                                    "grouped workspace click discarded: output {output} row unreadable ({reason}); no select dispatched"
+                                )
+                            },
+                        )?;
+                    if row
+                        .spaces
+                        .iter()
+                        .filter(|sid| **sid == rendered.sid)
+                        .count()
+                        != 1
+                    {
+                        return Err(format!(
+                            "stale grouped workspace click discarded: bound Space {} is not uniquely in output {output}'s fresh row; no select dispatched",
+                            rendered.sid
+                        ));
+                    }
+                }
+            }
+            Ok(action)
         }
 
         /// Live segment readbacks off the actual AppKit buttons (title,
@@ -1892,13 +2066,41 @@ mod native {
         enabled && dirty && elapsed >= BORDER_FAST_MIN
     }
 
-    /// Display-leg publish gate over explicit inputs (pure, testable): a
-    /// screen-parameter notification always republishes latest-wins; an
-    /// absent slot (failed startup read or transient unreadable snapshot)
-    /// recovers from the next good snapshot with no notification; a quiet
-    /// poll with a populated slot leaves it untouched.
+    /// Publish on a Space notification or a scheduled display refresh.
+    /// An absent slot recovers from the next good snapshot without a
+    /// notification; a quiet poll leaves a populated slot untouched.
     fn display_publish_due(display_notified: bool, slot_populated: bool) -> bool {
         display_notified || !slot_populated
+    }
+
+    #[derive(Default)]
+    struct DisplayRefresh {
+        next: Option<Instant>,
+        recheck: bool,
+    }
+
+    impl DisplayRefresh {
+        fn notify(&mut self, now: Instant) {
+            // AppKit reports display changes in bursts; read at the trailing
+            // edge rather than publishing a refresh for every member.
+            self.next = Some(now + Duration::from_millis(50));
+            self.recheck = true;
+        }
+
+        fn due(&self, now: Instant) -> bool {
+            self.next.is_some_and(|next| now >= next)
+        }
+
+        fn take_due(&mut self, now: Instant) -> bool {
+            if !self.due(now) {
+                return false;
+            }
+            // SLS may still report the rehomed order at the AppKit edge
+            // before all returning displays have joined. Allow one normal
+            // cadence interval for that second delivery, never poll for it.
+            self.next = std::mem::take(&mut self.recheck).then(|| now + CADENCE);
+            true
+        }
     }
 
     /// Main-thread cadence gate over explicit inputs (pure, testable): the
@@ -2572,12 +2774,10 @@ mod native {
         let mut last_cadence = Instant::now()
             .checked_sub(CADENCE)
             .unwrap_or_else(Instant::now);
-        // Pending display/Space notification stashed before the cadence
-        // gate: the flag take every iteration means no event waits for the
-        // 250 ms cadence, and the stash (never the raw flag) drives the
-        // early run below - a skipped early run keeps its wakeup instead of
-        // losing it. Cleared when the cadence body consumes it.
+        // Stash active-Space notifications before the cadence gate. Screen
+        // changes use independent trailing-edge and settlement deadlines.
         let mut display_pending = false;
+        let mut display_refresh = DisplayRefresh::default();
         // Staged effect-completion wake stashed the same way: either
         // effect owner (select or send) stages its terminal completion
         // off-main, and the next flag take notices via the handoff flag
@@ -2629,7 +2829,8 @@ mod native {
         // poll so the recovered snapshot republishes even when its revision
         // is identical to the pre-failure one.
         match snapshot_live() {
-            Ok(snapshot) => {
+            Ok((snapshot, ns)) => {
+                log_topology_visible_frames(&ns);
                 poll.poll(&snapshot);
                 publish_snapshot_context(&facts_store, &snapshot);
                 handle.publish_display_inputs(&snapshot);
@@ -2665,13 +2866,15 @@ mod native {
                 crate::ffi::pump_runloop_once(0);
             });
             let seen = wake_signal.generation();
-            // Event stash for the cadence gate below: take the guard flag
-            // every iteration so a display/Space notification never waits
-            // for the 250 ms cadence, and stash it (never act here) so a
-            // skipped early run keeps its wakeup. The cadence body
-            // consumes the stash with the same lock/secure gates as ever.
+            // Space changes wake immediately; screen changes schedule a
+            // bounded follow-up without delaying the Space-select wake.
             if display_flag.take_changed() {
                 display_pending = true;
+            }
+            let now = Instant::now();
+            if display_flag.take_screen_changed() {
+                display_refresh.notify(now);
+                display_events += 1;
             }
             // Terminal effect completions stage off-main (select Dock-swipe
             // settlement, send forward/return effects, including ambiguous
@@ -2725,7 +2928,7 @@ mod native {
             }
             if cadence_due(
                 last_cadence.elapsed(),
-                display_pending || effects_pending || claim_pending,
+                display_pending || display_refresh.due(now) || effects_pending || claim_pending,
             ) {
                 last_cadence = Instant::now();
             } else {
@@ -2738,7 +2941,13 @@ mod native {
                 // wakeups for the next iteration — nothing is lost by
                 // waiting. Native main-loop sources (display/Space
                 // notifications, app events) keep servicing while parked.
-                main_wake.park_until(seen, last_cadence + CADENCE);
+                let cadence = last_cadence + CADENCE;
+                main_wake.park_until(
+                    seen,
+                    display_refresh
+                        .next
+                        .map_or(cadence, |next| cadence.min(next)),
+                );
                 continue;
             }
             // Consume the stashed notification at the topology site below
@@ -2925,24 +3134,28 @@ mod native {
                 indicator.discard_clicks();
             }
 
-            // Topology: the 250 ms poll still owns the full snapshot; the
-            // send display legs publish on screen-parameter notification,
-            // plus startup above, plus recovery when the slot stands empty
-            // (a transient unreadable read clears it - the next good
-            // snapshot restores it without waiting for a notification), so
-            // a quiet poll with a populated slot never moves it. The stash
-            // take below runs after the lock/secure gates (which `continue`
-            // without consuming), and joins a concurrent flag set racing
-            // the gate, so no event is lost either way.
+            // Keep the live topology poll and the display-input lane
+            // separate: the latter publishes on a Space notification or
+            // scheduled display refresh, plus startup/invalidated recovery.
+            // Consume notifications here only after the session gates pass.
             let display_notified =
                 std::mem::replace(&mut display_pending, false) || display_flag.take_changed();
+            let now = Instant::now();
+            if display_flag.take_screen_changed() {
+                display_refresh.notify(now);
+                display_events += 1;
+            }
+            let settled_display_refresh = display_refresh.take_due(now);
             if display_notified {
                 display_events += 1;
             }
             let topology_read_started_ms = crate::input_eligibility::now_ms();
             match snapshot_live() {
-                Ok(snapshot) => {
-                    if display_publish_due(display_notified, handle.has_display_inputs()) {
+                Ok((snapshot, ns)) => {
+                    if display_publish_due(
+                        display_notified || settled_display_refresh,
+                        handle.has_display_inputs(),
+                    ) {
                         handle.publish_display_inputs(&snapshot);
                     }
                     last_snapshot = Some(snapshot.clone());
@@ -2983,6 +3196,7 @@ mod native {
                         poll.poll(&snapshot),
                         crate::topology::PollOutcome::Unchanged
                     ) {
+                        log_topology_visible_frames(&ns);
                         publish_snapshot_context(&facts_store, &snapshot);
                         handle.update_topology_with(snapshot, &|sid| {
                             crate::ffi::sls_space_type(sid).ok()
@@ -3492,14 +3706,46 @@ mod native {
                     // before effecting; this side only pins the plain-data
                     // display legs. Proof adopts from the completion on
                     // BOTH outcomes.
-                    let row = last_snapshot.as_ref().and_then(|live| {
-                        crate::workspace_select::user_row_from_rows(&live.rows, 0).ok()
-                    });
                     let published = handle.published_display_inputs();
                     let wake = handle.select_wake();
-                    let submit = match (row, published, wake) {
-                        (Some(_row), Some(published), Some(wake))
-                            if published.displays.len() == 1 =>
+                    let grouped_route = matches!(
+                        &claim.action,
+                        crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace { .. }
+                    ) && published
+                        .as_ref()
+                        .is_some_and(|published| published.displays.len() > 1);
+                    let submit = match (last_snapshot.as_ref(), published, wake) {
+                        (Some(live_snapshot), Some(published), Some(wake)) if grouped_route => {
+                            match crate::select_owner::multi_indicator_submit_display(
+                                &claim,
+                                &published,
+                                &live_snapshot.rows,
+                            ) {
+                                Ok((display_index, pinned_cgid, pinned_uuid)) => {
+                                    select_controller.submit(
+                                        &claim,
+                                        crate::select_owner::SelectSubmit {
+                                            display_index,
+                                            pinned_cgid,
+                                            pinned_uuid: &pinned_uuid,
+                                            published_displays: &published.displays,
+                                            published_separate: published.separate,
+                                            trailing_enabled:
+                                                crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                                            wake: &wake,
+                                        },
+                                    )
+                                }
+                                Err(reason) => Err(reason),
+                            }
+                        }
+                        (Some(live_snapshot), Some(published), Some(wake))
+                            if published.displays.len() == 1
+                                && crate::workspace_select::user_row_from_rows(
+                                    &live_snapshot.rows,
+                                    0,
+                                )
+                                .is_ok() =>
                         {
                             match (
                                 published.displays[0].uuid.clone(),
@@ -3533,8 +3779,13 @@ mod native {
                     match submit {
                         Ok(()) => {
                             eprintln!(
-                                "tiler-macos dev select action={} submitted route=dock-swipe complete=false",
+                                "tiler-macos dev select action={} submitted route={} complete=false",
                                 id,
+                                if grouped_route {
+                                    "mc-pinned"
+                                } else {
+                                    "dock-swipe"
+                                },
                             );
                         }
                         Err(reason) => {
@@ -3586,10 +3837,22 @@ mod native {
             }
             if indicator.armed()
                 && let Some(live) = last_snapshot.as_ref()
-                && let Ok(row) = crate::workspace_select::user_row_from_rows(&live.rows, 0)
             {
-                indicator.drain_clicks(&row, live.revision, &handle);
-                indicator.drain_toggles(&handle);
+                // Core clicks resolve their own output and must not be
+                // gated on display 0 being readable; only the legacy
+                // native-order path needs that single row.
+                let fresh_row = crate::workspace_select::user_row_from_rows(&live.rows, 0).ok();
+                // A single-display core click still needs that one row
+                // (the submit route keeps its exact old gate); only a
+                // genuinely multi-display publication may drain core
+                // clicks without display 0. Legacy clicks always need it.
+                let multi_published = handle
+                    .published_display_inputs()
+                    .is_some_and(|published| published.displays.len() > 1);
+                if fresh_row.is_some() || multi_published {
+                    indicator.drain_clicks(fresh_row.as_ref(), &live.rows, live.revision, &handle);
+                    indicator.drain_toggles(&handle);
+                }
             }
 
             // Discovery: running scoped apps bind launchDate/exe/bundle and
@@ -3891,7 +4154,7 @@ mod native {
                     let mut dispatched = false;
                     for _ in 0..trailing_lifecycle.owned().len() {
                         let row = match snapshot_live() {
-                            Ok(snapshot) => {
+                            Ok((snapshot, _ns)) => {
                                 match crate::workspace_select::user_row_from_rows(&snapshot.rows, 0)
                                 {
                                     Ok(row) => row,
@@ -4191,6 +4454,28 @@ mod native {
             // The cadence itself still fires with no event.
             assert!(cadence_due(Duration::from_millis(250), false));
             assert!(cadence_due(Duration::from_secs(10), false));
+        }
+
+        #[test]
+        fn display_refresh_coalesces_then_rechecks_once() {
+            let start = Instant::now();
+            let at = |ms| start + Duration::from_millis(ms);
+            let mut refresh = DisplayRefresh::default();
+            assert!(!refresh.take_due(at(0)));
+            refresh.notify(at(0));
+            refresh.notify(at(40));
+            assert!(!refresh.take_due(at(89)));
+            assert!(refresh.take_due(at(90)));
+            assert!(!refresh.take_due(at(339)));
+            assert!(refresh.take_due(at(340)));
+            assert!(!refresh.take_due(at(1_000)));
+            refresh.notify(at(1_000));
+            assert!(refresh.take_due(at(1_050)));
+            refresh.notify(at(1_299));
+            assert!(!refresh.take_due(at(1_300)));
+            assert!(refresh.take_due(at(1_349)));
+            assert!(refresh.take_due(at(1_599)));
+            assert!(!refresh.take_due(at(2_000)));
         }
 
         #[test]
@@ -5511,6 +5796,67 @@ mod tests {
         }
     }
 
+    /// Grouped renders split adjacent display groups with exactly one
+    /// non-interactive separator (never a leading/trailing one) and a
+    /// single group renders exactly like today. Baseline assembly returns
+    /// one segment per row only, so this grouped shape fails until the
+    /// grouped projection/assembly lands.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn indicator_segments_separate_display_groups_only() {
+        use crate::workspace_indicator::{CoreRowTarget, IndicatorRow, SpaceOccupancy};
+        fn row(position: usize, output: &str, workspace: &str, current: bool) -> IndicatorRow {
+            IndicatorRow {
+                position,
+                ordinal: position,
+                sid: position as u64,
+                current,
+                occupancy: SpaceOccupancy::Occupied,
+                selectable: true,
+                representative: None,
+                core: Some(CoreRowTarget {
+                    output: output.to_owned(),
+                    workspace: workspace.to_owned(),
+                    native_binding: Some(format!("space-{position}")),
+                    spare: false,
+                }),
+            }
+        }
+        let rows = vec![
+            row(1, "macos-display-1", "ws-a", true),
+            row(2, "macos-display-1", "ws-b", false),
+            row(3, "macos-display-2", "ws-c", true),
+            row(4, "macos-display-2", "ws-d", false),
+        ];
+        let icons: Vec<Option<objc2::rc::Retained<objc2_app_kit::NSImage>>> = vec![None; 4];
+        let segments = super::native::assemble_segment_rows(&rows, None, &[], &icons, 5, 7);
+        assert_eq!(
+            segments.len(),
+            rows.len() + 1,
+            "one separator between two groups"
+        );
+        let separators = segments
+            .iter()
+            .filter(|segment| segment.position == 0)
+            .count();
+        assert_eq!(separators, 1, "exactly one group separator");
+        assert_eq!(segments[2].position, 0, "separator sits between groups");
+        assert!(!segments[2].enabled, "a separator never dispatches");
+        assert!(
+            segments[2].miniatures.is_empty(),
+            "a separator paints no miniatures"
+        );
+        // The group members keep their own ordinals and current marks.
+        assert_eq!(segments[0].position, 1);
+        assert!(segments[0].current);
+        assert_eq!(segments[3].position, 3);
+        assert!(segments[3].current, "each group marks its own current");
+        // Single group: no separator at all (current rendering).
+        let single = super::native::assemble_segment_rows(&rows[..2], None, &[], &icons[..2], 5, 7);
+        assert_eq!(single.len(), 2);
+        assert!(single.iter().all(|segment| segment.position > 0));
+    }
+
     fn toggle_drain_driver() -> crate::workspace_indicator::IndicatorDriver {
         use crate::workspace_indicator::{IndicatorDriver, IndicatorMode, SpaceOccupancy};
         let projection = crate::workspace_indicator::project_indicator(
@@ -5779,6 +6125,7 @@ mod tests {
         let rows = vec![
             IndicatorRow {
                 position: 1,
+                ordinal: 1,
                 sid: 1,
                 current: true,
                 occupancy: SpaceOccupancy::Occupied,
@@ -5793,6 +6140,7 @@ mod tests {
             },
             IndicatorRow {
                 position: 2,
+                ordinal: 2,
                 sid: 2,
                 current: false,
                 occupancy: SpaceOccupancy::Unknown,

@@ -205,7 +205,7 @@ impl AxBackend for FakeAxBackend {
             window: cmd.window.clone(),
             rect: (cmd.x, cmd.y, cmd.w, cmd.h),
         });
-        AxCompletion::Applied { elapsed_ms: 0 }
+        AxCompletion::Applied { elapsed_ms: 0, readback_xywh: None }
     }
 
     fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {

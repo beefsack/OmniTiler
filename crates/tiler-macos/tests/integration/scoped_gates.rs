@@ -293,7 +293,7 @@ fn out_of_scope_never_writes() {
         9,
         3,
     );
-    assert!(matches!(completion, AxCompletion::Failed { .. }));
+    assert!(matches!(completion, AxCompletion::FencedNoCall { .. }));
     assert!(setter.sets.is_empty(), "no setter may run out of scope");
     assert!(setter.get_calls == 0, "no readback without an attempt");
     assert!(matches!(report.position, LegOutcome::Refused(_)));
@@ -322,7 +322,7 @@ fn ghostty_refused_at_effect_boundary_even_when_listed() {
         9,
         0,
     );
-    assert!(matches!(completion, AxCompletion::Failed { .. }));
+    assert!(matches!(completion, AxCompletion::FencedNoCall { .. }));
     assert!(setter.sets.is_empty());
 }
 
@@ -344,7 +344,7 @@ fn other_space_membership_writes_nothing() {
         9,
         0,
     );
-    assert!(matches!(completion, AxCompletion::Failed { .. }));
+    assert!(matches!(completion, AxCompletion::FencedNoCall { .. }));
     assert!(setter.sets.is_empty(), "other-Space windows take no writes");
     // Sticky multi-Space likewise refuses.
     gates.membership = Ok(vec![11, 12]);
@@ -360,7 +360,7 @@ fn other_space_membership_writes_nothing() {
         9,
         0,
     );
-    assert!(matches!(completion, AxCompletion::Failed { .. }));
+    assert!(matches!(completion, AxCompletion::FencedNoCall { .. }));
     assert!(setter.sets.is_empty());
 }
 
@@ -451,9 +451,8 @@ fn partial_first_size_mutation_reports_per_leg_truth() {
 
 #[test]
 fn mid_pass_safety_refusal_skips_remaining_legs() {
-    // Identity drifts between legs: the remaining legs skip with safety
-    // evidence (never attempted blind), and the completion names the
-    // fence rather than a setter cause.
+    // Identity drifts between legs. The first size setter already ran,
+    // so skipped later legs are partial truth, not a pre-call refusal.
     let scope = scope();
     let identity = identity();
     let gates = FakeGates::healthy(11, 9);
@@ -514,7 +513,18 @@ fn mid_pass_safety_refusal_skips_remaining_legs() {
     assert_eq!(setter.sets, vec!["size"]);
     assert!(matches!(report.position, LegOutcome::SkippedSafety(_)));
     assert!(matches!(report.size, LegOutcome::SkippedSafety(_)));
-    assert!(matches!(completion, AxCompletion::Failed { .. }));
+    // The first size setter already landed: the completion must carry that
+    // success forward, while the skipped final size leg stays false. Only
+    // the pre-fence size call ran — no later setter reached the app.
+    assert!(matches!(
+        completion,
+        AxCompletion::PartialApplied {
+            size_first_applied: true,
+            position_applied: false,
+            size_applied: false,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -534,7 +544,7 @@ fn revision_drift_supersedes_without_writes() {
         9,
         0,
     );
-    assert!(matches!(completion, AxCompletion::Failed { .. }));
+    assert!(matches!(completion, AxCompletion::FencedNoCall { .. }));
     assert!(setter.sets.is_empty(), "stale revision writes nothing");
 }
 
@@ -582,7 +592,10 @@ fn minimized_hidden_and_fullscreen_take_no_writes() {
             9,
             0,
         );
-        assert!(matches!(completion, AxCompletion::Failed { .. }), "{name}");
+        assert!(
+            matches!(completion, AxCompletion::FencedNoCall { .. }),
+            "{name}"
+        );
         assert!(setter.sets.is_empty(), "{name} takes no writes");
     }
 }

@@ -141,6 +141,49 @@ pub(crate) fn display_cgid_of_pinned(
     }
 }
 
+/// Exact full-topology preflight for the pinned multi-display MC select:
+/// before opening and again before the single press, every display row
+/// must still have a readable identifier/current and the same count, order,
+/// membership, and currents as the owner's prior pre-snapshot. Drift or an
+/// unprovable non-target row refuses without a select press (never actuating
+/// into a proof that cannot pass).
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn topology_preflight_matches(
+    prior: &TopologySnapshot,
+    fresh: &TopologySnapshot,
+) -> Result<(), McError> {
+    if prior.displays.len() != fresh.displays.len() {
+        return Err(McError::Blocked(format!(
+            "preflight display count changed (was {}, now {}); refusing before select press",
+            prior.displays.len(),
+            fresh.displays.len()
+        )));
+    }
+    for (index, (before, now)) in prior.displays.iter().zip(&fresh.displays).enumerate() {
+        let Some(before_id) = before.identifier.as_deref() else {
+            return Err(McError::Blocked(format!(
+                "preflight display {index} identity unreadable in the owner pre-snapshot; refusing before select press"
+            )));
+        };
+        let Some(now_id) = now.identifier.as_deref() else {
+            return Err(McError::Blocked(format!(
+                "preflight display {index} identity unreadable; refusing before select press"
+            )));
+        };
+        if before_id != now_id
+            || before.spaces != now.spaces
+            || before.current != now.current
+            || before.current.is_none()
+            || now.current.is_none()
+        {
+            return Err(McError::Blocked(format!(
+                "preflight topology drifted for display {index}; refusing before select press"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) mod live {
     use super::*;
@@ -913,6 +956,87 @@ pub(crate) mod live {
         })
     }
 
+    /// Go to `sid` on a caller-pinned display WITHOUT the global Dock
+    /// swipe: the same exact AX Space press as [`mc_goto_sid`], but the
+    /// displayed Mission Control surface is joined by the pinned
+    /// `(display_index, CG display id, managed UUID)` triple rather than a
+    /// fresh SLS locate + AppKit read. The pinned row must still own the
+    /// target before open and after the fresh re-read; any display move,
+    /// membership drift, or CG/UUID mismatch refuses before the press.
+    /// Used only by the serialized select owner for grouped indicator
+    /// clicks on several displays.
+    pub fn mc_goto_sid_pinned(
+        sid: u64,
+        display_index: usize,
+        pinned_cgid: u32,
+        pinned_uuid: &str,
+        prior: &TopologySnapshot,
+        budget: &mut ActionBudget,
+        cleanup: bool,
+    ) -> Result<super::PressOutcome, McError> {
+        action_gates()?;
+        let snap0 = fresh_snapshot()?;
+        topology_preflight_matches(prior, &snap0)?;
+        let (cgid, _) = display_cgid_of_pinned(&snap0, display_index, pinned_cgid, pinned_uuid)?;
+        let (d0, i0) = snap0.locate(sid).ok_or_else(|| {
+            McError::Ownership(format!(
+                "Space {sid} not uniquely located before pinned goto; ownership uncertain — refusing"
+            ))
+        })?;
+        if d0 != display_index || snap0.displays[d0].identifier.as_deref() != Some(pinned_uuid) {
+            return Err(McError::Blocked(format!(
+                "Space {sid} is not on the pinned display {pinned_uuid}; refusing pinned goto"
+            )));
+        }
+        run_mc_leg(
+            "goto-open",
+            super::McDismissal::Auto,
+            budget,
+            cleanup,
+            |b| {
+                action_gates()?;
+                let snap1 = fresh_snapshot()?;
+                topology_preflight_matches(prior, &snap1)?;
+                let (d1, i1) = snap1.locate(sid).ok_or_else(|| {
+                    McError::Ownership(format!(
+                        "Space {sid} moved during open; ownership uncertain — refusing"
+                    ))
+                })?;
+                let (cgid_fresh, _) = display_cgid_of_pinned(&snap1, d1, pinned_cgid, pinned_uuid)?;
+                if (d1, i1) != (d0, i0)
+                    || snap1.displays[d1].identifier != snap0.displays[d0].identifier
+                    || cgid_fresh != cgid
+                {
+                    return Err(McError::Blocked(format!(
+                        "pinned topology drifted during open (was display {d0} index {i0}, now {d1}/{i1}); refusing stale dispatch"
+                    )));
+                }
+                let children = spaces_list_children(&spaces_group(cgid_fresh)?)?;
+                if children.len() != snap1.displays[d1].spaces.len() {
+                    return Err(McError::Blocked(format!(
+                        "AX list count {} != SLS row count {} for pinned display {d1}; refusing index dispatch",
+                        children.len(),
+                        snap1.displays[d1].spaces.len()
+                    )));
+                }
+                let target = &children[i1];
+                super::spend_leg(b, cleanup, "goto-press")?;
+                action_gates()?;
+                crate::ffi::ax_perform_action(target, MC_ACTION_PRESS).map_err(|code| {
+                    McError::Dispatch(format!(
+                        "pinned goto press refused: {}",
+                        crate::ffi::ax_error_name(code)
+                    ))
+                })?;
+                Ok(super::PressOutcome {
+                    after: fresh_snapshot().ok(),
+                    mc_open: true,
+                    close_error: None,
+                })
+            },
+        )
+    }
+
     /// Remove `sid` via `AXRemoveDesktop`. Same SID-accepting,
     /// drift-rejecting shape as goto.
     pub fn mc_remove_sid(
@@ -1099,6 +1223,18 @@ pub(crate) mod live {
 
     pub fn mc_goto_sid(
         _sid: u64,
+        _budget: &mut ActionBudget,
+        _cleanup: bool,
+    ) -> Result<super::PressOutcome, McError> {
+        unsupported("Mission Control lifecycle")
+    }
+
+    pub fn mc_goto_sid_pinned(
+        _sid: u64,
+        _display_index: usize,
+        _pinned_cgid: u32,
+        _pinned_uuid: &str,
+        _prior: &TopologySnapshot,
         _budget: &mut ActionBudget,
         _cleanup: bool,
     ) -> Result<super::PressOutcome, McError> {
@@ -1949,7 +2085,55 @@ pub fn run_mc_lifecycle(
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseDecision, McDismissal, decide_close};
+    use super::{CloseDecision, McDismissal, decide_close, topology_preflight_matches};
+    use crate::mc_probe::{DisplaySpaces, TopologySnapshot};
+
+    fn topology(displays: Vec<DisplaySpaces>) -> TopologySnapshot {
+        TopologySnapshot { displays }
+    }
+
+    fn display(uuid: &str, spaces: &[u64], current: Option<u64>) -> DisplaySpaces {
+        DisplaySpaces {
+            identifier: Some(uuid.to_owned()),
+            spaces: spaces.to_vec(),
+            current,
+        }
+    }
+
+    #[test]
+    fn pinned_preflight_rejects_drift_and_unprovable_non_targets() {
+        let prior = topology(vec![
+            display("display-a", &[1, 2], Some(1)),
+            display("display-b", &[3, 4], Some(3)),
+        ]);
+        assert!(
+            topology_preflight_matches(&prior, &prior.clone()).is_ok(),
+            "the identical owner snapshot passes preflight"
+        );
+        // A non-target current move is refused before the select press.
+        let moved = topology(vec![
+            display("display-a", &[1, 2], Some(2)),
+            display("display-b", &[3, 4], Some(3)),
+        ]);
+        assert!(topology_preflight_matches(&prior, &moved).is_err());
+        // A reordered/renamed identity is refused.
+        let reordered = topology(vec![
+            display("display-b", &[3, 4], Some(3)),
+            display("display-a", &[1, 2], Some(1)),
+        ]);
+        assert!(topology_preflight_matches(&prior, &reordered).is_err());
+        // An unreadable non-target current or identity is not proof.
+        let mut missing_current = prior.clone();
+        missing_current.displays[0].current = None;
+        assert!(topology_preflight_matches(&prior, &missing_current).is_err());
+        let mut missing_identity = prior.clone();
+        missing_identity.displays[0].identifier = None;
+        assert!(topology_preflight_matches(&prior, &missing_identity).is_err());
+        // A membership change is drift too.
+        let mut membership = prior.clone();
+        membership.displays[0].spaces.push(9);
+        assert!(topology_preflight_matches(&prior, &membership).is_err());
+    }
 
     #[test]
     fn close_only_toggles_a_demonstrably_present_surface() {

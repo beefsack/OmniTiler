@@ -2,6 +2,8 @@
 
 Source inspection only; no native acceptance or changes to product behavior, decisions, or gates. The selected route keeps native Spaces and native macOS functions with SIP enabled, while retaining the Windows/KDE user-visible model.
 
+For the separate, undecided virtual-workspace alternatives, see [macOS virtualised-workspaces mode](macos-virtualised-workspaces-mode.md).
+
 ## Fn/Globe as a tiler modifier
 
 A public CG event tap can observe secondary-Fn **on events the OS produces** ([Apple flag docs](https://developer.apple.com/documentation/coregraphics/cgeventflags/masksecondaryfn)); the physical key's edge is commonly reported as `flagsChanged` at keycode 63, not ordinary key-down/up. Do not match the flag by itself: Hammerspoon also observes it on navigation/arrows and function keys. Prior art tracks the physical Fn edge when present, but it cannot guarantee observing it, infer it from every flagged event, or reserve the chord before OS handling (`swift-macos-tap-detection commit 33c746520b0e8abef3036a2edf852cd59f8650d6:Sources/TapDetection/KeyTapDetector.swift:327-365`, `Hammerspoon 1.1.1:extensions/eventtap/libeventtap_event.m:1549`, `Karabiner-Elements v16.3.0:src/share/monitor/event_tap_monitor.hpp:176-275`). Apple describes the CG flag as primarily found on laptops. External Apple keyboards may provide an Apple vendor Fn usage; generic firmware-only Fn can produce just the translated key, with no host Fn edge. No per-device identity is established at the session-tap layer. USB/Bluetooth, vendor usages and devices should be treated as contrasts, not inferred from their keycap (`Karabiner-Elements v16.3.0:vendor/vendor/include/pqrs/hid/usage.hpp:714-727,745-746`, [Apple F-key setting](https://support.apple.com/en-us/102439)).

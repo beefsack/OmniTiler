@@ -354,6 +354,8 @@ pub fn apply_scoped_frame(
         }
     };
     if !frame.valid_for_set() {
+        // No setter has run: a degenerate request is a pre-call refusal,
+        // never attempt evidence (typed, see [`AxCompletion::FencedNoCall`]).
         let refused = LegOutcome::Refused("degenerate frame".to_owned());
         let report = report_of(
             refused.clone(),
@@ -366,17 +368,20 @@ pub fn apply_scoped_frame(
             wid,
             expect_revision,
             crate::diag_cause::ENTRY_DEGENERATE,
-            "failed",
+            "fenced",
             &report,
         );
         return (
-            AxCompletion::Failed {
+            AxCompletion::FencedNoCall {
                 reason: "degenerate frame".to_owned(),
             },
             report,
         );
     }
     if let Err(reason) = fence_scoped_effect(scope, identity, gates, pid, wid, expect_revision) {
+        // The entry fence runs before any setter, so this refusal is a
+        // pre-call outcome (keep the honest diagnostic token; the typed
+        // completion records that no native call happened).
         let completion_token = if reason.contains("timeout") {
             "timeout"
         } else {
@@ -392,10 +397,7 @@ pub fn apply_scoped_frame(
             completion_token,
             &report,
         );
-        if reason.contains("timeout") {
-            return (AxCompletion::Timeout { timeout_ms: 2000 }, report);
-        }
-        return (AxCompletion::Failed { reason }, report);
+        return (AxCompletion::FencedNoCall { reason }, report);
     }
     // Leg 1 (size-first): an ordinary refusal still attempts the rest.
     // Each setter/readback leg clocks one honest instrumented call. A
@@ -483,31 +485,31 @@ pub fn apply_scoped_frame(
     );
     let leg_settled =
         |leg: &LegOutcome| matches!(leg, LegOutcome::Applied | LegOutcome::SkippedRedundant);
-    let safety_refusal = [&size_first, &position, &size].into_iter().find_map(|leg| {
-        if let LegOutcome::SkippedSafety(reason) = leg {
-            Some(reason.clone())
-        } else {
-            None
+    // A later-leg safety skip always follows the size-first setter (the
+    // entry fence already ran above), so a native call did happen: it is
+    // ambiguous partial truth with its bounded post-write readback, never
+    // the pre-call `FencedNoCall` shape. All legs settled (applied or
+    // provably redundant) is the only accepted completion.
+    let completion = if leg_settled(&size_first) && leg_settled(&position) && leg_settled(&size) {
+        AxCompletion::Applied {
+            elapsed_ms,
+            readback_xywh,
         }
-    });
-    let completion = match safety_refusal {
-        Some(reason) => AxCompletion::Failed { reason },
-        None if leg_settled(&size_first) && leg_settled(&position) && leg_settled(&size) => {
-            AxCompletion::Applied { elapsed_ms }
-        }
-        None => AxCompletion::PartialApplied {
+    } else {
+        AxCompletion::PartialApplied {
             elapsed_ms,
             size_first_applied: leg_settled(&size_first),
             position_applied: leg_settled(&position),
             size_applied: leg_settled(&size),
             readback_xywh,
             readback_unreadable: report.readback_unreadable,
-        },
+        }
     };
     let completion_token = match &completion {
         AxCompletion::Applied { .. } => "applied",
         AxCompletion::PartialApplied { .. } => "partial",
         AxCompletion::Failed { .. } => "failed",
+        AxCompletion::FencedNoCall { .. } => "fenced",
         AxCompletion::Timeout { .. } => "timeout",
     };
     crate::diag_cause::emit_frame_diag(
@@ -1344,12 +1346,17 @@ impl AxBackend for ScopedAxBackend {
     /// (never the legacy two-leg path, which cannot fence membership or
     /// revision). The gates and setter are constructed fresh per command
     /// on the owning thread; every leg is fenced and read back separately.
+    /// Refusals that happen before `apply_scoped_frame` (stale pid, missing
+    /// hook/context, non-macOS host) are typed pre-call outcomes, so they
+    /// contribute no attempt evidence to the core's write policy.
     fn apply_frame(&mut self, cmd: &FrameCommand) -> AxCompletion {
         use std::time::Instant;
         let start = Instant::now();
         let elapsed_ms = || start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         if cmd.pid != self.pid {
-            return AxCompletion::Failed {
+            // A stale command never reaches a setter: typed pre-call
+            // refusal, never attempt evidence for core policy.
+            return AxCompletion::FencedNoCall {
                 reason: "pid mismatch (stale command)".to_owned(),
             };
         }
@@ -1364,11 +1371,11 @@ impl AxBackend for ScopedAxBackend {
             let hook = match self.hook() {
                 Ok(hook) => hook,
                 Err(reason) => {
-                    return AxCompletion::Failed { reason };
+                    return AxCompletion::FencedNoCall { reason };
                 }
             };
             let Some(ctx) = hook.cell.load() else {
-                return AxCompletion::Failed {
+                return AxCompletion::FencedNoCall {
                     reason: "native context cleared; refusing".to_owned(),
                 };
             };
@@ -1413,6 +1420,7 @@ impl AxBackend for ScopedAxBackend {
                 AxCompletion::Applied { .. } => "applied",
                 AxCompletion::PartialApplied { .. } => "partial-applied",
                 AxCompletion::Failed { .. } => "failed",
+                AxCompletion::FencedNoCall { .. } => "fenced",
                 AxCompletion::Timeout { .. } => "timeout",
             };
             eprintln!(
@@ -1435,7 +1443,7 @@ impl AxBackend for ScopedAxBackend {
         {
             let _ = frame;
             let _ = elapsed_ms();
-            AxCompletion::Failed {
+            AxCompletion::FencedNoCall {
                 reason: "frame actuation is macOS-only".to_owned(),
             }
         }
@@ -1983,6 +1991,8 @@ mod native {
             let outcome = match setter.set_focus(cmd.wid, cmd.route) {
                 Ok(()) => AxCompletion::Applied {
                     elapsed_ms: elapsed_ms(),
+                    // Focus writes carry no frame readback.
+                    readback_xywh: None,
                 },
                 Err(reason) => AxCompletion::Failed { reason },
             };

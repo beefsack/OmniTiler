@@ -8,7 +8,7 @@
 //! [`crate::runtime_core`]; the public typed surface lives in
 //! [`crate::runtime`], which alone spawns and supervises these owners.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -169,6 +169,24 @@ pub(crate) enum EngineJob {
         generation: u64,
         cmd_id: u64,
         completion: AxCompletion,
+        /// Process-monotonic stamp of the native frame call, on the same
+        /// arbitrary epoch as the report `monotonic_ms`
+        /// (`input_eligibility::now_ms`). `None` only while clockless. It
+        /// becomes the staged `FrameAttempt.attempt_ms`: never the per-call
+        /// duration, which the core's burst quiet-gap and transient backoff
+        /// comparison would read as a different epoch.
+        attempt_ms: Option<u64>,
+    },
+    /// One explicit placement token was cancelled by the owning worker
+    /// before any native call (the latest accepted reply no longer
+    /// authorized it). Releases the spend so a later eligible republish
+    /// still gets its first attempt, and drops the write correlation. Never
+    /// sent after a backend call: that attempt is owed to the core.
+    FrameOpReleased {
+        pid: u32,
+        generation: u64,
+        cmd_id: u64,
+        operation: String,
     },
     /// Honest focus-dispatch completion from the owning AX worker (the SAME
     /// owner that observed the window). `cmd_id` carries the focus
@@ -437,6 +455,29 @@ impl Inbox {
         true
     }
 
+    /// Publish completed frame writes immediately before their owner snapshot.
+    /// A report cannot drain their attempts against pre-write facts in between.
+    /// Preserve observation priority on saturation; leave overflow for accounting.
+    pub(crate) fn try_send_observation(
+        &self,
+        observation: EngineJob,
+        preceding: &mut Vec<EngineJob>,
+    ) -> bool {
+        if preceding.is_empty() {
+            return self.try_send_data(observation);
+        }
+        let mut state = self.state.lock().expect("inbox mutex");
+        if state.closed || state.data_len == state.data_capacity {
+            return false;
+        }
+        let admitted = preceding.len().min(state.data_capacity - state.data_len - 1);
+        state.queue.extend(preceding.drain(..admitted));
+        state.queue.push_back(observation);
+        state.data_len += admitted + 1;
+        self.wake.notify_one();
+        true
+    }
+
     /// Block until a job arrives or stop/close is signalled. Strict FIFO.
     pub(crate) fn recv(&self, stop: &AtomicBool) -> Option<EngineJob> {
         let mut state = self.state.lock().expect("inbox mutex");
@@ -592,13 +633,39 @@ impl WorkerDrainMark {
     }
 }
 
-/// Latest-wins frame slot for one app worker. `set_latest` overwrites the
+/// One accepted desired-set update for a [`FrameSlot`].
+#[derive(Debug, Default)]
+pub(crate) struct FrameSlotUpdate {
+    /// Pending ordinary commands the newer set replaced (latest-wins).
+    pub(crate) coalesced: usize,
+    /// Owed one-shot placements cancelled because the accepted reply no
+    /// longer publishes exactly their `(window, token)` (absent, withdrawn,
+    /// held, replaced, or an old generation). None started, so the caller
+    /// releases their spend.
+    pub(crate) withdrawn: Vec<FrameCommand>,
+}
+
+/// Latest-wins frame slot for one app worker. `set_latest` replaces the
 /// whole pending desired set so rapid re-plans coalesce but never lose the
-/// final desired state - including a whole EMPTY desired set, which supersedes
-/// pending state when windows are removed/closed. Every overwrite bumps a
-/// revision token so a worker holding a taken batch can drop commands the
-/// newer desired state already superseded. Stopping drops the pending set
-/// (queued work is invalidated on terminate).
+/// final desired state - including a whole EMPTY desired set, which
+/// supersedes pending desired state when windows are removed/closed.
+///
+/// One exception: a command carrying an explicit placement token
+/// ([`FrameCommand::operation`]) is a one-shot imperative whose token was
+/// already spent at handoff. The accepted reply is its only authority, so
+/// the slot is told which `(window, token)` pairs that reply still
+/// publishes eligible and keeps an owed one-shot only while its exact pair
+/// stays authorized - across batches for other windows or a whole empty set.
+/// A reply that stops publishing it (dropped, held, withdrawn, replaced, or
+/// old generation) cancels the never-started command, which the caller
+/// releases for a later eligible republish. A newer row for the same window
+/// supersedes it too. Kept one-shots lead the batch, so a revision bump can
+/// never fence them.
+///
+/// Every accepted `set_latest` bumps a revision token so a worker holding a
+/// taken batch can drop the desired-state remainder the newer state already
+/// superseded. Stopping drops the pending set (queued work is invalidated
+/// on terminate).
 ///
 /// Public so the scoped effect hook can name it; construction and mutation
 /// stay crate-internal.
@@ -618,6 +685,9 @@ pub struct FrameSlot {
 #[derive(Debug)]
 struct FrameSlotState {
     latest: Option<Vec<FrameCommand>>,
+    /// Still-authorized explicit placements from the most recent accepted
+    /// reply, keyed by runtime window id. This app's windows only.
+    authorized: BTreeMap<String, String>,
     stopped: bool,
     rev: u64,
     mark_seq: u64,
@@ -629,6 +699,7 @@ impl FrameSlot {
         Self {
             state: Mutex::new(FrameSlotState {
                 latest: None,
+                authorized: BTreeMap::new(),
                 stopped: false,
                 rev: 0,
                 mark_seq: 0,
@@ -639,19 +710,77 @@ impl FrameSlot {
         }
     }
 
-    /// Overwrite the pending desired set. Returns `None` when stopped
-    /// (caller counts the invalidation), else the overwritten command
-    /// count for coalescing diagnostics.
-    pub(crate) fn set_latest(&self, cmds: Vec<FrameCommand>) -> Option<usize> {
+    /// Replace the pending desired set and record which explicit placements
+    /// the accepted reply still authorizes. Returns `None` when stopped
+    /// (caller counts the invalidation), else what this set replaced: the
+    /// ordinary commands it coalesced and the never-started one-shots it
+    /// cancelled (their spend must be released).
+    pub(crate) fn set_latest(
+        &self,
+        pid: u32,
+        cmds: Vec<FrameCommand>,
+        authorized: &BTreeMap<String, String>,
+        generation: u64,
+    ) -> Option<FrameSlotUpdate> {
         let mut state = self.state.lock().expect("frame slot mutex");
         if state.stopped {
             return None;
         }
-        let coalesced = state.latest.as_ref().map(Vec::len).unwrap_or(0);
-        state.latest = Some(cmds);
+        // This app's authorizations only (the reply's map covers every app).
+        state.authorized = authorized
+            .iter()
+            .filter(|(window, _)| {
+                crate::runtime_types::parse_window_id(window).is_some_and(|(wpid, _)| wpid == pid)
+            })
+            .map(|(window, operation)| (window.clone(), operation.clone()))
+            .collect();
+        // One-shot placements first (see the type docs): they are the only
+        // commands a revision bump must never fence.
+        let (one_shot, desired): (Vec<FrameCommand>, Vec<FrameCommand>) =
+            cmds.into_iter().partition(|cmd| cmd.operation.is_some());
+        let targeted: BTreeSet<&str> = one_shot
+            .iter()
+            .chain(desired.iter())
+            .map(|cmd| cmd.window.as_str())
+            .collect();
+        let mut next = Vec::with_capacity(
+            state.latest.as_ref().map_or(0, Vec::len) + one_shot.len() + desired.len(),
+        );
+        let mut update = FrameSlotUpdate::default();
+        for cmd in state.latest.take().unwrap_or_default() {
+            let Some(operation) = cmd.operation.as_deref() else {
+                update.coalesced += 1;
+                continue;
+            };
+            // Retain only the exact still-authorized pair; the reply is the
+            // authority (a spend is not a withdrawal, and a redundant frame
+            // is not a withdrawal either).
+            let still_authorized = cmd.generation == generation
+                && state.authorized.get(&cmd.window).map(String::as_str) == Some(operation);
+            if !still_authorized || targeted.contains(cmd.window.as_str()) {
+                update.withdrawn.push(cmd);
+            } else {
+                next.push(cmd);
+            }
+        }
+        next.extend(one_shot);
+        next.extend(desired);
+        state.latest = Some(next);
         state.rev += 1;
         self.wake.notify_one();
-        Some(coalesced)
+        Some(update)
+    }
+
+    /// Whether the most recent accepted reply still publishes exactly this
+    /// `(window, token)` placement. A taken one-shot may only start while
+    /// this holds: the reply, not the spend, is the authority.
+    pub(crate) fn op_authorized(&self, window: &str, operation: &str) -> bool {
+        self.state
+            .lock()
+            .expect("frame slot mutex")
+            .authorized
+            .get(window)
+            .is_some_and(|token| token == operation)
     }
 
     /// Current revision token: bumped by every accepted `set_latest`.
@@ -1447,9 +1576,12 @@ fn note_completion(
     // Timeout carry elapsed millis in the count; Failed maps its
     // reason to a fixed sanitized token.
     let (token, count): (&'static str, u64) = match completion {
-        AxCompletion::Applied { elapsed_ms } => ("applied", *elapsed_ms),
+        AxCompletion::Applied { elapsed_ms, .. } => ("applied", *elapsed_ms),
         AxCompletion::PartialApplied { elapsed_ms, .. } => ("partial-applied", *elapsed_ms),
         AxCompletion::Failed { reason } => (sanitize_backend_reason(reason), 0),
+        // A pre-call fence is an honest refusal for accounting purposes;
+        // it stages no attempt (see `stage_write_feedback`).
+        AxCompletion::FencedNoCall { reason } => (sanitize_backend_reason(reason), 0),
         AxCompletion::Timeout { timeout_ms } => ("timeout", *timeout_ms),
     };
     lock_shared(shared).count_completion(token);
@@ -2197,6 +2329,7 @@ pub(crate) fn process_job(
             generation,
             cmd_id,
             completion,
+            attempt_ms,
         } => {
             note_completion(shared, "ax-result", pid, generation, cmd_id, &completion);
             // Frame settlement joins the dispatch trace through the bounded
@@ -2219,12 +2352,42 @@ pub(crate) fn process_job(
                     crate::stage_timing::now_us().saturating_sub(t0_us),
                 );
             }
-            // A staged placement row changes the next report: advance the
+            // A staged attempt row changes the next report: advance the
             // shared mark now (the completion itself is already
-            // incorporated). Ordinary writes stage nothing - no mark moves.
-            if stage_write_feedback(session, retained, pid, generation, cmd_id, &completion) {
+            // incorporated). A pre-call refusal stages nothing - no mark
+            // moves.
+            if stage_write_feedback(
+                session,
+                retained,
+                pid,
+                generation,
+                cmd_id,
+                &completion,
+                attempt_ms,
+            ) {
                 crate::runtime::invalidate_clock(shared);
             }
+        }
+        EngineJob::FrameOpReleased {
+            pid,
+            generation,
+            cmd_id,
+            operation,
+        } => {
+            // A taken explicit placement was cancelled before any native
+            // call: release its spend (and drop its write correlation) so a
+            // later eligible republish still gets its first attempt. No
+            // attempt is staged - nothing ran.
+            session.release_frame_op(pid, cmd_id, &operation);
+            emit(
+                shared,
+                pid,
+                generation,
+                cmd_id,
+                "frame",
+                "op-released",
+                1,
+            );
         }
         EngineJob::FocusResult {
             pid,
@@ -3106,15 +3269,12 @@ mod tests {
         assert_eq!((control_dropped, data_dropped), (0, 0));
     }
 
-    #[test]
-    fn frame_slot_is_latest_wins() {
-        let slot = Arc::new(FrameSlot::new());
-        let stop = AtomicBool::new(false);
-        let cmd = |id| FrameCommand {
+    fn frame_cmd_at(window: &str, operation: Option<&str>, id: u64) -> FrameCommand {
+        FrameCommand {
             pid: 7,
             generation: 1,
             cmd_id: id,
-            window: "7_1".to_owned(),
+            window: window.to_owned(),
             wid: 1,
             x: 0,
             y: 0,
@@ -3122,24 +3282,151 @@ mod tests {
             h: 10,
             topology_revision: 0,
             domain: None,
-        };
-        assert_eq!(slot.set_latest(vec![cmd(1)]), Some(0));
+            operation: operation.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn frame_slot_is_latest_wins() {
+        let slot = Arc::new(FrameSlot::new());
+        let stop = AtomicBool::new(false);
+        let cmd = |id| frame_cmd_at("7_1", None, id);
+        let none = BTreeMap::new();
+        assert_eq!(
+            slot.set_latest(7, vec![cmd(1)], &none, 1)
+                .map(|update| update.coalesced),
+            Some(0)
+        );
         // A whole newer desired set overwrites the pending one; the
         // overwritten command count is reported for diagnostics. An empty
         // set supersedes too (window removal converges to empty).
-        assert_eq!(slot.set_latest(vec![cmd(2), cmd(3)]), Some(1));
+        let update = slot
+            .set_latest(7, vec![cmd(2), cmd(3)], &none, 1)
+            .expect("accepted");
+        assert_eq!(update.coalesced, 1);
+        assert!(update.withdrawn.is_empty());
         let (rev, taken) = slot.take_versioned(&stop).expect("pending set");
         assert_eq!(
             taken.iter().map(|c| c.cmd_id).collect::<Vec<_>>(),
             vec![2, 3]
         );
         assert_eq!(slot.current_rev(), rev);
-        assert_eq!(slot.set_latest(Vec::new()), Some(0));
+        assert_eq!(
+            slot.set_latest(7, Vec::new(), &none, 1)
+                .map(|update| update.coalesced),
+            Some(0)
+        );
         let (rev2, emptied) = slot.take_versioned(&stop).expect("empty set");
         assert!(emptied.is_empty());
         assert!(rev2 > rev);
         slot.stop();
-        assert_eq!(slot.set_latest(vec![cmd(4)]), None);
+        assert!(slot.set_latest(7, vec![cmd(4)], &none, 1).is_none());
+        assert_eq!(slot.take_versioned(&stop), None);
+    }
+
+    #[test]
+    fn frame_slot_keeps_only_authorized_one_shots() {
+        // An explicit placement token is spent at handoff before the command
+        // reaches this slot, so the command it authorized survives later
+        // accepted replies exactly while the reply still publishes that exact
+        // `(window, token)` eligible. Anything else (absent, held,
+        // withdrawn, replaced, old generation, or a newer row for the same
+        // window) cancels the never-started command, and the caller releases
+        // its spend so a later eligible republish still gets its first
+        // attempt.
+        let slot = Arc::new(FrameSlot::new());
+        let stop = AtomicBool::new(false);
+        let placed = frame_cmd_at("7_1", Some("op-2"), 1);
+        let mut authorized = BTreeMap::new();
+        authorized.insert("7_1".to_owned(), "op-2".to_owned());
+        // Another app's authorizations never land in this slot.
+        authorized.insert("9_1".to_owned(), "op-9".to_owned());
+        let update = slot
+            .set_latest(7, vec![placed.clone()], &authorized, 1)
+            .expect("accepted");
+        assert_eq!(update.coalesced, 0);
+        assert!(update.withdrawn.is_empty());
+        assert!(slot.op_authorized("7_1", "op-2"));
+        assert!(!slot.op_authorized("7_1", "op-3"));
+        assert!(
+            !slot.op_authorized("9_1", "op-9"),
+            "another app's placement is not this slot's authority"
+        );
+        // A reply that still publishes the placement keeps the owed attempt:
+        // the ordinary rows of this set supersede as usual, the one-shot does
+        // not.
+        let only_subject = |authorized: &mut BTreeMap<String, String>| {
+            authorized.clear();
+            authorized.insert("7_1".to_owned(), "op-2".to_owned());
+        };
+        only_subject(&mut authorized);
+        let update = slot
+            .set_latest(7, Vec::new(), &authorized, 1)
+            .expect("accepted");
+        assert!(update.withdrawn.is_empty());
+        let (rev, taken) = slot.take_versioned(&stop).expect("pending set");
+        assert_eq!(taken, vec![placed.clone()]);
+        assert_eq!(slot.current_rev(), rev);
+        // Absent from the accepted reply is a cancellation, not a wait.
+        assert_eq!(
+            slot.set_latest(7, vec![placed.clone()], &authorized, 1)
+                .map(|update| update.withdrawn.len()),
+            Some(0)
+        );
+        let update = slot
+            .set_latest(7, Vec::new(), &BTreeMap::new(), 1)
+            .expect("accepted");
+        assert_eq!(update.withdrawn, vec![placed.clone()]);
+        // A replaced token cancels the old one.
+        let mut replaced = BTreeMap::new();
+        replaced.insert("7_1".to_owned(), "op-3".to_owned());
+        assert_eq!(
+            slot.set_latest(7, vec![placed.clone()], &replaced, 1)
+                .map(|update| update.withdrawn.len()),
+            Some(0)
+        );
+        let update = slot
+            .set_latest(7, Vec::new(), &replaced, 1)
+            .expect("accepted");
+        assert_eq!(update.withdrawn, vec![placed.clone()]);
+        // A newer row for the SAME window supersedes the owed one-shot even
+        // while its token is still published: core retargeted that window.
+        assert_eq!(
+            slot.set_latest(7, vec![placed.clone()], &authorized, 1)
+                .map(|update| update.withdrawn.len()),
+            Some(0)
+        );
+        let newer = frame_cmd_at("7_1", Some("op-3"), 4);
+        let update = slot
+            .set_latest(7, vec![newer.clone()], &replaced, 1)
+            .expect("accepted");
+        assert_eq!(update.withdrawn, vec![placed.clone()]);
+        let (_, retargeted) = slot.take_versioned(&stop).expect("pending set");
+        assert_eq!(retargeted, vec![newer]);
+        // An old generation's placement is cancelled too: its lifetime is
+        // gone, so the token must stay re-spendable for a fresh lifetime.
+        let mut stale = frame_cmd_at("7_1", Some("op-2"), 5);
+        stale.generation = 0;
+        assert_eq!(
+            slot.set_latest(7, vec![stale.clone()], &authorized, 1)
+                .map(|update| update.withdrawn.len()),
+            Some(0)
+        );
+        let update = slot
+            .set_latest(7, Vec::new(), &authorized, 1)
+            .expect("accepted");
+        assert_eq!(update.withdrawn, vec![stale]);
+        // Stopping still invalidates queued work, owed one-shot included.
+        assert_eq!(
+            slot.set_latest(7, vec![placed], &authorized, 1)
+                .map(|update| update.withdrawn.len()),
+            Some(0)
+        );
+        slot.stop();
+        assert!(
+            slot.set_latest(7, Vec::new(), &authorized, 1).is_none(),
+            "a stopped slot never takes a handoff"
+        );
         assert_eq!(slot.take_versioned(&stop), None);
     }
 
@@ -3972,7 +4259,7 @@ mod trailing_join_tests {
             post: Some((4242, Some(8))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut fake, &cmd, &close, 4242, 7, revision, &shared,
@@ -4284,7 +4571,7 @@ mod trailing_join_tests {
                 post: Some((4242, Some(target_wid))),
                 reads: 0,
                 dispatches: 0,
-                completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+                completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
             };
             let job = crate::runtime_worker::handle_close_focus_command(
                 &mut fake, &cmd, &close, 4242, 7, revision, &shared,
@@ -6242,7 +6529,7 @@ mod trailing_join_tests {
             post: Some((4243, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut fake, &cmd, &close, 4243, 1, revision, &shared,
@@ -7041,7 +7328,7 @@ mod trailing_join_tests {
             post: Some((4243, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut fake, &cmd, &close, 4243, 1, revision, &shared,
@@ -7877,7 +8164,7 @@ mod trailing_join_tests {
             post: Some((4243, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut fake, &cmd, &close, 4243, 1, revision, &shared,

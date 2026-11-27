@@ -1259,3 +1259,722 @@ fn terminate_flat_close_rides_while_other_app_holds_on_oracle() {
     );
     assert!(!report.inventory_complete, "oracle hold still fences");
 }
+
+// -- Grouped multi-display indicator (offline, real builders) --------------
+//
+// Every scenario runs the production report/engine builders: an actual
+// native snapshot, `NativeContext::derive`, `build_report`, and a bound
+// world engine with macOS capabilities, then projects the accepted
+// reply's own pager. No native read, no live AX, no live SLS.
+
+const GROUP_UUID_A: &str = "A1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6";
+const GROUP_UUID_B: &str = "B1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6";
+
+fn group_display(cg_id: u32, uuid: &str, x: f64, y: f64) -> crate::ffi::NsDisplay {
+    let frame = crate::ffi::DisplayRect {
+        x,
+        y,
+        w: 1440.0,
+        h: 900.0,
+    };
+    crate::ffi::NsDisplay {
+        cg_id,
+        uuid: Some(uuid.to_owned()),
+        frame,
+        visible: frame,
+        scale: 2.0,
+    }
+}
+
+fn group_row(uuid: &str, spaces: &[u64], current: u64) -> crate::ffi::SlsDisplayRow {
+    crate::ffi::SlsDisplayRow {
+        identifier: Some(uuid.to_owned()),
+        spaces: spaces.to_vec(),
+        current: Some(current),
+    }
+}
+
+fn grouped_reply(
+    ns: &[crate::ffi::NsDisplay],
+    rows: &[crate::ffi::SlsDisplayRow],
+) -> tiler_core::world_report::WorldReplyV4 {
+    let snapshot = crate::topology::build_snapshot(ns, rows, Some(true));
+    let space_type = |_: u64| Some(crate::ffi::SlsSpaceType::User);
+    let (ctx, skipped) = NativeContext::derive(&snapshot, &space_type);
+    assert!(
+        skipped.is_empty(),
+        "user Spaces retain displays: {skipped:?}"
+    );
+    let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::new();
+    let memory = crate::runtime_core::LifetimeMemory::empty();
+    let closed: Vec<WindowId> = Vec::new();
+    let unreadable: BTreeMap<DomainKey, tiler_core::world_report::HoldReason> = BTreeMap::new();
+    let owned = "req-grouped".to_owned();
+    let mut input = ReportInput::new(
+        INCARNATION,
+        GENERATION,
+        &ctx,
+        1,
+        1,
+        &owned,
+        &members,
+        &memory,
+        &closed,
+        &unreadable,
+        &[],
+        "",
+        false,
+    );
+    let report = build_report(&mut input);
+    assert!(validate_report_v4_reason(&report).is_none());
+    let mut engine = tiler_core::world_engine::WorldEngine::new_test_bound_with_capabilities(
+        GENERATION,
+        INCARNATION,
+        crate::world_connection::macos_capabilities(),
+    )
+    .expect("bound test engine");
+    match tiler_protocol::world_admission::handle_report_checked(&mut engine, &report, &[]).outcome
+    {
+        WorldOutcome::Accepted(reply) | WorldOutcome::Duplicate(reply) => reply,
+        other => panic!("grouped report must admit, got {other:?}"),
+    }
+}
+
+fn grouped_user_rows(
+    rows: &[crate::ffi::SlsDisplayRow],
+) -> Vec<Option<crate::workspace_select::SelectionSnapshot>> {
+    rows.iter()
+        .map(|row| {
+            Some(crate::workspace_select::SelectionSnapshot {
+                display: row.identifier.clone().expect("test row identity"),
+                spaces: row.spaces.clone(),
+                current: row.current.expect("test row current"),
+            })
+        })
+        .collect()
+}
+
+fn grouped_projection(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    ns: &[crate::ffi::NsDisplay],
+    rows: &[crate::ffi::SlsDisplayRow],
+    user_rows: &[Option<crate::workspace_select::SelectionSnapshot>],
+) -> crate::workspace_indicator::IndicatorProjection {
+    crate::workspace_indicator::project_grouped_core_indicator(
+        &reply.presentation.pager,
+        &reply.workspaces,
+        ns,
+        rows,
+        user_rows,
+        crate::workspace_indicator::IndicatorMode::All,
+        &|_| crate::workspace_indicator::SpaceOccupancy::Occupied,
+        &|_| None,
+    )
+    .expect("coherent grouped projection")
+}
+
+fn grouped_two_output_rows() -> Vec<crate::ffi::SlsDisplayRow> {
+    vec![
+        group_row(GROUP_UUID_B, &[21, 22], 21),
+        group_row(GROUP_UUID_A, &[11, 12], 11),
+    ]
+}
+
+fn grouped_two_output_screens() -> Vec<crate::ffi::NsDisplay> {
+    // Deliberately out of read order: B is read first, A sits to its left.
+    vec![
+        group_display(2, GROUP_UUID_B, 1440.0, 0.0),
+        group_display(1, GROUP_UUID_A, 0.0, 0.0),
+    ]
+}
+
+#[test]
+fn grouped_render_marks_each_outputs_own_current_in_arrangement_order() {
+    let ns = grouped_two_output_screens();
+    let rows = grouped_two_output_rows();
+    let reply = grouped_reply(&ns, &rows);
+    assert_eq!(
+        reply.presentation.pager.len(),
+        2,
+        "core pager carries both outputs"
+    );
+    let projection = grouped_projection(&reply, &ns, &rows, &grouped_user_rows(&rows));
+    assert!(projection.visible);
+    assert!(
+        projection.title.is_empty(),
+        "several current Spaces have no single ordinal title"
+    );
+    assert!(
+        projection.tiling.is_none(),
+        "no ambiguous multi-display toggle"
+    );
+    assert_eq!(
+        projection
+            .rows
+            .iter()
+            .map(|row| row.core.as_ref().expect("core row").output.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "macos-display-1",
+            "macos-display-1",
+            "macos-display-2",
+            "macos-display-2"
+        ],
+        "groups follow the arrangement, never the read order"
+    );
+    assert_eq!(
+        projection
+            .rows
+            .iter()
+            .map(|row| (row.position, row.ordinal))
+            .collect::<Vec<_>>(),
+        vec![(1, 1), (2, 2), (3, 1), (4, 2)],
+        "render slots stay unique; displayed ordinals restart per group"
+    );
+    assert_eq!(
+        projection
+            .rows
+            .iter()
+            .filter(|row| row.current)
+            .map(|row| row.position)
+            .collect::<Vec<_>>(),
+        vec![1, 3],
+        "both outputs' current Spaces are highlighted at once"
+    );
+}
+
+#[test]
+fn grouped_click_names_only_its_own_output_and_workspace() {
+    use crate::runtime_types::InputSemanticAction;
+    let ns = grouped_two_output_screens();
+    let rows = grouped_two_output_rows();
+    let reply = grouped_reply(&ns, &rows);
+    let projection = grouped_projection(&reply, &ns, &rows, &grouped_user_rows(&rows));
+    let row = projection
+        .rows
+        .iter()
+        .find(|row| row.core.as_ref().expect("core row").output == "macos-display-2" && row.current)
+        .expect("B's current row");
+    let workspace = row.core.as_ref().expect("core row").workspace.clone();
+    let click = crate::workspace_indicator::IndicatorClick {
+        kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
+        position: row.position,
+        expected_sid: row.sid,
+        ui_generation: 4,
+        topology_revision: 9,
+    };
+    let action = crate::workspace_indicator::verify_core_row_click(
+        click,
+        row,
+        4,
+        9,
+        &reply.core_generation,
+        &reply.presentation,
+        &reply.workspaces,
+        &reply.core_generation,
+    )
+    .expect("coherent grouped click verifies");
+    assert_eq!(
+        action,
+        InputSemanticAction::IndicatorSelectWorkspace {
+            output: "macos-display-2".to_owned(),
+            workspace,
+        },
+        "the click carries only B's exact output/workspace"
+    );
+    // A stale click keeps the same shape and refuses on generation drift.
+    assert!(
+        crate::workspace_indicator::verify_core_row_click(
+            click,
+            row,
+            5,
+            9,
+            &reply.core_generation,
+            &reply.presentation,
+            &reply.workspaces,
+            &reply.core_generation,
+        )
+        .is_err(),
+        "a generation move between render and click refuses"
+    );
+}
+
+#[test]
+fn grouped_unknown_or_unprovable_scope_safe_hides_per_group() {
+    let ns = grouped_two_output_screens();
+    let rows = grouped_two_output_rows();
+    let reply = grouped_reply(&ns, &rows);
+    let mut user_rows = grouped_user_rows(&rows);
+    // B's user-Space read is unprovable: only A renders, and the item
+    // still shows A's own current rather than hiding both.
+    user_rows[0] = None;
+    let projection = grouped_projection(&reply, &ns, &rows, &user_rows);
+    assert!(projection.visible, "A's group stays provable");
+    assert!(
+        projection
+            .rows
+            .iter()
+            .all(|row| row.core.as_ref().expect("core row").output == "macos-display-1"),
+        "the unproven display's group is hidden, not guessed"
+    );
+    assert_eq!(
+        projection.title, "",
+        "several native displays attached: no single ordinal names the item"
+    );
+    assert!(
+        projection.tiling.is_none(),
+        "multi attached keeps the toggle disabled even when one group renders"
+    );
+    // Everything unprovable: the whole item hides with an explicit reason.
+    let all_unknown = vec![None, None];
+    let hidden = grouped_projection(&reply, &ns, &rows, &all_unknown);
+    assert!(!hidden.visible);
+    assert!(
+        hidden
+            .hidden_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("no provable core pager group")),
+        "{:?}",
+        hidden.hidden_reason
+    );
+    // Unknown occupancy is styled per row and never flips the core fact.
+    let mixed = crate::workspace_indicator::project_grouped_core_indicator(
+        &reply.presentation.pager,
+        &reply.workspaces,
+        &ns,
+        &rows,
+        &grouped_user_rows(&rows),
+        crate::workspace_indicator::IndicatorMode::All,
+        &|sid| {
+            if sid == 21 {
+                crate::workspace_indicator::SpaceOccupancy::Unknown
+            } else {
+                crate::workspace_indicator::SpaceOccupancy::Occupied
+            }
+        },
+        &|_| None,
+    )
+    .expect("mixed occupancy projects");
+    assert_eq!(
+        mixed
+            .rows
+            .iter()
+            .find(|row| row.sid == 21)
+            .expect("B current row")
+            .occupancy,
+        crate::workspace_indicator::SpaceOccupancy::Unknown
+    );
+}
+
+#[test]
+fn grouped_hotplug_regroups_and_ambiguous_joins_safe_hide() {
+    let ns = grouped_two_output_screens();
+    let rows = grouped_two_output_rows();
+    let reply = grouped_reply(&ns, &rows);
+    // Hot-unplug B: the same display set loses B's row, so only A's group
+    // remains and the render regroups without a stale B row.
+    let unplugged_rows = vec![rows[1].clone()];
+    let unplugged = grouped_projection(
+        &reply,
+        &ns,
+        &unplugged_rows,
+        &grouped_user_rows(&unplugged_rows),
+    );
+    assert!(unplugged.visible);
+    assert!(
+        unplugged
+            .rows
+            .iter()
+            .all(|row| row.core.as_ref().expect("core row").output == "macos-display-1"),
+        "no stale B row survives the unplug"
+    );
+    // A display whose UUID names no row is ambiguous scope: safe-hide it
+    // while A stays provable.
+    let mut unknown_identity = ns.clone();
+    unknown_identity[0].uuid = Some("C1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6".to_owned());
+    let partial = grouped_projection(&reply, &unknown_identity, &rows, &grouped_user_rows(&rows));
+    assert!(partial.visible);
+    assert!(
+        partial
+            .rows
+            .iter()
+            .all(|row| row.core.as_ref().expect("core row").output == "macos-display-1"),
+        "B's unjoinable group hides alone"
+    );
+    // An unreadable arrangement refuses the whole grouped render (safe-hide
+    // with a reason) instead of ordering by read position.
+    let mut malformed = ns.clone();
+    malformed[0].frame.x = f64::NAN;
+    let hidden = grouped_projection(&reply, &malformed, &rows, &grouped_user_rows(&rows));
+    assert!(!hidden.visible);
+    assert!(
+        hidden
+            .hidden_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("arrangement")),
+        "{:?}",
+        hidden.hidden_reason
+    );
+    // One display keeps the legacy single group exactly: slots equal
+    // ordinals, the current ordinal is the title, and no group is invented
+    // for the removed display.
+    let single_ns = vec![group_display(1, GROUP_UUID_A, 0.0, 0.0)];
+    let single_rows = vec![group_row(GROUP_UUID_A, &[11, 12], 11)];
+    let single_reply = grouped_reply(&single_ns, &single_rows);
+    let single_native = crate::workspace_select::SelectionSnapshot {
+        display: GROUP_UUID_A.to_owned(),
+        spaces: single_rows[0].spaces.clone(),
+        current: single_rows[0].current.expect("test row current"),
+    };
+    let single = crate::workspace_indicator::project_core_indicator(
+        &single_reply.presentation.pager,
+        &single_reply.workspaces,
+        1,
+        crate::workspace_indicator::IndicatorMode::All,
+        &|_| crate::workspace_indicator::SpaceOccupancy::Occupied,
+        &|_| None,
+        &single_native,
+    )
+    .expect("single display projects");
+    assert!(single.visible);
+    assert_eq!(single.title, "1");
+    assert_eq!(
+        single
+            .rows
+            .iter()
+            .map(|row| (row.position, row.ordinal))
+            .collect::<Vec<_>>(),
+        vec![(1, 1), (2, 2)],
+        "single display keeps slot == ordinal"
+    );
+}
+
+#[test]
+fn grouped_stale_current_and_rehome_disable_only_their_group_until_fresh_reply() {
+    use crate::workspace_indicator::SpaceOccupancy;
+    let ns = grouped_two_output_screens();
+    let rows = grouped_two_output_rows();
+    let reply = grouped_reply(&ns, &rows);
+
+    // B's applied reply still names Space 21 as current, but the fresh
+    // native row now reports 22. The retained B group stays visible at
+    // Unknown with every action disabled; A is untouched.
+    let stale_current_rows = vec![
+        group_row(GROUP_UUID_B, &[21, 22], 22),
+        group_row(GROUP_UUID_A, &[11, 12], 11),
+    ];
+    let stale_current = grouped_projection(
+        &reply,
+        &ns,
+        &stale_current_rows,
+        &grouped_user_rows(&stale_current_rows),
+    );
+    assert!(stale_current.visible, "the mapped stale group is retained");
+    let b_rows: Vec<_> = stale_current
+        .rows
+        .iter()
+        .filter(|row| row.core.as_ref().expect("core row").output == "macos-display-2")
+        .collect();
+    assert_eq!(b_rows.len(), 2, "B keeps both rows at Unknown");
+    for row in &b_rows {
+        assert_eq!(row.occupancy, SpaceOccupancy::Unknown);
+        assert!(!row.current, "no stale B highlight");
+        assert!(!row.selectable, "no stale B action");
+        assert_eq!(row.sid, 0, "no stale B anchor");
+    }
+    let a_rows: Vec<_> = stale_current
+        .rows
+        .iter()
+        .filter(|row| row.core.as_ref().expect("core row").output == "macos-display-1")
+        .collect();
+    assert_eq!(a_rows.len(), 2, "A stays truthful");
+    assert_eq!(
+        a_rows.iter().filter(|row| row.current).count(),
+        1,
+        "A keeps its own fresh current highlight"
+    );
+    assert!(a_rows.iter().all(|row| row.selectable), "A stays armed");
+    assert!(
+        stale_current.tiling.is_none(),
+        "a stale current group never owns the toggle"
+    );
+
+    // A fresh reply over the changed current restores B exactly.
+    let recovered_reply = grouped_reply(&ns, &stale_current_rows);
+    let recovered = grouped_projection(
+        &recovered_reply,
+        &ns,
+        &stale_current_rows,
+        &grouped_user_rows(&stale_current_rows),
+    );
+    let recovered_b: Vec<_> = recovered
+        .rows
+        .iter()
+        .filter(|row| row.core.as_ref().expect("core row").output == "macos-display-2")
+        .collect();
+    assert_eq!(
+        recovered_b.iter().filter(|row| row.current).count(),
+        1,
+        "fresh coherent reply restores B's current"
+    );
+    assert!(
+        recovered_b
+            .iter()
+            .all(|row| row.selectable && row.occupancy != SpaceOccupancy::Unknown),
+        "fresh coherent reply restores B's actions"
+    );
+
+    // With B's current coherent, move its non-current bound SID 22 to A.
+    // Only that stale B row disarms; B's current row and all of A remain.
+    let rehome_rows = vec![
+        group_row(GROUP_UUID_B, &[21], 21),
+        group_row(GROUP_UUID_A, &[11, 12, 22], 11),
+    ];
+    let rehomed = grouped_projection(&reply, &ns, &rehome_rows, &grouped_user_rows(&rehome_rows));
+    // Space 22 now appears only on A's live row. B's retained binding names
+    // no native Space here, so the projector must drop it instead of
+    // painting a phantom B number until the fresh reply catches up.
+    assert!(
+        rehomed.rows.iter().all(|row| {
+            row.core
+                .as_ref()
+                .and_then(|core| core.native_binding.as_deref())
+                != Some("space-22")
+        }),
+        "the positively rehomed Space never survives as a B number"
+    );
+    let rehomed_b: Vec<_> = rehomed
+        .rows
+        .iter()
+        .filter(|row| row.core.as_ref().expect("core row").output == "macos-display-2")
+        .collect();
+    assert_eq!(
+        rehomed_b.len(),
+        1,
+        "only B's live current row survives the rehome"
+    );
+    assert!(rehomed_b[0].current, "B keeps its live current row");
+    assert!(rehomed_b[0].selectable, "B's live current row stays armed");
+    assert_eq!(
+        rehomed
+            .rows
+            .iter()
+            .filter(|row| row.core.as_ref().expect("core row").output == "macos-display-1")
+            .filter(|row| row.current)
+            .count(),
+        1,
+        "A stays truthful after B's rehome"
+    );
+
+    // A fresh reply over the rehome attributes Space 22 to A and recovers
+    // B (which no longer has that workspace).
+    let rehome_reply = grouped_reply(&ns, &rehome_rows);
+    let rehome_recovered = grouped_projection(
+        &rehome_reply,
+        &ns,
+        &rehome_rows,
+        &grouped_user_rows(&rehome_rows),
+    );
+    assert!(
+        rehome_recovered.rows.iter().all(|row| {
+            row.core.as_ref().expect("core row").output != "macos-display-2"
+                || row
+                    .core
+                    .as_ref()
+                    .expect("core row")
+                    .native_binding
+                    .as_deref()
+                    != Some("space-22")
+        }),
+        "B no longer claims the rehomed Space after a fresh reply"
+    );
+    let a_rehomed = rehome_recovered
+        .rows
+        .iter()
+        .find(|row| {
+            row.core.as_ref().expect("core row").output == "macos-display-1"
+                && row
+                    .core
+                    .as_ref()
+                    .expect("core row")
+                    .native_binding
+                    .as_deref()
+                    == Some("space-22")
+        })
+        .expect("A owns the fresh binding");
+    assert!(
+        a_rehomed.selectable,
+        "the fresh owner row is armed after recovery"
+    );
+}
+
+#[test]
+fn reconnect_drops_phantom_rows_and_keeps_only_live_targets() {
+    use crate::workspace_indicator::SpaceOccupancy;
+    // A display returns with a changed native base SID while the applied
+    // core reply is still the pre-unplug one. Rows the fresh native rows
+    // cannot prove (vanished or rehomed bindings, orphan unbound
+    // non-spares) must never paint phantom numbers; the explicit spare
+    // survives as a disabled core designation, and every surviving row
+    // still targets its exact core output/workspace.
+    let ns = grouped_two_output_screens();
+    let old_rows = grouped_two_output_rows(); // B [21, 22], A [11, 12]
+    let reply = grouped_reply(&ns, &old_rows);
+    let a_output = "macos-display-1";
+    let b_output = "macos-display-2";
+    let native_binding = |output: &str, sid: &str| {
+        reply
+            .workspaces
+            .iter()
+            .find(|row| row.output.0 == output && row.native_binding.as_deref() == Some(sid))
+            .expect("fixture binding")
+            .id
+            .clone()
+    };
+    let a_workspace = native_binding(a_output, "space-11");
+    let b_workspace = native_binding(b_output, "space-21");
+
+    // Stale reply plus the leftover shapes a reconnect leaves behind:
+    // A retains an unbound non-spare from a displaced logical workspace,
+    // B retains bindings to a vanished SID and to a rehomed SID, and B
+    // keeps its explicit trailing spare.
+    let mut stale = reply.clone();
+    let mut injected: Vec<tiler_core::world_report::WorkspaceDesire> = Vec::new();
+    for (output, template_workspace, template_desire, id, ordinal, binding, trailing) in [
+        (a_output, 1usize, 0usize, "ws-orphan", 3u32, None, false),
+        (
+            b_output,
+            1usize,
+            0usize,
+            "ws-vanished",
+            3u32,
+            Some("space-99"),
+            false,
+        ),
+        (b_output, 1usize, 0usize, "ws-spare", 4u32, None, true),
+    ] {
+        let screen = stale
+            .presentation
+            .pager
+            .iter_mut()
+            .find(|screen| screen.output == output)
+            .expect("fixture screen");
+        let mut workspace = screen.workspaces[template_workspace].clone();
+        workspace.id = id.to_owned();
+        workspace.ordinal = ordinal;
+        workspace.label = tiler_core::world_presentation::pager_workspace_label(ordinal);
+        workspace.current = false;
+        workspace.occupied = false;
+        workspace.contains_focused = false;
+        workspace.windows.clear();
+        workspace.trailing = trailing;
+        screen.workspaces.push(workspace);
+        let mut desire = stale
+            .workspaces
+            .iter()
+            .filter(|row| row.output.0 == output)
+            .nth(template_desire)
+            .expect("fixture desire")
+            .clone();
+        desire.id = id.to_owned();
+        desire.native_binding = binding.map(str::to_owned);
+        desire.trailing = trailing;
+        desire.order = ordinal as usize - 1;
+        injected.push(desire);
+    }
+    stale.workspaces.extend(injected);
+
+    // Fresh native rows after reconnect: B's base SID moved (121 returns),
+    // its old Space 22 is now homed on A, and A still owns 11/12.
+    let reconnect_rows = vec![
+        group_row(GROUP_UUID_B, &[121, 21], 21),
+        group_row(GROUP_UUID_A, &[11, 12, 22], 11),
+    ];
+    let projection = grouped_projection(
+        &stale,
+        &ns,
+        &reconnect_rows,
+        &grouped_user_rows(&reconnect_rows),
+    );
+    assert!(projection.visible, "A and B still render their live rows");
+    for phantom in ["space-99", "space-22", "ws-orphan", "ws-vanished"] {
+        assert!(
+            projection.rows.iter().all(|row| {
+                let core = row.core.as_ref().expect("core row");
+                core.workspace != phantom && core.native_binding.as_deref() != Some(phantom)
+            }),
+            "no phantom row survives: {phantom}"
+        );
+    }
+    assert_eq!(
+        projection
+            .rows
+            .iter()
+            .map(|row| (
+                row.core.as_ref().expect("core row").output.as_str(),
+                row.ordinal,
+                row.selectable,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (a_output, 1, true),
+            (a_output, 2, true),
+            (b_output, 1, true),
+            (b_output, 4, false),
+        ],
+        "only live core rows and the disabled spare render, with their core ordinals"
+    );
+    let spare = &projection.rows[3];
+    assert!(spare.core.as_ref().expect("core row").spare);
+    assert_eq!(spare.occupancy, SpaceOccupancy::Unknown);
+
+    // Correct targets: each surviving bound row still selects its exact
+    // core output/workspace, never a native slot.
+    let click_for = |row: &crate::workspace_indicator::IndicatorRow| {
+        crate::workspace_indicator::IndicatorClick {
+            kind: crate::workspace_indicator::IndicatorClickKind::Numbered,
+            position: row.position,
+            expected_sid: row.sid,
+            ui_generation: 4,
+            topology_revision: 9,
+        }
+    };
+    let a_row = &projection.rows[0];
+    assert_eq!(a_row.core.as_ref().expect("core row").output, a_output);
+    assert_eq!(
+        crate::workspace_indicator::verify_core_row_click(
+            click_for(a_row),
+            a_row,
+            4,
+            9,
+            &stale.core_generation,
+            &stale.presentation,
+            &stale.workspaces,
+            &stale.core_generation,
+        )
+        .expect("A's live row verifies"),
+        crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace {
+            output: a_output.to_owned(),
+            workspace: a_workspace,
+        }
+    );
+    let b_row = &projection.rows[2];
+    assert_eq!(b_row.core.as_ref().expect("core row").output, b_output);
+    assert_eq!(
+        crate::workspace_indicator::verify_core_row_click(
+            click_for(b_row),
+            b_row,
+            4,
+            9,
+            &stale.core_generation,
+            &stale.presentation,
+            &stale.workspaces,
+            &stale.core_generation,
+        )
+        .expect("B's live row verifies"),
+        crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace {
+            output: b_output.to_owned(),
+            workspace: b_workspace,
+        }
+    );
+}

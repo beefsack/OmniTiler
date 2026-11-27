@@ -183,7 +183,13 @@ impl AxBackend for FakeAxBackend {
             window: cmd.window.clone(),
             rect: (cmd.x, cmd.y, cmd.w, cmd.h),
         });
-        AxCompletion::Applied { elapsed_ms: 0 }
+        // The accepted call reports exactly the frame it left behind: the
+        // core needs the bounded readback to tell a successful-but-clamped
+        // write from a setter that never landed.
+        AxCompletion::Applied {
+            elapsed_ms: 0,
+            readback_xywh: Some((cmd.x, cmd.y, cmd.w, cmd.h)),
+        }
     }
 
     fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {
@@ -725,6 +731,36 @@ fn collect_applied_exact(fixture: &Fixture, wants: &[&str]) -> Vec<String> {
     out.append(&mut drained);
     out.sort_unstable();
     out
+}
+
+/// Collect applied records until every wanted window has arrived at least
+/// once (deadline-bounded), then drain the rest and return the frame the
+/// fake setter left per window: the fake AX layer's retained native fact,
+/// which later reports must read back instead of the pre-write shape. A
+/// window applied more than once keeps its newest frame. Callers assert the
+/// exact landed set, so a stale batch still shows here.
+fn collect_applied_rects(
+    fixture: &Fixture,
+    wants: &[&str],
+) -> BTreeMap<String, (i32, i32, i32, i32)> {
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    let mut records = Vec::new();
+    let mut seen = BTreeSet::new();
+    while wants.iter().any(|want| !seen.contains(*want)) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        if let Ok(record) = fixture.applied_rx.recv_timeout(Duration::from_millis(50)) {
+            seen.insert(record.window.clone());
+            records.push(record);
+        }
+    }
+    records.append(&mut drain_applied(fixture));
+    let mut rects = BTreeMap::new();
+    for record in records {
+        rects.insert(record.window, record.rect);
+    }
+    rects
 }
 
 /// Windows in the latest desired plan, sorted.
@@ -1342,19 +1378,24 @@ fn mark_without_job_fences_and_never_wedges() {
         "baseline plus the recovered retry must apply: {:?}",
         diagnostics.core_replies
     );
+    let recovered = collect_applied_rects(&fixture, &["1001_11", "1001_12"]);
     assert_eq!(
-        collect_applied_exact(&fixture, &["1001_11", "1001_12"]),
-        vec!["1001_11".to_owned(), "1001_12".to_owned()],
+        recovered.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["1001_11", "1001_12"],
         "the recovered retry emits the fenced truth"
     );
+    // The newest report reads back the recovered retry's native frames,
+    // not the launch geometry that preceded those setters.
+    let r11 = recovered["1001_11"];
+    let r12 = recovered["1001_12"];
     assert_eq!(
         fixture.handle.submit_scoped_observation(obs(
             APP_A,
             generation,
             3,
             vec![
-                win(11, 0, 0, 640, 1080),
-                win(12, 640, 0, 640, 1080),
+                win(11, r11.0, r11.1, r11.2, r11.3),
+                win(12, r12.0, r12.1, r12.2, r12.3),
                 win(13, 1280, 0, 640, 1080),
             ],
             Some(11),
@@ -1505,13 +1546,10 @@ fn saturated_queue_overmarks_but_newest_and_retry_converge() {
         diagnostics.frames_coalesced, 0,
         "no hidden stale batch may have been overwritten: {diagnostics:?}"
     );
+    let newest = collect_applied_rects(&fixture, &["1001_11", "1001_12", "1001_164"]);
     assert_eq!(
-        collect_applied_exact(&fixture, &["1001_11", "1001_12", "1001_164"]),
-        vec![
-            "1001_11".to_owned(),
-            "1001_12".to_owned(),
-            "1001_164".to_owned()
-        ],
+        newest.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["1001_11", "1001_12", "1001_164"],
         "only the newest queued plan may reach the worker"
     );
     assert_eq!(
@@ -1523,17 +1561,21 @@ fn saturated_queue_overmarks_but_newest_and_retry_converge() {
         ]
     );
     // The retry arrives after the applied batch drained (channel receipt
-    // proves the worker took the slot batch, so the slot is empty).
-    // It applies normally, proving the coherence count compensated
-    // instead of wedging open (a leak refuses this forever).
+    // proves the worker took the slot batch, so the slot is empty). The
+    // newest plan's accepted frames are the app's retained native facts, so
+    // 11 and 12 read back their own unchanged geometry instead of the
+    // pre-write shapes. It applies normally, proving the coherence count
+    // compensated instead of wedging open (a leak refuses this forever).
+    let r11 = newest["1001_11"];
+    let r12 = newest["1001_12"];
     assert_eq!(
         fixture.handle.submit_scoped_observation(obs(
             APP_A,
             generation,
             68,
             vec![
-                win(11, 0, 0, 640, 1080),
-                win(12, 640, 0, 640, 1080),
+                win(11, r11.0, r11.1, r11.2, r11.3),
+                win(12, r12.0, r12.1, r12.2, r12.3),
                 win(200, 1280, 0, 640, 1080),
             ],
             Some(11),

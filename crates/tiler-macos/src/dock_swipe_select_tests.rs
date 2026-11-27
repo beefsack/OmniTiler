@@ -2536,3 +2536,95 @@ fn fixture_gate_owned_select_delegates_exactly_once() {
         "legitimate owned SID delegates exactly once"
     );
 }
+
+#[test]
+fn owner_backend_capability_and_creation_are_multi_display_explicit() {
+    // The shared drain permits several displays only when the owner backend
+    // advertises the exact pinned route; the same backend refuses native
+    // spare creation on multi (single-display MX6 stays on the old path).
+    let wake = SpaceSelectWake::new();
+    let latch = Arc::new(wake.subscribe());
+    let mut backend = OwnerSelectBackend::<FakeTopo, FakePoster>::pinned_with(
+        crate::dock_swipe_select::OwnerBackendArgs {
+            legs: crate::dock_swipe_select::PinnedLegs {
+                display_index: 1,
+                pinned_cgid: 9,
+                pinned_uuid: "display-b".to_owned(),
+                published_displays: vec![
+                    crate::topology::DisplayGeometry {
+                        cg_id: 7,
+                        uuid: Some("display-a".to_owned()),
+                        cg_bounds: None,
+                        visible: None,
+                        scale: 2.0,
+                    },
+                    crate::topology::DisplayGeometry {
+                        cg_id: 9,
+                        uuid: Some("display-b".to_owned()),
+                        cg_bounds: None,
+                        visible: None,
+                        scale: 2.0,
+                    },
+                ],
+                published_separate: Some(true),
+                settle_deadline: Duration::from_millis(250),
+            },
+            latch,
+            cancel: Arc::new(AtomicBool::new(false)),
+            budget_secs: 30,
+            gate_reads: Box::new(FakeGates {
+                gates: VecDeque::new(),
+            }),
+            creator: Box::new(FakeCreate {
+                results: VecDeque::new(),
+                log: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+                calls: Vec::new(),
+            }),
+            exit_gate: Box::new(FakeExitGate::new(std::rc::Rc::new(
+                std::cell::RefCell::new(Vec::new()),
+            ))),
+            topo: FakeTopo {
+                counts: VecDeque::new(),
+                rows: VecDeque::new(),
+                revisions: VecDeque::new(),
+                notify_on_read: Vec::new(),
+                reads: 0,
+            },
+            poster: FakePoster {
+                reports: VecDeque::new(),
+                releases: VecDeque::new(),
+                posted: Vec::new(),
+                released: Vec::new(),
+            },
+            op: Some("op-multi".to_owned()),
+            t_base: Instant::now(),
+            fixture_gate: None,
+        },
+    );
+    assert!(
+        backend.multi_display_output_select(),
+        "two published displays advertise the exact output-pinned route"
+    );
+    assert!(
+        backend.check_output("macos-display-9").is_ok(),
+        "the pinned published display passes its own exact output fence"
+    );
+    assert!(
+        backend.check_output("macos-display-7").is_err(),
+        "the owner never accepts the other display's output"
+    );
+    let before = SelectionSnapshot {
+        display: "display-b".to_owned(),
+        spaces: vec![31, 32],
+        current: 31,
+    };
+    let err = backend
+        .create(&before)
+        .expect_err("native spare creation is single-display only");
+    assert_eq!(err.setter, FrameSetter::Refused);
+    assert!(
+        err.reason.contains("native spare creation"),
+        "{}",
+        err.reason
+    );
+}

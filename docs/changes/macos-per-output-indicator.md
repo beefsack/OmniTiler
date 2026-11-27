@@ -1,22 +1,23 @@
-# macOS per-output workspace indicator
+# macOS shared grouped workspace indicator
 
 ## Goal and acceptance
 
-Render each physical output's core pager and independently prove that a click
-switches only that output's intended native Space with SIP enabled. This is a
-0.1 consistency blocker, separate from the single-display MX6 journey. Keep the
-core-designated trailing row and existing selection authority; no virtual
-workspaces, reduced SIP, pointer warp, or inferred occupancy and current.
-Unknown or held facts never create click authority; ambiguous output scope
-remains safe-hide, not parity.
+Render every physical output's core pager in one native menu-bar item and
+prove under SIP that each click switches exactly the clicked group's native
+Space on that output alone. This two-display proof blocks 0.1 separately
+from single-display MX6. Keep the core-designated trailing row and existing
+selection authority. No virtual workspace implementation, reduced SIP,
+pointer warp, inferred occupancy/current, or desktop strip. Unknown or held
+state is group-local and does not create click authority; ambiguous
+output-to-Space mapping remains safe-hide, not acceptance.
 
 ## Design discriminator
 
 Windows uses one taskbar overlay per output, rather than its focused-output
 tray stopgap; KDE keeps each pager in core's logical order. A replicated or
-pointer/focus-driven macOS status item does not satisfy that behavior: changing
-one physical display's pointer or focus cannot change what another display's
-pager represents. See [Windows settings](../decisions/settings.md#windows-taskbar-pager-placement-and-geometry)
+pointer/focus-driven macOS pager that swaps in only one output's rows
+would make a display's pager depend on focus or pointer position. The
+shared item instead represents all outputs simultaneously. See [Windows settings](../decisions/settings.md#windows-taskbar-pager-placement-and-geometry)
 and [KDE pager backing](../decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing).
 
 The current `NSStatusBar.systemStatusBar()` is system-managed. The public
@@ -37,10 +38,8 @@ alone is not a safe secondary-bar inset on Tahoe and uses private menu-bar
 queries. WhichSpace v1.5.0 (`README.md:71`, `WhichSpace/AppDelegate.swift:416`)
 retains one mirrored status item. Hammerspoon 1.1.1
 (`extensions/spaces/spaces.lua:740–800`) targets Mission Control's AX
-display group, but does not prove exact arrival. In OmniTiler, the projection
-and the product drain explicitly refuse multi-row scope
-([projection](../../crates/tiler-macos/src/workspace_indicator.rs#L319-L359),
-[drain](../../crates/tiler-macos/src/workspace_select.rs#L746-L764)).
+display group, but does not prove exact arrival. OmniTiler's original
+single-display projection and product drain refused multi-row scope.
 Core pager rows already carry output/workspace identity. The existing
 [Mission Control primitive](../../crates/tiler-macos/src/mc_lifecycle.rs#L842-L913)
 can locate a unique SID and press in its exact `AXDisplayID` group after a
@@ -48,44 +47,79 @@ fresh SID/CG display and list-count check. It does not itself prove that a
 product click still names that output or that its arrival leaves other rows
 unchanged. Public placement alone does not remove either requirement.
 
-## Decision required before implementation
+## Selected design and implementation scope
 
-| Option | Consistency | Safety and user-visible trade-off | Rough cost |
-| --- | --- | --- | --- |
-| A. App-owned, nonactivating strip per display below the menu bar | Can meet parity if the strip and exact SIP-on click pass on both displays. | Keep the current native item when the primary is the **only** display. It cannot be pinned to the primary in an extended setup; keeping it alive there can mirror or duplicate it. Do not overlay native bar hits. Prove a safe inset under crowding/auto-hide or suppress, plus fullscreen/game suppression and hotplug/reanchor. Visible Mission Control has to select the exact display group without disturbing other currents. | High: carrier lifecycle, selector and two-display proof. |
-| B. One native item tracking pointer/focus (or labelling all outputs) | Not per-output parity; requires a gate amendment if shipped instead. | Keeps system crowding, auto-hide and fullscreen behavior; focus/pointer changes can replace the visible target. Gate stale clicks and game/non-interference; a view-only item avoids new actuator risk but cannot replace selection. Clickable multi-display selection still needs the exact Mission Control join and arrival proof. | Low for view-only; medium or higher for truthful click selection. |
-| C. Native item bound to each display's menu bar, SIP on | Would match parity; no such supported route was found. | Native crowding, auto-hide and fullscreen behavior would be desirable, but neither the public SDK nor the tagged examples above provide persistent placement. Drawing a separate SkyLight bar is not binding to the menu bar. Selection would still need the Mission Control proof. | No supported implementation to price. |
-| D. Defer parity past 0.1 | Not parity; requires an explicit gate amendment. | Retain the single-display native item and multi-display safe-hide. No new crowding, auto-hide, fullscreen/game or Mission Control surface; multi-display users get no pager under ambiguous scope. | Low now; postpones A's implementation and proof. |
+On 2026-11-27 the user selected one shared `NSStatusItem` and explicitly
+rejected an app-owned nonactivating strip and the desktop intrusion it would
+create. This is a [cross-platform consistency exception](../decisions/settings.md#macos-workspace-indicator):
+Windows and KDE keep per-output pagers; public AppKit cannot bind the native
+item to one output. The cost is width: on a notched display, macOS can hide
+an item that does not fit without offering overflow. No compact mode in
+this change.
 
-**Conservative recommendation:** Keep the blocker and safe-hide unchanged
-until the user explicitly authorizes A (the only identified route that could
-meet parity). If a desktop strip is unacceptable, prefer an explicit D
-amendment over marketing B as parity. Do not add unused projection plumbing
-before choosing a carrier.
+The shared presentation applies in both [workspace modes](macos-virtualised-workspaces-mode.md).
+This implementation covers native Spaces, the only mode shipping in 0.1.
+Virtualised workspaces become the default when they ship after 0.1;
+their logical-workspace click routing is implemented and proven separately,
+and native Spaces become opt-in with documented limitations.
 
-No carrier is selected and no runtime code, MX6 rules or durable decision
-changes until that visible trade-off is resolved. If panels are approved, use
-accepted core rows keyed by exact output; positively join AppKit/CG display
-identity to managed row and target Space. Revalidate that join and the AX
-Mission Control display group and order before one press. Verify the target SID
-became current on that row and other rows did not change. No fallback to
-another display or replay after ambiguity. In shared native scope, never
-present one native selection as multiple independent selections.
+Groups are ordered by global frame x, with the primary first on a tie.
+Each group has its own current highlight; separators appear only between
+groups. The single-display rendering and existing number/spare rules are
+unchanged. Join each core row to its exact native output and revalidate
+clicks against current identity and topology before selecting. Verify the
+target SID on that output and that other outputs remain unchanged. Never
+infer targeting from pointer or focus, fall back to another display, or
+replay when attribution becomes ambiguous.
 
-After the carrier decision, cover the real snapshot/context builders offline:
-independent currents on two outputs; remove, rehome and reconnect without
-keeping stale targets; holds/unknown occupancy not read as empty; and
-ambiguous identity/refused or stale clicks with no native effect. Keep MX6's
-numbers and spare rules unchanged. Red/green first, then locked macOS library
-and integration tests and strict Clippy on the touched crates once.
+The initial pin in the diagnostic selector left the product owner refusing
+every multi-display claim. The product now binds the clicked core output
+and workspace in the serialized owner and presses the exact Mission
+Control display group. It rechecks full topology before pressing and
+requires exact arrival with every other current unchanged. The global
+Dock swipe and single-display MX6, keyboard and transfer routes are
+unchanged. A native unbound spare renders disabled with several displays;
+this change does not add multi-display Space creation or a tiling-toggle
+target. A known group held behind stale current evidence shows unknown,
+not a guessed highlight or stale click authority.
+
+## Verification
+
+- The separator test was red before implementation (four columns, five
+  expected) and passed with the grouped carrier. Production snapshot and
+  context tests cover independent currents, output pinning, order and
+  primary tie-break, regrouping, held and rehomed rows, single-display
+  layout and ambiguous attribution. Locked macOS tests passed: 1,789
+  library (three ignored) and 152 integration. Scoped formatting and
+  whitespace checks passed. The dependency-inclusive strict Clippy run
+  stopped on the nine known Windows log-sink diagnostics. With `--no-deps`
+  it instead stopped on a pre-existing `type_complexity` error in
+  `fixture_restart/tests.rs:819`; no changed Rust file emitted a diagnostic.
+- The signed single-display fixture completed occupied → empty →
+  occupied (3 → 4 → 3). Fresh native readbacks matched indicator rebuilds
+  at generations 2 → 3 → 4: four rows, one occupied, zero unknown.
+  The controller restored the starting Space and original topology,
+  reaped the product and left no recovery receipt or residue. This
+  matches the [pre-change baseline](macos-core-trailing-pager.md#signed-fixture-retest-2026-11-27)
+  for native switching and rebuilds. No physical click or painted pixels
+  were observed; the existing fixture supplies no verifiable status-item
+  capture target. Physical click and appearance remain open for MX6.
 
 ## Bounded physical check (after implementation)
 
-No new signed fixture run was performed. The [existing baseline](macos-core-trailing-pager.md#signed-fixture-retest-2026-11-27)
-proved a single-display native 3 → 4 → 3 switch, matching rebuilds and clean
-restoration, not physical click or painted markers. A two-display run is still
-required; do not use these steps to test the current safe-hidden preview as if
-it were the proposed carrier.
+User-run two-display acceptance is still required.
+
+Build and verify the signed product and fixture using the
+[live macOS guide](../live-macos-testing.md#fixture-first-live-tests). After
+the fixture starts and the owned desktops are ready, launch the bounded
+product from the repository root:
+
+```sh
+mise exec -- just tile --user-start --scope io.github.omnitiler.live-fixture --input off --workspace-indicator all --seconds 120
+```
+
+Let the product stop on its own; use another bounded session for a later
+leg if needed. Do not extend the leg to ordinary application windows.
 
 1. Use two extended physical displays (A and B), SIP enabled, and an already
    enabled “Displays have separate Spaces” setting. Record the display/Space
@@ -94,31 +128,32 @@ it were the proposed carrier.
    signed fixture only, `io.github.omnitiler.live-fixture` scope, and test only
    on separately identified run-owned desktops. Give A and B unequal current
    ordinals with at least one alternate owned desktop per display; leave an
-   alternate on B empty. Establish that each strip shows only its output's
-   workspaces and paints its current marker independently.
-2. Focus a fixture window on A and, without first activating B, physically
-   click B's alternate workspace on B's pager. Independently verify in Mission
-   Control that the expected native desktop on B became current and A's
-   desktop did not change. Compare the painted markers, including on the
-   empty destination. Repeat in reverse (focus on B, click A). A changed
-   highlight alone or landing on a same-numbered desktop on the wrong output
-   is a failure.
+   alternate on B empty. Verify one menu-bar item, groups in left-to-right
+   arrangement order with the primary first in a tie, a separator between
+   them, and both exact current Spaces painted at once.
+2. Focus a fixture window on A and, without first activating B,
+   click B's alternate workspace in the B group of the shared item.
+   Verify independently in Mission Control that the expected desktop on B
+   became current and A's desktop did not change. Compare the painted
+   markers, including on the empty destination. Repeat in reverse (focus
+   on B, click A). A changed highlight alone or landing on a same-numbered
+   desktop on the wrong output is a failure.
    Read-only corroboration is available with
    `mise exec -- cargo run --locked -p tiler-macos -- mc-inspect`:
    compare `layout.current` before and after. It is a sorted set, not a
    display map; it cannot replace the per-display Mission Control check.
 3. With the pager idle, disconnect B, allow topology to settle, and reconnect
-   it. After rehome, the removed pager must not appear on A or retain a
-   clickable target; A must show its accepted rows. After reconnect, change
-   display arrangement or scale and repeat one click: each pager must
-   reanchor to its own display and use fresh targets. While a topology join
-   is unproven, there must be no actionable stale rows. An unobserved
-   transient is not proof of fail-closed behavior; cover it offline.
-4. Put an owned fixture window into native fullscreen on one output, check
-   that the pager does not cover or take input from that fullscreen surface,
-   and leave fullscreen to verify fresh return. Check the approved auto-hide
-   and placement behavior, including that native menus remain usable. This
-   does not replace the separate real-game acceptance legs.
+   it. Once rehome settles, only A's group must remain, without a separator
+   or a B target. After reconnect, verify the returning group and then
+   change display arrangement; the groups must reorder and use fresh
+   targets. Repeat one click and check both native currents again.
+   While topology is unproven, no stale target may be actionable. If no
+   ambiguous transient is visible, rely on the offline refusal regression.
+4. In a separate user-run fullscreen check with an owned fixture window,
+   verify the native item does not intrude on the fullscreen surface;
+   after exit verify fresh current markers and no stale click targets.
+   Check native menu usability and note if crowding hides the status item.
+   This does not replace separate real-game acceptance.
 5. Stop the scoped owner and fixture, restore the arrangement and the
    starting desktop on each output, and remove only the owned test desktops.
    Verify no pager, owned window, helper, or recovery residue remains. Report

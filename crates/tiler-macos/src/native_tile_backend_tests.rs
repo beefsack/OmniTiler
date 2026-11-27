@@ -581,6 +581,14 @@ fn redundant_position_and_final_size_skip_on_exact_readbacks() {
     assert_eq!(setter.readback_calls.get(), 3);
     assert_eq!(report.readback, Some(frame));
     assert!(!report.readback_unreadable);
+    match completion {
+        AxCompletion::Applied { readback_xywh, .. } => assert_eq!(
+            readback_xywh,
+            Some((8, 38, 1108, 1123)),
+            "an accepted write carries its bounded post-write readback"
+        ),
+        other => panic!("expected Applied, got {other:?}"),
+    }
 }
 
 #[test]
@@ -687,8 +695,9 @@ fn unreadable_readback_never_skips_a_setter() {
 fn safety_skip_keeps_precedence_over_redundancy() {
     // The inter-leg fence fails before position even though the fresh
     // readback already matches: the leg reports SkippedSafety (never
-    // SkippedRedundant), the completion fails, and the position readback
-    // is withheld while the final leg still attempts.
+    // SkippedRedundant), the position readback is withheld while the final
+    // leg still attempts. The size-first setter did run, so this is honest
+    // partial truth (`PartialApplied`), never the pre-call shape.
     let frame = skip_frame();
     let gates = AllowGates {
         show_calls: Cell::new(0),
@@ -706,12 +715,97 @@ fn safety_skip_keeps_precedence_over_redundancy() {
         SKIP_REVISION,
         0,
     );
-    assert!(matches!(completion, AxCompletion::Failed { .. }));
+    match completion {
+        AxCompletion::PartialApplied {
+            size_first_applied,
+            position_applied,
+            size_applied,
+            readback_xywh,
+            readback_unreadable,
+            ..
+        } => {
+            assert!(size_first_applied, "the size-first call did happen");
+            assert!(!position_applied, "the fenced leg never reported");
+            assert!(
+                size_applied,
+                "the final leg is fenced separately and still attempts"
+            );
+            assert_eq!(readback_xywh, Some((8, 38, 1108, 1123)));
+            assert!(!readback_unreadable);
+        }
+        other => panic!("expected PartialApplied, got {other:?}"),
+    }
     assert!(matches!(report.position, LegOutcome::SkippedSafety(_)));
     assert_eq!(report.leg_readbacks[0], Some(frame));
     assert_eq!(report.leg_readbacks[1], None);
     assert_eq!(setter.position_calls.get(), 0);
     assert_eq!(setter.readback_calls.get(), 2);
+}
+
+#[test]
+fn entry_fence_refusal_is_a_typed_no_call() {
+    // The entry fence runs before any setter: a refusal there is a pre-call
+    // outcome, so it must never look like a failed call (which core would
+    // feed into its burst/transient budget).
+    let frame = skip_frame();
+    let gates = AllowGates {
+        show_calls: Cell::new(0),
+        fail_show_at: 1,
+    };
+    let mut setter = CountingSetter::new(Vec::new());
+    let (completion, report) = apply_scoped_frame(
+        &skip_scope(),
+        &skip_identity(),
+        &gates,
+        &mut setter,
+        SKIP_PID,
+        SKIP_WID,
+        &frame,
+        SKIP_REVISION,
+        0,
+    );
+    match completion {
+        AxCompletion::FencedNoCall { reason } => {
+            assert!(
+                reason.contains("scripted fence refusal"),
+                "the fence reason rides verbatim, got {reason}"
+            );
+        }
+        other => panic!("expected FencedNoCall, got {other:?}"),
+    }
+    assert_eq!(setter.size_calls.get(), 0, "no setter ran");
+    assert_eq!(setter.position_calls.get(), 0);
+    assert_eq!(setter.readback_calls.get(), 0, "no readback ran either");
+    assert!(matches!(report.size_first, LegOutcome::Refused(_)));
+}
+
+#[test]
+fn degenerate_frame_is_a_typed_no_call() {
+    // A degenerate request is refused before AX too: no setter, no readback.
+    let frame = AxFrame {
+        w: 0.0,
+        ..skip_frame()
+    };
+    let gates = AllowGates::passing();
+    let mut setter = CountingSetter::new(Vec::new());
+    let (completion, report) = apply_scoped_frame(
+        &skip_scope(),
+        &skip_identity(),
+        &gates,
+        &mut setter,
+        SKIP_PID,
+        SKIP_WID,
+        &frame,
+        SKIP_REVISION,
+        0,
+    );
+    match completion {
+        AxCompletion::FencedNoCall { reason } => assert_eq!(reason, "degenerate frame"),
+        other => panic!("expected FencedNoCall, got {other:?}"),
+    }
+    assert_eq!(setter.size_calls.get(), 0);
+    assert_eq!(setter.readback_calls.get(), 0);
+    assert!(matches!(report.size_first, LegOutcome::Refused(_)));
 }
 
 #[test]

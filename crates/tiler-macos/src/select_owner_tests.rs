@@ -414,17 +414,33 @@ fn reply_plan_previous_actuates_bound_target() {
 }
 
 #[test]
-fn cancelled_pending_job_terminal_completes_and_frees_lane() {
+fn cancelled_job_terminal_completes_without_actuation_and_frees_lane() {
     let wake = SpaceSelectWake::new();
     let published = displays();
-    let executed = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&executed);
+    let actuated = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&actuated);
+    let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
     let thread = SelectThread::spawn_with(Box::new(
         move |job: &SelectJob, _state: &mut SelectionState| {
-            flag.store(true, Ordering::SeqCst);
+            let reason = if job.claim.operation_id.as_deref() == Some("op-cancel") {
+                // Pickup may occur before cancel. Fence the fake effect
+                // until the caller has requested it, as a live executor
+                // would check cancellation at its own effect boundary.
+                cancelled_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("caller must request cancellation before the fake effect");
+                if job.cancel.load(Ordering::SeqCst) || job.latch.cancelled() {
+                    "cancelled before dispatch"
+                } else {
+                    flag.store(true, Ordering::SeqCst);
+                    "executor attempted to actuate a cancelled job"
+                }
+            } else {
+                "scripted follow-up refusal"
+            };
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
-                result: Err(refusal("executor must not run a cancelled job")),
+                result: Err(refusal(reason)),
                 proof: None,
                 base: job.submitted_at,
             }
@@ -450,6 +466,9 @@ fn cancelled_pending_job_terminal_completes_and_frees_lane() {
         })
         .expect("submits");
     assert!(thread.cancel());
+    cancelled_tx
+        .send(())
+        .expect("release the fake effect fence");
     let done = poll_block(&thread);
     assert_eq!(done.operation_id.as_deref(), Some("op-cancel"));
     assert!(
@@ -459,8 +478,8 @@ fn cancelled_pending_job_terminal_completes_and_frees_lane() {
             .contains("cancelled")
     );
     assert!(
-        !executed.load(Ordering::SeqCst),
-        "cancelled pending job never actuates"
+        !actuated.load(Ordering::SeqCst),
+        "cancelled job never actuates under either pickup order"
     );
     assert!(!thread.is_busy());
     // A later request after the cancelled terminal completion submits.
@@ -954,4 +973,161 @@ fn controller_submit_poll_refusal_then_resubmit() {
             submit_legs(&wake, &published, true),
         )
         .expect("lane free after refusal poll");
+}
+
+fn geometry(cg_id: u32, uuid: Option<&str>) -> crate::topology::DisplayGeometry {
+    crate::topology::DisplayGeometry {
+        cg_id,
+        uuid: uuid.map(str::to_owned),
+        cg_bounds: None,
+        visible: None,
+        scale: 2.0,
+    }
+}
+
+fn sls_row(uuid: Option<&str>, spaces: &[u64], current: Option<u64>) -> crate::ffi::SlsDisplayRow {
+    crate::ffi::SlsDisplayRow {
+        identifier: uuid.map(str::to_owned),
+        spaces: spaces.to_vec(),
+        current,
+    }
+}
+
+#[test]
+fn multi_indicator_submit_pins_the_exact_clicked_output() {
+    let published = crate::runtime_shared::PublishedDisplayInputs {
+        displays: vec![
+            geometry(7, Some("display-a")),
+            geometry(2, Some("display-b")),
+        ],
+        separate: Some(true),
+    };
+    // Fresh SLS rows are deliberately shuffled against display order:
+    // display A is row 0, so a display-0 pin cannot pass this test.
+    let rows = vec![
+        sls_row(Some("display-a"), &[11, 12], Some(11)),
+        sls_row(Some("display-b"), &[31, 32], Some(31)),
+    ];
+    let mut claim = tap_claim(
+        InputSemanticAction::IndicatorSelectWorkspace {
+            output: "macos-display-2".to_owned(),
+            workspace: "ws-32".to_owned(),
+        },
+        "op-indicator",
+    );
+    claim.select_target_output = Some("macos-display-2".to_owned());
+    claim.select_target_workspace = Some("ws-32".to_owned());
+    assert_eq!(
+        crate::select_owner::multi_indicator_submit_display(&claim, &published, &rows),
+        Ok((1, 2, "display-b".to_owned())),
+        "the clicked output pins its own fresh row (1), never display 0"
+    );
+    // The claim's reply-bound target must name the clicked id.
+    let mut moved = claim.clone();
+    moved.select_target_workspace = Some("ws-other".to_owned());
+    assert!(
+        crate::select_owner::multi_indicator_submit_display(&moved, &published, &rows).is_err()
+    );
+    // Unified or unreadable separate-Spaces mode refuses the grouped route.
+    let mut unified = published.clone();
+    unified.separate = Some(false);
+    assert!(crate::select_owner::multi_indicator_submit_display(&claim, &unified, &rows).is_err());
+    let mut unknown_mode = published.clone();
+    unknown_mode.separate = None;
+    assert!(
+        crate::select_owner::multi_indicator_submit_display(&claim, &unknown_mode, &rows).is_err()
+    );
+    // Single-display publications never take this route.
+    let single = crate::runtime_shared::PublishedDisplayInputs {
+        displays: vec![geometry(2, Some("display-b"))],
+        separate: Some(true),
+    };
+    assert!(crate::select_owner::multi_indicator_submit_display(&claim, &single, &rows).is_err());
+    // Duplicate fresh rows for the clicked UUID refuse ambiguity.
+    let duplicate_rows = vec![
+        sls_row(Some("display-b"), &[31], Some(31)),
+        sls_row(Some("display-b"), &[32], Some(32)),
+    ];
+    assert!(
+        crate::select_owner::multi_indicator_submit_display(&claim, &published, &duplicate_rows)
+            .is_err()
+    );
+    // An unknown output or unreadable UUID cannot join.
+    let unknown_output = tap_claim(
+        InputSemanticAction::IndicatorSelectWorkspace {
+            output: "macos-display-3".to_owned(),
+            workspace: "ws-32".to_owned(),
+        },
+        "op-indicator",
+    );
+    assert!(
+        crate::select_owner::multi_indicator_submit_display(&unknown_output, &published, &rows)
+            .is_err()
+    );
+}
+
+#[test]
+fn multi_select_arrival_requires_target_and_untouched_non_targets() {
+    use crate::mc_probe::{DisplaySpaces, TopologySnapshot};
+    let spaces = |uuid: &str, spaces: &[u64], current: u64| DisplaySpaces {
+        identifier: Some(uuid.to_owned()),
+        spaces: spaces.to_vec(),
+        current: Some(current),
+    };
+    let pre = TopologySnapshot {
+        displays: vec![
+            spaces("display-a", &[11, 12], 11),
+            spaces("display-b", &[31, 32], 31),
+        ],
+    };
+    let arrived = TopologySnapshot {
+        displays: vec![
+            spaces("display-a", &[11, 12], 11),
+            spaces("display-b", &[31, 32], 32),
+        ],
+    };
+    crate::select_owner::multi_select_arrived(&pre, &arrived, 32, "display-b")
+        .expect("target arrived and the other display stayed untouched");
+    // The target must actually be current after the direct MC press.
+    let not_arrived = TopologySnapshot {
+        displays: vec![
+            spaces("display-a", &[11, 12], 11),
+            spaces("display-b", &[31, 32], 31),
+        ],
+    };
+    assert!(
+        crate::select_owner::multi_select_arrived(&pre, &not_arrived, 32, "display-b").is_err()
+    );
+    // A non-target current move is not a successful pinned select.
+    let moved = TopologySnapshot {
+        displays: vec![
+            spaces("display-a", &[11, 12], 12),
+            spaces("display-b", &[31, 32], 32),
+        ],
+    };
+    assert!(crate::select_owner::multi_select_arrived(&pre, &moved, 32, "display-b").is_err());
+    // A rehome/membership change is unproven even when the target current
+    // matches.
+    let rehomed = TopologySnapshot {
+        displays: vec![
+            spaces("display-a", &[11, 12], 11),
+            spaces("display-b", &[31, 32, 40], 32),
+        ],
+    };
+    assert!(crate::select_owner::multi_select_arrived(&pre, &rehomed, 32, "display-b").is_err());
+    // The target must belong to the pinned display's pre row.
+    assert!(crate::select_owner::multi_select_arrived(&pre, &arrived, 99, "display-b").is_err());
+    // A duplicated/vanished display identity is ambiguous.
+    let duplicated = TopologySnapshot {
+        displays: vec![
+            spaces("display-a", &[11, 12], 11),
+            spaces("display-b", &[31, 32], 32),
+            spaces("display-b", &[31, 32], 32),
+        ],
+    };
+    assert!(crate::select_owner::multi_select_arrived(&pre, &duplicated, 32, "display-b").is_err());
+    let vanished = TopologySnapshot {
+        displays: vec![spaces("display-a", &[11, 12], 11)],
+    };
+    assert!(crate::select_owner::multi_select_arrived(&pre, &vanished, 32, "display-b").is_err());
 }

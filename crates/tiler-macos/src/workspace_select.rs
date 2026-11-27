@@ -37,10 +37,11 @@ impl SelectionSnapshot {
     }
 }
 
-/// Fresh single-display user-Space row for `display` (existing user Spaces
-/// in native row order plus the current Space). Read-only: one SLS snapshot
-/// plus one type read per SID. Shared by the explicit batch backend and the
-/// menu-bar indicator so both map ordinals over the identical row.
+/// Fresh user-Space row for `display` (existing user Spaces in native row
+/// order plus the current Space). Read-only: one SLS snapshot plus one type
+/// read per SID. Shared by the explicit batch backend and the menu-bar
+/// indicator so both map ordinals over the identical row; a grouped
+/// indicator click resolves its own display index before calling this.
 ///
 /// Display identity for the product single-display rule lives beside it in
 /// [`fresh_display_count`].
@@ -154,6 +155,14 @@ pub trait SelectionBackend {
     /// join stays wherever the backend reads its fresh row; this only
     /// additionally matches the logical output name.
     fn check_output(&mut self, output: &str) -> Result<(), String>;
+    /// Whether this backend implements the exact output-pinned route for
+    /// grouped indicator clicks on several displays (serialized owner
+    /// backend only). Legacy and diagnostic backends keep the default and
+    /// therefore the single-display rule; the shared drain never treats an
+    /// indicator-shaped action as proof by itself.
+    fn multi_display_output_select(&mut self) -> bool {
+        false
+    }
     fn empty(&mut self, sid: u64) -> Result<bool, String>;
     /// One create dispatch only; caller independently adopts an exact append.
     ///
@@ -743,14 +752,24 @@ pub(crate) fn drain_claimed_select_with(
             "product select refuses unarmed actions".to_owned(),
         ));
     }
-    // Product targeting rule: exactly ONE native display row. Zero or
-    // multiple rows refuse before any native touch - first-display guessing
-    // could switch the wrong display, so limited single-display support is
-    // the documented rule (multi-display per-display targeting is TBD). A
-    // display plugged/unplugged mid-drain is still caught by the exact-row
-    // checks below.
+    // Product targeting rule: legacy taps and explicit batch selects arm
+    // only with exactly ONE native display row, because their adapter has
+    // no output identity to pin. A grouped indicator row can arm several
+    // displays only through a backend that explicitly advertises the exact
+    // output-pinned route (the serialized owner backend: its click names
+    // the exact output and workspace it rendered, dispatch resolves that
+    // output to one display index, and the exact output fence below
+    // re-proves it). The shared drain never infers that capability from
+    // the action alone. Zero displays always refuse; a display
+    // plugged/unplugged mid-drain is still caught by the exact-row checks
+    // below.
+    let output_pinned_indicator = matches!(
+        claim.action,
+        crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace { .. }
+    );
     match backend.display_count() {
         Ok(1) => {}
+        Ok(n) if output_pinned_indicator && n > 1 && backend.multi_display_output_select() => {}
         Ok(n) => {
             return Err(refused_bare(format!(
                 "product select refuses: expected exactly one native display, found {n}"

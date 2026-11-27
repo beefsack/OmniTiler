@@ -972,6 +972,9 @@ pub(crate) fn emit_focus_done(pid: u32, cmd: u64, completion: &crate::runtime_ty
         crate::runtime_types::AxCompletion::PartialApplied { .. } => ("partial-applied", "-"),
         crate::runtime_types::AxCompletion::Timeout { .. } => ("timeout", "messaging-timeout"),
         crate::runtime_types::AxCompletion::Failed { reason } => ("failed", diag_cause(reason)),
+        crate::runtime_types::AxCompletion::FencedNoCall { reason } => {
+            ("fenced", diag_cause(reason))
+        }
     };
     eprintln!(
         "tiler-diag stage=focus-done stamp_us={} pid={} cmd={} outcome={} cause={} provenance=owner",
@@ -1377,7 +1380,7 @@ mod tests {
         ] {
             assert!(line.contains(token), "{token:?} in {line:?}");
         }
-        let _ = AxCompletion::Applied { elapsed_ms: 1 };
+        let _ = AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None };
     }
 
     #[test]

@@ -15,27 +15,33 @@ strict clippy, format, signed build/verify and hosted CI must pass. Physical
 appearance, fullscreen/game behavior and unavailable capture remain explicit
 acceptance limits rather than inferred results.
 
-## Tentative approach
+## Selected approach
 
-- One native status item, plain ordered workspace numbers by default; current
-  highlighted and occupancy separately distinguished. All existing Spaces are
-  shown, including native empty Spaces; no synthetic trailing workspace is added.
-- Enable/configure the readout in preview settings. Offer current-only mode for
-  space-constrained menu bars and optional compact representative application
-  icons from retained membership without extra observation. Each number has its
-  own direct native button; the all-workspace view is not hidden in a dropdown.
-- Keep selection's existing single-display restriction. Multiple displays must
-  refuse ambiguous selection rather than guess; rendering attribution must be
-  explicit: zero or multiple displays hide the item. Numbers beyond 9 are visible
-  but disabled because the current armed selector supports 1–9. Native fullscreen
-  and games receive no extra window or input layer.
-- Updates flow from existing observation/engine events to AppKit's main thread.
-  Selection reuses fresh session/topology gates and verified-arrival history.
+- One native status item shows native Space numbers in per-display groups,
+  ordered left to right with a separator between groups. Each group has its
+  own current marker. Retain the core-designated spare; a native unbound
+  spare is disabled when several displays are attached.
+- The status button shows one image containing numbers, occupancy, miniature
+  bands and optional representative app icons. Left-click selects an eligible
+  number directly; disabled and unknown painted slots do nothing.
+  Right-click or Control-click opens the Tiled toggle and mirrored
+  workspace menu. The button describes the groups to accessibility clients,
+  and the native menu mirrors the available selection actions.
+- Use core pager rows with proven native output attribution, never pointer
+  or focus guesses. Unknown or held state is group-local. Numbers beyond 9
+  remain visible but disabled. Native fullscreen and games receive no extra
+  window or input layer.
+- Refresh from existing observation/engine events on AppKit's main thread.
+  Selection reuses fresh session/topology gates and verified arrival.
+- Coalesce screen-parameter notifications at a 50 ms trailing edge,
+  then recheck once after one normal 250 ms cadence interval. The live
+  native row determines which retained Space bindings are still on that
+  display. Vanished, rehomed and orphan unbound rows drop out; surviving
+  core identities and ordinals are not rewritten.
 
-These choices are tentative pending user review. Alternatives: a separate status
-item per workspace, occupied-only numbering like AeroSpace's ordered i3 style,
-numeric SF Symbols instead of plain numbers, and an icon strip for only the
-current workspace. Application icons must remain optional and compact.
+Offer current-only mode for space-constrained menu bars. Representative
+application icons remain optional and compact; the item does not add a
+desktop overlay.
 
 ## Bounded work and dependencies
 
@@ -57,6 +63,23 @@ select-only preview. Existing objc2 AppKit bindings can host a status item witho
 a new crate. The exact occupancy and application-icon projection, unsafe baseline
 and multi-display rendering rule were resolved by implementation inspection.
 
+The click carrier follows the single-image and temporary-menu lifecycle in
+WhichSpace v1.5.0 (`WhichSpace/AppDelegate.swift`, `statusItemLocation(in:)`
+and `menuDidClose`). On macOS 27, status-item events may come from another
+process: hit-test the screen pointer converted through the button window,
+and read the global modifier state as well as the event flags. AltTab
+v11.10.2 (`src/Menubar.swift:238–240`) documents the layout-recursion risk
+of status-button subviews.
+
+WhichSpace v1.5.0 (`WhichSpace/SpaceUpdateCoordinator.swift:23–39,50–66`)
+coalesces topology notifications at a 50 ms trailing edge. yabai v7.1.25
+(`src/space_manager.c:1143–1193`) carries existing views across SID changes
+using Space UUIDs; rift v0.8.6 (`src/actor/spaces.rs:762–823`) only remaps a
+unique same-display replacement. The observed returning group already
+adopted its new SID and selected correctly. The phantom rows were on the
+surviving display, so the indicator fix does not add a Space UUID cache or
+infer a replacement from order.
+
 ## Implementation and review checkpoint
 
 The indicator uses retained engine-domain membership, including hidden domains,
@@ -65,10 +88,10 @@ application (focused member preferred); missing artwork leaves the number intact
 Settings are `workspace_indicator.mode` (`all`/`current`/`off`) and
 `workspace_indicator.icons` (false by default), with CLI overrides.
 
-The initial dropdown-only rendering and mutable click-identity approach failed
-review. Their correction renders native per-number buttons and carries immutable
-SID, UI generation and topology revision through click admission and native drain.
-Offline regressions cover pre-click rebuild and post-admission reorder refusals.
+Clicks carry immutable SID, UI generation and topology revision through
+admission and native drain. The directly painted tiles use the same slot
+geometry for drawing and hit testing. Offline regressions cover pre-click
+rebuild and post-admission reorder refusals.
 The independent global occupancy scanner was removed from production; a read-only
 diagnostic scanner is explicitly not retained-state evidence. Live appearance,
 selection and teardown still require a bounded fixture and independent review.
@@ -133,20 +156,100 @@ appeared to work, showing a single `1`. No trailing empty workspace is shown,
 as expected: trailing lifecycle is not implemented on macOS. Click-to-select,
 Space-switch updates and teardown remain unaccepted.
 
+### Two extended displays (2026-11-27, before the click-model fix)
+
+In signed fixture-only runs with separate Spaces and SIP on, both groups
+painted their own current markers, in arrangement order, with a separator
+and occupied miniature bands. AXPress and six physical clicks on *menu
+mirror items* selected the exact requested display's Space without changing
+the other display's current. Session-only rearrangement reversed the groups
+and restored their original order; selection still used the correct group.
+Native fullscreen did not get an extra bar; the tracked fullscreen group
+showed unknown markers and recovered exact highlights after exit. Native
+recent-use reordering was reflected in the indicator.
+
+Disconnect removed the departed group and separator. Reconnect restored
+that group and its exact current; mirror selection still targeted it even
+though a native Space ID changed. However, three unknown rows stayed on the
+remaining display after its native list had already shrunk. During settle,
+ambiguous attribution temporarily hid the item as intended. The runtime had
+already adopted the restored native inventory while the affected pager rows
+persisted, so a missed notification alone cannot explain this failure.
+An enabled trailing unknown row was also observed before disconnect. The
+grouped projector disabled the unbound spare, but AppKit's default automatic
+menu validation disregarded the explicitly disabled item state.
+Direct number clicks failed: AppKit's permanently attached menu intercepted
+the status-button click before its number subviews could act.
+
+Open under multi-display scoping: a fixture window crossed displays during
+the arrangement change (native clamping versus stale placement is not
+established), and the SIP-on Mission Control/Dock switch took roughly
+1.0–1.1 seconds. Neither is addressed by the indicator fix.
+
+### Signed check after the single-image change
+
+With two extended displays and a scoped, signed fixture window, the menu-bar
+capture showed two groups, two current outlines, one separator and a
+miniature under the occupied current Space. Accessibility named the same
+groups and identified the trailing `5?` as unavailable. Inline AppKit menu
+presentation held the AXPress request open and blocked bounded shutdown.
+Menu presentation is deferred to the main run loop so the request can return
+before menu tracking; the menu still detaches only when tracking closes.
+
+On the deferred build, AXPress opened the status menu without timing out.
+The native menu reported the trailing `5?` disabled. Pressing one workspace
+mirror in each display group changed only that display's current Space.
+Session-only rearrangement reversed the groups in the capture and AX
+description; a third mirror press selected the reordered group without
+changing the other display. Reverting the arrangement restored the
+original group order. The run reported clean shutdown and zero topology
+failures. Native readback confirmed both starting currents and the
+original arrangement; the fixture, product process and socket were gone.
+
+### Bounded physical session
+
+Before input, the indicator showed the native three- and four-Space groups
+plus the disabled spare. In the 120-second fixture run, four indicator
+selections reached the primary display through the existing pinned route.
+Two changed its current Space (1,165 ms and 1,013 ms) without changing the
+external display; two selected the already-current Space and made no
+change. No external selection, visible context menu or disconnect was
+captured in this run. The last settled AX counts still matched the native
+counts plus the disabled spare, but this was not a reconnect readback and
+there was no post-reconnect capture. Both starting currents and the
+arrangement were restored; the fixture, runtime and socket were gone.
+Those first clicks were navigation to recover the terminal, not the
+physical acceptance procedure. They do not establish a wrong-group hit.
+
+The instrumented rerun confirmed direct left-clicks on workspace 1 in
+each display's own menu bar. Click coordinates resolved to that display's
+group and workspace; only its current changed. Observed switches took
+1,024 ms and 1,060 ms. Control-click opened the context menu; unmodified
+right-click was not physically tested.
+
+Unplug collapsed the display groups. After replug, the capture and AX
+readback agreed with the native inventories: three and four desktops, plus
+one disabled trailing spare (`7?`) on the four-desktop group. The spare was
+the only unknown row; no stale native rows remained. Shutdown was clean
+with no topology failures, the original arrangement and primary current
+were restored, and the fixture, runtime and socket were gone. The former
+external current's native ID disappeared on disconnect. Exact-ID
+restoration refused rather than selecting a guessed replacement; the
+returning display was already on its replacement first desktop.
+
 ## Explicit platform differences and remaining limits
 
 - One native status item, not Windows' per-output external taskbar overlay or
-  Plasma's native pager; no miniature window geometry, urgency or settings/tray
-  controls. Numbers and optional representative app icons occupy menu-bar space.
-- All existing native user Spaces, including empties, appear in native order;
-  unlike KDE/Windows, no automatic minimum/trailing lifecycle or cleanup is armed.
-  Retained managed-window occupancy is not a global application census; unknown
-  membership is visibly `?`, not empty. Off-current domains remain retained.
-- One display only; zero/multiple displays hide rather than choose menu-bar,
-  focused or pointer display. KDE/Windows have per-output workspace presentation.
-- Existing selectors 1–9 only; higher numbers are shown but disabled. Clicks use
-  visible MC AX transitions, not the other adapters' host workspace switches.
-  Sends, migration and trailing creation remain outside the select-only preview.
+  Plasma's native pager. The item can be crowded out by the native menu bar.
+- Retained managed-window occupancy is not a global application census;
+  unknown membership is visibly `?`, not empty. Off-current domains remain
+  retained. Without a coherent core pager reply the item deliberately hides
+  rather than fabricating rows. In the fixture leg, it first appeared once
+  a managed window seeded a coherent reply; an empty scope is not itself a
+  separate visibility rule.
+- The [grouped native selector](macos-per-output-indicator.md) validates the
+  target output and observes exact arrival with the other currents unchanged.
+  Keyboard, transfer, and trailing creation do not gain multi-display scope.
 - Icons default off, one deterministic representative app per workspace rather
   than Windows' per-window miniature artwork. Missing artwork preserves numbers;
   refresh follows existing observations, not Windows' timed artwork refresh.

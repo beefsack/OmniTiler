@@ -480,6 +480,7 @@ pub fn completion_token(completion: &crate::runtime_types::AxCompletion) -> &'st
         crate::runtime_types::AxCompletion::Applied { .. } => "applied",
         crate::runtime_types::AxCompletion::PartialApplied { .. } => "partial",
         crate::runtime_types::AxCompletion::Failed { .. } => "failed",
+        crate::runtime_types::AxCompletion::FencedNoCall { .. } => "fenced",
         crate::runtime_types::AxCompletion::Timeout { .. } => "timeout",
     }
 }

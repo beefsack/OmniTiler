@@ -80,7 +80,7 @@ impl AxBackend for FakeBackend {
                 w: cmd.w,
                 h: cmd.h,
             });
-        AxCompletion::Applied { elapsed_ms: 0 }
+        AxCompletion::Applied { elapsed_ms: 0, readback_xywh: None }
     }
 
     fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {

@@ -75,7 +75,7 @@ impl AxBackend for FakeBackend {
             (cmd.x, cmd.y, cmd.w, cmd.h),
             cmd.topology_revision,
         ));
-        AxCompletion::Applied { elapsed_ms: 0 }
+        AxCompletion::Applied { elapsed_ms: 0, readback_xywh: None }
     }
 
     fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {
@@ -100,7 +100,7 @@ impl AxBackend for FakeBackend {
 
     fn dispatch_focus(&mut self, cmd: &FocusCommand) -> AxCompletion {
         let _ = self.inner.focus_tx.send(cmd.clone());
-        AxCompletion::Applied { elapsed_ms: 1 }
+        AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None }
     }
 
     fn bind_effect_hook(&mut self, hook: &tiler_macos::runtime_backend::EffectHook) {

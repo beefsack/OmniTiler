@@ -43,7 +43,8 @@ use crate::runtime_core::RetainedCore;
 use crate::runtime_thread::{CoherencePending, FocusSlot, FrameSlot, Inbox};
 use crate::runtime_types::{CloseFocusBinding, ProvenArrivalStamp, TopologyMode};
 use crate::world_runtime::{
-    DispatchContext, WorldSession, build_dispatch_report, map_gesture_preview, track_write,
+    DispatchContext, WorldSession, build_dispatch_report, map_gesture_preview, track_layout_write,
+    track_write,
 };
 use crate::world_sequencer::{CloseEnvelope, ReplyVerdict, RequestTicket, command_operation_id};
 
@@ -152,9 +153,14 @@ fn is_retained_fullscreen(retained: &RetainedCore, window: &str) -> bool {
         .is_some_and(|w| w.fullscreen)
 }
 
-/// Never send an explicit float placement into a retained overlay or a
-/// hidden lifetime. An in-place float leaves its token unspent.
-fn allows_explicit_float_frame(retained: &RetainedCore, window: &str, frame: Rect) -> bool {
+/// Native authority for one explicit float placement: the lifetime is
+/// readable, not minimized/host-hidden/sticky, not natively fullscreen, and
+/// its app is retained. Frame equality is deliberately NOT part of this: an
+/// observed frame already at the durable target proves the write redundant,
+/// not that the core stopped authorizing it, so an owed attempt is kept and
+/// the worker settles it as a redundant skip with evidence instead of the
+/// slot cancelling it here.
+fn explicit_float_authority(retained: &RetainedCore, window: &str) -> bool {
     let Some((pid, wid)) = parse_window_id(window) else {
         return false;
     };
@@ -174,11 +180,78 @@ fn allows_explicit_float_frame(retained: &RetainedCore, window: &str, frame: Rec
     }
     app.windows
         .iter()
-        .find(|entry| entry.wid == wid)
-        .is_some_and(|entry| {
-            !entry.fullscreen
-                && (entry.x, entry.y, entry.w, entry.h) != (frame.x, frame.y, frame.w, frame.h)
-        })
+        .any(|entry| entry.wid == wid && !entry.fullscreen)
+}
+
+/// Never send an explicit float placement into a retained overlay or a
+/// hidden lifetime. An in-place float leaves its token unspent.
+fn allows_explicit_float_frame(retained: &RetainedCore, window: &str, frame: Rect) -> bool {
+    if !explicit_float_authority(retained, window) {
+        return false;
+    }
+    let Some((pid, wid)) = parse_window_id(window) else {
+        return false;
+    };
+    let Some(app) = retained.apps.get(&pid) else {
+        return false;
+    };
+    app.windows.iter().any(|entry| {
+        entry.wid == wid && (entry.x, entry.y, entry.w, entry.h) != (frame.x, frame.y, frame.w, frame.h)
+    })
+}
+
+/// The explicit placements one accepted reply still authorizes, keyed by
+/// runtime window id. A row counts exactly while it publishes a placement
+/// token, is floating, has an effective frame, sits on a current
+/// output/workspace, is not held by a reply scope, and passes
+/// [`explicit_float_authority`] - independent of whether the row also
+/// stages a command: an already-spent token suppresses the duplicate
+/// command, never the authority of the queued attempt, and a redundant
+/// (observed == target) frame is a skip with evidence, not a withdrawal.
+/// The per-app slot retains an owed one-shot only while its exact
+/// `(window, token)` stays here and cancels it otherwise (the caller
+/// releases the cancelled spend, so a later eligible republish still gets
+/// its first attempt).
+fn explicit_float_authorizations(
+    session: &WorldSession,
+    reply: &WorldReplyV4,
+    retained: &RetainedCore,
+    current: &BTreeSet<(String, String)>,
+) -> BTreeMap<String, String> {
+    let mut authorized = BTreeMap::new();
+    for row in &reply.windows {
+        if row.frame_authority != ScopeAuthority::Untouched || !row.floating {
+            continue;
+        }
+        let Some(operation) = row
+            .frame_operation
+            .as_deref()
+            .filter(|operation| !operation.is_empty())
+        else {
+            continue;
+        };
+        // A withheld reply under a retained fullscreen overlay publishes the
+        // token without an effective frame; the adapter-remembered durable
+        // target is what its deferred reveal writes, so that pair stays
+        // authorized too.
+        let has_target = row.effective_frame.is_some()
+            || session
+                .pending_fullscreen_float_placements
+                .get(&row.lifetime.0)
+                .is_some_and(|stored| stored.operation == operation);
+        if !has_target || !current.contains(&(row.output.0.clone(), row.workspace.clone())) {
+            continue;
+        }
+        let scope_hold = reply.scopes.iter().any(|scope| {
+            scope.authority.hold_reason().is_some()
+                && scope.scope.covers_workspace(&row.output, &row.workspace)
+        });
+        if scope_hold || !explicit_float_authority(retained, &row.lifetime.0) {
+            continue;
+        }
+        authorized.insert(row.lifetime.0.clone(), operation.to_owned());
+    }
+    authorized
 }
 
 /// Record-only half of the deferred fullscreen-float lane: an applied
@@ -254,17 +327,21 @@ fn record_deferred_fullscreen_float_placement(
 /// so the adapter records the durable target on the withheld reply and
 /// writes it exactly once on a later applied reply after the overlay
 /// clears. The target is always the core-published durable frame, never
-/// the fullscreen pose.
+/// the fullscreen pose. If the clearing reply still carries the placement
+/// token, the reveal settles as explicit placement. Otherwise the adapter
+/// can still reveal its remembered target once without core correlation.
 #[allow(clippy::too_many_arguments)]
 fn stage_deferred_fullscreen_float_reveals(
     session: &mut WorldSession,
     retained: &RetainedCore,
     reply: &WorldReplyV4,
     current: &BTreeSet<(String, String)>,
+    slots: &LiveSlots,
     ticket_command: Option<&WorldCommand>,
     ticket_command_seq: Option<u64>,
     frames: &mut Vec<(String, Rect)>,
     frame_ops: &mut Vec<(String, String)>,
+    layout_frames: &[(String, Rect)],
 ) {
     record_deferred_fullscreen_float_placement(
         session,
@@ -287,6 +364,14 @@ fn stage_deferred_fullscreen_float_reveals(
             continue;
         };
         if app.generation != stored.generation {
+            continue;
+        }
+        if !slots.iter().any(|(slot_pid, _, _, _)| *slot_pid == pid) {
+            // No live slot to hand the reveal off to: keep it pending
+            // rather than consume the record (it is still owed a write).
+            session
+                .pending_fullscreen_float_placements
+                .insert(window, stored);
             continue;
         }
         // Lifetime clear: the adapter prunes closed lifetimes from the app's
@@ -364,21 +449,28 @@ fn stage_deferred_fullscreen_float_reveals(
             // frame.
             continue;
         }
-        if frames.iter().any(|(staged, _)| staged == &window) {
-            // The normal lane already staged this lifetime (a Controlled
-            // composed row): never write twice.
+        if frames
+            .iter()
+            .chain(layout_frames)
+            .any(|(staged, _)| staged == &window)
+        {
+            // The normal lane already staged this lifetime: never write twice.
             continue;
         }
         match row.frame_operation.as_deref() {
             Some(operation) => {
                 let target = row.effective_frame.unwrap_or(stored.target);
-                if session.spend_frame_op(operation) {
+                // An already-spent token means this exact placement is
+                // already queued: never stage it twice. The spend itself
+                // happens at handoff (see `emit_world_frames`), after a live
+                // slot actually took the command.
+                if !session.frame_op_spent(operation) {
                     frame_ops.push((window.clone(), operation.to_owned()));
                     frames.push((window, target));
                 }
             }
-            // Adapter-owned one-shot reveal: the core no longer carries the
-            // token, so write the remembered durable target once.
+            // No protocol token survives: preserve the native reveal
+            // without reporting it as an explicit placement or layout.
             None => frames.push((window, stored.target)),
         }
     }
@@ -2267,6 +2359,31 @@ fn consume_world_reply(
                 .collect(),
         }
     };
+    // Authoritative explicit-placement authorizations for this reply, plus
+    // the live per-app slots that can take a handed-off command: both gate
+    // the frame lane below (never spend a placement token for a write that
+    // cannot be handed off) and the per-app slot's retention/withdrawal of
+    // owed one-shots after it.
+    let authorized = explicit_float_authorizations(session, reply, retained, &current);
+    let (slots, topology_revision): (LiveSlots, u64) = {
+        let guard = lock_shared(shared);
+        (
+            guard
+                .apps
+                .iter()
+                .filter(|(_, r)| !r.terminated)
+                .map(|(pid, r)| {
+                    (
+                        *pid,
+                        r.generation,
+                        Arc::clone(&r.frames),
+                        Arc::clone(&r.focus),
+                    )
+                })
+                .collect(),
+            guard.topology_revision,
+        )
+    };
     // Pager binding rows for the menu-bar indicator: every native domain
     // (current AND hidden) translated through the applied reply's
     // `native_binding` rows — the same live-lookup pattern as `current`
@@ -2503,9 +2620,17 @@ fn consume_world_reply(
     // floats in place stay write-free: `allows_explicit_float_frame`
     // refuses while the observed frame already equals the target, and its
     // fullscreen/minimized/hidden vetoes keep deferred overlays out of this
-    // lane. Scope holds never authorize a write either.
+    // lane. Scope holds never authorize a write either. The token is spent
+    // exactly once and only at handoff (`emit_world_frames`), after a live
+    // slot accepted the command; the slot retains the owed one-shot while
+    // the latest accepted reply still publishes this exact
+    // `(window, token)` (see `explicit_float_authorizations`), so every
+    // published placement produces one attempt unless the core withdraws or
+    // supersedes it, and a cancelled never-started attempt releases its
+    // spend for a later eligible republish.
     let mut frames: Vec<(String, Rect)> = Vec::new();
     let mut frame_ops: Vec<(String, String)> = Vec::new();
+    let mut layout_frames: Vec<(String, Rect)> = Vec::new();
     for row in &reply.windows {
         let operation = row.frame_operation.as_deref();
         let controlled = row.frame_authority == ScopeAuthority::Controlled;
@@ -2530,13 +2655,34 @@ fn consume_world_reply(
         {
             continue;
         }
-        if let Some(operation) = operation {
-            if !session.spend_frame_op(operation) {
+        // Only the explicit float lane carries a placement token: core never
+        // mints one for a Controlled (tiled/composed) row, and on this lane
+        // the token is the sole write authority. The spend itself happens at
+        // handoff (see `emit_world_frames`): an already spent token means an
+        // earlier reply authorized this write and its command is still queued
+        // or in flight (see `FrameSlot`), so omitting the row here suppresses
+        // a duplicate spend - it never withdraws that attempt. No live slot
+        // means no handoff, so nothing is spent here either.
+        if !controlled {
+            let Some(operation) = operation else {
+                continue;
+            };
+            let Some((wpid, _)) = parse_window_id(&row.lifetime.0) else {
+                continue;
+            };
+            if !slots.iter().any(|(slot_pid, _, _, _)| *slot_pid == wpid) {
                 continue;
             }
-            frame_ops.push((row.lifetime.0.clone(), operation.to_string()));
+            if session.frame_op_spent(operation) {
+                continue;
+            }
+            frame_ops.push((row.lifetime.0.clone(), operation.to_owned()));
         }
-        frames.push((row.lifetime.0.clone(), frame));
+        if controlled {
+            layout_frames.push((row.lifetime.0.clone(), frame));
+        } else {
+            frames.push((row.lifetime.0.clone(), frame));
+        }
     }
     // Deferred adapter reveal for explicit float placements withheld behind
     // a retained fullscreen overlay (shared core keeps those rows
@@ -2546,10 +2692,12 @@ fn consume_world_reply(
         retained,
         reply,
         &current,
+        &slots,
         ticket_command,
         ticket_command_seq,
         &mut frames,
         &mut frame_ops,
+        &layout_frames,
     );
     // Applied-reply presentation publish: exactly the applied reply's
     // shapes ride shared state for the tile main thread, which renders
@@ -2623,8 +2771,12 @@ fn consume_world_reply(
         session,
         retained,
         shared,
+        &slots,
+        topology_revision,
+        &authorized,
         frames,
         frame_ops,
+        layout_frames,
         desired,
         overlay_skipped,
         op,
@@ -2650,14 +2802,22 @@ fn consume_world_reply(
 
 /// Frame emission from world rows: per-app latest-wins slots, per-app
 /// command sequencing, whole-reply empty-set supersede, and the same
-/// counters/ring discipline as the legacy path.
+/// counters/ring discipline as the legacy path. The placement token is
+/// spent exactly here, after a live slot accepted the handoff; a slot that
+/// cancelled an owed one-shot has its spend released so a later eligible
+/// republish still gets its first attempt. Only reply rows explicitly
+/// classified as Controlled correlate on the Layout lane.
 #[allow(clippy::too_many_arguments)]
 fn emit_world_frames(
     session: &mut WorldSession,
     retained: &mut RetainedCore,
     shared: &Arc<Mutex<Shared>>,
+    slots: &LiveSlots,
+    topology_revision: u64,
+    authorized: &BTreeMap<String, String>,
     frames: Vec<(String, Rect)>,
     frame_ops: Vec<(String, String)>,
+    layout_frames: Vec<(String, Rect)>,
     desired: Vec<DesiredFrame>,
     overlay_skipped: u64,
     op: &'static str,
@@ -2666,39 +2826,30 @@ fn emit_world_frames(
     generation: u64,
     seq: u64,
 ) {
-    crate::diag_cause::emit_batch_queued(
-        frames.len() as u64,
-        frame_ops.len() as u64,
-        overlay_skipped,
-        seq,
-    );
     let frame_op_by_window: BTreeMap<&str, &str> = frame_ops
         .iter()
         .map(|(window, operation)| (window.as_str(), operation.as_str()))
         .collect();
-    let (slots, topology_revision): (LiveSlots, u64) = {
-        let guard = lock_shared(shared);
-        (
-            guard
-                .apps
-                .iter()
-                .filter(|(_, r)| !r.terminated)
-                .map(|(pid, r)| {
-                    (
-                        *pid,
-                        r.generation,
-                        Arc::clone(&r.frames),
-                        Arc::clone(&r.focus),
-                    )
-                })
-                .collect(),
-            guard.topology_revision,
-        )
-    };
-    let mut by_app: BTreeMap<u32, Vec<FrameCommand>> = BTreeMap::new();
+    crate::diag_cause::emit_batch_queued(
+        (frames.len() + layout_frames.len()) as u64,
+        frame_ops.len() as u64,
+        overlay_skipped,
+        seq,
+    );
+    // Controlled commands are appended last for each app. Retain the
+    // boundary with the batch rather than allocating a second lookup.
+    let mut by_app: BTreeMap<u32, (Vec<FrameCommand>, Option<usize>)> = BTreeMap::new();
     let mut unparseable = 0u64;
-    for (window, rect) in &frames {
-        let Some((wpid, wid)) = parse_window_id(window) else {
+    for (window, rect, controlled) in frames
+        .into_iter()
+        .map(|(window, rect)| (window, rect, false))
+        .chain(
+            layout_frames
+                .into_iter()
+                .map(|(window, rect)| (window, rect, true)),
+        )
+    {
+        let Some((wpid, wid)) = parse_window_id(&window) else {
             unparseable += 1;
             continue;
         };
@@ -2715,30 +2866,27 @@ fn emit_world_frames(
                 app.cmd_counter
             })
             .unwrap_or(0);
-        // Write correlation for explicit placement tokens only
-        // (proven-outcome feedback — never false success; ordinary rows
-        // stage nothing and occupy no correlation space, see
-        // `track_write`).
-        track_write(
-            session,
-            wpid,
-            cmd_id,
-            window,
-            *rect,
-            frame_op_by_window.get(window.as_str()).copied(),
-        );
-        by_app.entry(wpid).or_default().push(FrameCommand {
+        let operation = frame_op_by_window
+            .get(window.as_str())
+            .map(|&op| op.to_owned());
+        let (cmds, first_layout) = by_app.entry(wpid).or_default();
+        if controlled && first_layout.is_none() {
+            *first_layout = Some(cmds.len());
+        }
+        let domain = retained.window_domains.get(&window).cloned();
+        cmds.push(FrameCommand {
             pid: wpid,
             generation: app_generation,
             cmd_id,
-            window: window.clone(),
+            window,
             wid,
             x: rect.x,
             y: rect.y,
             w: rect.w,
             h: rect.h,
             topology_revision,
-            domain: retained.window_domains.get(window).cloned(),
+            domain,
+            operation,
         });
         // Stage timing binds this worker `cmd_id` (per-app counter, with
         // the owning `pid`) back to the dispatch trace id so worker apply
@@ -2758,28 +2906,76 @@ fn emit_world_frames(
     }
     let mut emitted = 0u64;
     let mut coalesced = 0u64;
+    let mut withdrawn = 0u64;
     let mut dead = unparseable;
-    for (wpid, cmds) in &by_app {
-        let Some((_, _, slot, _)) = slots.iter().find(|(p, _, _, _)| *p == *wpid) else {
+    // Release a slot-cancelled owed one-shot's spend (never started) and
+    // drop its write correlation: a later accepted reply that republishes
+    // the same token eligible still gets its first attempt.
+    let release_withdrawn = |session: &mut WorldSession, cmds: &[FrameCommand]| {
+        for cmd in cmds {
+            let Some(operation) = cmd.operation.as_deref() else {
+                continue;
+            };
+            session.release_frame_op(cmd.pid, cmd.cmd_id, operation);
+        }
+    };
+    for (wpid, (cmds, first_layout)) in &by_app {
+        let Some((_, app_generation, slot, _)) = slots.iter().find(|(p, _, _, _)| *p == *wpid)
+        else {
             dead += cmds.len() as u64;
             continue;
         };
-        match slot.set_latest(cmds.clone()) {
-            Some(overwritten) => {
-                emitted += cmds.len() as u64;
-                coalesced += overwritten as u64;
+        let Some(update) = slot.set_latest(*wpid, cmds.clone(), authorized, *app_generation)
+        else {
+            // A stopped slot never took the handoff: no spend, no
+            // correlation, counted as invalidated queue instead.
+            dead += cmds.len() as u64;
+            continue;
+        };
+        emitted += cmds.len() as u64;
+        coalesced += update.coalesced as u64;
+        withdrawn += update.withdrawn.len() as u64;
+        release_withdrawn(session, &update.withdrawn);
+        // The slot accepted this set, so each command's spend is committed
+        // here (never before a handoff) together with its write correlation
+        // (proven-outcome feedback, never false success). Explicit writes
+        // and Controlled writes correlate in separate maps; a tokenless
+        // deferred reveal has no protocol authority and stages neither.
+        for (index, cmd) in cmds.iter().enumerate() {
+            let target = Rect {
+                x: cmd.x,
+                y: cmd.y,
+                w: cmd.w,
+                h: cmd.h,
+            };
+            if let Some(operation) = cmd.operation.as_deref() {
+                session.spend_frame_op(operation);
+                track_write(
+                    session,
+                    cmd.pid,
+                    cmd.cmd_id,
+                    &cmd.window,
+                    target,
+                    Some(operation),
+                );
+            } else if first_layout.is_some_and(|first| index >= first) {
+                track_layout_write(session, cmd.pid, cmd.cmd_id, &cmd.window, target);
             }
-            None => dead += cmds.len() as u64,
         }
     }
     // A whole applied reply supersedes pending state: live apps with no
     // windows in this reply converge to empty instead of actuating stale
-    // frames. Duplicates and refusals never reach here (no clobber).
-    for (wpid, _, slot, _) in &slots {
+    // frames, and owed one-shots the reply no longer authorizes are
+    // cancelled (released above). Duplicates and refusals never reach here
+    // (no clobber).
+    for (wpid, app_generation, slot, _) in slots {
         if !by_app.contains_key(wpid)
-            && let Some(overwritten) = slot.set_latest(Vec::new())
+            && let Some(update) =
+                slot.set_latest(*wpid, Vec::new(), authorized, *app_generation)
         {
-            coalesced += overwritten as u64;
+            coalesced += update.coalesced as u64;
+            withdrawn += update.withdrawn.len() as u64;
+            release_withdrawn(session, &update.withdrawn);
         }
     }
     {
@@ -2787,6 +2983,7 @@ fn emit_world_frames(
         guard.count_reply(&format!("{op}-{outcome}"));
         guard.diagnostics.frames_emitted += emitted;
         guard.diagnostics.frames_coalesced += coalesced;
+        guard.diagnostics.frames_op_withdrawn += withdrawn;
         guard.diagnostics.frames_overlay_skipped += overlay_skipped;
         guard.diagnostics.terminated_invalidated += dead;
         guard.last_desired = desired;
@@ -2798,6 +2995,9 @@ fn emit_world_frames(
     emit(shared, pid, generation, seq, "core-reply", token, emitted);
     if emitted > 0 {
         emit(shared, pid, generation, seq, "frame", "emitted", emitted);
+    }
+    if withdrawn > 0 {
+        emit(shared, pid, generation, seq, "frame", "op-withdrawn", withdrawn);
     }
 }
 
@@ -7429,7 +7629,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(7))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut genuine,
@@ -8361,7 +8561,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut genuine,
@@ -8448,7 +8648,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut replaced,
@@ -8567,7 +8767,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut moved_backend,
@@ -9625,7 +9825,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(7))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let revision = lock_shared(&shared).topology_revision;
         let deferred = crate::runtime_worker::handle_close_focus_command(
@@ -9730,7 +9930,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(7))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut genuine,
@@ -12102,7 +12302,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut fake, &cmd, &close, CLOSE_PID, CLOSE_GEN, revision, &shared,
@@ -12308,7 +12508,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(7))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3, readback_xywh: None },
         };
         let job2 = crate::runtime_worker::handle_close_focus_command(
             &mut stuck, &cmd2, &close2, CLOSE_PID, CLOSE_GEN, revision2, &shared2,
@@ -12429,7 +12629,7 @@ mod tests {
             post: None,
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut unknown,
@@ -12484,7 +12684,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(5))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job_c = crate::runtime_worker::handle_close_focus_command(
             &mut moved, &cmd_c, &close_c, CLOSE_PID, CLOSE_GEN, revision_c, &shared_c,
@@ -12533,7 +12733,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job_n = crate::runtime_worker::handle_close_focus_command(
             &mut nulled,
@@ -12587,7 +12787,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job_w = crate::runtime_worker::handle_close_focus_command(
             &mut newer, &cmd_w, &close_w, CLOSE_PID, CLOSE_GEN, revision_w, &shared_w,
@@ -12631,7 +12831,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job_d = crate::runtime_worker::handle_close_focus_command(
             &mut deferred,
@@ -12657,7 +12857,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(9))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 1, readback_xywh: None },
         };
         let job_b = crate::runtime_worker::handle_close_focus_command(
             &mut bare, &cmd, &close, CLOSE_PID, CLOSE_GEN, revision, &shared,
@@ -12941,7 +13141,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(8))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut fake, &cmd, &close, CLOSE_PID, CLOSE_GEN, revision, &shared,
@@ -13280,7 +13480,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(8))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut fake, &cmd, &close, CLOSE_PID, CLOSE_GEN, revision, &shared,
@@ -13642,7 +13842,7 @@ mod tests {
             post: Some((CLOSE_PID, Some(8))),
             reads: 0,
             dispatches: 0,
-            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3 },
+            completion: crate::runtime_types::AxCompletion::Applied { elapsed_ms: 3, readback_xywh: None },
         };
         let job = crate::runtime_worker::handle_close_focus_command(
             &mut fake, &cmd, &close, CLOSE_PID, CLOSE_GEN, revision, &shared,
@@ -14182,6 +14382,19 @@ mod tests {
             guard.diagnostics.frames_overlay_skipped,
             guard.diagnostics.focus_dispatched,
             guard.last_native_creations.len(),
+        )
+    }
+
+    /// Explicit-placement counters read under ONE guard: the shared mutex is
+    /// not reentrant, so a tuple of separate `lock_shared` calls in the same
+    /// statement deadlocks (the first guard's temporary lives to the end of
+    /// the statement).
+    fn ff_frame_counters(shared: &Arc<Mutex<Shared>>) -> (u64, u64, u64) {
+        let guard = lock_shared(shared);
+        (
+            guard.diagnostics.frames_emitted,
+            guard.diagnostics.frames_coalesced,
+            guard.diagnostics.frames_op_withdrawn,
         )
     }
 
@@ -15968,6 +16181,16 @@ mod tests {
             !session.spend_frame_op("op-4"),
             "the duplicate reply never re-spends the placement token"
         );
+        // The offline harness has no worker. Consume the one-shot here
+        // before feeding the observation that represents its native echo.
+        assert_eq!(
+            ff_pending_frames(&shared, FF_PID)
+                .into_iter()
+                .filter(|(window, _)| window == FF_SUBJECT)
+                .collect::<Vec<_>>(),
+            vec![(FF_SUBJECT.to_owned(), Some("op-4".to_owned()))],
+            "the worker would see exactly one subject attempt"
+        );
 
         // 5. Native echo at the remembered geometry: observation-only proves
         //    the placement and stages no subject write.
@@ -16025,6 +16248,372 @@ mod tests {
                 .map(|entry| ff_rect(entry.x, entry.y, entry.w, entry.h)),
             Some(remembered),
             "the retained plan keeps the remembered geometry"
+        );
+    }
+
+    /// Dispatch one applied reply through the real consume path with the
+    /// production ToggleFloat identity, exactly like the engine thread.
+    fn ff_dispatch(
+        session: &mut WorldSession,
+        retained: &mut RetainedCore,
+        shared: &Arc<Mutex<Shared>>,
+        focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+        reply: &tiler_core::world_report::WorldReplyV4,
+        ticket: Option<(&WorldCommand, u64)>,
+    ) {
+        consume_world_reply(
+            session,
+            retained,
+            shared,
+            focus_queue,
+            16,
+            reply,
+            &[],
+            ticket.map(|(command, _)| command),
+            ticket.map(|(_, seq)| seq),
+            "toggle-float",
+            "accepted",
+            0,
+            0,
+            0,
+            0,
+        );
+    }
+
+    /// Pending per-app frame commands `(window, placement token)` drained
+    /// from the real slot (empty when the slot holds no batch). These offline
+    /// fixtures run no worker, so nothing else pops the queued batch.
+    fn ff_pending_frames(shared: &Arc<Mutex<Shared>>, pid: u32) -> Vec<(String, Option<String>)> {
+        let frames = Arc::clone(
+            &lock_shared(shared)
+                .apps
+                .get(&pid)
+                .expect("live fixture app")
+                .frames,
+        );
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        match frames.wait_batch_or_quiet(&stop, std::time::Duration::ZERO) {
+            crate::runtime_thread::FrameWait::Batch(_, cmds) => cmds
+                .into_iter()
+                .map(|cmd| (cmd.window, cmd.operation))
+                .collect(),
+            crate::runtime_thread::FrameWait::Quiet(_) => Vec::new(),
+            other => panic!("unexpected frame wait, got {other:?}"),
+        }
+    }
+
+    /// Seed two tiles, then float the subject onto a durable placement frame
+    /// that differs from the observed one (the re-float shape), leaving one
+    /// spent explicit-placement command queued and undrained by a worker.
+    /// The engine rides along so a caller can admit further distinct
+    /// observation replies instead of replaying this one.
+    #[allow(clippy::type_complexity)]
+    fn ff_stage_undrained_float_placement() -> (
+        Arc<Mutex<Shared>>,
+        tiler_core::world_engine::WorldEngine,
+        WorldSession,
+        RetainedCore,
+        Arc<Mutex<Vec<FocusRequest>>>,
+        tiler_core::world_report::WorldReplyV4,
+    ) {
+        let (command, token) = ff_toggle_float_command();
+        assert_eq!(token, "toggle-float", "production op token");
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = mf_engine();
+        let seed = ff_accepted(
+            &mut engine,
+            &mf_report(
+                1,
+                vec![
+                    mf_fact(FF_SIBLING, 0, false),
+                    mf_fact(FF_SUBJECT, 100, false),
+                ],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        ff_dispatch(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &seed,
+            None,
+        );
+        retained.observed_focus = Some(tiler_core::directional::WindowId(FF_SUBJECT.to_owned()));
+        retained.observed_focus_known = true;
+        if let Some(app) = retained.apps.get_mut(&FF_PID) {
+            app.focused_wid = Some(8);
+        }
+        let mut float = ff_accepted(
+            &mut engine,
+            &mf_report(
+                2,
+                vec![
+                    mf_fact(FF_SIBLING, 0, false),
+                    mf_fact(FF_SUBJECT, 100, false),
+                ],
+                FF_SUBJECT,
+                Some(2),
+                Some(command.clone()),
+            ),
+        );
+        {
+            let subject = float
+                .windows
+                .iter_mut()
+                .find(|row| row.lifetime.0 == FF_SUBJECT)
+                .expect("floated subject row");
+            assert!(subject.floating, "subject floats: {subject:?}");
+            assert_eq!(
+                subject.frame_operation.as_deref(),
+                Some("op-2"),
+                "the float publishes its placement token: {subject:?}"
+            );
+            // Durable placement differs from the observed frame, so the
+            // explicit float lane authorizes exactly one native write.
+            subject.effective_frame = Some(ff_rect(160, 120, 480, 360));
+        }
+        let before = ff_counters(&shared);
+        ff_dispatch(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &float,
+            Some((&command, 2)),
+        );
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "the float stages the sibling reflow plus the subject placement: \
+             {after:?} vs {before:?}"
+        );
+        assert!(
+            !session.spend_frame_op("op-2"),
+            "the explicit placement token is spent at handoff"
+        );
+        (shared, engine, session, retained, focus_queue, float)
+    }
+
+    /// Model the documented shape where a pending placement token is
+    /// re-published on a later accepted reply (core keeps publishing it
+    /// until the placement settles; a reply that was skipped or held leaves
+    /// it outstanding). The test then measures the adapter's keep/release
+    /// decision, not core token minting.
+    fn ff_republish_placement(
+        reply: &mut tiler_core::world_report::WorldReplyV4,
+        window: &str,
+        operation: &str,
+        target: Rect,
+    ) {
+        let row = reply
+            .windows
+            .iter_mut()
+            .find(|row| row.lifetime.0 == window)
+            .unwrap_or_else(|| panic!("missing row {window}"));
+        assert!(row.floating, "a placement row floats: {row:?}");
+        assert_eq!(
+            row.frame_authority,
+            tiler_core::world_report::ScopeAuthority::Untouched,
+            "an explicit placement lane is Untouched: {row:?}"
+        );
+        row.frame_operation = Some(operation.to_owned());
+        row.effective_frame = Some(target);
+    }
+
+    #[test]
+    fn spent_float_placement_survives_a_distinct_later_reply() {
+        // Regression: the token is spent at handoff and the command sits
+        // queued in the per-app slot. A later, distinct accepted reply that
+        // still publishes the same `(window, token)` (the placement is
+        // unsettled, so the lane sees the token spent and omits the row) used
+        // to overwrite the undispatched command: no native attempt, no
+        // completion, and the token stayed spent forever. The distinct reply
+        // keeps the authority, so the owed placement survives while only the
+        // ordinary sibling row coalesces.
+        let (shared, mut engine, mut session, mut retained, focus_queue, float) =
+            ff_stage_undrained_float_placement();
+        let observation = mf_report(
+            3,
+            vec![
+                mf_fact(FF_SIBLING, 0, false),
+                mf_fact(FF_SUBJECT, 100, false),
+            ],
+            FF_SUBJECT,
+            None,
+            None,
+        );
+        let mut later = ff_accepted(&mut engine, &observation);
+        assert_ne!(
+            later.based_on_observation_seq, float.based_on_observation_seq,
+            "the regression runs a distinct accepted reply, never a replay"
+        );
+        ff_republish_placement(
+            &mut later,
+            FF_SUBJECT,
+            "op-2",
+            ff_rect(160, 120, 480, 360),
+        );
+        let before = ff_frame_counters(&shared);
+        ff_dispatch(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &later,
+            None,
+        );
+        let after = ff_frame_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "the later reply stages only the sibling: {after:?} vs {before:?}"
+        );
+        assert_eq!(
+            after.1 - before.1,
+            1,
+            "only the superseded sibling is coalesced: the spend-suppressed \
+             placement is neither re-emitted nor counted as invalidated"
+        );
+        assert_eq!(
+            after.2 - before.2,
+            0,
+            "an unsettled placement is still authorized: nothing is withdrawn"
+        );
+        assert_eq!(
+            ff_pending_frames(&shared, FF_PID),
+            vec![
+                (FF_SUBJECT.to_owned(), Some("op-2".to_owned())),
+                (FF_SIBLING.to_owned(), None),
+            ],
+            "the undispatched spent placement stays queued ahead of the newer batch"
+        );
+    }
+
+    #[test]
+    fn held_float_placement_is_cancelled_and_republished_gets_its_first_attempt() {
+        // A hold withdraws the queued placement instead of leaving it to
+        // write into a held scope (or to be silently overwritten): the
+        // never-started command leaves the slot and its spend is released,
+        // so the same token republished eligible still gets its first
+        // attempt - exactly one, never two.
+        let (shared, mut engine, mut session, mut retained, focus_queue, float) =
+            ff_stage_undrained_float_placement();
+        let mut held = float.clone();
+        for row in &mut held.windows {
+            row.frame_authority = tiler_core::world_report::ScopeAuthority::Hold(
+                tiler_core::world_report::HoldReason::Minimized,
+            );
+        }
+        let before = lock_shared(&shared).diagnostics.frames_op_withdrawn;
+        ff_dispatch(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &held,
+            None,
+        );
+        let withdrawn = lock_shared(&shared).diagnostics.frames_op_withdrawn - before;
+        assert_eq!(withdrawn, 1, "the held reply withdraws the owed placement");
+        assert!(
+            ff_pending_frames(&shared, FF_PID).is_empty(),
+            "the cancelled placement is not left queued"
+        );
+        assert!(
+            !session.frame_op_spent("op-2"),
+            "a never-started placement's spend is released"
+        );
+        // A distinct accepted observation reply republishes the placement
+        // (same token, the echo keeps it unsettled).
+        let observation = mf_report(
+            4,
+            vec![
+                mf_fact(FF_SIBLING, 0, false),
+                mf_fact(FF_SUBJECT, 100, false),
+            ],
+            FF_SUBJECT,
+            None,
+            None,
+        );
+        let republished = ff_accepted(&mut engine, &observation);
+        let mut republished = republished;
+        ff_republish_placement(
+            &mut republished,
+            FF_SUBJECT,
+            "op-2",
+            ff_rect(160, 120, 480, 360),
+        );
+        ff_dispatch(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &republished,
+            None,
+        );
+        assert_eq!(
+            ff_pending_frames(&shared, FF_PID),
+            vec![
+                (FF_SUBJECT.to_owned(), Some("op-2".to_owned())),
+                (FF_SIBLING.to_owned(), None),
+            ],
+            "the republished placement is queued again: its first attempt still owed"
+        );
+        assert!(
+            session.frame_op_spent("op-2"),
+            "the republished placement spends again exactly at handoff"
+        );
+    }
+
+    #[test]
+    fn absent_float_placement_is_cancelled_and_released() {
+        // A reply that no longer publishes the placement at all (the
+        // lifetime dropped out of the observation) withdraws the owed
+        // attempt and releases its spend; the slot then carries only the
+        // rows this reply actually authorizes.
+        let (shared, mut engine, mut session, mut retained, focus_queue, _float) =
+            ff_stage_undrained_float_placement();
+        let observation = mf_report(5, vec![mf_fact(FF_SIBLING, 0, false)], FF_SUBJECT, None, None);
+        let later = ff_accepted(&mut engine, &observation);
+        assert!(
+            later
+                .windows
+                .iter()
+                .find(|row| row.lifetime.0 == FF_SUBJECT)
+                .is_none_or(|row| row.frame_operation.is_none()),
+            "the dropped lifetime publishes no placement token: {later:?}"
+        );
+        let before = lock_shared(&shared).diagnostics.frames_op_withdrawn;
+        ff_dispatch(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            &later,
+            None,
+        );
+        assert_eq!(
+            lock_shared(&shared).diagnostics.frames_op_withdrawn - before,
+            1,
+            "the absent placement is withdrawn"
+        );
+        assert!(
+            !session.frame_op_spent("op-2"),
+            "the cancelled spend is released for a later eligible republish"
+        );
+        assert!(
+            ff_pending_frames(&shared, FF_PID)
+                .iter()
+                .all(|(window, _)| window != FF_SUBJECT),
+            "the cancelled subject is never queued"
         );
     }
 

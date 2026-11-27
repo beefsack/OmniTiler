@@ -100,6 +100,39 @@ impl PointsRect {
         })
     }
 
+    /// Integer adapter for work areas that must stay *inside* a fractional
+    /// CG rect: ceil the minima and floor the maxima, instead of rounding
+    /// each edge 1:1 as [`Self::to_rect`] does (which can claim pixels
+    /// outside `visibleFrame`). `None` on any non-finite input or endpoint,
+    /// an endpoint outside the signed `i32` range, a non-positive extent,
+    /// or an extent that overflows `i32` subtraction: refused, never
+    /// saturated into a guessed work area.
+    #[must_use]
+    pub(crate) fn to_rect_inward(self) -> Option<tiler_core::geometry::Rect> {
+        for v in [self.x, self.y, self.w, self.h] {
+            if !v.is_finite() {
+                return None;
+            }
+        }
+        if self.w <= 0.0 || self.h <= 0.0 {
+            return None;
+        }
+        let (x0, y0) = (self.x.ceil(), self.y.ceil());
+        let (x1, y1) = ((self.x + self.w).floor(), (self.y + self.h).floor());
+        for v in [x0, y0, x1, y1] {
+            if !v.is_finite() || v < i32::MIN as f64 || v > i32::MAX as f64 {
+                return None;
+            }
+        }
+        let (x0, y0, x1, y1) = (x0 as i32, y0 as i32, x1 as i32, y1 as i32);
+        let w = x1.checked_sub(x0)?;
+        let h = y1.checked_sub(y0)?;
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        Some(tiler_core::geometry::Rect { x: x0, y: y0, w, h })
+    }
+
     /// Intersection area with display bounds in the same top-left points
     /// space. Non-finite or degenerate inputs overlap nothing (`0.0`).
     #[must_use]
@@ -505,6 +538,131 @@ pub fn output_key(cg_id: u32) -> String {
 #[must_use]
 pub fn workspace_key(sid: u64) -> String {
     format!("space-{sid}")
+}
+
+/// Left-to-right native display order for grouped menu-bar attribution:
+/// global AppKit frame x ascending, the primary display (frame origin
+/// `(0, 0)`) winning an equal-x tie, then frame y and CG display id as
+/// deterministic further tie-breaks. Returns indices into `ns`. Refuses
+/// (never guesses) when any frame origin is non-finite or a non-zero CG
+/// display id repeats, so a malformed arrangement hides instead of
+/// reordering groups. A zero CG id (unreadable identity) orders
+/// deterministically and is skipped by the grouped renderer on its own,
+/// so one unreadable display never hides the other provable groups.
+pub fn order_display_indices(ns: &[NsDisplay]) -> Result<Vec<usize>, String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut uuids = std::collections::BTreeSet::new();
+    for display in ns {
+        if !display.frame.x.is_finite() || !display.frame.y.is_finite() {
+            return Err(
+                "native display arrangement unreadable; refusing ambiguous attribution".to_owned(),
+            );
+        }
+        if display.cg_id != 0 && !seen.insert(display.cg_id) {
+            return Err(
+                "native display identity unprovable; refusing ambiguous attribution".to_owned(),
+            );
+        }
+        if let Some(uuid) = display.uuid.as_deref()
+            && !uuids.insert(uuid)
+        {
+            return Err("native display UUID repeats; refusing ambiguous attribution".to_owned());
+        }
+    }
+    let mut order: Vec<usize> = (0..ns.len()).collect();
+    order.sort_by(|a, b| {
+        let (a, b) = (&ns[*a], &ns[*b]);
+        let primary = |display: &NsDisplay| {
+            if display.frame.x == 0.0 && display.frame.y == 0.0 {
+                0
+            } else {
+                1
+            }
+        };
+        a.frame
+            .x
+            .partial_cmp(&b.frame.x)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| primary(a).cmp(&primary(b)))
+            .then_with(|| {
+                a.frame
+                    .y
+                    .partial_cmp(&b.frame.y)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.cg_id.cmp(&b.cg_id))
+    });
+    Ok(order)
+}
+
+/// The one SLS row whose in-row managed-display identifier equals `uuid`
+/// exactly (positions are never consulted). Missing or duplicate matches
+/// refuse: an ambiguous output-to-Space mapping never authorizes a group.
+pub fn unique_row_for_display(rows: &[SlsDisplayRow], uuid: &str) -> Result<usize, String> {
+    let mut found = None;
+    for (index, row) in rows.iter().enumerate() {
+        if row.identifier.as_deref() != Some(uuid) {
+            continue;
+        }
+        if found.is_some() {
+            return Err(
+                "native display UUID maps to several Space rows; refusing ambiguous attribution"
+                    .to_owned(),
+            );
+        }
+        found = Some(index);
+    }
+    found.ok_or_else(|| {
+        "native display UUID has no exact Space row; refusing ambiguous attribution".to_owned()
+    })
+}
+
+/// Exact published-output join for the serialized owner's multi-display
+/// indicator route: the unique live geometry whose CG display id names
+/// `output`, joined to the unique fresh SLS row by that geometry's managed
+/// UUID. Returns the fresh SLS row index (the index the owner actuates),
+/// the pinned CG display id, and the pinned UUID. Refuses duplicate CG
+/// ids, duplicate UUIDs, a missing/unreadable UUID, an unknown output, or
+/// an ambiguous row join; never a positional or first-display guess.
+pub fn display_index_for_output(
+    displays: &[DisplayGeometry],
+    rows: &[SlsDisplayRow],
+    output: &str,
+) -> Result<(usize, u32, String), String> {
+    let mut cg_ids = std::collections::BTreeSet::new();
+    let mut uuids = std::collections::BTreeSet::new();
+    for display in displays {
+        if display.cg_id != 0 && !cg_ids.insert(display.cg_id) {
+            return Err(
+                "native display identity repeats; refusing ambiguous attribution".to_owned(),
+            );
+        }
+        if let Some(uuid) = display.uuid.as_deref()
+            && !uuids.insert(uuid)
+        {
+            return Err("native display UUID repeats; refusing ambiguous attribution".to_owned());
+        }
+    }
+    let mut found = None;
+    for display in displays {
+        if display.cg_id == 0 || output_key(display.cg_id) != output {
+            continue;
+        }
+        let uuid = display.uuid.as_deref().ok_or_else(|| {
+            format!("output {output} has no managed display UUID; refusing ambiguous attribution")
+        })?;
+        if found.is_some() {
+            return Err(format!(
+                "output {output} maps to several native displays; refusing ambiguous attribution"
+            ));
+        }
+        found = Some((display, uuid));
+    }
+    let (display, uuid) = found.ok_or_else(|| {
+        format!("output {output} has no exact native display; refusing ambiguous attribution")
+    })?;
+    let index = unique_row_for_display(rows, uuid)?;
+    Ok((index, display.cg_id, uuid.to_owned()))
 }
 
 /// Select the scoped domain for one display. `space_type` resolves a Space
@@ -1319,5 +1477,109 @@ mod tests {
         ] {
             assert_eq!(bad.to_rect(), None);
         }
+    }
+    #[test]
+    fn grouped_display_order_is_left_to_right_with_primary_tie() {
+        // Shuffled NSScreen order: arrangement decides, never the read.
+        let displays = vec![
+            ns(2, "u2", 1440.0, 0.0, 1440.0, 900.0),
+            ns(4, "u4", -1440.0, 0.0, 1440.0, 900.0),
+            ns(3, "u3", 0.0, -900.0, 1440.0, 900.0),
+            ns(1, "u1", 0.0, 0.0, 1440.0, 900.0),
+        ];
+        let order = order_display_indices(&displays).expect("arrangement provable");
+        let cg_ids: Vec<u32> = order.iter().map(|i| displays[*i].cg_id).collect();
+        // x ascending; at x=0 the primary (origin 0,0) wins over the one
+        // below, then the deterministic y order.
+        assert_eq!(cg_ids, vec![4, 1, 3, 2]);
+        // Same-x non-primary displays keep y then cg_id determinism.
+        let stacked = vec![
+            ns(7, "u7", 0.0, -900.0, 1440.0, 900.0),
+            ns(6, "u6", 0.0, 0.0, 1440.0, 900.0),
+            ns(5, "u5", 0.0, 900.0, 1440.0, 900.0),
+        ];
+        let order = order_display_indices(&stacked).expect("stacked provable");
+        let cg_ids: Vec<u32> = order.iter().map(|i| stacked[*i].cg_id).collect();
+        assert_eq!(cg_ids, vec![6, 7, 5], "primary first, then y ascending");
+        let same = vec![
+            ns(9, "u9", 0.0, 900.0, 1440.0, 900.0),
+            ns(8, "u8", 0.0, 900.0, 1440.0, 900.0),
+        ];
+        let order = order_display_indices(&same).expect("tie provable");
+        assert_eq!(
+            order.iter().map(|i| same[*i].cg_id).collect::<Vec<_>>(),
+            vec![8, 9],
+            "complete ties break on CG display id"
+        );
+        // Unreadable or duplicate identity refuses instead of reordering.
+        let mut nan = ns(1, "u1", 0.0, 0.0, 1440.0, 900.0);
+        nan.frame.x = f64::NAN;
+        assert!(order_display_indices(&[nan]).is_err());
+        assert!(
+            order_display_indices(&[
+                ns(1, "u1", 0.0, 0.0, 10.0, 10.0),
+                ns(1, "u1b", 10.0, 0.0, 10.0, 10.0)
+            ])
+            .is_err()
+        );
+        assert!(
+            order_display_indices(&[
+                ns(1, "u1", 0.0, 0.0, 10.0, 10.0),
+                ns(2, "u1", 10.0, 0.0, 10.0, 10.0)
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn grouped_output_join_is_exact_and_never_positional() {
+        // Rows shuffled against display order.
+        let rows = vec![
+            row(Some("u2"), &[21, 22], Some(21)),
+            row(Some("u1"), &[11, 12], Some(11)),
+        ];
+        assert_eq!(unique_row_for_display(&rows, "u1").unwrap(), 1);
+        assert_eq!(unique_row_for_display(&rows, "u2").unwrap(), 0);
+        assert!(unique_row_for_display(&rows, "missing").is_err());
+        let geometry = |cg_id: u32, uuid: Option<&str>| crate::topology::DisplayGeometry {
+            cg_id,
+            uuid: uuid.map(str::to_owned),
+            cg_bounds: None,
+            visible: None,
+            scale: 2.0,
+        };
+        let displays = vec![geometry(1, Some("u1")), geometry(2, Some("u2"))];
+        assert_eq!(
+            display_index_for_output(&displays, &rows, "macos-display-2").unwrap(),
+            (0, 2, "u2".to_owned())
+        );
+        assert_eq!(
+            display_index_for_output(&displays, &rows, "macos-display-1").unwrap(),
+            (1, 1, "u1".to_owned())
+        );
+        assert!(
+            display_index_for_output(&displays, &rows, "macos-display-3").is_err(),
+            "unknown output refuses"
+        );
+        // A missing identifier never joins by position.
+        let unidentified = vec![row(None, &[11], Some(11)), row(Some("u2"), &[21], Some(21))];
+        assert!(display_index_for_output(&displays, &unidentified, "macos-display-1").is_err());
+        // Duplicate UUID rows and duplicate display identities refuse.
+        let duplicate_rows = vec![
+            row(Some("u1"), &[11], Some(11)),
+            row(Some("u1"), &[12], Some(12)),
+            row(Some("u2"), &[21], Some(21)),
+        ];
+        assert!(display_index_for_output(&displays, &duplicate_rows, "macos-display-1").is_err());
+        let duplicate_displays = vec![displays[0].clone(), displays[0].clone()];
+        assert!(display_index_for_output(&duplicate_displays, &rows, "macos-display-1").is_err());
+        // A display with an unreadable UUID cannot be joined.
+        let unreadable = vec![geometry(1, None), geometry(2, Some("u2"))];
+        assert!(display_index_for_output(&unreadable, &rows, "macos-display-1").is_err());
+        // Both a duplicate CG id and a duplicate UUID are ambiguous.
+        let twice = vec![geometry(1, Some("u1")), geometry(1, Some("u1b"))];
+        assert!(display_index_for_output(&twice, &rows, "macos-display-1").is_err());
+        let same_uuid = vec![geometry(1, Some("u1")), geometry(2, Some("u1"))];
+        assert!(display_index_for_output(&same_uuid, &rows, "macos-display-1").is_err());
     }
 }

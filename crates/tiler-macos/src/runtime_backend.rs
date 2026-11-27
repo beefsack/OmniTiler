@@ -363,13 +363,18 @@ impl AxBackend for NativeAxBackend {
             h: f64::from(cmd.h),
         };
         if !frame.valid_for_set() {
-            return AxCompletion::Failed {
+            // No AX setter runs for a degenerate frame: typed pre-call
+            // refusal (stages no attempt evidence).
+            return AxCompletion::FencedNoCall {
                 reason: "degenerate frame".to_owned(),
             };
         }
         match ax_set_frame(window, &frame) {
             Ok(()) => AxCompletion::Applied {
                 elapsed_ms: start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                // The legacy two-leg path keeps no bounded post-write
+                // readback; `None` is the honest unreadable leg.
+                readback_xywh: None,
             },
             Err(code) => AxCompletion::Failed {
                 reason: format!("set: {}", crate::ffi::ax_error_name(code)),

@@ -455,12 +455,13 @@ pub fn current_uid() -> u32 {
     0
 }
 
-/// Shareable dirty generation for display/Space changes. Pure atomic
-/// semantics are identical on every platform; only native observer
-/// installation is platform-specific. Clones share the pending change.
+/// Shareable pending Space and screen-parameter changes. The screen
+/// notification is distinct so it can settle without delaying Space wakes.
 #[derive(Debug, Clone, Default)]
 pub struct DisplayChangeFlag {
     dirty: Arc<AtomicU64>,
+    #[cfg(target_os = "macos")]
+    screen_dirty: Arc<AtomicBool>,
     wake: SpaceSelectWake,
 }
 
@@ -470,15 +471,20 @@ impl DisplayChangeFlag {
         Self::default()
     }
 
-    /// Record an external change; bursts coalesce until the next take.
+    /// Record an active-Space change; bursts coalesce until the next take.
     pub fn mark_changed(&self) {
         self.dirty.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Take and clear all pending changes.
+    /// Take and clear pending active-Space changes.
     #[must_use]
     pub fn take_changed(&self) -> bool {
         self.dirty.swap(0, Ordering::SeqCst) != 0
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn take_screen_changed(&self) -> bool {
+        self.screen_dirty.swap(false, Ordering::SeqCst)
     }
 
     /// Shareable active-Space wake generation (event-driven select
@@ -7366,69 +7372,104 @@ mod macos {
     // -- Menu-bar workspace indicator (public AppKit only, main thread) --
     //
     // One variable-length status item whose BUTTON shows every existing
-    // native Space in native order as directly clickable per-workspace
-    // segments (plain numbers, current distinctly highlighted, occupancy
-    // treatments distinct even with icons off — see the appearance policy
-    // in `crate::workspace_indicator`). The dropdown menu mirrors the same
-    // rows for accessibility. Each segment carries its 1-based position as
-    // the button tag and an immutable render-time click binding
-    // (`IndicatorClick`: slot kind, position, expected SID, UI generation,
-    // topology revision) in its own target object; the action forwards the
-    // verbatim over a bounded channel to the tile controller, which
-    // resolves it against the CURRENT render generation and a FRESH native
-    // row before submitting through the guarded engine lane (see
-    // `crate::workspace_indicator::resolve_indicator_click`). The action method
-    // performs no AX, no snapshot, no logging — binding forward only,
-    // dropped when the controller is not draining (bounded backpressure,
-    // never a block inside the callback). The view and the menu are
-    // rebuilt change-only by the controller (one atomic `rebuild` covers
-    // both, so a shrunken row can never leave a stale clickable segment
-    // or item behind); teardown removes the item explicitly. Appearance
-    // evidence comes from live view readbacks (`segment_snapshot`,
-    // `segment_targets`, `status_frame`) — never from a cached model. No
-    // Dock icon (the tile controller already runs accessory), no
-    // activation, no overlay, no polling of its own, no numeric SF Symbols
-    // anywhere (representative icons are real app icons or nothing).
+    // native Space in native order as ONE composited NSImage: plain
+    // numbers, current distinctly highlighted, occupancy treatments
+    // distinct even with icons off, pager miniature bands and optional
+    // representative app icons (see the appearance policy in
+    // `crate::workspace_indicator`). Groups are separated by a drawn
+    // rule, never a clickable column. The image and the hit test consume
+    // the SAME `SlotColumn` vector (`slot_columns`/`slot_at_x`), so a
+    // painted number and its target can never drift. Each clickable slot
+    // carries the immutable render-time binding (`IndicatorClick`: slot
+    // kind, position, expected SID, UI generation, topology revision) in
+    // the button's action target; the action hit-tests the click x and
+    // forwards the verbatim binding over a bounded channel to the tile
+    // controller, which resolves it against the CURRENT render generation
+    // and a FRESH native row before submitting through the guarded engine
+    // lane (see `crate::workspace_indicator::resolve_indicator_click`).
+    // The action performs no AX, no snapshot, no logging — binding
+    // forward only, dropped when the controller is not draining (bounded
+    // backpressure, never a block inside the callback).
+    //
+    // Left click selects; a right click, Control-left click, or a
+    // non-mouse/no-event activation (VoiceOver AXPress) opens the SAME
+    // mirror menu by attaching it and performing one synthesized click.
+    // The menu is NOT attached permanently (a permanent menu swallows
+    // left clicks — the verified failure mode); it is detached ONLY in
+    // `menuDidClose`, matching the verified WhichSpace v1.5.0
+    // `showStatusMenu`/`menuDidClose` shape for macOS 27's out-of-process
+    // status items. The menu items stay native NSMenuItems (pressable AX
+    // mirror entries) with their own immutable per-row targets, so an
+    // AXPress dispatches the identical binding. macOS 27 status-item
+    // events can lose the button window's coordinates and modifier
+    // flags, so the click path compensates with `NSEvent.mouseLocation`
+    // converted from screen coordinates and the static
+    // `NSEvent.modifierFlags` union (WhichSpace v1.5.0); older systems
+    // keep the event's own `locationInWindow`/`modifierFlags`. The
+    // image, slots and menu are rebuilt change-only by the controller
+    // (one atomic `rebuild`), so a shrunken row can never leave a stale
+    // clickable slot or item behind; teardown removes the item
+    // explicitly. The status button carries a truthful accessibility
+    // label naming every rendered group/slot (the image paints no
+    // accessible text). No Dock icon (the tile controller already runs
+    // accessory), no activation, no overlay, no polling of its own, no
+    // numeric SF Symbols anywhere (representative icons are real app
+    // icons or nothing).
 
     use crate::workspace_indicator::{
-        IndicatorClick, IndicatorToggleClick, MINIATURE_BAND_H, SpaceOccupancy,
-        TOGGLE_TILING_MENU_TAG, is_workspace_row_tag, segment_column_width,
+        AccessibleSlot, IndicatorClick, IndicatorToggleClick, MINIATURE_BAND_H, SpaceOccupancy,
+        TOGGLE_TILING_MENU_TAG, indicator_accessibility_description, is_workspace_row_tag,
+        segment_column_width, slot_columns, slot_columns_width,
     };
+    use objc2_app_kit::{NSAccessibility, NSMenuDelegate, NSStringDrawing};
+    use objc2_foundation::NSObjectProtocol;
 
-    /// One indicator row (plain data in; the handle owns the native
-    /// segments and menu items). `position` rides as the segment/menu tag
-    /// (1-based native ordinal); `title` is the rendered button/menu text
-    /// (the ordinal with an explicit `'?'` suffix if and only if occupancy
-    /// is Unknown — see [`crate::workspace_indicator::segment_title`]);
+    /// One indicator row (plain data in; the handle owns the drawn image,
+    /// the slot map and the mirror menu items). `position` rides as the
+    /// menu tag and slot identity (1-based render slot, unique across the
+    /// whole item); `title` is the rendered menu/image text (the row's OWN
+    /// group ordinal with an explicit `'?'` suffix if and only if
+    /// occupancy is Unknown — see
+    /// [`crate::workspace_indicator::segment_title`]);
     /// `icon` carries a pre-resolved 16pt app image when the icons flag is
     /// on (`None` renders the number alone — icons ride LEFT of the
     /// number, never replacing it); `click` is the immutable render-time
-    /// binding the segment forwards verbatim; `occupancy` drives the
+    /// binding the slot forwards verbatim; `occupancy` drives the painted
     /// appearance treatment (occupied = full-alpha bold, empty = dimmed
     /// regular, unknown = full-alpha regular plus the `'?'` title suffix
-    /// with an explicit "unknown" tooltip — never conflated with empty;
-    /// no label colour is ever set) while `current` adds the bordered
-    /// highlight orthogonally. `miniatures` carries the pager's drawable
-    /// window rectangles for this Space in segment-band points (resolved
-    /// colours included): rows without pager content carry none and render
-    /// exactly as before.
+    /// with an explicit "unknown" tooltip — never conflated with empty)
+    /// while `current` adds the bordered highlight orthogonally.
+    /// `miniatures` carries the pager's drawable window rectangles for
+    /// this Space in segment-band points (resolved colours included):
+    /// rows without pager content carry none and render exactly as
+    /// before. `separator` rows are pure group dividers between outputs:
+    /// they carry position 0, an empty title, no miniatures, and never
+    /// dispatch (the menu renders a native separator item, the image a
+    /// 1pt rule — both untagged and excluded from slot targets).
     pub struct SegmentRow {
         pub position: usize,
+        /// 1-based ordinal the row SHOWS within its own output group (the
+        /// title and tooltip range read this, never the global slot).
+        pub ordinal: usize,
         pub title: String,
         pub current: bool,
         pub enabled: bool,
         pub occupancy: SpaceOccupancy,
         pub icon: Option<objc2::rc::Retained<objc2_app_kit::NSImage>>,
         pub miniatures: Vec<crate::pager::MiniatureDraw>,
+        pub separator: bool,
         pub click: IndicatorClick,
     }
 
-    /// Live segment readback for fixtures and the live-proof harness:
-    /// every field is read off the actual buttons (title, tag, bordered,
-    /// enabled, font trait, image presence, tooltip, screen frame) — the
-    /// occupancy word parses back out of the live tooltip, so a drifted
-    /// appearance contract fails loudly instead of passing on a stale
-    /// model. `frame` is screen coordinates (status-item window base).
+    /// Live rendered-slot readback for fixtures and the live-proof
+    /// harness: every field comes from the render that painted the image
+    /// (title, slot, current, enabled, bold/icon/alpha treatment) plus the
+    /// SAME shared geometry the hit test uses, converted to screen
+    /// coordinates off the live status button. The occupancy word is the
+    /// rendered verdict, so a drifted appearance contract fails loudly
+    /// instead of passing on a stale model. `frame` is the painted slot's
+    /// rect (item-local) converted to screen coordinates through the live
+    /// status button.
     #[derive(Debug, Clone, PartialEq)]
     pub struct SegmentReadback {
         pub position: usize,
@@ -7520,163 +7561,394 @@ mod macos {
         }
     }
 
-    struct MiniatureStripIvars {
-        draws: Vec<crate::pager::MiniatureDraw>,
+    /// One rendered clickable slot: the immutable render-time binding plus
+    /// the painted treatment facts read back by fixtures (never re-derived
+    /// from pixels).
+    #[derive(Debug, Clone, PartialEq)]
+    struct RenderedSlot {
+        click: IndicatorClick,
+        group: usize,
+        title: String,
+        current: bool,
+        enabled: bool,
+        occupancy: SpaceOccupancy,
+        bold: bool,
+        has_icon: bool,
+        alpha: f64,
     }
 
-    // SAFETY: plain-data ivars carried to `set_ivars` (same shape as
-    // `BorderRingIvars` above: drawable rects plus resolved colours, never
-    // dereferenced as an ObjC object).
-    unsafe impl objc2::Encode for MiniatureStripIvars {
+    /// One render's shared geometry plus aligned slot facts. `columns`
+    /// includes divider columns, so `slots[index]` is `None` exactly where
+    /// `columns[index].position` is `None`; drawing, hit testing and
+    /// readbacks all index the SAME vector.
+    #[derive(Debug, Clone, Default, PartialEq)]
+    struct IndicatorRenderState {
+        columns: Vec<crate::workspace_indicator::SlotColumn>,
+        slots: Vec<Option<RenderedSlot>>,
+    }
+
+    struct IndicatorActionIvars {
+        // Main-thread only (the class is built and used there); the borrow
+        // never spans `performClick`, which may re-enter the action.
+        render: std::cell::RefCell<IndicatorRenderState>,
+        sender: std::sync::mpsc::SyncSender<IndicatorClick>,
+        item: objc2::rc::Retained<objc2_app_kit::NSStatusItem>,
+        menu: objc2::rc::Retained<objc2_app_kit::NSMenu>,
+    }
+
+    // SAFETY: plain-data ivars carried to `set_ivars` (the render state,
+    // channel sender and retained handles are never encoded).
+    unsafe impl objc2::Encode for IndicatorActionIvars {
         const ENCODING: objc2::Encoding = objc2::Encoding::Object;
     }
 
-    objc2::define_class! {
-        // SAFETY: `NSView` subclass with no subclassing requirements beyond
-        // the two drawing overrides below; no `Drop`. `drawRect:` fills
-        // one rect per pager miniature (resolved colours ride the ivars)
-        // and strokes a 1pt full-strength border on the focused one — no
-        // layout, no logging, no panics. The strip is a non-interactive
-        // sibling of the segment buttons (never overlapping them), so
-        // clicks keep flowing to the button target-action unchanged.
-        #[unsafe(super(objc2_app_kit::NSView))]
-        #[thread_kind = objc2::MainThreadOnly]
-        #[ivars = Box<MiniatureStripIvars>]
-        struct WorkspaceMiniatureStrip;
+    /// macOS 27 hosts status items out of process, so their events can
+    /// lose the button window's coordinates and modifier flags. Verified
+    /// against WhichSpace v1.5.0 `WhichSpace/AppDelegate.swift`
+    /// (`statusItemEventsArriveOutOfProcess`, `statusItemModifierFlags`,
+    /// `statusItemLocation(in:)`).
+    fn status_item_events_arrive_out_of_process() -> bool {
+        objc2_foundation::NSProcessInfo::processInfo()
+            .operatingSystemVersion()
+            .majorVersion
+            >= 27
+    }
 
-        // SAFETY: signatures match `isOpaque` and `drawRect:` exactly.
-        impl WorkspaceMiniatureStrip {
-            #[unsafe(method(isOpaque))]
-            fn is_opaque(&self) -> bool {
-                false
+    fn status_item_modifier_flags(
+        event: &objc2_app_kit::NSEvent,
+    ) -> objc2_app_kit::NSEventModifierFlags {
+        let flags = event.modifierFlags();
+        if status_item_events_arrive_out_of_process() {
+            flags.union(objc2_app_kit::NSEvent::modifierFlags_class())
+        } else {
+            flags
+        }
+    }
+
+    /// Item-local click x. On macOS 27 the event's own window coordinate
+    /// is the button centre, so derive it from the live screen mouse
+    /// position instead; older systems keep the event's coordinate.
+    fn status_item_click_x(
+        event: &objc2_app_kit::NSEvent,
+        button: &objc2_app_kit::NSStatusBarButton,
+        window: &objc2_app_kit::NSWindow,
+        pointer: objc2_foundation::NSPoint,
+    ) -> Option<(f64, f64)> {
+        let in_window = if status_item_events_arrive_out_of_process() {
+            window.convertPointFromScreen(pointer)
+        } else {
+            event.locationInWindow()
+        };
+        // AppKit can inset the image within the button even when the
+        // requested status-item length equals the rendered image width.
+        let image_rect = button.cell()?.imageRectForBounds(button.bounds());
+        let button_x = button.convertPoint_fromView(in_window, None).x;
+        Some((button_x, button_x - image_rect.origin.x))
+    }
+
+    objc2::define_class! {
+        // SAFETY: `NSObject` imposes no subclassing requirements and this
+        // class implements no `Drop`. The action schedules menu tracking
+        // or forwards an immutable slot binding over a bounded channel;
+        // a full channel drops the click rather than blocking AppKit.
+        #[unsafe(super(objc2_foundation::NSObject))]
+        #[ivars = Box<IndicatorActionIvars>]
+        struct WorkspaceIndicatorAction;
+
+        // SAFETY: the signature matches `workspaceIndicatorClicked:`
+        // (one `NSStatusBarButton` argument; its geometry is the rendered
+        // image's frame, and the slot map came from the same render).
+        impl WorkspaceIndicatorAction {
+            #[unsafe(method(workspaceIndicatorClicked:))]
+            fn workspace_indicator_clicked(
+                &self,
+                button: &objc2_app_kit::NSStatusBarButton,
+            ) {
+                let Some(mtm) = objc2::MainThreadMarker::new() else {
+                    return;
+                };
+                let event = objc2_app_kit::NSApplication::sharedApplication(mtm)
+                    .currentEvent();
+                // Any activation that is not a left mouse event (VoiceOver
+                // AXPress arrives with no event or a non-mouse one) opens
+                // the mirror menu; there is no pointer target to infer.
+                let kind = event.as_deref().map(objc2_app_kit::NSEvent::r#type);
+                let modifiers = event.as_deref().map(status_item_modifier_flags);
+                let menu_intent = kind != Some(objc2_app_kit::NSEventType::LeftMouseUp)
+                    || modifiers.is_some_and(|flags| {
+                        flags.contains(objc2_app_kit::NSEventModifierFlags::Control)
+                    });
+                let pointer = objc2_app_kit::NSEvent::mouseLocation();
+                let window = button.window();
+                let x = event
+                    .as_deref()
+                    .zip(window.as_deref())
+                    .and_then(|(event, window)| status_item_click_x(event, button, window, pointer));
+                let report = |outcome: &str, slot: Option<&RenderedSlot>| {
+                    use std::io::Write;
+                    let window_frame = window
+                        .as_ref()
+                        .map(|window| (window.windowNumber(), frame_tuple(window.frame())));
+                    let screen = window
+                        .as_ref()
+                        .and_then(|window| window.screen())
+                        .map(|screen| frame_tuple(screen.frame()));
+                    let slot = slot.map(|slot| (slot.group, slot.click.position, slot.title.as_str()));
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "tiler-macos dev indicator pointer event={kind:?} modifiers={:#x} global=({:.1},{:.1}) button_and_image_x={x:?} window={window_frame:?} screen={screen:?} group_slot_label={slot:?} outcome={outcome}",
+                        modifiers.map_or(0, |flags| flags.bits()), pointer.x, pointer.y,
+                    );
+                };
+                if menu_intent {
+                    report("menu-request", None);
+                    use objc2_foundation::{NSArray, NSDefaultRunLoopMode, NSRunLoop};
+                    let run_loop = NSRunLoop::currentRunLoop();
+                    let selector = objc2::sel!(workspaceIndicatorPresentMenu:);
+                    // SAFETY: This schedules our own selector with the
+                    // NSStatusBarButton it expects on the same main run
+                    // loop. AppKit retains both until delivery or cancel.
+                    // Let AXPress reply before entering menu tracking;
+                    // presenting inline blocks the accessibility request.
+                    unsafe {
+                        run_loop.cancelPerformSelector_target_argument(
+                            selector,
+                            self.as_ref(),
+                            Some(button.as_ref()),
+                        );
+                        run_loop.performSelector_target_argument_order_modes(
+                            selector,
+                            self.as_ref(),
+                            Some(button.as_ref()),
+                            0,
+                            &NSArray::from_slice(&[NSDefaultRunLoopMode]),
+                        );
+                    }
+                    return;
+                }
+                let Some((_, image_x)) = x else {
+                    report("no-button-geometry", None);
+                    return;
+                };
+                let ivars = self.ivars();
+                let render = ivars.render.borrow();
+                let slot = crate::workspace_indicator::slot_index_at_x(&render.columns, image_x)
+                    .and_then(|index| render.slots.get(index))
+                    .and_then(Option::as_ref);
+                let Some(slot) = slot else {
+                    report("no-slot", None);
+                    return;
+                };
+                // A disabled or unknown painted slot does not select.
+                // The native menu preserves the existing guarded route
+                // for slots with known targets but unknown occupancy.
+                if !slot.enabled || slot.occupancy == SpaceOccupancy::Unknown {
+                    report(if slot.enabled { "unknown" } else { "disabled" }, Some(slot));
+                    return;
+                }
+                let submitted = ivars.sender.try_send(slot.click).is_ok();
+                report(if submitted { "submitted" } else { "channel-refused" }, Some(slot));
             }
 
-            #[unsafe(method(drawRect:))]
-            fn draw_rect(&self, _dirty: objc2_foundation::NSRect) {
-                let band_h = self.bounds().size.height;
-                for draw in &self.ivars().draws {
-                    if ![draw.x, draw.y, draw.w, draw.h]
-                        .iter()
-                        .all(|v| v.is_finite())
-                        || draw.w <= 0.0
-                        || draw.h <= 0.0
-                    {
-                        continue;
-                    }
-                    // Layout units count y from the band top (screen
-                    // convention); AppKit counts from the bottom.
-                    let rect = objc2_foundation::NSRect::new(
-                        objc2_foundation::NSPoint::new(draw.x, band_h - (draw.y + draw.h)),
-                        objc2_foundation::NSSize::new(draw.w, draw.h),
-                    );
-                    let byte = |c: u8| f64::from(c) / 255.0;
-                    objc2_app_kit::NSColor::colorWithCalibratedRed_green_blue_alpha(
-                        byte(draw.fill.0),
-                        byte(draw.fill.1),
-                        byte(draw.fill.2),
-                        1.0,
-                    )
-                    .set();
-                    objc2_app_kit::NSBezierPath::fillRect(rect);
-                    if draw.focused {
-                        objc2_app_kit::NSColor::colorWithCalibratedRed_green_blue_alpha(
-                            byte(draw.border.0),
-                            byte(draw.border.1),
-                            byte(draw.border.2),
-                            1.0,
-                        )
-                        .set();
-                        let inset = objc2_foundation::NSRect::new(
-                            objc2_foundation::NSPoint::new(
-                                rect.origin.x + 0.5,
-                                rect.origin.y + 0.5,
-                            ),
-                            objc2_foundation::NSSize::new(
-                                (rect.size.width - 1.0).max(0.0),
-                                (rect.size.height - 1.0).max(0.0),
-                            ),
-                        );
-                        let path = objc2_app_kit::NSBezierPath::bezierPathWithRect(inset);
-                        path.setLineWidth(1.0);
-                        path.stroke();
-                    }
+            #[unsafe(method(workspaceIndicatorPresentMenu:))]
+            fn workspace_indicator_present_menu(&self, button: &objc2_app_kit::NSStatusBarButton) {
+                let Some(mtm) = objc2::MainThreadMarker::new() else {
+                    return;
+                };
+                let ivars = self.ivars();
+                if ivars.item.menu(mtm).is_some() {
+                    return;
                 }
+                // Attach only for presentation. A permanent menu swallows
+                // left clicks; menuDidClose detaches after tracking ends,
+                // including macOS 27's out-of-process presentation.
+                ivars.item.setMenu(Some(&ivars.menu));
+                // SAFETY: delivered only on the main run loop with the
+                // status button retained across the tracking call.
+                unsafe { button.performClick(None) };
             }
         }
     }
 
-    /// Owned menu-bar indicator handle: one status item plus its segment
-    /// view, its mirror menu, and the per-row click targets. Main-thread
+    struct MenuCloseIvars {
+        item: objc2::rc::Retained<objc2_app_kit::NSStatusItem>,
+    }
+
+    // SAFETY: plain-data ivars carried to `set_ivars` (the retained status
+    // item is kept alive by the handle too and never encoded).
+    unsafe impl objc2::Encode for MenuCloseIvars {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Object;
+    }
+
+    objc2::define_class! {
+        // SAFETY: `NSObject` subclass with no `Drop`; `menuDidClose:` only
+        // detaches the mirror menu (an AppKit call, no AX, layout, logging
+        // or panics) so left clicks return to the action.
+        #[unsafe(super(objc2_foundation::NSObject))]
+        #[thread_kind = objc2::MainThreadOnly]
+        #[ivars = Box<MenuCloseIvars>]
+        struct WorkspaceIndicatorMenuDelegate;
+
+        // SAFETY: plain `NSObject` subclass; no extra requirements.
+        unsafe impl NSObjectProtocol for WorkspaceIndicatorMenuDelegate {}
+
+        // SAFETY: the method signature matches `NSMenuDelegate`.
+        unsafe impl NSMenuDelegate for WorkspaceIndicatorMenuDelegate {
+            #[unsafe(method(menuDidClose:))]
+            fn menu_did_close(&self, _menu: &objc2_app_kit::NSMenu) {
+                self.ivars().item.setMenu(None);
+            }
+        }
+    }
+
+    /// Owned menu-bar indicator handle: one status item, its single drawn
+    /// image, its on-demand mirror menu, the button's action target (slot
+    /// map) and the menu items' per-row click targets. Main-thread
     /// confinement is structural (same shape as [`BorderCarrier`]):
     /// creation and every method take or hold a
-    /// [`objc2::MainThreadMarker`], and the held `Retained` handles are
-    /// `MainThreadOnly`. The target/button/menu sets are rebuilt atomically
-    /// by [`WorkspaceIndicator::rebuild`] and held here (menu items and
-    /// buttons do not retain their targets), so no click can outlive its
-    /// render. No `Drop` impl: teardown is the explicit
-    /// [`WorkspaceIndicator::destroy`], which consumes the handle.
+    /// [`objc2::MainThreadMarker`]. The image/slot/menu sets are rebuilt
+    /// atomically by [`WorkspaceIndicator::rebuild`] and held here (AppKit
+    /// control targets and menu delegates are not retained by AppKit), so
+    /// no click can outlive its render. No `Drop` impl: teardown is the
+    /// explicit [`WorkspaceIndicator::destroy`], which consumes the
+    /// handle.
     pub struct WorkspaceIndicator {
         item: objc2::rc::Retained<objc2_app_kit::NSStatusItem>,
         menu: objc2::rc::Retained<objc2_app_kit::NSMenu>,
-        sender: std::sync::mpsc::SyncSender<IndicatorClick>,
         toggle_sender: std::sync::mpsc::SyncSender<IndicatorToggleClick>,
+        /// Menu row targets, retained because `NSMenuItem` targets are
+        /// weak references; the items live in `menu`, so the objects must
+        /// outlive every menu interaction.
+        #[allow(dead_code)]
         targets: std::cell::RefCell<Vec<objc2::rc::Retained<WorkspaceSegmentTarget>>>,
         toggle_target: std::cell::RefCell<Option<objc2::rc::Retained<WorkspaceToggleTarget>>>,
-        buttons: std::cell::RefCell<Vec<objc2::rc::Retained<objc2_app_kit::NSButton>>>,
-        container: std::cell::RefCell<Option<objc2::rc::Retained<objc2_app_kit::NSView>>>,
+        action_target: objc2::rc::Retained<WorkspaceIndicatorAction>,
+        /// `NSMenu` delegate, retained because `NSMenu` holds it weakly;
+        /// it only detaches the on-demand menu after tracking.
+        #[allow(dead_code)]
+        menu_delegate: objc2::rc::Retained<WorkspaceIndicatorMenuDelegate>,
         mtm: objc2::MainThreadMarker,
     }
 
-    /// Segment button geometry (AppKit points): compact enough for the menu
-    /// bar, wide enough for two-digit ordinals plus a 16pt icon. Column
-    /// widths share [`crate::workspace_indicator::segment_column_width`]
-    /// with the pager band layout; the 8pt miniature band shares
+    /// Status-image height (AppKit points): the menu-bar item working
+    /// height (AltTab v11.10.2 `Menubar.swift` notes `NSStatusBar.thickness`
+    /// stays 22pt even where the visible menu bar is taller). Compact
+    /// enough for the menu bar, wide enough for two-digit ordinals plus a
+    /// 16pt icon. Column widths share
+    /// [`crate::workspace_indicator::segment_column_width`] with the pager
+    /// band layout; the 8pt miniature band shares
     /// [`crate::workspace_indicator::MINIATURE_BAND_H`].
     const SEGMENT_HEIGHT: f64 = 22.0;
+    /// Group-divider column width (AppKit points): a narrow non-clickable
+    /// rule between output groups, wide enough to read as a boundary
+    /// without consuming a segment slot.
+    const SEPARATOR_WIDTH: f64 = 7.0;
+    /// Icon side and insets inside a slot column (AppKit points).
+    const ICON_SIDE: f64 = 16.0;
+    const ICON_INSET: f64 = 3.0;
+    const ICON_GAP: f64 = 2.0;
+    /// Truthful status-button accessibility help (the label names the
+    /// rendered groups; this names the two activation routes).
+    const INDICATOR_AX_HELP: &str =
+        "Left-click selects a workspace; right-click or Control-click opens the workspace menu.";
 
     impl WorkspaceIndicator {
-        /// Create the status item and wire the click channel (bounded; the
-        /// controller drains it every cadence). The button starts with
-        /// `title` and an empty menu; the caller fills both with
-        /// [`WorkspaceIndicator::rebuild`].
+        /// Create the status item and wire the action target (bounded
+        /// click channel; the controller drains it every cadence). The
+        /// button starts with `title`, an empty image and NO attached
+        /// menu; the caller fills both with
+        /// [`WorkspaceIndicator::rebuild`]. The mirror menu is attached
+        /// only for the duration of an alternate click and detached in
+        /// `menuDidClose`, so left clicks stay on the action path.
         pub fn create(
             mtm: objc2::MainThreadMarker,
             title: &str,
             clicks: std::sync::mpsc::SyncSender<IndicatorClick>,
             toggles: std::sync::mpsc::SyncSender<IndicatorToggleClick>,
         ) -> Result<Self, String> {
+            use objc2::runtime::ProtocolObject;
             use objc2_foundation::NSString;
             let bar = objc2_app_kit::NSStatusBar::systemStatusBar();
             let item = bar.statusItemWithLength(objc2_app_kit::NSVariableStatusItemLength);
-            // Title and tooltip ride the status bar button (the direct
-            // `NSStatusItem` title/tooltip setters are deprecated).
-            if let Some(button) = item.button(mtm) {
-                button.setTitle(&NSString::from_str(title));
-                button.setToolTip(Some(&NSString::from_str("OmniTiler workspaces")));
-            }
             let menu: objc2::rc::Retained<objc2_app_kit::NSMenu> =
                 objc2_app_kit::NSMenu::initWithTitle(
                     mtm.alloc::<objc2_app_kit::NSMenu>(),
                     &NSString::from_str("OmniTiler Workspaces"),
                 );
-            item.setMenu(Some(menu.as_ref()));
+            // The rows carry their own explicit enabled verdict (past-nine
+            // ordinals and unbound spares must stay refused), so AppKit's
+            // auto-enabling must never override `setEnabled(false)`.
+            menu.setAutoenablesItems(false);
+            // One action target survives every render: the rebuild swaps
+            // its slot map under the same retained object, so the button's
+            // target can never dangle between renders.
+            let allocated = WorkspaceIndicatorAction::alloc();
+            // SAFETY: ivars set directly, then the superclass `init` (the
+            // `define_class!` doc shape, same as the display observer); the
+            // render state, bounded sender and retained item/menu are plain
+            // data, never encoded.
+            let action_target: objc2::rc::Retained<WorkspaceIndicatorAction> = unsafe {
+                objc2::msg_send![
+                    super(allocated.set_ivars(Box::new(IndicatorActionIvars {
+                        render: std::cell::RefCell::new(IndicatorRenderState::default()),
+                        sender: clicks,
+                        item: item.clone(),
+                        menu: menu.clone(),
+                    }))),
+                    init
+                ]
+            };
+            let allocated = mtm.alloc::<WorkspaceIndicatorMenuDelegate>();
+            // SAFETY: ivars set directly, then the superclass `init`; the
+            // retained item is plain data, never encoded.
+            let menu_delegate: objc2::rc::Retained<WorkspaceIndicatorMenuDelegate> = unsafe {
+                objc2::msg_send![
+                    super(allocated.set_ivars(Box::new(MenuCloseIvars { item: item.clone() }))),
+                    init
+                ]
+            };
+            // NSMenu holds its delegate weakly, so the handle retains it.
+            let delegate_ref: &ProtocolObject<dyn NSMenuDelegate> =
+                ProtocolObject::from_ref(&*menu_delegate);
+            menu.setDelegate(Some(delegate_ref));
+            if let Some(button) = item.button(mtm) {
+                // Title and tooltip ride the status bar button (the direct
+                // `NSStatusItem` title/tooltip setters are deprecated).
+                button.setTitle(&NSString::from_str(title));
+                button.setToolTip(Some(&NSString::from_str("OmniTiler workspaces")));
+                // SAFETY: the action target is retained by the handle for
+                // the whole item lifetime (NSControl does not retain it);
+                // the selector matches the `define_class!` method above.
+                unsafe {
+                    use objc2::sel;
+                    let target_ptr: *const WorkspaceIndicatorAction = &*action_target;
+                    let target: &objc2::runtime::AnyObject =
+                        &*target_ptr.cast::<objc2::runtime::AnyObject>();
+                    button.setTarget(Some(target));
+                    button.setAction(Some(sel!(workspaceIndicatorClicked:)));
+                }
+                button.sendActionOn(
+                    objc2_app_kit::NSEventMask::LeftMouseUp
+                        | objc2_app_kit::NSEventMask::RightMouseUp,
+                );
+                button.setAccessibilityHelp(Some(&NSString::from_str(INDICATOR_AX_HELP)));
+            }
             Ok(Self {
                 item,
                 menu,
-                sender: clicks,
                 toggle_sender: toggles,
                 targets: std::cell::RefCell::new(Vec::new()),
                 toggle_target: std::cell::RefCell::new(None),
-                buttons: std::cell::RefCell::new(Vec::new()),
-                container: std::cell::RefCell::new(None),
+                action_target,
+                menu_delegate,
                 mtm,
             })
         }
 
         /// Retitle the status item through its button (the direct item
-        /// setter is deprecated). Production segment renders clear this:
-        /// the per-workspace buttons carry every ordinal, and stale button
-        /// text must never overlap them.
+        /// setter is deprecated). Production renders clear this: the drawn
+        /// image carries every ordinal, and stale button text must never
+        /// overlap it.
         pub fn set_title(&self, _mtm: objc2::MainThreadMarker, title: &str) {
             use objc2_foundation::NSString;
             if let Some(button) = self.item.button(self.mtm) {
@@ -7684,22 +7956,21 @@ mod macos {
             }
         }
 
-        /// Rebuild the button segments AND the mirror menu from `rows`
-        /// (native order in, native order out): both are replaced wholesale
-        /// in one call, so a shrunken row can never leave a stale clickable
-        /// segment or item behind, and the menu can never disagree with the
-        /// bar. Current segments read bordered plus bold, occupied
-        /// borderless bold full-alpha, empty borderless regular dimmed,
-        /// unknown borderless regular full-alpha plus the `'?'` title
-        /// suffix with an explicit "unknown" tooltip (never dimmed like
-        /// empty, never bold like occupied unless also current — and no
-        /// label colour is ever set, so the suffix is the marker);
-        /// positions past the armed `1..=9` range stay visible
-        /// but disabled with a tooltip naming the missing route. Icons ride
-        /// left of the number only when pre-resolved (`None` renders the
-        /// plain number alone). `tiling` is the current workspace's proven
-        /// planner mode: the prepended menu toggle reads it, and `None`
-        /// (unproven) renders it disabled instead of guessing.
+        /// Rebuild the drawn status image AND the mirror menu from `rows`
+        /// (native order in, native order out) in one call, so a shrunken
+        /// row can never leave a stale clickable slot or item behind, and
+        /// the menu can never disagree with the image. Current slots read
+        /// bordered plus bold, occupied borderless bold full-alpha, empty
+        /// borderless regular dimmed, unknown borderless regular
+        /// full-alpha plus the `'?'` title suffix with an explicit
+        /// "unknown" tooltip (never dimmed like empty, never bold like
+        /// occupied unless also current); group ordinals past the armed
+        /// `1..=9` range stay visible but disabled with a tooltip naming
+        /// the missing route. Icons ride left of the number only when
+        /// pre-resolved (`None` renders the plain number alone).
+        /// `tiling` is the current workspace's proven planner mode: the
+        /// prepended menu toggle reads it, and `None` (unproven) renders
+        /// it disabled instead of guessing.
         pub fn rebuild(
             &self,
             _mtm: objc2::MainThreadMarker,
@@ -7707,14 +7978,15 @@ mod macos {
             tiling: Option<bool>,
         ) {
             use objc2::rc::Retained;
-            // Fresh per-row targets first: every segment and menu item
-            // below shares its row's target (target-action allows multiple
-            // senders), and the handle retains the set so no click can
-            // outlive its render. The previous set is replaced only after
-            // the new view and menu install, so a click mid-rebuild still
-            // forwards a complete binding.
+            // Fresh per-row targets: every mirror menu item shares its
+            // row's target (target-action allows multiple senders), and
+            // the handle retains the set so no AX press can outlive its
+            // render. The previous set is replaced only after the new menu
+            // and image install, so a click mid-rebuild still forwards a
+            // complete binding. The image itself needs no per-row targets:
+            // one action target hit-tests the shared slot map.
             let mut targets: Vec<Retained<WorkspaceSegmentTarget>> = Vec::with_capacity(rows.len());
-            for row in rows {
+            for row in rows.iter().filter(|row| !row.separator) {
                 let allocated: objc2::rc::Allocated<WorkspaceSegmentTarget> =
                     WorkspaceSegmentTarget::alloc();
                 // SAFETY: ivars set directly, then the superclass `init`
@@ -7725,7 +7997,7 @@ mod macos {
                     objc2::msg_send![
                         super(allocated.set_ivars(Box::new(WorkspaceSegmentIvars {
                             click: row.click,
-                            sender: self.sender.clone(),
+                            sender: self.action_target.ivars().sender.clone(),
                         }))),
                         init
                     ]
@@ -7755,24 +8027,10 @@ mod macos {
                     init
                 ]
             };
-            self.rebuild_impl(rows, &targets, &toggle_target, tiling);
+            self.rebuild_menu_live(rows, &targets, &toggle_target, tiling);
+            self.rebuild_image(rows);
             *self.targets.borrow_mut() = targets;
             *self.toggle_target.borrow_mut() = Some(toggle_target);
-        }
-
-        /// Install one rebuilt menu (in place, so [`WorkspaceIndicator::row_titles`]
-        /// reads the live items) plus one rebuilt segment view from `rows`
-        /// with the prebuilt `targets` (one per row, same order) and the
-        /// prepended toggle target.
-        fn rebuild_impl(
-            &self,
-            rows: &[SegmentRow],
-            targets: &[objc2::rc::Retained<WorkspaceSegmentTarget>],
-            toggle_target: &objc2::rc::Retained<WorkspaceToggleTarget>,
-            tiling: Option<bool>,
-        ) {
-            self.rebuild_menu_live(rows, targets, toggle_target, tiling);
-            self.rebuild_segments(rows, targets);
         }
 
         /// Rebuild the mirror menu in place (native order in, native order
@@ -7829,7 +8087,18 @@ mod macos {
                 };
                 toggle.setToolTip(Some(&NSString::from_str(toggle_tip)));
                 self.menu.addItem(&toggle);
-                for (row, target) in rows.iter().zip(targets.iter()) {
+                let mut targets = targets.iter();
+                for row in rows {
+                    if row.separator {
+                        // Native group divider: no target/tag/action, so it
+                        // can never dispatch.
+                        self.menu
+                            .addItem(&objc2_app_kit::NSMenuItem::separatorItem(self.mtm));
+                        continue;
+                    }
+                    let Some(target) = targets.next() else {
+                        continue;
+                    };
                     let title = NSString::from_str(&row.title);
                     let allocated = self.mtm.alloc::<objc2_app_kit::NSMenuItem>();
                     let item: objc2::rc::Retained<objc2_app_kit::NSMenuItem> =
@@ -7852,7 +8121,7 @@ mod macos {
                         item.setImage(Some(image.as_ref()));
                     }
                     let tip = crate::workspace_indicator::segment_tooltip(
-                        row.position,
+                        row.ordinal,
                         row.occupancy,
                         row.current,
                         row.enabled,
@@ -7863,126 +8132,253 @@ mod macos {
             }
         }
 
-        /// Rebuild the menu-bar segment view: one compact button per row in
-        /// native order, each directly clickable through its row's target.
-        /// Replaces the previous container wholesale (removal before
-        /// install) and sizes the item to the content, so a shrunken row
-        /// can never leave a stale clickable segment behind.
-        fn rebuild_segments(
-            &self,
-            rows: &[SegmentRow],
-            targets: &[objc2::rc::Retained<WorkspaceSegmentTarget>],
-        ) {
-            use objc2_foundation::NSString;
-            if let Some(old) = self.container.borrow_mut().take() {
-                old.removeFromSuperview();
-            }
-            *self.buttons.borrow_mut() = Vec::new();
-            let Some(button) = self.item.button(self.mtm) else {
-                return;
-            };
-            // The segments carry every ordinal: clear the button title so
-            // stale text never overlaps them.
-            button.setTitle(&NSString::from_str(""));
-            // Pager miniature band: rows carrying drawable miniatures gain
-            // an 8pt strip below the number button (siblings, never
-            // overlapping the button, so clicks keep flowing to the button
-            // target-action unchanged). No miniatures anywhere keeps the
-            // exact current 22pt item.
-            let band = rows.iter().any(|row| !row.miniatures.is_empty());
-            let band_y = if band { MINIATURE_BAND_H } else { 0.0 };
-            let height = SEGMENT_HEIGHT + band_y;
-            let mut width = 0.0;
+        /// Rebuild the menu-bar status image: one NSImage painting every
+        /// group row in native order (numbers, current border, occupancy
+        /// alpha/bold, `?` suffix, representative icons left of the
+        /// number, pager miniature bands under the numbers, divider rules
+        /// between groups). The SAME `SlotColumn` vector drives the draw
+        /// and the retained hit-test map, so a painted number and its
+        /// target cannot drift. Replaces the previous image wholesale and
+        /// sizes the item to the content, so a shrunken row can never
+        /// leave a stale clickable slot behind.
+        #[allow(deprecated)] // `lockFocus` is the dependency-free eager path.
+        fn rebuild_image(&self, rows: &[SegmentRow]) {
+            use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
             let mut widths = Vec::with_capacity(rows.len());
             for row in rows {
                 // Shared rule with the pager band layout: the drawable
-                // rects always match the drawn column.
-                let w = segment_column_width(
-                    row.icon.is_some(),
-                    row.position >= 10 || row.title.ends_with('?'),
-                );
-                widths.push(w);
-                width += w;
+                // miniatures always match the drawn column. A group
+                // separator gets a fixed narrow non-clickable column.
+                let width = if row.separator {
+                    SEPARATOR_WIDTH
+                } else {
+                    segment_column_width(
+                        row.icon.is_some(),
+                        row.ordinal >= 10 || row.title.ends_with('?'),
+                    )
+                };
+                widths.push(((!row.separator).then_some(row.position), width));
             }
-            self.item.setLength(width.max(1.0));
-            let container: objc2::rc::Retained<objc2_app_kit::NSView> =
-                objc2_app_kit::NSView::initWithFrame(
-                    self.mtm.alloc::<objc2_app_kit::NSView>(),
-                    border_nsrect((0.0, 0.0, width.max(1.0), height)),
-                );
-            let mut buttons = Vec::with_capacity(rows.len());
-            // SAFETY: every created button/strip, its per-row target, and
-            // the installed selector are live; tags carry 1-based
-            // positions; frames stay inside the container computed above.
-            unsafe {
-                use objc2::sel;
-                let mut x = 0.0;
-                for ((row, target), w) in rows.iter().zip(targets.iter()).zip(widths.iter()) {
-                    let title = NSString::from_str(&row.title);
-                    let segment: objc2::rc::Retained<objc2_app_kit::NSButton> =
-                        objc2_app_kit::NSButton::buttonWithTitle_target_action(
-                            &title,
-                            Some(target.as_ref()),
-                            Some(sel!(workspaceIndicatorSegmentClicked:)),
-                            self.mtm,
-                        );
-                    segment.setTag(row.position as _);
-                    segment.setBezelStyle(objc2_app_kit::NSBezelStyle::SmallSquare);
-                    segment.setBordered(row.current);
-                    segment.setEnabled(row.enabled);
-                    let bold = row.current || row.occupancy == SpaceOccupancy::Occupied;
-                    let font = if bold {
-                        objc2_app_kit::NSFont::boldSystemFontOfSize(SEGMENT_HEIGHT - 9.0)
-                    } else {
-                        objc2_app_kit::NSFont::systemFontOfSize(SEGMENT_HEIGHT - 9.0)
-                    };
-                    segment.setFont(Some(&font));
-                    segment.setAlphaValue(match (row.enabled, row.occupancy) {
-                        (false, _) => 0.35,
-                        (true, SpaceOccupancy::Occupied) => 1.0,
-                        (true, SpaceOccupancy::Empty) => 0.45,
-                        (true, SpaceOccupancy::Unknown) => 1.0,
-                    });
-                    if let Some(image) = row.icon.as_ref() {
-                        segment.setImage(Some(image.as_ref()));
-                        segment.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeft);
+            let columns = slot_columns(&widths);
+            let width = slot_columns_width(&columns).max(1.0);
+            let band = rows.iter().any(|row| !row.miniatures.is_empty());
+            let band_h = if band { MINIATURE_BAND_H } else { 0.0 };
+            let number_h = SEGMENT_HEIGHT - band_h;
+            let font_size = if band { 11.0 } else { 13.0 };
+            let regular_font = objc2_app_kit::NSFont::systemFontOfSize(font_size);
+            let bold_font = objc2_app_kit::NSFont::boldSystemFontOfSize(font_size);
+            let mut render = IndicatorRenderState {
+                columns,
+                slots: Vec::with_capacity(rows.len()),
+            };
+            let mut accessible = Vec::with_capacity(rows.len());
+            let mut group = 0usize;
+            for row in rows {
+                if row.separator {
+                    group += 1;
+                    render.slots.push(None);
+                    continue;
+                }
+                if group == 0 {
+                    group = 1;
+                }
+                let bold = row.current || row.occupancy == SpaceOccupancy::Occupied;
+                let alpha = match (row.enabled, row.occupancy) {
+                    (false, _) => 0.35,
+                    (true, SpaceOccupancy::Occupied) => 1.0,
+                    (true, SpaceOccupancy::Empty) => 0.45,
+                    (true, SpaceOccupancy::Unknown) => 1.0,
+                };
+                render.slots.push(Some(RenderedSlot {
+                    click: row.click,
+                    group,
+                    title: row.title.clone(),
+                    current: row.current,
+                    enabled: row.enabled,
+                    occupancy: row.occupancy,
+                    bold,
+                    has_icon: row.icon.is_some(),
+                    alpha,
+                }));
+                accessible.push(AccessibleSlot {
+                    group,
+                    ordinal: row.ordinal,
+                    occupancy: row.occupancy,
+                    current: row.current,
+                    enabled: row.enabled,
+                });
+            }
+            let image = objc2_app_kit::NSImage::initWithSize(
+                <objc2_app_kit::NSImage as objc2::AllocAnyThread>::alloc(),
+                NSSize::new(width, SEGMENT_HEIGHT),
+            );
+            // Draw into the image once per render (the same eager shape as
+            // WhichSpace v1.5.0's renderer; a menu-bar appearance change
+            // is repainted by the next render rather than by a hidden
+            // observation path here).
+            image.lockFocus();
+            for ((row, column), slot) in rows
+                .iter()
+                .zip(render.columns.iter())
+                .zip(render.slots.iter())
+            {
+                let Some(slot) = slot.as_ref() else {
+                    // Group divider: one 1pt rule, never a target.
+                    let x = (column.start + column.width / 2.0).floor() + 0.5;
+                    objc2_app_kit::NSColor::separatorColor().set();
+                    let line = objc2_app_kit::NSBezierPath::bezierPath();
+                    line.setLineWidth(1.0);
+                    line.moveToPoint(NSPoint::new(x, 5.0));
+                    line.lineToPoint(NSPoint::new(x, SEGMENT_HEIGHT - 5.0));
+                    line.stroke();
+                    continue;
+                };
+                // Pager miniature band: resolved colours ride the draws;
+                // layout units count y from the band top, AppKit from the
+                // bottom.
+                for draw in &row.miniatures {
+                    if ![draw.x, draw.y, draw.w, draw.h]
+                        .iter()
+                        .all(|v| v.is_finite())
+                        || draw.w <= 0.0
+                        || draw.h <= 0.0
+                    {
+                        continue;
                     }
-                    let tip = crate::workspace_indicator::segment_tooltip(
-                        row.position,
-                        row.occupancy,
-                        row.current,
-                        row.enabled,
+                    let rect = NSRect::new(
+                        NSPoint::new(column.start + draw.x, band_h - (draw.y + draw.h)),
+                        NSSize::new(draw.w, draw.h),
                     );
-                    segment.setToolTip(Some(&NSString::from_str(&tip)));
-                    segment.setFrame(border_nsrect((x, band_y, *w, SEGMENT_HEIGHT)));
-                    container.addSubview(&segment);
-                    if !row.miniatures.is_empty() {
-                        // SAFETY: `alloc` + direct ivars + superclass
-                        // `initWithFrame:` (the `BorderRingView` shape);
-                        // drawable rects plus resolved colours are
-                        // plain data, never dereferenced as ObjC objects.
-                        let strip: objc2::rc::Retained<WorkspaceMiniatureStrip> = objc2::msg_send![
-                            super(self.mtm.alloc::<WorkspaceMiniatureStrip>().set_ivars(
-                                Box::new(MiniatureStripIvars {
-                                    draws: row.miniatures.clone(),
-                                }),
-                            )),
-                            initWithFrame: border_nsrect((x, 0.0, *w, MINIATURE_BAND_H))
-                        ];
-                        container.addSubview(&strip);
+                    let byte = |c: u8| f64::from(c) / 255.0;
+                    objc2_app_kit::NSColor::colorWithCalibratedRed_green_blue_alpha(
+                        byte(draw.fill.0),
+                        byte(draw.fill.1),
+                        byte(draw.fill.2),
+                        1.0,
+                    )
+                    .set();
+                    objc2_app_kit::NSBezierPath::fillRect(rect);
+                    if draw.focused {
+                        objc2_app_kit::NSColor::colorWithCalibratedRed_green_blue_alpha(
+                            byte(draw.border.0),
+                            byte(draw.border.1),
+                            byte(draw.border.2),
+                            1.0,
+                        )
+                        .set();
+                        let inset = NSRect::new(
+                            NSPoint::new(rect.origin.x + 0.5, rect.origin.y + 0.5),
+                            NSSize::new(
+                                (rect.size.width - 1.0).max(0.0),
+                                (rect.size.height - 1.0).max(0.0),
+                            ),
+                        );
+                        let path = objc2_app_kit::NSBezierPath::bezierPathWithRect(inset);
+                        path.setLineWidth(1.0);
+                        path.stroke();
                     }
-                    x += *w;
-                    buttons.push(segment);
+                }
+                // Current marker: a thin rounded border in the number band
+                // (orthogonal to occupancy, same rule the old bordered
+                // bezel gave).
+                if slot.current {
+                    let rect = NSRect::new(
+                        NSPoint::new(column.start + 1.5, band_h + 1.5),
+                        NSSize::new((column.width - 3.0).max(0.0), (number_h - 3.0).max(0.0)),
+                    );
+                    if rect.size.width > 1.0 && rect.size.height > 1.0 {
+                        objc2_app_kit::NSColor::labelColor()
+                            .colorWithAlphaComponent(0.85)
+                            .set();
+                        let path =
+                            objc2_app_kit::NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                                rect, 4.0, 4.0,
+                            );
+                        path.setLineWidth(1.0);
+                        path.stroke();
+                    }
+                }
+                let mut text_left = column.start + 2.0;
+                let text_right = column.end() - 2.0;
+                if let Some(icon) = row.icon.as_ref() {
+                    let icon_rect = NSRect::new(
+                        NSPoint::new(
+                            column.start + ICON_INSET,
+                            band_h + (number_h - ICON_SIDE) / 2.0,
+                        ),
+                        NSSize::new(ICON_SIDE, ICON_SIDE),
+                    );
+                    icon.drawInRect_fromRect_operation_fraction(
+                        icon_rect,
+                        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
+                        objc2_app_kit::NSCompositingOperation::SourceOver,
+                        slot.alpha,
+                    );
+                    text_left = column.start + ICON_INSET + ICON_SIDE + ICON_GAP;
+                }
+                let title = NSString::from_str(&slot.title);
+                let color =
+                    objc2_app_kit::NSColor::labelColor().colorWithAlphaComponent(slot.alpha);
+                let font = if slot.bold { &bold_font } else { &regular_font };
+                let attributes = Self::indicator_text_attributes(font, &color);
+                // SAFETY: the attribute dictionary carries exactly the
+                // font/foreground keys the drawing methods expect, and the
+                // context is the image focus locked above.
+                unsafe {
+                    let measured = title.sizeWithAttributes(Some(&attributes));
+                    let x = text_left + ((text_right - text_left) - measured.width).max(0.0) / 2.0;
+                    let y = band_h + (number_h - measured.height) / 2.0;
+                    title.drawAtPoint_withAttributes(NSPoint::new(x, y), Some(&attributes));
                 }
             }
-            button.addSubview(&container);
-            *self.buttons.borrow_mut() = buttons;
-            *self.container.borrow_mut() = Some(container);
+            image.unlockFocus();
+            image.setTemplate(false);
+            self.item.setLength(width);
+            if let Some(button) = self.item.button(self.mtm) {
+                // The image carries every ordinal: clear the button title
+                // so stale text never overlaps it.
+                button.setTitle(&NSString::from_str(""));
+                button.setImage(Some(&image));
+                button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+                button.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
+                let description = indicator_accessibility_description(&accessible);
+                button.setAccessibilityLabel(
+                    (!description.is_empty())
+                        .then(|| NSString::from_str(&description))
+                        .as_deref(),
+                );
+                button.setAccessibilityHelp(Some(&NSString::from_str(INDICATOR_AX_HELP)));
+            }
+            *self.action_target.ivars().render.borrow_mut() = render;
         }
 
+        /// AppKit text attributes for one painted ordinal: the selected
+        /// font plus a label colour at the slot's treatment alpha.
+        fn indicator_text_attributes(
+            font: &objc2_app_kit::NSFont,
+            color: &objc2_app_kit::NSColor,
+        ) -> objc2::rc::Retained<
+            objc2_foundation::NSDictionary<
+                objc2_foundation::NSAttributedStringKey,
+                objc2::runtime::AnyObject,
+            >,
+        > {
+            use objc2::runtime::AnyObject;
+            use objc2_foundation::NSDictionary;
+            // SAFETY: both values are live AppKit objects; the dictionary
+            // stores them opaquely under the well-known attribute keys.
+            let font: &AnyObject = unsafe { &*std::ptr::from_ref(font).cast::<AnyObject>() };
+            let color: &AnyObject = unsafe { &*std::ptr::from_ref(color).cast::<AnyObject>() };
+            NSDictionary::from_slices(
+                &[unsafe { objc2_app_kit::NSFontAttributeName }, unsafe {
+                    objc2_app_kit::NSForegroundColorAttributeName
+                }],
+                &[font, color],
+            )
+        }
         /// Status item title readback through its button (appearance
-        /// evidence for the live fixture; production segment renders clear
-        /// this — the per-workspace buttons carry every ordinal).
+        /// evidence for the live fixture; production renders clear this —
+        /// the drawn image carries every ordinal).
         pub fn title_text(&self) -> String {
             self.item
                 .button(self.mtm)
@@ -8004,67 +8400,64 @@ mod macos {
                 .collect()
         }
 
-        /// Live segment readback for fixtures and the live-proof harness:
-        /// one entry per button, every field read off the actual view
-        /// (title, tag, bordered/current, enabled, font bold trait, image
-        /// presence, tooltip occupancy word, alpha, screen frame). The
-        /// occupancy word parses back out of the live tooltip — a drifted
-        /// appearance contract yields `"unparseable"`, never a guessed
-        /// verdict.
+        /// Rendered-slot readback for fixtures and the live-proof harness:
+        /// one entry per clickable slot from the SAME render that painted
+        /// the image (title, current, enabled, occupancy verdict and
+        /// bold/icon/alpha treatment) plus the shared slot geometry
+        /// converted to screen coordinates through the live status button
+        /// (the painted slot's actual click rect). Never a cached model:
+        /// the render state is replaced atomically with the image.
         pub fn segment_snapshot(&self) -> Vec<SegmentReadback> {
-            let buttons = self.buttons.borrow();
-            let container = self.container.borrow();
-            let container_view = container.as_ref();
-            let mut out = Vec::with_capacity(buttons.len());
-            for segment in buttons.iter() {
-                let occupancy = segment
-                    .toolTip()
-                    .and_then(|tip| {
-                        crate::workspace_indicator::parse_segment_tooltip(&tip.to_string())
-                    })
-                    .map(|(_, occupancy, _)| {
-                        match occupancy {
+            let render = self.action_target.ivars().render.borrow();
+            let button = self.item.button(self.mtm);
+            let window = button.as_ref().and_then(|button| button.window());
+            let slot_frame = |column: crate::workspace_indicator::SlotColumn| match (
+                button.as_ref(),
+                window.as_ref(),
+            ) {
+                (Some(button), Some(window)) => {
+                    let rect = objc2_foundation::NSRect::new(
+                        objc2_foundation::NSPoint::new(column.start, 0.0),
+                        objc2_foundation::NSSize::new(column.width, button.bounds().size.height),
+                    );
+                    let in_window = button.convertRect_toView(rect, None);
+                    frame_tuple(window.convertRectToScreen(in_window))
+                }
+                _ => (0.0, 0.0, 0.0, 0.0),
+            };
+            render
+                .slots
+                .iter()
+                .zip(render.columns.iter())
+                .filter_map(|(slot, column)| {
+                    slot.as_ref().map(|slot| SegmentReadback {
+                        position: column.position.unwrap_or(0),
+                        title: slot.title.clone(),
+                        current: slot.current,
+                        enabled: slot.enabled,
+                        occupancy: match slot.occupancy {
                             SpaceOccupancy::Occupied => "occupied",
                             SpaceOccupancy::Empty => "empty",
                             SpaceOccupancy::Unknown => "unknown",
                         }
-                        .to_owned()
+                        .to_owned(),
+                        bold: slot.bold,
+                        has_icon: slot.has_icon,
+                        alpha: slot.alpha,
+                        frame: slot_frame(*column),
                     })
-                    .unwrap_or_else(|| "unparseable".to_owned());
-                let bold = segment.font().is_some_and(|font| {
-                    font.fontDescriptor()
-                        .symbolicTraits()
-                        .contains(objc2_app_kit::NSFontDescriptorSymbolicTraits::TraitBold)
-                });
-                let frame = match (container_view, segment.window()) {
-                    (Some(container), Some(window)) => {
-                        let in_window = container.convertRect_toView(segment.frame(), None);
-                        frame_tuple(window.convertRectToScreen(in_window))
-                    }
-                    _ => (0.0, 0.0, 0.0, 0.0),
-                };
-                out.push(SegmentReadback {
-                    position: segment.tag().max(0) as usize,
-                    title: segment.title().to_string(),
-                    current: segment.isBordered(),
-                    enabled: segment.isEnabled(),
-                    occupancy,
-                    bold,
-                    has_icon: segment.image().is_some(),
-                    alpha: segment.alphaValue(),
-                    frame,
-                });
-            }
-            out
+                })
+                .collect()
         }
 
         /// Live click-target bindings in render order: `(position,
         /// expected SID, UI generation, topology revision, slot kind)`
-        /// read off the actual retained target objects. The live-proof
-        /// harness compares these against the fresh native row immediately
-        /// before any synthetic click - a mismatch proves staleness
-        /// instead of dispatching. The kind rides so the harness proves
-        /// which slot (numbered select vs trailing create) it read back.
+        /// read off the retained render map the action hit-tests. The
+        /// live-proof harness compares these against the fresh native row
+        /// immediately before any synthetic click - a mismatch proves
+        /// staleness instead of dispatching. The kind rides so the harness
+        /// proves which slot (numbered select vs trailing create) it read
+        /// back.
         pub fn segment_targets(
             &self,
         ) -> Vec<(
@@ -8074,11 +8467,13 @@ mod macos {
             u64,
             crate::workspace_indicator::IndicatorClickKind,
         )> {
-            self.targets
-                .borrow()
+            let render = self.action_target.ivars().render.borrow();
+            render
+                .slots
                 .iter()
-                .map(|target| {
-                    let click = target.ivars().click;
+                .filter_map(|slot| slot.as_ref())
+                .map(|slot| {
+                    let click = slot.click;
                     (
                         click.position,
                         click.expected_sid,
@@ -8104,9 +8499,17 @@ mod macos {
             self.item.isVisible()
         }
 
-        /// Verified teardown: remove the item from the status bar. Consumes
-        /// the handle so no AppKit call can follow the removal.
+        /// Verified teardown: detach any open mirror menu, then remove the
+        /// item from the status bar. Consumes the handle so no AppKit call
+        /// can follow the removal.
         pub fn destroy(self, _mtm: objc2::MainThreadMarker) {
+            // SAFETY: destroy is main-thread-only. Remove deferred requests
+            // for this action before removing its status item.
+            unsafe {
+                objc2_foundation::NSRunLoop::currentRunLoop()
+                    .cancelPerformSelectorsWithTarget(self.action_target.as_ref());
+            }
+            self.item.setMenu(None);
             objc2_app_kit::NSStatusBar::systemStatusBar().removeStatusItem(&self.item);
         }
     }
@@ -10286,8 +10689,7 @@ mod macos {
 
     #[repr(C)]
     struct DisplayChangeIvars {
-        dirty: Arc<AtomicU64>,
-        wake: SpaceSelectWake,
+        flag: DisplayChangeFlag,
         main_wake: super::MainWakeSignal,
     }
 
@@ -10315,11 +10717,9 @@ mod macos {
         impl DisplayChangeObserver {
             #[unsafe(method(displayParametersDidChange:))]
             fn display_parameters_did_change(&self, _notif: &objc2_foundation::NSNotification) {
-                // Minimal callback: bump dirty plus the host-wake poke so a
-                // main thread parked in the runloop returns immediately (the
-                // sticky `dirty` stays the truth; the poke only shortens the
-                // wait). No snapshot, no AX, no log.
-                self.ivars().dirty.fetch_add(1, Ordering::SeqCst);
+                // Keep screen bursts separate from active-Space changes:
+                // the main loop debounces only the former.
+                self.ivars().flag.screen_dirty.store(true, Ordering::SeqCst);
                 self.ivars().main_wake.signal();
             }
 
@@ -10328,8 +10728,8 @@ mod macos {
                 // Minimal callback: bump dirty plus the select wake and the
                 // host-wake poke (same truth/poke split as above). No
                 // snapshot, no AX, no log.
-                self.ivars().dirty.fetch_add(1, Ordering::SeqCst);
-                self.ivars().wake.notify();
+                self.ivars().flag.mark_changed();
+                self.ivars().flag.wake.notify();
                 self.ivars().main_wake.signal();
             }
         }
@@ -10365,17 +10765,14 @@ mod macos {
         /// Clone the shareable dirty flag for the controller thread.
         #[must_use]
         pub fn flag(&self) -> DisplayChangeFlag {
-            DisplayChangeFlag {
-                dirty: self.observer.ivars().dirty.clone(),
-                wake: self.observer.ivars().wake.clone(),
-            }
+            self.observer.ivars().flag.clone()
         }
 
         /// Clone the shareable active-Space wake for off-main select
         /// owners (event-driven settlement waits on this generation).
         #[must_use]
         pub fn select_wake(&self) -> SpaceSelectWake {
-            self.observer.ivars().wake.clone()
+            self.observer.ivars().flag.select_wake()
         }
     }
 
@@ -10401,8 +10798,7 @@ mod macos {
         // Bound before the macro: a struct literal inline would parse as a
         // block inside `msg_send!`.
         let ivars = DisplayChangeIvars {
-            dirty: flag.dirty.clone(),
-            wake: flag.select_wake(),
+            flag: flag.clone(),
             main_wake: main_wake.clone(),
         };
         // Ivars set directly, then the superclass `init` (the `define_class!`
@@ -11368,11 +11764,13 @@ mod stub {
     /// portable [`crate::pager::MiniatureDraw`] rows (never drawn here).
     pub struct SegmentRow {
         pub position: usize,
+        pub ordinal: usize,
         pub title: String,
         pub current: bool,
         pub enabled: bool,
         pub occupancy: crate::workspace_indicator::SpaceOccupancy,
         pub miniatures: Vec<crate::pager::MiniatureDraw>,
+        pub separator: bool,
         pub click: crate::workspace_indicator::IndicatorClick,
     }
 

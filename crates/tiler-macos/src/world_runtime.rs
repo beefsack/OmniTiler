@@ -40,7 +40,7 @@
 //! area with [`PHASE1_OUTER_GAP`](crate::runtime_types::PHASE1_OUTER_GAP) separately; core applies the inset once.
 //! The synthetic skeleton carries zero outer gap and raw [`PHASE1_BOUNDS`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -97,6 +97,12 @@ fn session_tokens() -> Option<(String, String)> {
 /// built report is rejected owner-side: nothing admits, nothing actuates.
 const UNBOUND_INCARNATION: &str = "unbound";
 const UNBOUND_GENERATION: &str = "unbound";
+
+/// Bound on retained frame-write correlation entries and spent placement
+/// tokens (oldest evicted past the bound): both correlate one-off explicit
+/// writes, never plan truth, so a bounded window of recent history is
+/// enough to settle completions and absorb reply duplicates.
+pub(crate) const FRAME_CORRELATION_CAP: usize = 4096;
 
 /// Merge the core's complete, key-ordered projection. Departed keys disappear
 /// without a verdict. Inert redelivery allocates nothing; on change, move
@@ -204,17 +210,33 @@ pub(crate) struct WorldSession {
     /// the report is accepted — attempts describe attempted actuation,
     /// never retry themselves.
     pub(crate) pending_creations: BTreeMap<String, NativeCreationAttempt>,
-    /// Staged raw frame attempts, latest-wins per window. Only explicit
-    /// float-placement writes ever stage here; ordinary frame traffic
-    /// rides the observation facts.
+    /// Staged raw frame attempts for explicit float placements only,
+    /// latest-wins per window. Ordinary layout traffic stages into the
+    /// separate [`Self::pending_layouts`] map so a layout completion can
+    /// never clobber a one-shot placement row for the same window before
+    /// the next report drains (the placement row settles a spent core
+    /// token; the layout row is re-derivable policy feedback).
     pub(crate) pending_frames: BTreeMap<String, FrameAttempt>,
-    /// Frame-write correlation: `(pid, cmd_id)` to the emitted window, its
-    /// attempted frame, and its explicit placement token, if any. Bounded
-    /// (oldest evicted).
+    /// Staged raw layout attempts for ordinary (tokenless `Controlled`)
+    /// frame writes, latest-wins per window, bounded oldest-evicted.
+    /// Separate from [`Self::pending_frames`] by design (see above); the
+    /// drain merges placement rows first, so one window never carries two
+    /// frame rows on the wire (`duplicate-frame`).
+    pending_layouts: BTreeMap<String, FrameAttempt>,
+    /// Frame-write correlation for explicit float placements:
+    /// `(pid, cmd_id)` to the emitted window, its attempted frame, and its
+    /// placement token. Bounded (oldest evicted).
     pending_writes: BTreeMap<(u32, u64), (String, Rect, Option<String>)>,
+    /// Frame-write correlation for ordinary layout writes: `(pid, cmd_id)`
+    /// to the emitted window and its attempted frame, bounded (oldest
+    /// evicted). Never shares space with the placement correlation.
+    pub(crate) pending_layout_writes: BTreeMap<(u32, u64), (String, Rect)>,
     /// Explicit float-placement tokens already written once (exactly-once
-    /// geometry under `frame_operation`).
-    spent_frame_ops: BTreeSet<String>,
+    /// geometry under `frame_operation`). Bounded oldest-evicted like the
+    /// write correlation, and generation-scoped: core command sequences
+    /// restart with a fresh generation, so a dead generation's spend must
+    /// never pre-refuse a new token that reuses the same string.
+    spent_frame_ops: VecDeque<String>,
     /// Adapter-owned deferred reveals for explicit float placements
     /// withheld while the lifetime was natively fullscreen, keyed by
     /// runtime window id. Ordinary float rows arrive `Untouched` from
@@ -350,8 +372,10 @@ impl WorldSession {
                 pending_members: BTreeMap::new(),
                 pending_creations: BTreeMap::new(),
                 pending_frames: BTreeMap::new(),
+                pending_layouts: BTreeMap::new(),
                 pending_writes: BTreeMap::new(),
-                spent_frame_ops: BTreeSet::new(),
+                pending_layout_writes: BTreeMap::new(),
+                spent_frame_ops: VecDeque::new(),
                 pending_fullscreen_float_placements: BTreeMap::new(),
                 pending_close_feedback: None,
                 coverage_gap: false,
@@ -398,8 +422,10 @@ impl WorldSession {
             pending_members: BTreeMap::new(),
             pending_creations: BTreeMap::new(),
             pending_frames: BTreeMap::new(),
+            pending_layouts: BTreeMap::new(),
             pending_writes: BTreeMap::new(),
-            spent_frame_ops: BTreeSet::new(),
+            pending_layout_writes: BTreeMap::new(),
+            spent_frame_ops: VecDeque::new(),
             pending_fullscreen_float_placements: BTreeMap::new(),
             pending_close_feedback: None,
             coverage_gap: false,
@@ -668,7 +694,12 @@ impl WorldSession {
             .is_err()
     }
 
-    /// The applied projections and gesture terminal are generation-scoped.
+    /// The applied projections, gesture terminal, and one-off
+    /// explicit-write memory are generation-scoped. Core command sequences
+    /// restart with a fresh generation, so a stale spend would pre-refuse a
+    /// NEW placement token that reuses the same string (zero attempts for a
+    /// published token), and a deferred fullscreen reveal still carries a
+    /// dead generation's durable target. A rebind withdraws both.
     pub(crate) fn sync_settlement_generation(&mut self, bound: &str) -> bool {
         if self.settlements_generation == bound {
             return false;
@@ -677,6 +708,8 @@ impl WorldSession {
         self.gesture_settlement = None;
         self.operation_settlements.clear();
         self.switch_settlements.clear();
+        self.spent_frame_ops.clear();
+        self.pending_fullscreen_float_placements.clear();
         true
     }
 
@@ -995,10 +1028,22 @@ impl WorldSession {
             .collect()
     }
 
+    /// Drain staged frame attempts for the next report. Placement rows
+    /// (explicit one-shot float operations) win a same-window collision
+    /// with a layout row and the displaced layout row is disposed of here:
+    /// one window owns exactly one frame authority per report (wire
+    /// `duplicate-frame` refuses two rows), a placement row settles a token
+    /// the adapter already spent (it can never be re-derived), while a
+    /// layout row is advisory anti-fighting feedback the core re-learns from
+    /// the next observation of the same window. Both maps drain on every
+    /// dispatch whether or not the report is accepted (attempts describe
+    /// attempted actuation and never retry themselves).
     fn take_frame_attempts(&mut self) -> Vec<FrameAttempt> {
-        std::mem::take(&mut self.pending_frames)
-            .into_values()
-            .collect()
+        let mut frames = std::mem::take(&mut self.pending_frames);
+        for (window, attempt) in std::mem::take(&mut self.pending_layouts) {
+            frames.entry(window).or_insert(attempt);
+        }
+        frames.into_values().collect()
     }
 
     /// Stage one raw close-focus feedback row for the next dispatched
@@ -1063,8 +1108,43 @@ impl WorldSession {
     }
 
     /// Spend one explicit float-placement token; false when already spent.
+    /// Bounded oldest-evicted past [`FRAME_CORRELATION_CAP`], and scoped to
+    /// the bound core generation (see
+    /// [`WorldSession::sync_settlement_generation`]). Called only at worker
+    /// handoff (see [`crate::world_dispatch`]): a token must never burn
+    /// before a live slot took the command.
     pub(crate) fn spend_frame_op(&mut self, operation: &str) -> bool {
-        self.spent_frame_ops.insert(operation.to_owned())
+        if self.frame_op_spent(operation) {
+            return false;
+        }
+        if self.spent_frame_ops.len() >= FRAME_CORRELATION_CAP {
+            self.spent_frame_ops.pop_front();
+        }
+        self.spent_frame_ops.push_back(operation.to_owned());
+        true
+    }
+
+    /// Whether this explicit placement token is already spent: its command
+    /// is queued in a slot, in flight, or was attempted.
+    pub(crate) fn frame_op_spent(&self, operation: &str) -> bool {
+        self.spent_frame_ops.iter().any(|spent| spent == operation)
+    }
+
+    /// Release one never-started explicit placement's spend and drop its
+    /// write correlation: the token still owes its first attempt if a later
+    /// accepted reply republishes it eligible. Never called once a native
+    /// call has started (that attempt is owed to the core).
+    pub(crate) fn release_frame_op(&mut self, pid: u32, cmd_id: u64, operation: &str) -> bool {
+        self.pending_writes.remove(&(pid, cmd_id));
+        let Some(index) = self
+            .spent_frame_ops
+            .iter()
+            .position(|spent| spent == operation)
+        else {
+            return false;
+        };
+        self.spent_frame_ops.remove(index);
+        true
     }
 }
 
@@ -1642,52 +1722,52 @@ pub(crate) fn map_gesture_preview(
 /// reported success stages `Accepted` (arrival is never claimed here —
 /// later observations prove it); partial writes and timeouts are
 /// throwing/ambiguous (`Threw`, never blindly repeated); proven failures
-/// are explicit refusals (`Refused`).
+/// are explicit refusals (`Refused`). `FencedNoCall` is a pre-call refusal
+/// (no AX setter ran) and is short-circuited by the staging path before
+/// this mapping: it must never stage a row at all.
 pub(crate) fn completion_setter(completion: &AxCompletion) -> FrameSetter {
     match completion {
         AxCompletion::Applied { .. } => FrameSetter::Accepted,
         AxCompletion::PartialApplied { .. } => FrameSetter::Threw,
-        AxCompletion::Failed { .. } => FrameSetter::Refused,
+        AxCompletion::Failed { .. } | AxCompletion::FencedNoCall { .. } => FrameSetter::Refused,
         AxCompletion::Timeout { .. } => FrameSetter::Threw,
     }
 }
 
-/// Genuine elapsed time for one completion, when the worker reported one:
-/// applied/partial writes carry `elapsed_ms`, timeouts carry `timeout_ms`,
-/// and a proven failure reports no duration (`None`, never a fabricated 0).
-pub(crate) fn completion_attempt_ms(completion: &AxCompletion) -> Option<u64> {
-    match completion {
-        AxCompletion::Applied { elapsed_ms } | AxCompletion::PartialApplied { elapsed_ms, .. } => {
-            Some(*elapsed_ms)
-        }
-        AxCompletion::Timeout { timeout_ms } => Some(*timeout_ms),
-        AxCompletion::Failed { .. } => None,
-    }
-}
-
 /// Immediate post-write readback from one [`AxCompletion`], when the
-/// worker captured it (`None` = unreadable, never guessed).
+/// worker captured a carriable one (`None` = unreadable, not carriable on
+/// the wire, or no readback lane, never guessed). The wire bound is
+/// enforced here as the single staging choke point: AppKit can report
+/// float geometry outside the carried rectangle, and a non-carriable
+/// readback must ride as unreadable rather than invalidate the whole
+/// report (`frame-readback-invalid`).
 pub(crate) fn completion_readback(completion: &AxCompletion) -> Option<Rect> {
-    match completion {
-        AxCompletion::PartialApplied {
-            readback_xywh: Some((x, y, w, h)),
-            ..
-        } => Some(Rect {
-            x: *x,
-            y: *y,
-            w: *w,
-            h: *h,
-        }),
-        _ => None,
+    let (AxCompletion::Applied {
+        readback_xywh: Some((x, y, w, h)),
+        ..
     }
+    | AxCompletion::PartialApplied {
+        readback_xywh: Some((x, y, w, h)),
+        ..
+    }) = completion
+    else {
+        return None;
+    };
+    tiler_core::bounds::valid_carried_rect(*x, *y, *w, *h).then_some(Rect {
+        x: *x,
+        y: *y,
+        w: *w,
+        h: *h,
+    })
 }
 
-/// Track one emitted frame write for raw-attempt correlation: ONLY rows
-/// carrying an explicit placement token (`frame_operation`) are recorded —
-/// ordinary frame traffic stages nothing core-side (it rides the
-/// completions counters), so it must never occupy correlation space nor
-/// evict a pending placement entry. Bounded (oldest placement evicted).
-/// The attempted target frame rides along as the core's correlation.
+/// Track one emitted frame write carrying an explicit placement token
+/// (`frame_operation`) for raw-attempt correlation. Placement writes are
+/// one-shot imperative operations, so they keep their own correlation space
+/// (see [`track_layout_write`] for the ordinary lane): neither may evict
+/// the other. Bounded to [`FRAME_CORRELATION_CAP`] entries (oldest
+/// placement evicted). The attempted target frame rides along as the core's
+/// correlation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn track_write(
     session: &mut WorldSession,
@@ -1700,7 +1780,7 @@ pub(crate) fn track_write(
     let Some(operation) = operation else {
         return;
     };
-    if session.pending_writes.len() > 4096 {
+    if session.pending_writes.len() >= FRAME_CORRELATION_CAP {
         session.pending_writes.pop_first();
     }
     session.pending_writes.insert(
@@ -1709,21 +1789,51 @@ pub(crate) fn track_write(
     );
 }
 
-/// Stage one raw frame attempt for an explicit placement token: only rows
-/// carrying a `frame_operation` settle anything core-side, and only with
-/// the recorded disposition (never false success). `dpi_before` /
+/// Track one emitted ordinary layout write (a `Controlled` row, which
+/// carries no placement token) for raw-attempt correlation. The core's
+/// anti-fighting policy (clamp memory, transient backoff, burst budget)
+/// only consumes reported attempts, so a macOS Controlled write must stage
+/// one; keeping it in its own bounded map means layout traffic can never
+/// evict a one-shot placement entry nor be mistaken for one. Bounded to
+/// [`FRAME_CORRELATION_CAP`] entries (oldest evicted).
+pub(crate) fn track_layout_write(
+    session: &mut WorldSession,
+    wpid: u32,
+    cmd_id: u64,
+    window: &str,
+    target: Rect,
+) {
+    if session.pending_layout_writes.len() >= FRAME_CORRELATION_CAP {
+        session.pending_layout_writes.pop_first();
+    }
+    session
+        .pending_layout_writes
+        .insert((wpid, cmd_id), (window.to_owned(), target));
+}
+
+/// Stage one raw frame attempt from one correlation: an explicit placement
+/// token settles with the recorded disposition (never false success), and
+/// an ordinary layout write stages `FramePurpose::Layout`. Both lanes carry
+/// the immediate post-write readback so the core can distinguish a
+/// successful-but-clamped write from a transient failure. `dpi_before` /
 /// `dpi_after` are always `None` (no per-window basis, never guessed);
 /// `prewrite` is always `None` (no pre-write read at completion time —
 /// only an explicit refusal with an unchanged readable preimage would
 /// prove refusal, so a bare refusal latches ambiguity, never a verdict).
-/// `attempt_ms` rides only a genuinely reported duration (a proven failure
-/// reports none). Each fresh attempt takes one producer-minted identity;
-/// the same staged row keeps it across report resends. Ordinary frame
-/// writes stay on the completions counters and logs.
+/// `attempt_ms` is the process-monotonic stamp of the native call on the
+/// same epoch as the report `monotonic_ms` (`None` while clockless), never
+/// a per-call duration: the core compares it against observation stamps for
+/// burst quiet re-arm and transient backoff. Each fresh attempt takes one
+/// producer-minted identity; the same staged row keeps it across report
+/// resends.
 /// Consumes the correlation entry (one completion per command) and drops
 /// stale generations (a relaunched PID never settles under an old
-/// command). Returns whether an attempt row staged (the caller advances
-/// the watermark only then: the staged row changes the next report).
+/// command). A typed pre-call fence ([`AxCompletion::FencedNoCall`])
+/// stages nothing on either lane: no AX setter ran, so it must not spend
+/// core burst or transient budget. Returns whether an attempt row staged
+/// (the caller advances the watermark only then: the staged row changes
+/// the next report).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_write_feedback(
     session: &mut WorldSession,
     retained: &RetainedCore,
@@ -1731,6 +1841,7 @@ pub(crate) fn stage_write_feedback(
     generation: u64,
     cmd_id: u64,
     completion: &AxCompletion,
+    attempt_ms: Option<u64>,
 ) -> bool {
     if retained
         .apps
@@ -1738,16 +1849,46 @@ pub(crate) fn stage_write_feedback(
         .is_none_or(|app| app.generation != generation)
     {
         session.pending_writes.remove(&(pid, cmd_id));
+        session.pending_layout_writes.remove(&(pid, cmd_id));
         return false;
     }
-    let Some((window, target, operation)) = session.pending_writes.remove(&(pid, cmd_id)) else {
+    let placement = session.pending_writes.remove(&(pid, cmd_id));
+    let layout = session.pending_layout_writes.remove(&(pid, cmd_id));
+    if matches!(completion, AxCompletion::FencedNoCall { .. }) {
         return false;
-    };
-    let Some(operation) = operation else {
+    }
+    if let Some((window, target, operation)) = placement {
+        let Some(operation) = operation else {
+            return false;
+        };
+        let attempt_id = session.sequencer().next_frame_attempt_id();
+        session.pending_frames.insert(
+            window.clone(),
+            FrameAttempt {
+                window: WindowId(window),
+                target,
+                disposition: completion_setter(completion),
+                readback: completion_readback(completion),
+                dpi_before: None,
+                dpi_after: None,
+                attempt_id,
+                attempt_ms,
+                purpose: FramePurpose::FloatPlacement {
+                    operation_id: operation,
+                    prewrite: None,
+                },
+            },
+        );
+        return true;
+    }
+    let Some((window, target)) = layout else {
         return false;
     };
     let attempt_id = session.sequencer().next_frame_attempt_id();
-    session.pending_frames.insert(
+    if session.pending_layouts.len() >= FRAME_CORRELATION_CAP {
+        session.pending_layouts.pop_first();
+    }
+    session.pending_layouts.insert(
         window.clone(),
         FrameAttempt {
             window: WindowId(window),
@@ -1757,19 +1898,19 @@ pub(crate) fn stage_write_feedback(
             dpi_before: None,
             dpi_after: None,
             attempt_id,
-            attempt_ms: completion_attempt_ms(completion),
-            purpose: FramePurpose::FloatPlacement {
-                operation_id: operation,
-                prewrite: None,
-            },
+            attempt_ms,
+            purpose: FramePurpose::Layout,
         },
     );
     true
 }
 
 /// Drop every retained mapping row for one terminated PID: homing,
-/// minimized lifetimes, and write/effect correlation. Called before the
-/// terminate dispatch so closed windows ride as closes, never members.
+/// minimized lifetimes, and both write-correlation lanes plus any staged
+/// layout attempt carried by its windows. Called before the terminate
+/// dispatch so closed windows ride as closes, never members; a terminated
+/// lifetime's layout feedback is dead evidence (core prunes it anyway) and
+/// must never cost a frame row in the terminate report.
 pub(crate) fn forget_world_members(
     session: &mut WorldSession,
     retained: &mut RetainedCore,
@@ -1780,6 +1921,13 @@ pub(crate) fn forget_world_members(
         .minimized
         .retain(|id, _| !id.starts_with(&format!("{pid}_")));
     session.pending_writes.retain(|(wpid, _), _| *wpid != pid);
+    session
+        .pending_layout_writes
+        .retain(|(wpid, _), _| *wpid != pid);
+    let prefix = format!("{pid}_");
+    session
+        .pending_layouts
+        .retain(|window, _| !window.starts_with(&prefix));
     clear_focus_into(retained, pid);
 }
 
@@ -1875,6 +2023,102 @@ mod tests {
         )
         .expect("synthetic report builds");
         assert!(second.focus_feedback.is_empty());
+    }
+
+    #[test]
+    fn spent_frame_ops_are_bounded_like_the_placement_correlation() {
+        // Explicit placement tokens are per-command and never recycled
+        // within one core generation, so the spent set must stay bounded
+        // instead of growing for the life of the session (the write
+        // correlation map shares the same bound).
+        let mut session = fixed_session("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        for id in 0..=FRAME_CORRELATION_CAP {
+            assert!(
+                session.spend_frame_op(&format!("op-{id}")),
+                "a fresh token spends once: op-{id}"
+            );
+        }
+        assert!(
+            session.spend_frame_op("op-0"),
+            "the oldest spend is evicted past the bound"
+        );
+        assert!(
+            !session.spend_frame_op(&format!("op-{FRAME_CORRELATION_CAP}")),
+            "the newest spend stays remembered"
+        );
+    }
+
+    #[test]
+    fn generation_rebind_clears_placement_spend_and_deferrals() {
+        // Both are scoped to the bound core generation: core command
+        // sequences restart with a fresh generation, so a stale spend would
+        // pre-refuse a NEW token that reuses the same string, and a deferred
+        // reveal would write a dead generation's durable target.
+        let mut session = fixed_session("ffffffffffffffffffffffffffffffff");
+        assert!(session.spend_frame_op("op-2"));
+        session.pending_fullscreen_float_placements.insert(
+            "1001_2".to_owned(),
+            PendingFullscreenFloatPlacement {
+                operation: "op-2".to_owned(),
+                target: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 10,
+                    h: 10,
+                },
+                generation: 1,
+            },
+        );
+        assert!(session.sync_settlement_generation("gen-2"), "rebind");
+        assert!(
+            session.spend_frame_op("op-2"),
+            "a fresh generation's token is never pre-refused by a dead spend"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "a dead generation's deferred reveal is withdrawn"
+        );
+    }
+
+    #[test]
+    fn released_placement_spend_allows_the_first_attempt_again() {
+        // A token cancelled before any native call hands its spend back, so
+        // the same token republished eligible still gets its first attempt.
+        // Release also drops the write correlation (nothing ran, so no
+        // completion can ever consume it) and a second release changes
+        // nothing.
+        let mut session = fixed_session("dddddddddddddddddddddddddddddddd");
+        let target = Rect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
+        track_write(
+            &mut session,
+            1001,
+            7,
+            "1001_2",
+            target,
+            Some("op-2"),
+        );
+        assert!(session.spend_frame_op("op-2"));
+        assert!(session.frame_op_spent("op-2"));
+        assert_eq!(session.pending_writes.len(), 1);
+        assert!(session.release_frame_op(1001, 7, "op-2"));
+        assert!(!session.frame_op_spent("op-2"));
+        assert!(
+            session.pending_writes.is_empty(),
+            "a never-started placement's correlation is dropped with its spend"
+        );
+        assert!(
+            !session.release_frame_op(1001, 7, "op-2"),
+            "a second release finds nothing and changes nothing"
+        );
+        assert!(
+            session.spend_frame_op("op-2"),
+            "the republished token spends again: its first attempt is still owed"
+        );
     }
 
     #[test]

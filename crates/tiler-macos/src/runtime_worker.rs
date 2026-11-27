@@ -58,6 +58,7 @@ fn send_observation(
     generation: u64,
     seq: u64,
     snapshot: &BackendSnapshot,
+    completed_frames: &mut Vec<EngineJob>,
 ) -> bool {
     let job = EngineJob::Observation {
         pid,
@@ -69,7 +70,7 @@ fn send_observation(
     // Bump before enqueue (see `invalidate_clock` in runtime): the engine
     // may dequeue the instant the job lands.
     crate::runtime::invalidate_clock(shared);
-    if inbox.try_send_data(job) {
+    if inbox.try_send_observation(job, completed_frames) {
         {
             let mut guard = lock_shared(shared);
             guard.diagnostics.observations_published += 1;
@@ -102,6 +103,7 @@ fn send_observation_scoped(
     generation: u64,
     seq: u64,
     snapshot: &ScopedBackendSnapshot,
+    completed_frames: &mut Vec<EngineJob>,
 ) -> bool {
     // Host-change intake: poll-result receipt IS intake (no tap or
     // notification callback exists on this path). One mint off the shared
@@ -122,7 +124,7 @@ fn send_observation_scoped(
     // Bump before enqueue (see `invalidate_clock` in runtime): the engine
     // may dequeue the instant the job lands.
     crate::runtime::invalidate_clock(shared);
-    if inbox.try_send_data(job) {
+    if inbox.try_send_observation(job, completed_frames) {
         {
             let mut guard = lock_shared(shared);
             guard.diagnostics.observations_published += 1;
@@ -140,6 +142,34 @@ fn send_observation_scoped(
         true
     } else {
         false
+    }
+}
+
+fn send_unpaired_frame_results(
+    inbox: &Inbox,
+    shared: &Arc<Mutex<Shared>>,
+    pid: u32,
+    generation: u64,
+    completed_frames: &mut Vec<EngineJob>,
+    drop_overflow: bool,
+) {
+    for job in completed_frames.drain(..) {
+        let EngineJob::AxResult { cmd_id, .. } = &job else {
+            unreachable!("only frame results are buffered")
+        };
+        let cmd_id = *cmd_id;
+        if drop_overflow || !inbox.try_send_data(job) {
+            lock_shared(shared).diagnostics.result_dropped_full += 1;
+            emit(
+                shared,
+                pid,
+                generation,
+                cmd_id,
+                "ax-result",
+                "queue-full-dropped",
+                0,
+            );
+        }
     }
 }
 
@@ -1048,6 +1078,69 @@ pub(crate) fn handle_close_focus_command(
     }
 }
 
+/// Start fence for one taken frame command. A newer desired set supersedes
+/// the ordinary desired-state remainder wholesale; a one-shot explicit
+/// placement (`FrameCommand::operation`) leads the batch (see
+/// [`FrameSlot`]) and its spent token still owes exactly one native attempt,
+/// so a later batch for other windows never fences it. What does cancel it
+/// is authority: the owning slot keeps only the `(window, token)` pairs the
+/// latest accepted reply still publishes eligible, so a taken one-shot whose
+/// authorization stopped is cancelled before any native call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameFence {
+    Dispatch,
+    /// Ordinary rows: a newer desired set superseded the remainder.
+    Superseded,
+    /// A one-shot placement the latest accepted reply no longer authorizes.
+    Withdrawn,
+}
+
+fn fence_frame_command(
+    cmd: &crate::runtime_types::FrameCommand,
+    taken_rev: u64,
+    current_rev: u64,
+    authorized: bool,
+) -> FrameFence {
+    match cmd.operation {
+        Some(_) if !authorized => FrameFence::Withdrawn,
+        Some(_) => FrameFence::Dispatch,
+        None if current_rev != taken_rev => FrameFence::Superseded,
+        None => FrameFence::Dispatch,
+    }
+}
+
+/// Release one never-started explicit placement's spend (worker half): the
+/// token still owes its first attempt if a later accepted reply republishes
+/// it eligible. Control admission - a release must never be dropped. Never
+/// called after the backend call: that attempt is owed to the core.
+fn release_cancelled_frame_op(
+    inbox: &Inbox,
+    shared: &Arc<Mutex<Shared>>,
+    pid: u32,
+    generation: u64,
+    cmd: &crate::runtime_types::FrameCommand,
+) {
+    let Some(operation) = cmd.operation.clone() else {
+        return;
+    };
+    lock_shared(shared).diagnostics.frames_op_withdrawn += 1;
+    emit(
+        shared,
+        pid,
+        generation,
+        cmd.cmd_id,
+        "frame",
+        "op-withdrawn",
+        0,
+    );
+    let _ = inbox.send_control(EngineJob::FrameOpReleased {
+        pid,
+        generation,
+        cmd_id: cmd.cmd_id,
+        operation,
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn app_worker_main(
     pid: u32,
@@ -1104,6 +1197,7 @@ pub(crate) fn app_worker_main(
     // watermark so a test fence can prove every attempt predating a mark is
     // either engine-processed or dropped.
     let mut sends_attempted: u64 = 0;
+    let mut completed_frames = Vec::new();
     // Slot revision drained through: taking a batch drains everything at or
     // below its revision (older untaken batches are superseded, never
     // actuated later); quiet passes drain through the observed current
@@ -1152,7 +1246,15 @@ pub(crate) fn app_worker_main(
                 stamp_owner_focus(&mut snapshot, lock_shared(&shared).focus_evidence.clone());
                 seq += 1;
                 sends_attempted += 1;
-                if send_observation_scoped(&inbox, &shared, pid, generation, seq, &snapshot) {
+                if send_observation_scoped(
+                    &inbox,
+                    &shared,
+                    pid,
+                    generation,
+                    seq,
+                    &snapshot,
+                    &mut completed_frames,
+                ) {
                     focus_hint = snapshot.focused_wid;
                     last_scoped = Some(snapshot);
                 } else {
@@ -1170,7 +1272,15 @@ pub(crate) fn app_worker_main(
                 };
                 seq += 1;
                 sends_attempted += 1;
-                if send_observation(&inbox, &shared, pid, generation, seq, &snapshot) {
+                if send_observation(
+                    &inbox,
+                    &shared,
+                    pid,
+                    generation,
+                    seq,
+                    &snapshot,
+                    &mut completed_frames,
+                ) {
                     last = Some(snapshot);
                 } else {
                     pending.set(snapshot);
@@ -1260,6 +1370,7 @@ pub(crate) fn app_worker_main(
         }
         // Flush the latest retained observation (backpressure: retained and
         // retried, never silently lost).
+        let has_snapshot = !pending.is_empty() || pending_scoped.is_some();
         if native_mode {
             if let Some(mut snapshot) = pending_scoped.take() {
                 // Evidence stamps at send time (freshest), never at stage
@@ -1270,7 +1381,15 @@ pub(crate) fn app_worker_main(
                 stamp_owner_focus(&mut snapshot, lock_shared(&shared).focus_evidence.clone());
                 seq += 1;
                 sends_attempted += 1;
-                if send_observation_scoped(&inbox, &shared, pid, generation, seq, &snapshot) {
+                if send_observation_scoped(
+                    &inbox,
+                    &shared,
+                    pid,
+                    generation,
+                    seq,
+                    &snapshot,
+                    &mut completed_frames,
+                ) {
                     focus_hint = snapshot.focused_wid;
                     last_scoped = Some(snapshot);
                 } else {
@@ -1280,13 +1399,31 @@ pub(crate) fn app_worker_main(
         } else if let Some(snapshot) = pending.take() {
             seq += 1;
             sends_attempted += 1;
-            if send_observation(&inbox, &shared, pid, generation, seq, &snapshot) {
+            if send_observation(
+                &inbox,
+                &shared,
+                pid,
+                generation,
+                seq,
+                &snapshot,
+                &mut completed_frames,
+            ) {
                 focus_hint = snapshot.focused_wid;
                 last = Some(snapshot);
             } else {
                 pending.set(snapshot);
             }
         }
+        // Only a paired enqueue can carry the results of a changed
+        // snapshot. On dedup the retained facts were already published.
+        send_unpaired_frame_results(
+            &inbox,
+            &shared,
+            pid,
+            generation,
+            &mut completed_frames,
+            has_snapshot,
+        );
         // Owner arrival capture for the current pending selection intent
         // (native mode only): at the existing multiplex triggers, notice a
         // new pending tuple, watermark, revision, context, or lifetime and
@@ -1539,6 +1676,9 @@ pub(crate) fn app_worker_main(
             // a superseding desired set. Calls already inside the backend
             // finish on their own bound.
             if stop.load(Ordering::SeqCst) {
+                // Teardown: spends are not released here - the engine
+                // session is going away with this runtime, and a released
+                // token could only be re-queued into a dead slot.
                 let skipped = (cmds.len() - index) as u64;
                 lock_shared(&shared).diagnostics.terminated_invalidated += skipped;
                 emit(
@@ -1552,19 +1692,37 @@ pub(crate) fn app_worker_main(
                 );
                 break;
             }
-            if frames.current_rev() != taken_rev {
-                let skipped = (cmds.len() - index) as u64;
-                lock_shared(&shared).diagnostics.frames_coalesced += skipped;
-                emit(
-                    &shared,
-                    pid,
-                    generation,
-                    cmd.cmd_id,
-                    "frame",
-                    "superseded",
-                    skipped,
-                );
-                break;
+            // A newer desired set supersedes the desired-state remainder
+            // wholesale: nothing in it starts after a superseding plan, and
+            // the next plan (or observation) converges instead. One-shot
+            // explicit placements lead the batch (see `FrameSlot`) and are
+            // fenced by authority instead: only the latest accepted reply
+            // can cancel an owed attempt. Cancelled before any native call,
+            // so the spend is released for a later eligible republish.
+            let authorized = cmd
+                .operation
+                .as_deref()
+                .is_none_or(|operation| frames.op_authorized(&cmd.window, operation));
+            match fence_frame_command(cmd, taken_rev, frames.current_rev(), authorized) {
+                FrameFence::Dispatch => {}
+                FrameFence::Superseded => {
+                    let skipped = (cmds.len() - index) as u64;
+                    lock_shared(&shared).diagnostics.frames_coalesced += skipped;
+                    emit(
+                        &shared,
+                        pid,
+                        generation,
+                        cmd.cmd_id,
+                        "frame",
+                        "superseded",
+                        skipped,
+                    );
+                    break;
+                }
+                FrameFence::Withdrawn => {
+                    release_cancelled_frame_op(&inbox, &shared, pid, generation, cmd);
+                    continue;
+                }
             }
             if cmd.generation != generation || cmd.pid != pid {
                 lock_shared(&shared).diagnostics.stale_dropped += 1;
@@ -1577,12 +1735,16 @@ pub(crate) fn app_worker_main(
                     "stale-rejected",
                     0,
                 );
+                // A never-started placement from a dead lifetime releases its
+                // spend: a later eligible republish still gets its attempt.
+                release_cancelled_frame_op(&inbox, &shared, pid, generation, cmd);
                 continue;
             }
             // Topology revision fence: a display/Space change mid-plan
             // supersedes taken commands exactly like a newer desired set.
             // The remainder of the batch never starts; the next plan (or
-            // the next observation) converges instead. No retry here.
+            // the next observation) converges instead. No retry here, but
+            // never-started placements release their spend (nothing ran).
             if cmd.topology_revision != lock_shared(&shared).topology_revision {
                 let skipped = (cmds.len() - index) as u64;
                 lock_shared(&shared).diagnostics.frames_coalesced += skipped;
@@ -1595,6 +1757,9 @@ pub(crate) fn app_worker_main(
                     "revision-superseded",
                     skipped,
                 );
+                for dropped in &cmds[index..] {
+                    release_cancelled_frame_op(&inbox, &shared, pid, generation, dropped);
+                }
                 break;
             }
             // Redundant once observers report back: desired geometry already
@@ -1630,6 +1795,10 @@ pub(crate) fn app_worker_main(
                     .is_some()
             };
             if redundant {
+                // Evidence, not a cancellation: the owed attempt is
+                // consumed (the desktop already shows the durable target, so
+                // the core is not withholding authority) and its spend is
+                // retained.
                 {
                     let mut guard = lock_shared(&shared);
                     guard.diagnostics.frames_redundant_skipped += 1;
@@ -1661,6 +1830,19 @@ pub(crate) fn app_worker_main(
                 0,
             );
             let apply_clock = crate::stage_timing::PhaseClock::start();
+            // Stamp the native call on the process-monotonic epoch the
+            // report `monotonic_ms` uses: the core correlates this stamp
+            // against observation stamps for burst quiet re-arm and
+            // transient backoff, so a per-call duration would be a foreign
+            // epoch. Taken at the call boundary (before the setter runs).
+            // Zero is that epoch's "not sampled yet" sentinel (core treats a
+            // zero attempt stamp as clockless and never proves quiet or
+            // backoff from it), so report it as absent rather than a real
+            // instant.
+            let attempt_ms = match crate::input_eligibility::now_ms() {
+                0 => None,
+                stamp => Some(stamp),
+            };
             let completion = backend.apply_frame(cmd);
             if crate::stage_timing::enabled() {
                 crate::stage_timing::record_for(
@@ -1673,25 +1855,14 @@ pub(crate) fn app_worker_main(
                     apply_clock.elapsed(),
                 );
             }
-            let job = EngineJob::AxResult {
+            completed_frames.push(EngineJob::AxResult {
                 pid,
                 generation,
                 cmd_id: cmd.cmd_id,
                 completion,
-            };
+                attempt_ms,
+            });
             sends_attempted += 1;
-            if !inbox.try_send_data(job) {
-                lock_shared(&shared).diagnostics.result_dropped_full += 1;
-                emit(
-                    &shared,
-                    pid,
-                    generation,
-                    cmd.cmd_id,
-                    "ax-result",
-                    "queue-full-dropped",
-                    0,
-                );
-            }
         }
         if stop.load(Ordering::SeqCst) {
             break;
@@ -1746,11 +1917,8 @@ pub(crate) fn app_worker_main(
                 generation,
                 cmds.first().map(|cmd| cmd.cmd_id).unwrap_or(0),
             );
-            // Post-batch observed readback total: input-to-post-batch
-            // snapshot-ready per unique parent trace in this batch. The
-            // `AxResult`s above queue before this snapshot, and
-            // redundant-skipped commands emit no `AxResult` at all, so this
-            // endpoint - not the settle total - carries their ready total.
+            // Input-to-readback-ready per unique parent trace in this
+            // batch, including redundant skips with no AxResult.
             // One clock read, no new syscall/read; aggregate emit only.
             // Dispatch success stays distinct from convergence/paint:
             // readiness only, never target equality.
@@ -1791,17 +1959,25 @@ pub(crate) fn app_worker_main(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        // End-of-pass mark: the taken batch is terminally accounted (every
-        // command actuated or fenced above), its completion attempts were
-        // made ahead of this mark, and the readback staged (or failed)
-        // honestly.
+        // Calls are accounted; buffered completions and the readback
+        // still owe a publication pass before the batch settles.
         frames.note_drain(WorkerDrainMark::pass(
             generation,
             drained,
             sends_attempted,
-            !pending.is_empty() || pending_scoped.is_some(),
+            !pending.is_empty() || pending_scoped.is_some() || !completed_frames.is_empty(),
         ));
     }
+    // Calls that returned during termination still owe an engine result
+    // for lifetime rejection and accounting; there will be no owner read.
+    send_unpaired_frame_results(
+        &inbox,
+        &shared,
+        pid,
+        generation,
+        &mut completed_frames,
+        false,
+    );
     // Final mark: teardown stops the slot, invalidating anything still
     // queued, so the frozen current revision is drained by definition and
     // nothing further will be sent. Retained observations die with the
@@ -2016,6 +2192,55 @@ mod tests {
         assert_eq!(
             gate_deferred_focus(4242, 7, "4242_7", Some((4242, Some(8)))),
             PriorFocusGate::Moved,
+        );
+    }
+
+    #[test]
+    fn frame_fence_spares_owed_placement_until_authority_stops() {
+        // A newer desired set supersedes the desired-state remainder taken
+        // under an older revision. A one-shot explicit placement carries a
+        // token already spent at handoff, so a batch for other windows is not
+        // a withdrawal of it: only the owning slot's authority (the latest
+        // accepted reply still publishing that exact `(window, token)`) can
+        // cancel it, and that cancellation is a release, never a refusal.
+        let cmd = |operation: Option<&str>| crate::runtime_types::FrameCommand {
+            pid: 7,
+            generation: 1,
+            cmd_id: 1,
+            window: "7_1".to_owned(),
+            wid: 1,
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            topology_revision: 0,
+            domain: None,
+            operation: operation.map(str::to_owned),
+        };
+        assert_eq!(
+            fence_frame_command(&cmd(None), 3, 4, true),
+            FrameFence::Superseded,
+            "a newer desired set supersedes the desired-state remainder"
+        );
+        assert_eq!(
+            fence_frame_command(&cmd(Some("op-2")), 3, 4, true),
+            FrameFence::Dispatch,
+            "the owed placement still owes its attempt despite a new batch"
+        );
+        assert_eq!(
+            fence_frame_command(&cmd(Some("op-2")), 3, 4, false),
+            FrameFence::Withdrawn,
+            "a reply that stopped authorizing cancels the never-started placement"
+        );
+        assert_eq!(
+            fence_frame_command(&cmd(None), 3, 3, true),
+            FrameFence::Dispatch,
+            "an unchanged revision dispatches desired-state rows"
+        );
+        assert_eq!(
+            fence_frame_command(&cmd(Some("op-2")), 3, 3, true),
+            FrameFence::Dispatch,
+            "an unchanged revision dispatches the placement"
         );
     }
 }
@@ -2461,7 +2686,10 @@ mod settled_fence_tests {
             guard
                 .applied
                 .push((cmd.window.clone(), (cmd.x, cmd.y, cmd.w, cmd.h)));
-            AxCompletion::Applied { elapsed_ms: 0 }
+            AxCompletion::Applied {
+                elapsed_ms: 0,
+                readback_xywh: None,
+            }
         }
 
         fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {

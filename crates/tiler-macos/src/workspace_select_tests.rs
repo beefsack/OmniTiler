@@ -6,6 +6,7 @@ use tiler_core::world_report::FrameSetter;
 struct Fake {
     row: SelectionSnapshot,
     displays: usize,
+    multi_output_select: bool,
     revision: Option<u64>,
     output: String,
     empty: Result<bool, String>,
@@ -23,6 +24,7 @@ impl Default for Fake {
                 current: 20,
             },
             displays: 1,
+            multi_output_select: false,
             revision: None,
             output: "macos-display-1".to_owned(),
             empty: Ok(true),
@@ -42,6 +44,9 @@ impl SelectionBackend for Fake {
     }
     fn revision(&mut self) -> Option<u64> {
         self.revision
+    }
+    fn multi_display_output_select(&mut self) -> bool {
+        self.multi_output_select
     }
     fn check_output(&mut self, output: &str) -> Result<(), String> {
         if output == self.output {
@@ -1185,6 +1190,41 @@ fn drain_gates_display_and_unarmed_refuse_without_touch() {
         "{}",
         failure.reason
     );
+    // Grouped indicator rows may actuate the exact clicked output on a
+    // multi-display session: the backend is pinned to that output, so the
+    // exact output fence (never a positional guess) replaces the legacy
+    // single-display rule. The other display's current Space is untouched.
+    let mut fake = Fake {
+        displays: 2,
+        multi_output_select: true,
+        output: "macos-display-2".to_owned(),
+        row: SelectionSnapshot {
+            display: "display-b".to_owned(),
+            spaces: vec![31, 32],
+            current: 31,
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let claim = plan_claim(
+        Action::IndicatorSelectWorkspace {
+            output: "macos-display-2".to_owned(),
+            workspace: "ws-32".to_owned(),
+        },
+        "op-1",
+        "macos-display-2",
+        "ws-32",
+        Some("space-32"),
+        None,
+        Some(31),
+    );
+    let success = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect("grouped indicator select actuates its exact output");
+    assert_eq!(fake.selects, vec![32], "B selects exactly B's Space");
+    assert!(success.effect.changed);
+    assert_eq!(success.effect.from, 31);
+    assert_eq!(success.effect.target, 32);
+    assert_eq!(fake.row.current, 32, "only B's own row moves");
     // Missing operation identity never actuates.
     let mut fake = Fake::default();
     let mut state = SelectionState::default();

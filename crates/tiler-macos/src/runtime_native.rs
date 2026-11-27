@@ -259,6 +259,9 @@ pub(crate) fn close_completion_disposition(
             setter: FrameSetter::Refused,
             reason: VisibilityReason::NativeRefused,
         },
+        crate::runtime_types::AxCompletion::FencedNoCall { .. } => FocusDisposition::NotCalled {
+            reason: tiler_core::world_report::FocusNoCallReason::NativeRefused,
+        },
         crate::runtime_types::AxCompletion::PartialApplied { .. }
         | crate::runtime_types::AxCompletion::Timeout { .. } => FocusDisposition::Called {
             setter: FrameSetter::Threw,
@@ -272,9 +275,10 @@ pub(crate) fn close_completion_disposition(
 /// guessed).
 pub(crate) fn close_attempt_ms(completion: &crate::runtime_types::AxCompletion) -> u64 {
     match completion {
-        crate::runtime_types::AxCompletion::Applied { elapsed_ms } => *elapsed_ms,
+        crate::runtime_types::AxCompletion::Applied { elapsed_ms, .. } => *elapsed_ms,
         crate::runtime_types::AxCompletion::PartialApplied { elapsed_ms, .. } => *elapsed_ms,
         crate::runtime_types::AxCompletion::Failed { .. } => 0,
+        crate::runtime_types::AxCompletion::FencedNoCall { .. } => 0,
         crate::runtime_types::AxCompletion::Timeout { timeout_ms } => *timeout_ms,
     }
 }
@@ -1623,7 +1627,7 @@ mod tests {
         // Only a reported success claims `Accepted` (arrival itself is
         // never claimed here — later observations prove it).
         assert_eq!(
-            close_completion_disposition(&AxCompletion::Applied { elapsed_ms: 5 }),
+            close_completion_disposition(&AxCompletion::Applied { elapsed_ms: 5, readback_xywh: None }),
             FocusDisposition::Called {
                 setter: FrameSetter::Accepted,
                 reason: VisibilityReason::Empty,
@@ -1664,7 +1668,7 @@ mod tests {
     #[test]
     fn close_attempt_ms_honest_durations() {
         assert_eq!(
-            close_attempt_ms(&AxCompletion::Applied { elapsed_ms: 5 }),
+            close_attempt_ms(&AxCompletion::Applied { elapsed_ms: 5, readback_xywh: None }),
             5,
         );
         assert_eq!(

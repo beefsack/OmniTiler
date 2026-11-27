@@ -360,9 +360,11 @@ impl NativeContext {
             // Last-observed geometry rides the skip record when the
             // snapshot read it: a skip is about Space homing, never a
             // blind display. Geometry failures leave both absent.
+            // FULL rounds 1:1 (adjacency authority); work areas round
+            // inward so they never claim pixels outside visibleFrame.
             let observed = snapshot.displays.iter().find(|d| d.cg_id == display.cg_id);
             let bounds = observed.and_then(|g| g.cg_bounds.and_then(|r| r.to_rect()));
-            let visible = observed.and_then(|g| g.visible.and_then(|r| r.to_rect()));
+            let visible = observed.and_then(|g| g.visible.and_then(|r| r.to_rect_inward()));
             let domain = (|| {
                 let _geometry = observed
                     .ok_or_else(|| format!("display {} vanished mid-derive", display.cg_id))?;
@@ -1116,6 +1118,19 @@ pub struct FrameCommand {
     /// crosses displays mid-plan refuses the remaining legs instead of
     /// actuating outside its planned domain.
     pub domain: Option<DomainKey>,
+    /// Explicit float-placement token that authorized this command, if any.
+    /// A tokenized command is a one-shot imperative whose token is spent
+    /// exactly at handoff (never before a live slot took it), so it must
+    /// reach the worker exactly once even when a newer desired set arrives
+    /// first (see `FrameSlot`), and it still owes that attempt after a newer
+    /// desired set supersedes the ordinary desired-state remainder. Only the
+    /// latest accepted reply can cancel it: the slot retains it exactly
+    /// while that reply still publishes this `(window, token)` eligible, so
+    /// a withdrawn/held/absent placement leaves the slot and its spend is
+    /// released (a later eligible republish still gets its first attempt),
+    /// while a redundant (observed already at target) placement keeps its
+    /// attempt and settles as a skipped-with-evidence completion.
+    pub operation: Option<String>,
 }
 
 /// Typed focus request out of the engine. `generation` fences PID reuse and
@@ -1151,10 +1166,21 @@ pub struct FocusRequest {
 /// OS status names only, never user content. `PartialApplied` carries the
 /// actual partial truth after the single bounded readback: which legs took
 /// effect plus the readback rect (`None` when unreadable, never guessed).
+/// `Applied` carries the same bounded post-write readback: it is the
+/// synchronous proof the core's anti-fighting policy correlates a
+/// successful-but-clamped write against (an accepted setter alone never
+/// proves arrival). `FencedNoCall` is the typed pre-call refusal: no AX
+/// setter ever ran, so no attempt evidence may be staged for it (see the
+/// attempt mapping in `docs/changes/v4-phase3-macos-port.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AxCompletion {
     Applied {
         elapsed_ms: u64,
+        /// Immediate post-write readback in report-wire integer points,
+        /// when the transaction captured a carriable one. `None` =
+        /// unreadable or not carriable on the wire (never clamped or
+        /// guessed: a fabricated rect would make the whole report invalid).
+        readback_xywh: Option<(i32, i32, i32, i32)>,
     },
     PartialApplied {
         elapsed_ms: u64,
@@ -1167,6 +1193,14 @@ pub enum AxCompletion {
         readback_unreadable: bool,
     },
     Failed {
+        reason: String,
+    },
+    /// The write was fenced before any AX setter call: the entry safety
+    /// fence (identity/scope/ownership/membership/revision/show-state) or a
+    /// degenerate frame refused it, so no native call ever started. A
+    /// later-leg safety skip after a setter already ran is NOT this shape:
+    /// that is ambiguous partial truth (`PartialApplied`).
+    FencedNoCall {
         reason: String,
     },
     Timeout {
@@ -1441,6 +1475,12 @@ pub struct RuntimeDiagnostics {
     /// refuses): retained fullscreen members keep their slot with no target
     /// geometry. Plan truth is untouched (only emission is filtered).
     pub frames_overlay_skipped: u64,
+    /// Explicit placement one-shots cancelled before any native call because
+    /// an accepted reply stopped authorizing their exact `(window, token)`
+    /// (absent, held, withdrawn, replaced, or an old generation). Their spend
+    /// is released, so a later eligible republish still gets its first
+    /// attempt; an attempt already taken is never released.
+    pub frames_op_withdrawn: u64,
     pub focus_dispatched: u64,
     pub focus_dropped_full: u64,
     pub stale_dropped: u64,

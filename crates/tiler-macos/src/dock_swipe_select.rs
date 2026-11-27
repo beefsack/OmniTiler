@@ -1140,6 +1140,115 @@ impl OwnerSelectBackend<LiveSwipeTopology, LiveSwipePoster> {
     }
 }
 
+impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
+    /// Grouped indicator select on several displays: one direct, pinned
+    /// Mission Control Space press on the clicked display instead of the
+    /// global Dock swipe (which independently refuses several displays).
+    /// All reads are fresh SLS/unlocked/AX gates on this owner thread; no
+    /// AppKit read and no fallback/replay. Full pre/post snapshots prove
+    /// the target arrived and every non-target display stayed untouched;
+    /// anything else is a typed refusal or throw.
+    fn select_multi_display(
+        &mut self,
+        before: &SelectionSnapshot,
+        sid: u64,
+    ) -> Result<(), DispatchError> {
+        if self.legs.published_separate != Some(true) {
+            return Err(DispatchError::refused(
+                "multi-display indicator select refuses: separate-Spaces mode unreadable or disabled; no actuation",
+            ));
+        }
+        if self.cancel.load(Ordering::SeqCst) || self.latch.cancelled() {
+            return Err(DispatchError::refused(
+                "multi-display indicator select refuses: cancelled before dispatch",
+            ));
+        }
+        let exact_published = self
+            .legs
+            .published_displays
+            .iter()
+            .filter(|display| {
+                display.cg_id == self.legs.pinned_cgid
+                    && display.uuid.as_deref() == Some(self.legs.pinned_uuid.as_str())
+            })
+            .count();
+        if exact_published != 1 {
+            return Err(DispatchError::refused(
+                "multi-display indicator select refuses: pinned display identity is not uniquely published; no actuation",
+            ));
+        }
+        if before.display != self.legs.pinned_uuid {
+            return Err(DispatchError::refused(format!(
+                "multi-display indicator select refuses: fresh row names {} not the pinned {}; no actuation",
+                before.display, self.legs.pinned_uuid
+            )));
+        }
+        let pre = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| {
+            DispatchError::refused(format!(
+                "multi-display indicator select refuses: pre-dispatch full snapshot unreadable ({e}); no actuation"
+            ))
+        })?;
+        let mut target = None;
+        for (index, display) in pre.displays.iter().enumerate() {
+            if display.identifier.as_deref() != Some(self.legs.pinned_uuid.as_str()) {
+                continue;
+            }
+            if target.is_some() {
+                return Err(DispatchError::refused(
+                    "multi-display indicator select refuses: pinned UUID maps to several rows; no actuation",
+                ));
+            }
+            target = Some(index);
+        }
+        let target = target.ok_or_else(|| {
+            DispatchError::refused(
+                "multi-display indicator select refuses: pinned UUID has no fresh row; no actuation",
+            )
+        })?;
+        if pre.displays[target].current != Some(before.current) {
+            return Err(DispatchError::refused(
+                "multi-display indicator select refuses: pinned current moved before dispatch; no actuation",
+            ));
+        }
+        if !pre.displays[target].spaces.contains(&sid) {
+            return Err(DispatchError::refused(format!(
+                "multi-display indicator select refuses: Space {sid} is not in the pinned display's row; no actuation"
+            )));
+        }
+        let outcome = crate::mc_lifecycle::live::mc_goto_sid_pinned(
+            sid,
+            target,
+            self.legs.pinned_cgid,
+            &self.legs.pinned_uuid,
+            &pre,
+            &mut self.budget,
+            false,
+        )
+        .map_err(DispatchError::from_mc)?;
+        let _ = outcome.after;
+        let post = crate::mc_lifecycle::live::await_snapshot(&|snapshot| {
+            let mut found = None;
+            for (index, display) in snapshot.displays.iter().enumerate() {
+                if display.identifier.as_deref() != Some(self.legs.pinned_uuid.as_str()) {
+                    continue;
+                }
+                if found.is_some() {
+                    return false;
+                }
+                found = Some(index);
+            }
+            found.is_some_and(|index| snapshot.displays[index].current == Some(sid))
+        })
+        .map_err(|e| {
+            DispatchError::threw(format!(
+                "multi-display indicator select dispatched but the arrival snapshot was unreadable ({e}); refusing unproven arrival"
+            ))
+        })?;
+        crate::select_owner::multi_select_arrived(&pre, &post, sid, &self.legs.pinned_uuid)
+            .map_err(DispatchError::threw)
+    }
+}
+
 impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T, P> {
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
         let row = self.topo.fresh_full_row()?;
@@ -1152,6 +1261,10 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
 
     fn display_count(&mut self) -> Result<usize, String> {
         self.topo.display_count()
+    }
+
+    fn multi_display_output_select(&mut self) -> bool {
+        self.legs.published_displays.len() > 1 && self.legs.pinned_cgid != 0
     }
 
     fn revision(&mut self) -> Option<u64> {
@@ -1171,6 +1284,22 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
                 "product select refuses: reply target output {output} is not the pinned display {pinned}; no actuation"
             ));
         }
+        if self.legs.published_displays.len() > 1 {
+            let exact = self
+                .legs
+                .published_displays
+                .iter()
+                .filter(|display| {
+                    display.cg_id == self.legs.pinned_cgid
+                        && display.uuid.as_deref() == Some(self.legs.pinned_uuid.as_str())
+                })
+                .count();
+            if exact != 1 {
+                return Err(format!(
+                    "product select refuses: pinned display identity is not uniquely published for {output}; no actuation"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1179,6 +1308,15 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
     }
 
     fn create(&mut self, before: &SelectionSnapshot) -> Result<(), DispatchError> {
+        // Native unbound-spare creation stays a single-display capability:
+        // the grouped multi-display route disables spare rows and never
+        // broadens creation policy. The single-display MX6 path below is
+        // unchanged.
+        if self.legs.published_displays.len() > 1 {
+            return Err(DispatchError::refused(
+                "multi-display indicator select refuses native spare creation; single-display creation is unchanged",
+            ));
+        }
         // Fixture gate: the controller owns creation while gated; the
         // product never appends. Typed pre-dispatch refusal (nothing
         // attempted, exit watch never armed).
@@ -1266,6 +1404,9 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
         if self.exit_armed {
             self.exit_armed = false;
             self.exit_gate.await_exit(&self.cancel)?;
+        }
+        if self.legs.published_displays.len() > 1 {
+            return self.select_multi_display(before, sid);
         }
         // Owner-fresh gates (never the stale submit-time snapshot), the
         // per-job settle latch, and the shared cancellation flag travel

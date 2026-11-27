@@ -4,30 +4,31 @@
 //! mapping, and startup configuration.
 //!
 //! One native status item shows every existing native Space in native order
-//! as directly clickable per-workspace segments in the menu-bar item itself
-//! (plain numbers, current distinctly highlighted, occupancy treatments
-//! distinct even with icons off); the dropdown menu mirrors the same rows
-//! for accessibility. Selection reuses the guarded engine lane
-//! ([`crate::workspace_select`]): a segment click submits the same armed
-//! [`crate::runtime_types::InputSemanticAction`] the tap submits, so the
-//! unarmed, single-display, gate, drift, and verified-arrival rules all
+//! as directly clickable slots in one drawn menu-bar image (plain numbers,
+//! current distinctly highlighted, occupancy treatments distinct even with
+//! icons off); the on-demand dropdown menu mirrors the same rows for
+//! accessibility and alternate clicks. Selection reuses the guarded engine
+//! lane ([`crate::workspace_select`]): a segment click submits the same
+//! armed [`crate::runtime_types::InputSemanticAction`] the tap submits, so
+//! the unarmed, single-display, gate, drift, and verified-arrival rules all
 //! apply unchanged. No synthetic trailing workspace is ever added, no
 //! trailing lifecycle is managed, and no preference file is written.
 //!
 //! Appearance policy (rendered natively in [`crate::ffi`], read back from
-//! the live buttons by fixtures — never from a cached model):
+//! the live render state by fixtures — never from a cached model):
 //! - Order is native order, titles are 1-based ordinals with an explicit
 //!   `'?'` suffix if and only if occupancy is Unknown (e.g. `"2?"`);
 //!   numeric labels otherwise. Icons (when the flag resolves one) ride
 //!   LEFT of the number, never replacing it.
-//! - Current is orthogonal and unmissable: bordered bezel plus bold title.
+//! - Current is orthogonal and unmissable: a drawn rounded border plus
+//!   bold title.
 //! - Occupancy is a second channel, distinct with icons off: Occupied reads
 //!   full-alpha bold, Empty reads dimmed-alpha regular, Unknown reads
-//!   full-alpha regular plus the `'?'` title suffix (the text colour is
-//!   never changed — the native render sets no label colour, so the suffix
-//!   is the honest Unknown marker, not a colour). Unknown is never dimmed
+//!   full-alpha regular plus the `'?'` title suffix (the text hue stays the
+//!   label colour — only its alpha follows the treatment — so the suffix is
+//!   the honest Unknown marker, not a hue). Unknown is never dimmed
 //!   like Empty and never bold like Occupied (unless also current, where
-//!   the bezel plus bold are the current channel and `'?'` still names the
+//!   the border plus bold are the current channel and `'?'` still names the
 //!   Unknown occupancy).
 //! - Positions past the armed `1..=9` select range stay visible but disabled
 //!   (no armed route — clicking one must refuse, never select wrong).
@@ -163,9 +164,17 @@ pub enum SpaceOccupancy {
 /// token, never a heap id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndicatorRow {
-    /// 1-based position: the native ordinal for native-order rows, the
-    /// core ordinal for core-order rows (also the menu item tag).
+    /// 1-based UNIQUE render slot across the whole item (the menu/segment
+    /// tag and the click payload position). A grouped multi-display render
+    /// assigns slots sequentially across groups, so two displays can both
+    /// show ordinal 1 without colliding; a single-display render keeps
+    /// slot == ordinal exactly as before.
     pub position: usize,
+    /// 1-based ordinal the row SHOWS within its own output group (the
+    /// native ordinal for native-order rows, the core ordinal for
+    /// core-order rows). Title rendering and the armed `1..=9` range read
+    /// this, never the global slot.
+    pub ordinal: usize,
     /// Native anchor SID: the bound desktop for bound rows, the
     /// render-time native last for spare rows, `0` for unbound pending
     /// rows. Freshness fence only — never the actuation target.
@@ -205,7 +214,9 @@ pub struct CoreRowTarget {
 pub struct IndicatorProjection {
     pub visible: bool,
     pub hidden_reason: Option<String>,
-    /// Status item title: the current Space's plain native ordinal.
+    /// Status item title: the current Space's plain ordinal when exactly
+    /// one group renders; empty for several groups (each row carries its
+    /// own group ordinal instead, and no single ordinal names the item).
     pub title: String,
     pub rows: Vec<IndicatorRow>,
     /// The current workspace's retained planner mode from the coherent
@@ -271,6 +282,7 @@ pub fn project_indicator(
         }
         rows.push(IndicatorRow {
             position,
+            ordinal: position,
             sid: *sid,
             current: *sid == current,
             occupancy: occupancy(*sid),
@@ -301,20 +313,26 @@ pub fn project_indicator(
 /// ids/ordinals/current/occupied. Binding-map absence is NOT unbound
 /// proof: only an explicit `trailing` designation on BOTH the pager row
 /// and its matching desire row plus an explicit `None` native binding
-/// names the spare. A non-tail `None` binding is never a spare — it
-/// renders visible in core order as ordinary pending (disabled until
-/// backing arrives). A bound trailing row is ordinary (selectable like
-/// any bound row). The single-display and mode gates match
+/// names the spare. A non-tail `None` binding is never a spare and, with
+/// no live native Space to prove it, never renders as a phantom number.
+/// A bound trailing row is ordinary (selectable like any bound row). The
+/// live native row is authoritative for which bound rows still exist: a
+/// retained core binding alone does not prove its native Space is still
+/// here, so a vanished or rehomed binding is dropped instead of rendering
+/// an Unknown placeholder. The single-display and mode gates match
 /// [`project_indicator`]; pager screens empty/missing or not exactly one
-/// screen projects hidden with an explicit reason (multi-display
-/// per-display targeting is TBD — never first-display guessing). No
+/// screen projects hidden with an explicit reason. Several displays are
+/// never guessed here: the grouped path
+/// ([`project_grouped_core_indicator`]) attributes each output's rows by
+/// exact key. No
 /// occupancy-driven `+` slot is ever invented here: the spare comes only
 /// from the explicit core designation above.
 ///
 /// Arguments: `screens` is the applied reply presentation pager content;
-/// `desires` the same reply's workspace desires; `native_last` the
-/// render-time native last SID (spare-row freshness anchor only — never
-/// an actuation target); `occupancy`/`representative` resolve over bound
+/// `desires` the same reply's workspace desires; `native` the fresh live
+/// native row for this single output (its last SID anchors the spare and
+/// its Space inventory proves or drops every bound row) — never an
+/// actuation target; `occupancy`/`representative` resolve over bound
 /// native SIDs (unbound rows read `Unknown` with no representative).
 pub fn project_core_indicator(
     screens: &[tiler_core::world_presentation::PagerScreen],
@@ -323,7 +341,7 @@ pub fn project_core_indicator(
     mode: IndicatorMode,
     occupancy: &dyn Fn(u64) -> SpaceOccupancy,
     representative: &dyn Fn(u64) -> Option<String>,
-    native_last: u64,
+    native: &crate::workspace_select::SelectionSnapshot,
 ) -> Result<IndicatorProjection, String> {
     if mode == IndicatorMode::Off {
         return Ok(IndicatorProjection {
@@ -367,20 +385,111 @@ pub fn project_core_indicator(
             tiling: None,
         });
     }
+    let native_last = native.spaces.last().copied().unwrap_or(0);
+    let (mut rows, current_ordinal, tiling) = project_core_screen_rows(
+        screen,
+        desires,
+        mode,
+        occupancy,
+        representative,
+        native_last,
+    )?;
+    // The live row decides which retained core identities still name a
+    // native Space: drop vanished/rehomed bindings and orphan unbound
+    // non-spares (the explicit spare alone survives unbound). Renumber the
+    // render slots so the painted columns stay contiguous; the displayed
+    // ordinals stay core truth.
+    let mut current_live = false;
+    rows.retain(|row| {
+        let live = core_row_is_live(row, &|sid: u64| native.spaces.contains(&sid));
+        if live && row.current {
+            current_live = true;
+        }
+        live
+    });
+    if rows.is_empty() {
+        return Ok(IndicatorProjection {
+            visible: false,
+            hidden_reason: Some(
+                "no live native Space backs any retained core pager row; refusing phantom rows"
+                    .to_owned(),
+            ),
+            title: String::new(),
+            rows: Vec::new(),
+            tiling: None,
+        });
+    }
+    if !current_live {
+        return Ok(IndicatorProjection {
+            visible: false,
+            hidden_reason: Some(
+                "core current workspace is not backed by the live native Space row; refusing stale highlight"
+                    .to_owned(),
+            ),
+            title: String::new(),
+            rows: Vec::new(),
+            tiling: None,
+        });
+    }
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.position = index + 1;
+    }
+    Ok(IndicatorProjection {
+        visible: true,
+        hidden_reason: None,
+        title: current_ordinal.to_string(),
+        rows,
+        tiling,
+    })
+}
+
+/// Shared per-screen core row builder: one applied-reply pager screen's
+/// workspaces in core order with core ids/ordinals/current/occupied. Rows
+/// carry `position == ordinal` here; a grouped caller reassigns the global
+/// render slots after concatenation. The single-screen
+/// [`project_core_indicator`] and the multi-display
+/// [`project_grouped_core_indicator`] share this builder, so occupancy,
+/// spare designation, pending-row disabling, and the armed range can never
+/// drift between the single- and multi-display paths.
+///
+/// Returns the rows, the current row's 1-based ordinal, and the retained
+/// planner mode of the CURRENT workspace (`None` when the reply does not
+/// name it — never guessed).
+fn project_core_screen_rows(
+    screen: &tiler_core::world_presentation::PagerScreen,
+    desires: &[tiler_core::world_report::WorkspaceDesire],
+    mode: IndicatorMode,
+    occupancy: &dyn Fn(u64) -> SpaceOccupancy,
+    representative: &dyn Fn(u64) -> Option<String>,
+    native_last: u64,
+) -> Result<
+    (
+        Vec<IndicatorRow>,
+        usize,
+        Option<tiler_core::world_report::TilingMode>,
+    ),
+    String,
+> {
     let mut seen = std::collections::BTreeSet::new();
     for workspace in &screen.workspaces {
         if workspace.ordinal == 0 || !seen.insert(workspace.ordinal) {
-            return Err("workspace row/core ordinal identity unprovable".to_owned());
+            return Err(format!(
+                "workspace row/core ordinal identity unprovable for output {}",
+                screen.output
+            ));
         }
     }
     let Some(current_workspace) = screen.workspaces.iter().find(|row| row.current) else {
-        return Err("workspace row/current identity unprovable".to_owned());
+        return Err(format!(
+            "workspace row/current identity unprovable for output {}",
+            screen.output
+        ));
     };
-    let current_position = usize::try_from(current_workspace.ordinal)
+    let current_ordinal = usize::try_from(current_workspace.ordinal)
         .map_err(|_| "workspace row/core ordinal identity unprovable".to_owned())?;
     let mut rows = Vec::with_capacity(screen.workspaces.len());
     for workspace in &screen.workspaces {
-        let position = usize::try_from(workspace.ordinal)
+        let ordinal = usize::try_from(workspace.ordinal)
             .map_err(|_| "workspace row/core ordinal identity unprovable".to_owned())?;
         // Explicit spare rule: BOTH the pager row and its matching desire
         // row designate trailing AND the desire binding is explicitly
@@ -424,15 +533,16 @@ pub fn project_core_indicator(
             (0, SpaceOccupancy::Unknown, None)
         };
         rows.push(IndicatorRow {
-            position,
+            position: ordinal,
+            ordinal,
             sid: anchor,
             current: workspace.current,
             occupancy: row_occupancy,
-            // Unbound non-spare rows stay visible but disabled (pending
-            // backing — never an armed route until the reply binds them);
-            // positions past the armed `1..=9` range stay disabled like
+            // Unbound non-spare rows never arm (both projection callers
+            // drop them as orphans with no live native Space to prove);
+            // ordinals past the armed `1..=9` range stay disabled like
             // native rows. The spare selects exactly like a bound row.
-            selectable: (bound || spare) && position <= 9,
+            selectable: (bound || spare) && ordinal <= 9,
             representative: row_representative,
             core: Some(CoreRowTarget {
                 output: screen.output.clone(),
@@ -442,18 +552,257 @@ pub fn project_core_indicator(
             }),
         });
     }
-    Ok(IndicatorProjection {
-        visible: true,
-        hidden_reason: None,
-        title: current_position.to_string(),
+    Ok((
         rows,
+        current_ordinal,
         // The menu toggle renders the retained planner mode of the
         // CURRENT workspace only: a reply without its desire row leaves
         // it unproven (never guessed).
-        tiling: desires
+        desires
             .iter()
             .find(|row| row.output.0 == screen.output && row.id == current_workspace.id)
             .map(|row| row.tiling_mode),
+    ))
+}
+
+/// Whether one projected core row is still proven by the live native row.
+/// The explicit unbound spare is the only unbound row that survives (it is
+/// a designated core slot, not a native Space); every bound row must name
+/// an exact SID the live row proves, and a non-spare row with no parseable
+/// binding is an orphan that never renders. Legacy native-order rows
+/// (`core == None`) are their own evidence and always survive.
+fn core_row_is_live(row: &IndicatorRow, proves_sid: &dyn Fn(u64) -> bool) -> bool {
+    let Some(core) = row.core.as_ref() else {
+        return true;
+    };
+    core.spare
+        || core
+            .native_binding
+            .as_deref()
+            .and_then(crate::workspace_select::parse_native_binding)
+            .is_some_and(proves_sid)
+}
+
+/// Whether `sid` appears exactly once across every mapped user row and that
+/// occurrence belongs to `row_index`. A bound row whose SID is absent,
+/// duplicated, or owned by another display is stale: it must never remain
+/// armed after a rehome.
+fn sid_uniquely_owned(
+    user_rows: &[Option<crate::workspace_select::SelectionSnapshot>],
+    row_index: usize,
+    sid: u64,
+) -> bool {
+    let mut found = 0usize;
+    for (index, row) in user_rows.iter().enumerate() {
+        let Some(row) = row else {
+            continue;
+        };
+        for space in &row.spaces {
+            if *space != sid {
+                continue;
+            }
+            if index != row_index {
+                return false;
+            }
+            found += 1;
+        }
+    }
+    found == 1
+}
+
+/// Project one INDICATOR frame for several outputs: one shared status item
+/// showing every display's pager Spaces in per-output groups, ordered
+/// left-to-right by the native display arrangement (global frame x; the
+/// primary display wins an equal-x tie; further ties stay deterministic —
+/// see [`crate::topology::order_display_indices`]). Each group highlights
+/// ITS OWN output's current Space, so several rows can read current at
+/// once. Clicks stay exact-id selects on the clicked row's output; there
+/// is no pointer or focus inference and no cross-output move here.
+///
+/// Safety boundaries:
+/// - A group renders only when its output-to-Space scope is proven: the
+///   pager screen's output key names exactly one native display, that
+///   display's UUID names exactly one SLS row, and that row's user-Space
+///   read is provable. Any unprovable scope hides THAT group (safe-hide),
+///   never a guessed display or row; when no group is provable the whole
+///   item hides with an explicit reason.
+/// - Core contract failures (duplicate screen outputs, duplicate/missing
+///   ordinals, missing current) fail closed for the whole render.
+/// - The live native row proves every rendered row: a bound row whose SID
+///   vanished or is owned by another output, and an unbound non-spare with
+///   no native Space, are dropped instead of painted as unknown numbers.
+///   The explicit spare is the sole unbound survivor; a stale current
+///   retains only its still-present rows at Unknown.
+/// - `screens` is the applied reply's pager content, `desires` the same
+///   reply's workspace desires, `rows` the live SLS rows in read order,
+///   `user_rows` the same rows resolved through
+///   [`crate::workspace_select::user_row_from_rows`] (`None` = unprovable
+///   scope). `occupancy`/`representative` resolve over bound native SIDs
+///   across every output (unbound rows read `Unknown`).
+///
+/// The tiling toggle stays single-group only: with several groups, or
+/// several native displays attached even when just one group renders
+/// provably, there is no unambiguous "current workspace" to toggle, so
+/// `tiling` is `None` and the toggle renders disabled instead of inventing
+/// a target. Native spare creation likewise stays single-display; grouped
+/// multi-display spare rows render disabled.
+#[allow(clippy::too_many_arguments)]
+pub fn project_grouped_core_indicator(
+    screens: &[tiler_core::world_presentation::PagerScreen],
+    desires: &[tiler_core::world_report::WorkspaceDesire],
+    ns: &[crate::ffi::NsDisplay],
+    rows: &[crate::ffi::SlsDisplayRow],
+    user_rows: &[Option<crate::workspace_select::SelectionSnapshot>],
+    mode: IndicatorMode,
+    occupancy: &dyn Fn(u64) -> SpaceOccupancy,
+    representative: &dyn Fn(u64) -> Option<String>,
+) -> Result<IndicatorProjection, String> {
+    let hidden = |reason: String| IndicatorProjection {
+        visible: false,
+        hidden_reason: Some(reason),
+        title: String::new(),
+        rows: Vec::new(),
+        tiling: None,
+    };
+    if mode == IndicatorMode::Off {
+        return Ok(hidden("disabled by configuration".to_owned()));
+    }
+    if screens.is_empty() {
+        return Ok(hidden(
+            "no coherent core pager reply; refusing native inference".to_owned(),
+        ));
+    }
+    let mut outputs = std::collections::BTreeSet::new();
+    for screen in screens {
+        if !outputs.insert(screen.output.as_str()) {
+            return Err(format!(
+                "duplicate core pager screen for output {}; refusing ambiguous attribution",
+                screen.output
+            ));
+        }
+    }
+    let order = match crate::topology::order_display_indices(ns) {
+        Ok(order) => order,
+        Err(reason) => return Ok(hidden(reason)),
+    };
+    let mut projected: Vec<IndicatorRow> = Vec::new();
+    let mut groups = 0usize;
+    let mut only_group: Option<(usize, Option<tiler_core::world_report::TilingMode>)> = None;
+    for index in order {
+        let display = &ns[index];
+        if display.cg_id == 0 {
+            continue;
+        }
+        let Some(uuid) = display.uuid.as_deref() else {
+            // Unreadable display identity: this group's output-to-Space
+            // scope is unproven, so it safe-hides alone.
+            continue;
+        };
+        let output = crate::topology::output_key(display.cg_id);
+        let Some(screen) = screens.iter().find(|screen| screen.output == output) else {
+            // No core pager content for this display (for example a
+            // suspended output): no group is invented.
+            continue;
+        };
+        if screen.workspaces.is_empty() {
+            continue;
+        }
+        let Ok(row_index) = crate::topology::unique_row_for_display(rows, uuid) else {
+            continue;
+        };
+        let Some(user) = user_rows.get(row_index).and_then(Option::as_ref) else {
+            continue;
+        };
+        let native_last = user.spaces.last().copied().unwrap_or(0);
+        let (mut group_rows, current_ordinal, mut tiling) = project_core_screen_rows(
+            screen,
+            desires,
+            mode,
+            occupancy,
+            representative,
+            native_last,
+        )?;
+        if group_rows.is_empty() {
+            continue;
+        }
+        // The applied reply is authoritative for the group's identity, but
+        // the live native row is authoritative for what is actually here,
+        // current and owned. Drop every retained row the live row cannot
+        // prove (vanished or rehomed bindings, orphan unbound non-spares):
+        // a core identity alone never keeps a phantom number. A stale/held
+        // core current must retain the group's still-present rows (at
+        // Unknown) while suppressing the stale highlight and every action
+        // in that group only.
+        let proves = |sid: u64| sid_uniquely_owned(user_rows, row_index, sid);
+        let core_current = group_rows
+            .iter()
+            .find(|row| row.current)
+            .and_then(|row| row.core.as_ref())
+            .and_then(|core| core.native_binding.as_deref())
+            .and_then(crate::workspace_select::parse_native_binding);
+        let current_stale = !core_current.is_some_and(|sid| sid == user.current && proves(sid));
+        if current_stale {
+            group_rows.retain(|row| core_row_is_live(row, &proves));
+            if group_rows.is_empty() {
+                // Nothing native-backed survives here: no group, no
+                // phantom numbers.
+                continue;
+            }
+            for row in &mut group_rows {
+                row.current = false;
+                row.occupancy = SpaceOccupancy::Unknown;
+                row.selectable = false;
+                row.sid = 0;
+            }
+            tiling = None;
+        } else {
+            group_rows.retain(|row| core_row_is_live(row, &proves));
+            if group_rows.is_empty() {
+                continue;
+            }
+        }
+        groups += 1;
+        if !current_stale {
+            only_group = Some((current_ordinal, tiling));
+        }
+        let first_slot = projected.len() + 1;
+        for (offset, mut row) in group_rows.into_iter().enumerate() {
+            row.position = first_slot + offset;
+            projected.push(row);
+        }
+    }
+    if projected.is_empty() {
+        return Ok(hidden(
+            "no provable core pager group: no live native Space backs a retained core row; refusing phantom rows"
+                .to_owned(),
+        ));
+    }
+    // Several native displays attached: native spare creation stays a
+    // single-display capability (the owner also refuses it), so render the
+    // spare disabled instead of offering an action that cannot dispatch.
+    // The single-display MX6/creation path is unchanged.
+    let multi_attached = ns.len() > 1;
+    if multi_attached {
+        for row in &mut projected {
+            if row.core.as_ref().is_some_and(|core| core.spare) {
+                row.selectable = false;
+            }
+        }
+    }
+    let (title, tiling) = match (groups, only_group) {
+        (1, Some((current_ordinal, tiling))) if !multi_attached => {
+            (current_ordinal.to_string(), tiling)
+        }
+        // Several outputs are current at once, or several displays are
+        // attached: no single workspace unambiguously owns the toggle.
+        _ => (String::new(), None),
+    };
+    Ok(IndicatorProjection {
+        visible: true,
+        hidden_reason: None,
+        title,
+        rows: projected,
+        tiling,
     })
 }
 
@@ -544,10 +893,10 @@ pub fn verify_core_row_click(
             rendered.position
         ));
     }
-    if rendered.position == 0 || rendered.position > 9 {
+    if rendered.ordinal == 0 || rendered.ordinal > 9 {
         return Err(format!(
             "workspace segment {} has no armed select route (armed range is 1..=9); refusing instead of selecting the wrong Space",
-            rendered.position
+            rendered.ordinal
         ));
     }
     if !rendered.selectable {
@@ -1300,11 +1649,11 @@ pub fn summarize_retained(
         .collect()
 }
 
-/// Miniature band height in AppKit points: menu-bar indicator segments
-/// gain this band below the number button when any Space paints pager
-/// miniatures (no miniatures anywhere: the item keeps its exact current
-/// 22pt height). Single source of truth for the native column layout and
-/// the pager miniature band layout below.
+/// Miniature band height in AppKit points: when any Space paints pager
+/// miniatures, the fixed 22pt indicator image reserves this band along its
+/// bottom edge and the numbers share the remaining height; with no
+/// miniatures anywhere the numbers use the full item height. Single source
+/// of truth for the native draw and the pager miniature band layout below.
 pub const MINIATURE_BAND_H: f64 = 8.0;
 
 /// Segment column width in AppKit points: compact for bare ordinals, wider
@@ -1358,27 +1707,140 @@ pub fn segment_tooltip(
     tip
 }
 
-/// Parse one live segment tooltip back into `(position, occupancy,
-/// current)`: `None` on any shape drift, so fixtures fail loudly instead
-/// of trusting a stale contract.
+// -- Shared status-image geometry --------------------------------------------
+
+/// One drawn status-image column in item-local AppKit points. `position`
+/// is the 1-based clickable slot the painted pixel and the hit test both
+/// name (`None` for a native group divider, which advances `start` without
+/// ever becoming a target).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotColumn {
+    pub position: Option<usize>,
+    pub start: f64,
+    pub width: f64,
+}
+
+impl SlotColumn {
+    /// Right edge in item-local points.
+    #[must_use]
+    pub fn end(self) -> f64 {
+        self.start + self.width
+    }
+}
+
+/// Resolve ordered `(slot position, width)` columns into item-local spans
+/// in one pass. The status image renderer and the click hit test consume
+/// this SAME vector, so a painted number and its target can never drift.
+/// Non-finite or negative widths collapse to zero instead of corrupting
+/// every later offset.
 #[must_use]
-pub fn parse_segment_tooltip(tip: &str) -> Option<(usize, SpaceOccupancy, bool)> {
-    let (head, rest) = tip.split_once(':')?;
-    let position: usize = head.strip_prefix("Space ")?.trim().parse().ok()?;
-    if position == 0 {
+pub fn slot_columns(columns: &[(Option<usize>, f64)]) -> Vec<SlotColumn> {
+    let mut start = 0.0;
+    let mut out = Vec::with_capacity(columns.len());
+    for (position, width) in columns {
+        let width = if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
+        };
+        out.push(SlotColumn {
+            position: *position,
+            start,
+            width,
+        });
+        start += width;
+    }
+    out
+}
+
+/// Total drawn width of a resolved column list (item length).
+#[must_use]
+pub fn slot_columns_width(columns: &[SlotColumn]) -> f64 {
+    columns.last().map_or(0.0, |column| column.end())
+}
+
+/// Hit-test the rendered status image at item-local `x`, returning the
+/// matching column INDEX. Only clickable columns participate: group
+/// dividers and everything outside the image are "no target" (never a
+/// neighbouring row). The upper bound is inclusive and the first match
+/// wins, matching the verified WhichSpace v1.5.0
+/// `StatusBarLayout.slot(at:)` rule (`x >= start && x <= start + width`),
+/// so an exact shared edge resolves to the left slot. Non-finite input
+/// refuses.
+#[must_use]
+pub fn slot_index_at_x(columns: &[SlotColumn], x: f64) -> Option<usize> {
+    if !x.is_finite() {
         return None;
     }
-    let rest = rest.trim();
-    let occupancy = if rest.starts_with("occupied") {
-        SpaceOccupancy::Occupied
-    } else if rest.starts_with("empty") {
-        SpaceOccupancy::Empty
-    } else if rest.starts_with("unknown") {
-        SpaceOccupancy::Unknown
-    } else {
-        return None;
-    };
-    Some((position, occupancy, rest.contains("current")))
+    columns
+        .iter()
+        .position(|column| column.position.is_some() && x >= column.start && x <= column.end())
+}
+
+/// Hit-test the rendered status image at item-local `x` (the matched
+/// column), or `None` for a divider gap, empty input, or out-of-image x.
+#[must_use]
+pub fn slot_at_x(columns: &[SlotColumn], x: f64) -> Option<SlotColumn> {
+    slot_index_at_x(columns, x).map(|index| columns[index])
+}
+
+/// One rendered slot's accessibility facts for the status button label.
+/// `group` is the 1-based display-group ordinal in arrangement order (the
+/// same group the image separates), never a private output identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessibleSlot {
+    pub group: usize,
+    pub ordinal: usize,
+    pub occupancy: SpaceOccupancy,
+    pub current: bool,
+    pub enabled: bool,
+}
+
+/// Truthful status-button accessibility description: every rendered
+/// workspace with its own group, ordinal, occupancy verdict, current
+/// marker and whether a select route is armed. The image itself paints no
+/// text for accessibility clients, so this label is the only honest
+/// description; empty slots produce an empty string (the caller clears the
+/// label instead of inventing a workspace).
+#[must_use]
+pub fn indicator_accessibility_description(slots: &[AccessibleSlot]) -> String {
+    if slots.is_empty() {
+        return String::new();
+    }
+    let groups = slots.iter().map(|slot| slot.group).max().unwrap_or(1);
+    let mut out = String::from("OmniTiler workspaces");
+    if groups > 1 {
+        out.push_str(&format!(", {groups} display groups"));
+    }
+    out.push('.');
+    let mut index = 0;
+    while index < slots.len() {
+        let group = slots[index].group;
+        if groups > 1 {
+            out.push_str(&format!(" Group {group}:"));
+        }
+        let mut first = true;
+        while index < slots.len() && slots[index].group == group {
+            let slot = slots[index];
+            out.push_str(if first { " workspace " } else { "; workspace " });
+            first = false;
+            out.push_str(&slot.ordinal.to_string());
+            if slot.current {
+                out.push_str(", current");
+            }
+            out.push_str(match slot.occupancy {
+                SpaceOccupancy::Occupied => ", occupied",
+                SpaceOccupancy::Empty => ", empty",
+                SpaceOccupancy::Unknown => ", unknown",
+            });
+            if !slot.enabled {
+                out.push_str(", unavailable");
+            }
+            index += 1;
+        }
+        out.push('.');
+    }
+    out
 }
 
 // -- Driver (pure production-path state machine) -----------------------------
@@ -1489,9 +1951,9 @@ impl IndicatorDriver {
 
     /// Cached pager miniature rows the native surface draws
     /// (`(row position, drawable miniatures)` per rendered row, empty
-    /// without pager content). Keyed by position (core ordinals and native
-    /// ordinals are both unique per render), never by inferred native
-    /// slot, so skewed core/native orders paint exactly. Pager-only
+    /// without pager content). Keyed by the unique render slot (position),
+    /// never by inferred native slot, so skewed core/native orders and
+    /// grouped multi-display renders paint exactly. Pager-only
     /// changes repaint without advancing the generation, so queued clicks
     /// stay valid across a focus move.
     #[must_use]
@@ -2560,7 +3022,7 @@ mod tests {
                 IndicatorMode::All,
                 &|_| SpaceOccupancy::Empty,
                 &|_| None,
-                10,
+                &native_row(&[20, 10], 20),
             )
             .expect("provable core rows project")
         };
@@ -2585,7 +3047,9 @@ mod tests {
                 core_workspace("ws-b", 2, false, false, false),
             ],
         )];
-        // No desire row for the CURRENT workspace: unproven.
+        // No desire row for the CURRENT workspace: it has no live native
+        // backing to prove, so the projection safe-hides instead of
+        // painting an unprovable current.
         let no_current_desire = vec![core_desire("ws-b", "out-a", Some("space-10"), false, 1)];
         let projection = project_core_indicator(
             &screens,
@@ -2594,9 +3058,10 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Empty,
             &|_| None,
-            10,
+            &native_row(&[20, 10], 20),
         )
-        .expect("provable core rows project");
+        .expect("unprovable current hides");
+        assert!(!projection.visible);
         assert_eq!(projection.tiling, None);
         // A hidden projection carries nothing.
         let desires = vec![
@@ -2610,7 +3075,7 @@ mod tests {
             IndicatorMode::Off,
             &|_| SpaceOccupancy::Empty,
             &|_| None,
-            10,
+            &native_row(&[20, 10], 20),
         )
         .expect("off mode projects hidden");
         assert_eq!(off.tiling, None);
@@ -2624,7 +3089,7 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Empty,
             &|_| None,
-            10,
+            &native_row(&[20, 10], 20),
         )
         .expect("provable core rows project");
         assert_eq!(proven.tiling, Some(TilingMode::Tiled));
@@ -2936,29 +3401,23 @@ mod tests {
     }
 
     #[test]
-    fn segment_tooltip_round_trips_appearance_contract() {
-        for (position, occupancy, current, enabled) in [
-            (1, SpaceOccupancy::Occupied, false, true),
-            (2, SpaceOccupancy::Empty, true, true),
-            (3, SpaceOccupancy::Unknown, false, true),
-            (10, SpaceOccupancy::Empty, false, false),
-        ] {
-            let tip = segment_tooltip(position, occupancy, current, enabled);
-            assert!(tip.starts_with(&format!("Space {position}: ")), "{tip}");
-            let (parsed_position, parsed_occupancy, parsed_current) =
-                parse_segment_tooltip(&tip).expect("live tooltip parses");
-            assert_eq!(parsed_position, position);
-            assert_eq!(parsed_occupancy, occupancy);
-            assert_eq!(parsed_current, current);
-            if enabled {
-                assert!(!tip.contains("no armed"), "{tip}");
-            } else {
-                assert!(tip.contains("no armed select route"), "{tip}");
-            }
-        }
-        assert!(parse_segment_tooltip("Space 0: empty").is_none());
-        assert!(parse_segment_tooltip("Workspace 2: empty").is_none());
-        assert!(parse_segment_tooltip("Space 2: full").is_none());
+    fn segment_tooltip_names_current_and_unavailable_slots() {
+        assert_eq!(
+            segment_tooltip(1, SpaceOccupancy::Occupied, false, true),
+            "Space 1: occupied"
+        );
+        assert_eq!(
+            segment_tooltip(2, SpaceOccupancy::Empty, true, true),
+            "Space 2: empty, current"
+        );
+        assert_eq!(
+            segment_tooltip(3, SpaceOccupancy::Unknown, false, true),
+            "Space 3: unknown"
+        );
+        assert_eq!(
+            segment_tooltip(10, SpaceOccupancy::Empty, false, false),
+            "Space 10: empty, no armed select route"
+        );
     }
 
     #[test]
@@ -2986,6 +3445,87 @@ mod tests {
             assert_eq!(digits.parse::<usize>().expect("numeric stem"), position);
             assert_eq!(marked, occupancy == SpaceOccupancy::Unknown);
         }
+    }
+
+    #[test]
+    fn slot_columns_advance_dividers_without_creating_targets() {
+        // Two slots, a 7pt group divider, then one wide slot: the divider
+        // consumes pixels but appears in `slot_columns` with no position.
+        let columns = slot_columns(&[
+            (Some(1), 26.0),
+            (Some(2), 26.0),
+            (None, 7.0),
+            (Some(3), 44.0),
+        ]);
+        assert_eq!(
+            columns,
+            vec![
+                SlotColumn {
+                    position: Some(1),
+                    start: 0.0,
+                    width: 26.0
+                },
+                SlotColumn {
+                    position: Some(2),
+                    start: 26.0,
+                    width: 26.0
+                },
+                SlotColumn {
+                    position: None,
+                    start: 52.0,
+                    width: 7.0
+                },
+                SlotColumn {
+                    position: Some(3),
+                    start: 59.0,
+                    width: 44.0
+                },
+            ]
+        );
+        assert_eq!(slot_columns_width(&columns), 103.0);
+        // Degenerate widths never corrupt later offsets.
+        let repaired = slot_columns(&[(Some(1), -3.0), (Some(2), f64::NAN), (Some(3), 5.0)]);
+        assert_eq!(repaired[2].start, 0.0);
+        assert_eq!(slot_columns_width(&repaired), 5.0);
+    }
+
+    #[test]
+    fn slot_at_x_maps_edges_and_refuses_gaps() {
+        let columns = slot_columns(&[
+            (Some(1), 26.0),
+            (Some(2), 26.0),
+            (None, 7.0),
+            (Some(3), 44.0),
+        ]);
+        let position = |x: f64| slot_at_x(&columns, x).and_then(|slot| slot.position);
+        // Exact slot starts and interiors hit their own slot.
+        assert_eq!(position(0.0), Some(1));
+        assert_eq!(position(12.5), Some(1));
+        assert_eq!(position(26.0), Some(1), "shared edge resolves left first");
+        assert_eq!(position(26.1), Some(2));
+        assert_eq!(
+            position(52.0),
+            Some(2),
+            "slot keeps its inclusive right edge"
+        );
+        // The divider is a real gap: no target anywhere inside it.
+        assert_eq!(position(52.1), None);
+        assert_eq!(position(58.9), None);
+        // The next group starts immediately after the divider.
+        assert_eq!(position(59.0), Some(3));
+        assert_eq!(position(103.0), Some(3), "last slot keeps its right edge");
+        // Outside the image and non-finite input refuse instead of guessing.
+        assert_eq!(position(-0.1), None);
+        assert_eq!(position(103.1), None);
+        assert_eq!(position(f64::NAN), None);
+        assert_eq!(position(f64::INFINITY), None);
+        assert_eq!(slot_at_x(&[], 0.0), None);
+        // The index form is what the AppKit action uses, so pin it too.
+        assert_eq!(slot_index_at_x(&columns, 0.0), Some(0));
+        assert_eq!(slot_index_at_x(&columns, 52.0), Some(1));
+        assert_eq!(slot_index_at_x(&columns, 52.1), None);
+        assert_eq!(slot_index_at_x(&columns, 59.0), Some(3));
+        assert_eq!(slot_index_at_x(&columns, f64::NAN), None);
     }
 
     fn core_workspace(
@@ -3038,6 +3578,15 @@ mod tests {
         }
     }
 
+    /// One fresh live native row for the single-output projection tests.
+    fn native_row(spaces: &[u64], current: u64) -> crate::workspace_select::SelectionSnapshot {
+        crate::workspace_select::SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: spaces.to_vec(),
+            current,
+        }
+    }
+
     #[test]
     fn core_rows_follow_core_order_ids_and_ordinals_not_native_positions() {
         // Skew: native SIDs [20, 10] but core ordinals [1, 2] on ids
@@ -3060,7 +3609,7 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Empty,
             &|_| None,
-            10,
+            &native_row(&[20, 10], 20),
         )
         .expect("provable core row projects");
         assert!(projection.visible);
@@ -3121,7 +3670,7 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            99,
+            &native_row(&[20], 20),
         )
         .expect("provable core rows project");
         assert_eq!(projection.rows.len(), 2);
@@ -3217,7 +3766,7 @@ mod tests {
         );
         // Forged payload: anchor SID does not match the rendered row.
         let mut wrong_sid = core_click_for(&rows[1], 7, 9);
-        wrong_sid.expected_sid = rows[0].sid;
+        wrong_sid.expected_sid = rows[1].sid + 1;
         assert!(
             verify_core_row_click(
                 wrong_sid,
@@ -3261,7 +3810,7 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            40,
+            &native_row(&(30u64..40).collect::<Vec<_>>(), 30),
         )
         .expect("ten core rows project");
         assert_eq!(wide_projection.rows.len(), 10);
@@ -3282,7 +3831,10 @@ mod tests {
             )
             .is_err()
         );
-        // Pending unbound non-spare row refuses: visible but never armed.
+        // Pending unbound non-spare rows have no live native Space to
+        // prove them: the projection drops them instead of painting a
+        // phantom number, and the verifier still refuses any unbound row
+        // that manages to reach it.
         let pending_screens = vec![core_screen(
             "out-a",
             vec![
@@ -3301,16 +3853,36 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            11,
+            &native_row(&[11], 11),
         )
-        .expect("pending row projects");
-        let pending = &pending_projection.rows[1];
-        assert!(!pending.selectable, "unbound non-spare never arms");
+        .expect("live core row projects");
+        assert_eq!(pending_projection.rows.len(), 1);
+        assert!(
+            pending_projection
+                .rows
+                .iter()
+                .all(|row| { row.core.as_ref().expect("core row").workspace != "ws-pending" })
+        );
+        let pending = IndicatorRow {
+            position: 2,
+            ordinal: 2,
+            sid: 0,
+            current: false,
+            occupancy: SpaceOccupancy::Unknown,
+            selectable: true,
+            representative: None,
+            core: Some(CoreRowTarget {
+                output: "out-a".to_owned(),
+                workspace: "ws-pending".to_owned(),
+                native_binding: None,
+                spare: false,
+            }),
+        };
         let pending_presentation = core_presentation_for(&pending_screens);
         assert!(
             verify_core_row_click(
-                core_click_for(pending, 7, 9),
-                pending,
+                core_click_for(&pending, 7, 9),
+                &pending,
                 7,
                 9,
                 "gen-9",
@@ -3495,10 +4067,11 @@ mod tests {
     }
 
     #[test]
-    fn core_spare_renders_ordinal_and_selects_while_non_tail_none_stays_pending() {
+    fn core_spare_renders_ordinal_and_selects_while_orphan_unbound_rows_drop() {
         // ws-spare: pager trailing + desire trailing + None binding = spare.
-        // ws-pending: non-tail None binding = visible ordinary pending,
-        // disabled. ws-bound-trailing: bound trailing row is ordinary bound.
+        // ws-pending: non-tail None binding = orphan with no live native
+        // Space, so it never renders. ws-bound-trailing: bound trailing row
+        // is ordinary bound.
         let screens = vec![core_screen(
             "out-a",
             vec![
@@ -3521,32 +4094,132 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            99,
+            &native_row(&[11, 13], 11),
         )
         .expect("provable core row projects");
-        assert_eq!(projection.rows.len(), 4);
-        let spare = &projection.rows[3];
-        assert_eq!(spare.position, 4);
+        assert_eq!(projection.rows.len(), 3);
+        assert!(
+            projection
+                .rows
+                .iter()
+                .all(|row| row.core.as_ref().expect("core").workspace != "ws-pending")
+        );
+        assert_eq!(
+            projection
+                .rows
+                .iter()
+                .map(|row| (row.position, row.ordinal))
+                .collect::<Vec<_>>(),
+            vec![(1, 1), (2, 3), (3, 4)],
+            "painted slots stay contiguous while ordinals stay core truth"
+        );
+        let spare = &projection.rows[2];
+        assert_eq!(spare.ordinal, 4);
         assert!(spare.core.as_ref().expect("core").spare);
         assert!(spare.selectable, "spare selects like a bound row");
         assert_eq!(spare.occupancy, SpaceOccupancy::Unknown);
         // Ordinal title, never '+'/'?'-plus: the segment title helper
         // renders the core ordinal with the Unknown suffix only.
         assert_eq!(
-            segment_title(spare.position, spare.occupancy),
+            segment_title(spare.ordinal, spare.occupancy),
             "4?",
             "spare renders its core ordinal, never a plus marker"
         );
-        assert!(!segment_title(spare.position, spare.occupancy).contains('+'));
-        let pending = &projection.rows[1];
-        assert!(!pending.core.as_ref().expect("core").spare);
-        assert_eq!(pending.sid, 0);
-        assert!(!pending.selectable, "pending unbound never arms");
-        assert_eq!(pending.occupancy, SpaceOccupancy::Unknown);
-        let bound_tail = &projection.rows[2];
+        assert!(!segment_title(spare.ordinal, spare.occupancy).contains('+'));
+        let bound_tail = &projection.rows[1];
         assert!(!bound_tail.core.as_ref().expect("core").spare);
         assert!(bound_tail.selectable, "bound trailing is ordinary");
         assert_eq!(bound_tail.sid, 13);
+    }
+
+    #[test]
+    fn single_output_drops_vanished_and_orphan_rows_against_live_row() {
+        // Fresh native row [13, 11]: core rows 11 (current) and 13 remain,
+        // the vanished binding 12 and the orphan unbound non-spare drop,
+        // and the explicit spare survives. Only the live row decides.
+        let screens = vec![core_screen(
+            "out-a",
+            vec![
+                core_workspace("ws-live", 1, true, true, false),
+                core_workspace("ws-gone", 2, false, false, false),
+                core_workspace("ws-other", 3, false, false, false),
+                core_workspace("ws-orphan", 4, false, false, false),
+                core_workspace("ws-spare", 5, false, false, true),
+            ],
+        )];
+        let desires = vec![
+            core_desire("ws-live", "out-a", Some("space-11"), false, 0),
+            core_desire("ws-gone", "out-a", Some("space-12"), false, 1),
+            core_desire("ws-other", "out-a", Some("space-13"), false, 2),
+            core_desire("ws-orphan", "out-a", None, false, 3),
+            core_desire("ws-spare", "out-a", None, true, 4),
+        ];
+        let projection = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            &native_row(&[13, 11], 11),
+        )
+        .expect("live rows project");
+        assert!(projection.visible);
+        assert_eq!(
+            projection
+                .rows
+                .iter()
+                .map(|row| (
+                    row.position,
+                    row.ordinal,
+                    row.core.as_ref().expect("core").workspace.as_str(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![(1, 1, "ws-live"), (2, 3, "ws-other"), (3, 5, "ws-spare")],
+            "phantom rows drop and painted slots stay contiguous"
+        );
+        assert_eq!(projection.title, "1");
+        // The surviving live row still targets its exact core id.
+        let other = &projection.rows[1];
+        let presentation = core_presentation_for(&screens);
+        assert_eq!(
+            verify_core_row_click(
+                core_click_for(other, 7, 9),
+                other,
+                7,
+                9,
+                "gen-9",
+                &presentation,
+                &desires,
+                "gen-9",
+            )
+            .expect("live row verifies"),
+            InputSemanticAction::IndicatorSelectWorkspace {
+                output: "out-a".to_owned(),
+                workspace: "ws-other".to_owned(),
+            }
+        );
+        // A vanished core current never keeps a stale highlight: the
+        // single-output screen safe-hides instead.
+        let hidden = project_core_indicator(
+            &screens,
+            &desires,
+            1,
+            IndicatorMode::All,
+            &|_| SpaceOccupancy::Occupied,
+            &|_| None,
+            &native_row(&[13], 13),
+        )
+        .expect("unprovable current hides");
+        assert!(!hidden.visible);
+        assert!(
+            hidden
+                .hidden_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("current")),
+            "{:?}",
+            hidden.hidden_reason
+        );
     }
 
     #[test]
@@ -3575,7 +4248,7 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            99,
+            &native_row(&[11, 13], 11),
         )
         .expect("bound trailing projects");
         let bound_tail = &projection.rows[1];
@@ -3678,7 +4351,7 @@ mod tests {
             IndicatorMode::All,
             &occupancy_of,
             &|_| None,
-            0,
+            &native_row(&[21, 22, 23], 21),
         )
         .expect("projects");
         assert_eq!(projection.rows[0].occupancy, SpaceOccupancy::Occupied);
@@ -3696,7 +4369,7 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            0,
+            &native_row(&[11], 11),
         )
         .expect("hidden projects");
         assert!(!hidden.visible);
@@ -3708,7 +4381,7 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            0,
+            &native_row(&[11], 11),
         )
         .expect("hidden projects");
         assert!(!hidden_empty.visible);
@@ -3733,7 +4406,7 @@ mod tests {
             IndicatorMode::Off,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            12,
+            &native_row(&[11, 12], 11),
         )
         .expect("off projects hidden");
         assert!(!off.visible);
@@ -3744,7 +4417,7 @@ mod tests {
             IndicatorMode::Current,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            12,
+            &native_row(&[11, 12], 11),
         )
         .expect("current projects");
         assert_eq!(current.rows.len(), 2);
@@ -3755,8 +4428,9 @@ mod tests {
                 .iter()
                 .any(|row| row.core.as_ref().expect("core").spare)
         );
-        // Multi-display and malformed bindings stay safe: malformed Some
-        // binding degrades to pending, never a guessed desktop.
+        // Multi-display and malformed bindings stay safe: a malformed Some
+        // binding names no native Space and drops rather than guessing a
+        // desktop or painting a phantom row.
         let malformed_desires = vec![
             core_desire("ws-1", "out-a", Some("space-11"), false, 0),
             core_desire("ws-2", "out-a", Some("bogus"), false, 1),
@@ -3769,12 +4443,17 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            12,
+            &native_row(&[11], 11),
         )
         .expect("projects");
-        let row2 = &malformed.rows[1];
-        assert_eq!(row2.sid, 0);
-        assert!(!row2.selectable);
+        assert_eq!(malformed.rows.len(), 2);
+        assert!(
+            malformed
+                .rows
+                .iter()
+                .all(|row| row.core.as_ref().expect("core").workspace != "ws-2")
+        );
+        assert!(malformed.rows[1].core.as_ref().expect("core").spare);
         let multi = project_core_indicator(
             &screens,
             &desires,
@@ -3782,7 +4461,7 @@ mod tests {
             IndicatorMode::All,
             &|_| SpaceOccupancy::Occupied,
             &|_| None,
-            12,
+            &native_row(&[11, 12], 11),
         )
         .expect("multi projects hidden");
         assert!(!multi.visible);

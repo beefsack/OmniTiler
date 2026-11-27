@@ -93,6 +93,138 @@ pub struct SelectSubmit<'a> {
     pub wake: &'a SpaceSelectWake,
 }
 
+/// Resolve the exact published display a grouped indicator click names.
+/// This is the production submit seam for the multi-display route: the
+/// claim's action output/workspace must equal the reply-bound target, the
+/// separate-Spaces mode must be proven on, and the clicked output must join
+/// exactly one published `(CG display id, managed UUID)` and one fresh SLS
+/// row. Returns the fresh row index plus the pinned pair; any ambiguity or
+/// mismatch refuses before a job is submitted. Callers use this only when
+/// the live publication has several displays (the single-display route is
+/// unchanged).
+pub(crate) fn multi_indicator_submit_display(
+    claim: &ClaimedSelect,
+    published: &crate::runtime_shared::PublishedDisplayInputs,
+    rows: &[crate::ffi::SlsDisplayRow],
+) -> Result<(usize, u32, String), String> {
+    let crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace { output, workspace } =
+        &claim.action
+    else {
+        return Err(
+            "multi-display indicator route refuses a non-indicator action; no actuation".to_owned(),
+        );
+    };
+    if claim.select_target_output.as_deref() != Some(output.as_str())
+        || claim.select_target_workspace.as_deref() != Some(workspace.as_str())
+    {
+        return Err(format!(
+            "multi-display indicator route refuses: claim target does not name the clicked {output}/{workspace}; no actuation"
+        ));
+    }
+    if published.displays.len() < 2 {
+        return Err(
+            "multi-display indicator route refuses a single-display publication; no actuation"
+                .to_owned(),
+        );
+    }
+    if published.separate != Some(true) {
+        return Err(
+            "multi-display indicator route refuses: separate-Spaces mode unreadable or disabled; no actuation"
+                .to_owned(),
+        );
+    }
+    crate::topology::display_index_for_output(&published.displays, rows, output)
+}
+
+/// Verify a direct per-display Mission Control select against full native
+/// snapshots: the target Space must live in the pinned display's group and
+/// be current there after dispatch, every other display's Space membership
+/// and current Space must be exactly unchanged, and no display identity may
+/// be duplicated or dropped. `Err` means unproven, never a retry.
+pub(crate) fn multi_select_arrived(
+    pre: &crate::mc_probe::TopologySnapshot,
+    post: &crate::mc_probe::TopologySnapshot,
+    sid: u64,
+    pinned_uuid: &str,
+) -> Result<(), String> {
+    let target = single_display_by_uuid(pre, pinned_uuid)?;
+    let target_mentions = pre.displays[target]
+        .spaces
+        .iter()
+        .filter(|space| **space == sid)
+        .count();
+    if target_mentions != 1 {
+        return Err(format!(
+            "Space {sid} is not uniquely in pinned display {pinned_uuid}'s group; refusing unproven target"
+        ));
+    }
+    let post_target = single_display_by_uuid(post, pinned_uuid)?;
+    if post.displays.len() != pre.displays.len() {
+        return Err(format!(
+            "display count changed during select (was {}, now {}); refusing unproven arrival",
+            pre.displays.len(),
+            post.displays.len()
+        ));
+    }
+    if post.displays[post_target].current != Some(sid) {
+        return Err(format!(
+            "Space {sid} is not current on pinned display {pinned_uuid} after select; refusing unproven arrival"
+        ));
+    }
+    if post.displays[post_target].spaces != pre.displays[target].spaces {
+        return Err(format!(
+            "pinned display {pinned_uuid} Space membership changed during select; refusing unproven arrival"
+        ));
+    }
+    for (index, before) in pre.displays.iter().enumerate() {
+        if index == target {
+            continue;
+        }
+        let uuid = before.identifier.as_deref().ok_or_else(|| {
+            "non-target display identity unreadable; refusing unproven arrival".to_owned()
+        })?;
+        let before_current = before.current.ok_or_else(|| {
+            format!(
+                "non-target display {uuid} current unreadable before select; refusing unproven arrival"
+            )
+        })?;
+        let after = single_display_by_uuid(post, uuid)?;
+        if post.displays[after].current != Some(before_current) {
+            return Err(format!(
+                "non-target display {uuid} current moved during select (was {before_current}, now {:?}); refusing unproven arrival",
+                post.displays[after].current
+            ));
+        }
+        if post.displays[after].spaces != before.spaces {
+            return Err(format!(
+                "non-target display {uuid} Space membership changed during select; refusing unproven arrival"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn single_display_by_uuid(
+    snapshot: &crate::mc_probe::TopologySnapshot,
+    uuid: &str,
+) -> Result<usize, String> {
+    let mut found = None;
+    for (index, display) in snapshot.displays.iter().enumerate() {
+        if display.identifier.as_deref() != Some(uuid) {
+            continue;
+        }
+        if found.is_some() {
+            return Err(format!(
+                "display UUID {uuid} maps to several SLS rows; refusing ambiguous attribution"
+            ));
+        }
+        found = Some(index);
+    }
+    found.ok_or_else(|| {
+        format!("display UUID {uuid} has no exact SLS row; refusing ambiguous attribution")
+    })
+}
+
 struct SelectLane {
     pending: Option<SelectJob>,
     inflight: Option<SelectJob>,

@@ -88,19 +88,21 @@
   requirement. Native two-display arrangement validation is pending
   ([topology evidence](archive/macos-full-display-topology.md)).
 
-### Per-output pager physical check
+### Shared grouped pager physical check
 
-Per-output rendering and exact SIP-on selection are a separate 0.1
-consistency blocker, not a substitution for MX6. Once a carrier is approved
-and implemented, follow the [bounded signed-fixture procedure](macos-per-output-indicator.md#bounded-physical-check-after-implementation).
-On two extended physical displays with separate Spaces, set different
-currents and click each display's pager while the other display has fixture
-focus. Independently verify the exact native destination on the clicked
-display, the unchanged current on the other display, and both painted
-markers. Include an empty destination, disconnect/rehome/reconnect and
-arrangement or scale reanchor, refusal of unproven attribution, fullscreen
-suppression/return, and teardown restoring the original desktops. No
-two-display pass has been recorded; the gate counts and MX6 remain unchanged.
+SIP-on multi-display indicator acceptance remains a separate 0.1 blocker,
+not a substitution for MX6. Use the [bounded signed-fixture procedure](macos-per-output-indicator.md#bounded-physical-check-after-implementation)
+on two extended displays with separate Spaces. The one menu-bar item must
+show groups in display arrangement order and paint each group's exact current
+Space. With fixture focus on A, click a B-group alternate (including an
+empty destination); verify in Mission Control that B alone switched to
+the exact target and A's current did not change. Repeat with A and B reversed.
+Disconnect/rehome/reconnect and rearrange the displays: groups must update
+in place, with no actionable stale targets under unproven scope. Check
+fullscreen behavior and teardown restoring the starting desktops. Safe-hide
+under ambiguous attribution is safety evidence, not a pass. The notch/width
+risk is a known limitation, not a separate carrier. No two-display pass has
+been recorded; the gate counts and MX6 remain unchanged.
 
 ### Original checks 1-53
 

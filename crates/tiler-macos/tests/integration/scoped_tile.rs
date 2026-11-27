@@ -130,7 +130,13 @@ impl AxBackend for FakeBackend {
             (cmd.x, cmd.y, cmd.w, cmd.h),
             cmd.topology_revision,
         ));
-        AxCompletion::Applied { elapsed_ms: 0 }
+        // The accepted call reports exactly the frame it left behind: the
+        // core needs the bounded readback to tell a successful-but-clamped
+        // write from a setter that never landed.
+        AxCompletion::Applied {
+            elapsed_ms: 0,
+            readback_xywh: Some((cmd.x, cmd.y, cmd.w, cmd.h)),
+        }
     }
 
     fn snapshot(&mut self) -> Result<Vec<ObservedWindow>, String> {
@@ -199,7 +205,10 @@ impl AxBackend for FakeBackend {
 
     fn dispatch_focus(&mut self, cmd: &FocusCommand) -> AxCompletion {
         let _ = self.inner.focus_tx.send(cmd.clone());
-        AxCompletion::Applied { elapsed_ms: 1 }
+        AxCompletion::Applied {
+            elapsed_ms: 1,
+            readback_xywh: None,
+        }
     }
 }
 
@@ -532,6 +541,39 @@ fn wait_applied_pair(
         seen[0].clone().expect("seen"),
         seen[1].clone().expect("seen"),
     )
+}
+
+/// Collect one applied record per wanted window, order-free and
+/// deadline-bounded, then return the frame the fake setter left per window:
+/// the fake AX layer's retained native fact, which later reports must read
+/// back instead of the pre-write shape the test declared.
+fn wait_applied_rects(fixture: &Fixture, wants: &[&str]) -> BTreeMap<String, (i32, i32, i32, i32)> {
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut rects = BTreeMap::new();
+    while wants.iter().any(|want| !rects.contains_key(*want)) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            panic!("no applied frames for {wants:?}: got {rects:?}");
+        }
+        match fixture.applied_rx.recv_timeout(remaining) {
+            Ok(record) if wants.contains(&record.2.as_str()) => {
+                rects.insert(record.2, record.3);
+            }
+            Ok(_) => continue,
+            Err(_) => panic!("no applied frames for {wants:?}: got {rects:?}"),
+        }
+    }
+    rects
+}
+
+/// Observed window at one retained native frame (see [`wait_applied_rects`]).
+fn retained(
+    rects: &BTreeMap<String, (i32, i32, i32, i32)>,
+    window: &str,
+    wid: u32,
+) -> ObservedWindow {
+    let (x, y, w, h) = rects[window];
+    win_at(wid, x, y, w, h)
 }
 
 /// Wait for the next applied frame for `window` whose rect equals
@@ -1317,9 +1359,7 @@ fn space_switch_preserves_hidden_layout_without_retirement() {
         SubmitOutcome::Accepted
     );
     assert!(fixture.handle.flush(FLUSH));
-    let _ = wait_applied(&fixture, "1001_1");
-    let _ = wait_applied(&fixture, "1001_2");
-    let _ = wait_applied(&fixture, "1001_4");
+    let birth = wait_applied_rects(&fixture, &["1001_1", "1001_2", "1001_4"]);
     while fixture.applied_rx.try_recv().is_ok() {}
     // Nontrivial layout: focus the leftmost window and move it right.
     // Leftmost-picked (never assumed order) so the move always has a
@@ -1350,7 +1390,11 @@ fn space_switch_preserves_hidden_layout_without_retirement() {
             APP_A,
             gen_a,
             11,
-            vec![(win(1), vec![11]), (win(2), vec![11]), (win(4), vec![11]),],
+            vec![
+                (retained(&birth, "1001_1", 1), vec![11]),
+                (retained(&birth, "1001_2", 2), vec![11]),
+                (retained(&birth, "1001_4", 4), vec![11]),
+            ],
             Some(focus_wid),
             revision
         )),
@@ -1430,6 +1474,8 @@ fn space_switch_preserves_hidden_layout_without_retirement() {
             .map(|(_, r)| *r)
             .expect("moved window")
     };
+    let moved_frames: BTreeMap<String, (i32, i32, i32, i32)> =
+        moved_rects.iter().cloned().collect();
     while fixture.applied_rx.try_recv().is_ok() {}
     // Switch display 1 to 12 (11 stays known): A reports its triple
     // hidden plus a new window on 12; B is undisturbed.
@@ -1445,9 +1491,9 @@ fn space_switch_preserves_hidden_layout_without_retirement() {
             gen_a,
             20,
             vec![
-                (win(1), vec![11]),
-                (win(2), vec![11]),
-                (win(4), vec![11]),
+                (retained(&moved_frames, "1001_1", 1), vec![11]),
+                (retained(&moved_frames, "1001_2", 2), vec![11]),
+                (retained(&moved_frames, "1001_4", 4), vec![11]),
                 (win(3), vec![12]),
             ],
             None,
@@ -1528,10 +1574,10 @@ fn space_switch_preserves_hidden_layout_without_retirement() {
             gen_a,
             30,
             vec![
-                (win(1), vec![11]),
-                (win(2), vec![11]),
-                (win(4), vec![11]),
-                (win(3), vec![12]),
+                (retained(&moved_frames, "1001_1", 1), vec![11]),
+                (retained(&moved_frames, "1001_2", 2), vec![11]),
+                (retained(&moved_frames, "1001_4", 4), vec![11]),
+                (win_at(3, c.3.0, c.3.1, c.3.2, c.3.3), vec![12]),
             ],
             None,
             revision3
@@ -1643,8 +1689,29 @@ fn deleted_space_retires_domain_and_reseeds() {
     fixture.handle.launch_app(APP_A).expect("launch A");
     fixture.handle.launch_app(APP_B).expect("launch B");
     assert!(fixture.handle.flush(FLUSH));
-    let _ = wait_applied_pair(&fixture, "1001_1", "1002_2");
+    let (a0, b0) = wait_applied_pair(&fixture, "1001_1", "1002_2");
     while fixture.applied_rx.try_recv().is_ok() {}
+    // The applied rectangles are the native facts the fake AX layer holds.
+    // Echo them on the birth Spaces so creation-settlement re-reads stay
+    // truthful instead of reverting to the pre-write launch shapes.
+    install(
+        &fixture,
+        APP_A,
+        scripted(
+            vec![win_at(1, a0.3.0, a0.3.1, a0.3.2, a0.3.3)],
+            vec![vec![11]],
+            None,
+        ),
+    );
+    install(
+        &fixture,
+        APP_B,
+        scripted(
+            vec![win_at(2, b0.3.0, b0.3.1, b0.3.2, b0.3.3)],
+            vec![vec![21]],
+            None,
+        ),
+    );
     let gen_a = fixture.handle.app_generation(APP_A).expect("gen A");
     let gen_b = fixture.handle.app_generation(APP_B).expect("gen B");
 
@@ -1688,12 +1755,14 @@ fn deleted_space_retires_domain_and_reseeds() {
         .handle
         .update_topology_with(spaced.clone(), &user_space);
     // A full report under the appended readback settles both create legs.
+    // Both windows report the frames their setters left (the retained
+    // native facts), never their pre-write launch shapes.
     assert_eq!(
         fixture.handle.submit_scoped_observation(scoped_obs(
             APP_A,
             gen_a,
             10,
-            vec![(win(1), vec![11])],
+            vec![(win_at(1, a0.3.0, a0.3.1, a0.3.2, a0.3.3), vec![11])],
             None,
             revision2
         )),
@@ -1704,7 +1773,7 @@ fn deleted_space_retires_domain_and_reseeds() {
             APP_B,
             gen_b,
             10,
-            vec![(win(2), vec![21])],
+            vec![(win_at(2, b0.3.0, b0.3.1, b0.3.2, b0.3.3), vec![21])],
             None,
             revision2
         )),
@@ -1744,19 +1813,34 @@ fn deleted_space_retires_domain_and_reseeds() {
     moved.revision =
         topology::fingerprint_snapshot(&moved.displays, &moved.rows, moved.separate_spaces);
     let revision3 = fixture.handle.update_topology_with(moved, &user_space);
-    // Workers re-read under the new revision (same observed windows, new
-    // membership evidence arrives with the next snapshots).
+    // Returning to the reseeded Space, A reports the native frame its setter
+    // left at birth, now on Space 12: the reseed target already holds, so the
+    // core must converge from readback instead of another write. B reports
+    // its retained frame unchanged on Space 21.
     install(
         &fixture,
         APP_A,
-        scripted(vec![win(1)], vec![vec![12]], None),
+        scripted(
+            vec![win_at(1, a0.3.0, a0.3.1, a0.3.2, a0.3.3)],
+            vec![vec![12]],
+            None,
+        ),
+    );
+    install(
+        &fixture,
+        APP_B,
+        scripted(
+            vec![win_at(2, b0.3.0, b0.3.1, b0.3.2, b0.3.3)],
+            vec![vec![21]],
+            None,
+        ),
     );
     assert_eq!(
         fixture.handle.submit_scoped_observation(scoped_obs(
             APP_A,
             gen_a,
             20,
-            vec![(win(1), vec![12])],
+            vec![(win_at(1, a0.3.0, a0.3.1, a0.3.2, a0.3.3), vec![12])],
             None,
             revision3
         )),
@@ -1767,28 +1851,63 @@ fn deleted_space_retires_domain_and_reseeds() {
     // refusing A's in-flight reply as stale before it can emit (see
     // `prove_coherent` / the sequencer's `stale-observation` verdict).
     assert!(fixture.handle.flush(FLUSH));
-    let a = wait_applied(&fixture, "1001_1");
     assert_eq!(
         fixture.handle.submit_scoped_observation(scoped_obs(
             APP_B,
             gen_b,
             20,
-            vec![(win(2), vec![21])],
+            // Display 2 is undisturbed: B's retained native frame is still
+            // the frame its setter left at birth.
+            vec![(win_at(2, b0.3.0, b0.3.1, b0.3.2, b0.3.3), vec![21])],
             None,
             revision3
         )),
         SubmitOutcome::Accepted
     );
-    assert!(fixture.handle.flush(FLUSH));
-    // Both windows re-actuate inside their (unchanged) work areas.
-    let b = wait_applied(&fixture, "1002_2");
+    // No redundant AX call is required when the readback says both native
+    // frames already equal the settled plan. The settlement fence proves
+    // every worker pass drained before the plan and write drain below.
+    settle_known(&fixture.handle, std::time::Instant::now() + WAIT);
+    let desired = fixture.handle.last_desired_geometry();
+    let planned = |window: &str| {
+        desired
+            .iter()
+            .find(|f| f.window == window)
+            .map(|f| (f.x, f.y, f.w, f.h))
+            .unwrap_or_else(|| panic!("{window} missing from final plan: {desired:?}"))
+    };
+    let a_final = planned("1001_1");
+    let b_final = planned("1002_2");
+    assert_eq!(
+        a_final, a0.3,
+        "reseeded A must keep its independently captured birth frame"
+    );
+    assert_eq!(
+        b_final, b0.3,
+        "undisturbed B must keep its independently captured birth frame"
+    );
     let areas = work_areas();
-    assert!(within(a.3, areas[0]), "reseeded domain tiles d1: {:?}", a.3);
-    assert!(within(b.3, areas[1]), "stable domain tiles d2: {:?}", b.3);
-    // Convergence evidence is on the ring (the engine adopted the new
-    // topology through a full world report; the space-11 session retired
-    // core-internally — its Space left the display, not merely the
-    // foreground — while the re-actuation above proves the reseed).
+    assert!(
+        within(a_final, areas[0]),
+        "reseeded domain tiles d1: {a_final:?}"
+    );
+    assert!(
+        within(b_final, areas[1]),
+        "stable domain tiles d2: {b_final:?}"
+    );
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        let target = match record.2.as_str() {
+            "1001_1" => a0.3,
+            "1002_2" => b0.3,
+            other => panic!("post-delete write to unexpected window {other}"),
+        };
+        assert_eq!(
+            record.3, target,
+            "any post-delete write must land exactly on the retained frame"
+        );
+    }
+    // The ring confirms adoption of the topology with Space 11 removed;
+    // the converged geometry above confirms the reseeded domain tiles.
     assert!(
         fixture
             .handle
@@ -2469,7 +2588,7 @@ fn removed_display_retires_its_domains() {
         SubmitOutcome::Accepted
     );
     assert!(fixture.handle.flush(FLUSH));
-    let _ = wait_applied_pair(&fixture, "1001_1", "1002_2");
+    let (a0, _b0) = wait_applied_pair(&fixture, "1001_1", "1002_2");
     while fixture.applied_rx.try_recv().is_ok() {}
     // Display 2 unplugged: single display, single row.
     let single = topology::build_snapshot(
@@ -2483,7 +2602,9 @@ fn removed_display_retires_its_domains() {
             APP_A,
             gen_a,
             20,
-            vec![(win(1), vec![11])],
+            // The surviving window's accepted frame is the app's retained
+            // native fact on the single display, not its pre-write shape.
+            vec![(win_at(1, a0.3.0, a0.3.1, a0.3.2, a0.3.3), vec![11])],
             None,
             revision2
         )),
@@ -3330,7 +3451,12 @@ fn arrival_on_empty_space_retains_hidden_layout_without_writes() {
             APP_A,
             gen_a,
             11,
-            vec![(win(1), vec![11])],
+            // The hidden window keeps the frame its setter left: no writes
+            // and no geometry churn while absent from the current view.
+            vec![(
+                win_at(1, first.3.0, first.3.1, first.3.2, first.3.3),
+                vec![11]
+            )],
             None,
             revision
         )),
@@ -3355,7 +3481,10 @@ fn arrival_on_empty_space_retains_hidden_layout_without_writes() {
             APP_A,
             gen_a,
             12,
-            vec![(win(1), vec![11])],
+            vec![(
+                win_at(1, first.3.0, first.3.1, first.3.2, first.3.3),
+                vec![11]
+            )],
             None,
             revision
         )),
