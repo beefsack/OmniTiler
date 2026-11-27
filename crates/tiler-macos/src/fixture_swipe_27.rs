@@ -476,6 +476,27 @@ fn prove_fullscreen(
                 stable()?;
                 driver.prove_gesture_target(&subject.0, subject.1)
             };
+            // Host observation from the first signed run: a switch away from
+            // the detached fullscreen Space leaves the app's AX focus on the
+            // fullscreen window, so the owned Desktop sibling never becomes
+            // foreground on arrival. The return dispatch is a probe setup
+            // step, not part of the away measurement: after the away leg
+            // proved the Desktop current, explicitly focus only that windowed
+            // sibling and record it separately. Never a fullscreen write and
+            // never a weakened exact source proof; a refused focus aborts the
+            // probe rather than pressing from an unproven source.
+            let source_setup = if to == fullscreen {
+                if observe(&full, pin)? != dest {
+                    return Err("desktop sibling focus setup: owned Desktop not current".to_owned());
+                }
+                let started = clock.elapsed();
+                driver.focus(&b.0, b.1).map_err(|(_, e)| e)?;
+                crate::fixture_leg::settle_hold(crate::fixture_leg::FOCUS_SETTLE_MS)
+                    .map_err(|(_, e)| e)?;
+                Some((started, clock.elapsed()))
+            } else {
+                None
+            };
             // The full comparison pins every other display to its previously
             // verified User current, excluding any foreign fullscreen source.
             let mut prior = full.clone();
@@ -514,13 +535,22 @@ fn prove_fullscreen(
                 { break; }
                 if wait.elapsed() >= DEADLINE { return Err("fullscreen probe did not reach exact stable arrival".to_owned()); }
             }
-            let row = serde_json::json!({
+            let mut row = serde_json::json!({
                 "route": if mc { "mc-pinned" } else { "dock-swipe" },
                 "away": to == dest, "dispatch_started_us": dispatch_started.as_micros(),
                 "notification_sample_us": notification.map(|t| t.as_micros()),
                 "current_sample_us": current.map(|t| t.as_micros()),
                 "foreground_sample_us": foreground.map(|t| t.as_micros()),
             });
+            if let Some((setup_start, setup_end)) = source_setup {
+                row["probe_setup"] = serde_json::json!({
+                    "desktop_sibling_focus_us": [
+                        setup_start.as_micros(), setup_end.as_micros()
+                    ],
+                    "desktop_sibling_wid": b.1,
+                    "after_away_measurement": true,
+                });
+            }
             eprintln!("fixture fullscreen probe {row}");
             evidence.push(row);
         }
