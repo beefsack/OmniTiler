@@ -1,11 +1,11 @@
 # Gaming
 
 ### Anti-cheat mechanism limits
-- Decision: interact with other processes only through host window-management mechanisms; never inject code or access process memory. Synthetic input is prohibited except for Dock Space gestures and title-bar drags used for [macOS native Space switching or sends](macos.md#managed-native-spaces-input-and-transfers). Never dispatch the exception while a fullscreen window has focus, games included per the [fullscreen-state rule](#fullscreen-state-based-protection).
+- Decision: interact with other processes only through host window-management mechanisms; never inject code or access process memory. Synthetic input is prohibited except for Dock Space gestures and title-bar drags for [macOS native Space switching or sends](macos.md#managed-native-spaces-input-and-transfers). Around fullscreen windows, the exception follows the shared [fullscreen-state rule](#fullscreen-state-based-protection) and [fullscreen workspace and layout actions](window-state.md#fullscreen-workspace-and-layout-actions), the same rules KDE follows.
 - Why: anti-cheat false positives put user game accounts at risk.
 - Assumes / revisit if: these mechanisms are those anti-cheat systems flag; revisit after anti-cheat research. Current code audit against this list remains outstanding.
-- Status: active, 2026-11-27; the scoped macOS exception supersedes the blanket synthetic-input ban only for these actions.
-- Evidence: User 2026-11-27; [Gaming Compatibility](../principles.md#gaming-compatibility), [interface review](../changes/core-interface-review.md).
+- Status: active, 2026-11-27.
+- Evidence: User 2026-11-27; [fullscreen-state rule](#fullscreen-state-based-protection), [fullscreen workspace and layout actions](window-state.md#fullscreen-workspace-and-layout-actions), [R-INS-06, Ours KDE](../spec/reference-outcomes/insertion.md#r-ins-06-explicit-selection-discriminator-fresh-fullscreen-leg), [Gaming Compatibility](../principles.md#gaming-compatibility), [interface review](../changes/core-interface-review.md).
 
 ### Fullscreen-state based protection
 - Decision: Fullscreen windows (exclusive and borderless-windowed fullscreen, games included) remain workspace members; explicit user workspace actions apply. The tiler never tiles, resizes, focuses, overlays or intercepts input for a fullscreen window unasked. A windowed game is an ordinary window.
