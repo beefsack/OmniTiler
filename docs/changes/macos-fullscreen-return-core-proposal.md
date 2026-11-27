@@ -1,114 +1,179 @@
 # Proposal: return to a remembered native fullscreen member on macOS
 
-**Status:** revised after the 2026-11-27 rejection, pending external re-review and host evidence. No wire, core, or return-route change is enabled by this proposal.
+**Status:** host single-window round-trip evidence collected; Split View and product switch-away remain unprobed; pending Pass 3 re-review
+
+No wire, core, or return-route change is enabled by this proposal.
 
 ## Problem
 
-Selecting a logical workspace should return to its remembered fullscreen member when that member still owns a separate native fullscreen Space. macOS exposes two distinct physical destinations: the user Desktop that anchors the logical workspace, and the disposable fullscreen Space that presently covers it. OmniTiler must switch to the latter for this explicit command, prove exact arrival, and leave focus, frame, and fullscreen state to the host. A fullscreen Space must not become a workspace, ring entry, or write-authorizing domain.
+Selecting a logical workspace should return to its remembered fullscreen member when that member still owns a separate native fullscreen Space. macOS exposes two physical destinations: the user Desktop that anchors the logical workspace, and the disposable fullscreen Space that presently covers it. OmniTiler must switch to the latter for this explicit command, prove exact arrival without a focus setter, and leave focus, frame, and fullscreen state to the host. A fullscreen Space must not become a workspace, ring entry, or write-authorizing domain.
 
 ## Present representation and gap
 
-- [`remembered_view_focus`](../../crates/tiler-core/src/world_tiling_views.rs) resolves focus from logical homing and last-active/layout history. `retain_view` can publish the exact lifetime as `FocusRequest.target`, with `cmd_seq` and `after_shown.op` identifying its parent select. [`host_owned_focus_bearing_fullscreen_focus_freezes_frameless_and_proves`](../../crates/tiler-core/src/world_selection_await_tests.rs) shows that this works for a fullscreen member reported on the **same native binding** as its logical home. It does not prove return to a separate unbound fullscreen Space.
-- On macOS [`build_report`](../../crates/tiler-macos/src/world_builder.rs) emits a grounded fullscreen window with `fullscreen: true` and `NativeWorkspaceFact::Omitted` when it cannot home the window to a user Space. Physical membership is read by the adapter, not published as user membership. Core may retain the logical home; the exact `focus_request.target` is a useful selection subject, not a physical destination or an arrival receipt.
-- [`AfterShown`](../../crates/tiler-core/src/world_report.rs) freezes logical view/member obligations. [`selection_native_proof` and `prove_selection_arrival`](../../crates/tiler-core/src/world_selection.rs) require a native current echo or explicit attempt that proves the logical target through its native binding, and native member proof against that binding. [`settle_views_pre`](../../crates/tiler-core/src/world_settle.rs) also settles against that logical/native binding. An exact post-read of the fullscreen SID therefore cannot prove this selection through today's v4 fields. Reporting the underlying Desktop SID as physically current or giving the fullscreen SID a second logical binding would change the meaning of those facts and could enable effects on the covered Desktop.
+- [`remembered_view_focus`](../../crates/tiler-core/src/world_tiling_views.rs#L439-L509) resolves focus from logical homing and last-active/layout history. [`retain_view`](../../crates/tiler-core/src/world_tiling_views.rs#L218-L427) can publish the exact lifetime as `FocusRequest.target`, with `cmd_seq` and `after_shown.op` identifying its parent select. [`host_owned_focus_bearing_fullscreen_focus_freezes_frameless_and_proves`](../../crates/tiler-core/src/world_selection_await_tests.rs#L10478) shows this works for a fullscreen member reported on the **same native binding** as its logical home. It does not prove return to a separate unbound fullscreen Space.
+- On macOS [`build_report`](../../crates/tiler-macos/src/world_builder.rs#L398) emits a grounded fullscreen window with `fullscreen: true` and `NativeWorkspaceFact::Omitted` when it cannot home the window to a user Space. Physical membership is read by the adapter, not published as user membership. The exact focus target is a useful selection subject, not a physical destination or an arrival receipt.
+- [`prove_selection_arrival`](../../crates/tiler-core/src/world_selection.rs#L2388-L2461) is only consulted through [`settle_selection_feedback`](../../crates/tiler-core/src/world_selection.rs#L1628-L1669) when an effect exists, and arrival members freeze only under that effect gate ([`freeze_one_selection`](../../crates/tiler-core/src/world_selection.rs#L1331-L1333)). [`switch_members`](../../crates/tiler-core/src/world_selection.rs#L1417-L1441) is a separate host-owned-empty lane. [`selection_terminal`](../../crates/tiler-core/src/world_selection.rs#L2283-L2327) reports `SwitchFocus::Unproven` without an effect once native proof passes. A focusless return therefore cannot use arrival brackets, and today's native proof only matches the Desktop binding.
+- [`retain_view`](../../crates/tiler-core/src/world_tiling_views.rs#L284-L327) mints one retained view flight for the initiating output, then fans the logical view and one shared history entry to all live outputs. [`selection_native_proof`](../../crates/tiler-core/src/world_selection.rs#L1879-L1940) requires one native echo per obligated output from that identical logical/native binding. An exact post-read of the fullscreen SID cannot prove the selection through today's v4 fields.
+- [`held_scopes`](../../crates/tiler-core/src/world_run_v4.rs#L381-L423) fences a whole logical workspace when a staged window already has a staged home but no readable logical receipt, so a detached fullscreen member also fences ordinary Desktop siblings. The loop does not fence newcomers with no staged home; Pass 2's "every missing receipt" framing was too broad. [`logical_homing`](../../crates/tiler-core/src/world_observe.rs#L875-L887) is the `receipt.is_none() && native_authoritative()` branch: it retains an output-matched or legitimately remapped existing home and returns `None` for a born-fullscreen newcomer, whose own writes are fenced. It is not a bare host-owned fallback. [`execution_subject`](../../crates/tiler-core/src/world_close_focus.rs#L171-L190) resolves an implicit command from the old cursor or observed foreground, and [`seed_focus_cursor`](../../crates/tiler-core/src/world_close_focus.rs#L212-L219) only updates it on a later report.
+- v4 currently shares [`WorkspaceRef`](../../crates/tiler-core/src/world_report.rs#L68-L77) between member and view evidence, stores only a bare native string in [`FocusChange::View`](../../crates/tiler-core/src/world_report.rs#L1539-L1541), and keys view-attempt duplicates by operation alone ([`world_property_attempts.rs`](../../crates/tiler-protocol/src/world_property_attempts.rs#L494-L558)). `NativeObservation.current` is nullable with an absent key held ([`world_protocol.rs`](../../crates/tiler-protocol/src/world_protocol.rs#L2996-L3039)), so read gaps and known absence are indistinguishable.
 
-## Review and known limitation
+## Pass 3 decisions
 
-The review rejected a defaulted capability and a singular top-level destination under the closed v4 contract, a singleton scene model that excludes Split View, and a separate settlement terminal. The replacement uses the existing per-output flight and proof engine, and distinguishes a detached surface from its logical home.
+### 1. Focusless return settlement
 
-Selecting the current logical workspace while fullscreen still mints a host-owned View flight. The macOS owner mechanically refuses it before posting because the detached SID is not in the user Desktop order; it does not pull the user out of fullscreen on the current route. A core-side no-op belongs to this redesign. Any interim switch-away route must preserve that refusal.
+An explicit return to a detached fullscreen member **never mints a FocusRequest, ArrivalBracket, focus feedback, or any focus/visibility setter**. A detached override forces the focusless binding even when `remembered_view_focus` resolves a candidate, so the direct and awaitShown focus effects are not taken. At grant, each admitted View flight freezes its own typed destination and, for a detached target, its own intended `WindowId`. Store these together in the output-keyed `RetainedSelection.view_targets` as `{home: DomainKey, destination: ViewRef, intended_member: Option<WindowId>}`; `intended_member` is present exactly when `destination` is detached. With no effect, arrival members and host-owned `switch_members` stay empty; the common terminal still reaches `SwitchOutcome::Complete` once all remaining obligations and native proof pass, with `SwitchFocus::Unproven`, never `Proven`. The intended member is a membership subject only; it is not a focus decision.
 
-## Proposed v4 delta
+[`selection_native_proof`](../../crates/tiler-core/src/world_selection.rs#L1879-L1940) and [`settle_views_pre`](../../crates/tiler-core/src/world_settle.rs#L550-L653) compare each output's frozen `destination`; a detached override skips the Desktop-binding echo and proves only through the branches below. Logical `workspace.views` keeps the selected logical id until a newer known coherent departure supersedes it under the existing rule; physical `last_views` records the typed destination. A settled logical view never implies the covered Desktop is current or receives a write.
 
-Amend the closed v4 schema in place. `HostCapabilities.detachedFullscreenView` is a **required boolean**, valid as `true` only for host-owned workspace domains. No omission, default or compatibility shape; update codecs and active fixtures together, preserving historical fixtures. KDE and Windows explicitly declare `false`, with no behavior change. See [wire conventions](../porting/world-contract.md#wire-conventions-and-bounds) and [contract authority](../decisions/contract.md#contract-authority-and-v4-migration).
+The detached target is proven by either branch, from coherent readable facts on the frozen output:
 
-| Contract location | Change |
+| Branch | Exact proof | Rejection |
+|---|---|---|
+| A. Fresh physical current | `currentKnown: true`, `detachedCurrent` exactly the frozen `DetachedRef`, and the frozen lifetime grounded on that same surface (`detachedSurface` exact, `fullscreen: true`, same output) in the same coherent report. | Missing/gapped current, Desktop current, another surface, missing/mismatched member, or incomplete inventory holds. |
+| B. Correlated accepted post | A correlated `ViewAttempt` with `disposition.setter: "accepted"`, `post` exactly the frozen `DetachedRef`, exact `(op,out,ws)` tuple, and `postMember` equal to the frozen intended lifetime and grounded at that read (live exact lifetime with a readable fact on the frozen surface); the adapter may send `postMember` only when it read that membership between two exact physical samples of the same target. | Refused/threw, unreadable/non-target post, wrong output/workspace, non-null `postMember` on a non-detached post, a different member, or an unattested/bad row holds and is never retried. |
+
+`postMember` is a membership observation, never focus evidence. Branch B is historical: once latched it is not re-proven, and a newer **known** physical departure (Desktop, another detached surface, or positive member loss) is adopted as newer external input without replaying the command, re-sending a View, or borrowing foreground as focus. A report gap is not a departure. This preserves the existing proven-then-abandoned rule ([`world_settle.rs`](../../crates/tiler-core/src/world_settle.rs#L439-L456)) for the detached scene.
+
+### 2. Homing, holds, and born-fullscreen
+
+| Case | Rule |
 |---|---|
-| `NativeObservation` | Required nullable detached-current surface ref, separate from the user Desktop current and never part of `order` or occupancy. A positive detached-current fact leaves user Desktop current null. |
-| `WindowFact` | Required nullable detached surface ref, valid with `fullscreen: true`. More than one live lifetime can share the same surface on the same output; membership proves neither a logical home nor a focused member. |
-| View `TransferTarget` | Freeze a nullable typed native destination override on the existing per-output flight. Select only a detached surface whose exact remembered lifetime and logical home agree with that output and target workspace, and only for the explicit command. Shared fan-out can carry distinct overrides for each output; existing `RetainedTransfer` supersession and correlation apply. |
-| `ViewAttempt.{pre,post,base}` | Use a closed native surface variant for user Desktop or detached fullscreen, with exact output and opaque native identity. The corresponding native arrival bracket can name the same surface. Neither fact rebinds a workspace. |
+| Detached fullscreen with a pre-existing same-lifetime, same-output home | Exempt **only** from the membership-derived whole-scope hold in [`world_run_v4.rs`](../../crates/tiler-core/src/world_run_v4.rs#L383-L423) when `detachedSurface` is exact, `fullscreen == Some(true)`, and that lifetime's pre-existing `core_homing` names the same output. Keep the retained home. |
+| Any other hold | Still applies: held/excluded windows, incomplete inventory, gesture barrier, native order conflict, conflicting facts, and window-local holds. The exemption never clears them. |
+| Unknown/unreadable detached membership with a staged home | Remains fenced; no positive detached fact means no exemption. |
+| Born fullscreen with no prior home | Remains unhomed (`logical_homing` returns `None`), its own writes are fenced by a window-local hold, and no arbitrary logical scope is fenced. Do not invent a home or Desktop currency. |
+| Ordinary Desktop siblings | Retain tiling/focus eligibility on their own readable proof; the detached member does not poison the scope once the narrow exemption applies. |
+| Detached member writes | No frame, membership, show-state, focus, raise, or fullscreen setter is authorized for the detached lifetime. Its covered Desktop remains in the ordinary user Desktop order but is not published as physically current or visible on the strength of the detached fact. |
 
-Use one settlement engine: `selection_native_proof`, `prove_selection_arrival` and `settle_views_pre` compare against each flight's frozen physical destination when overridden, otherwise continue to use the Desktop binding. Explicit return freezes the exact member independently of its physical surface; covered Desktop members need not become visible. Require a fresh physical current and matching correlated post with grounded member arrival; do not treat report silence as a move or success. Before a grant, missing, closed, ambiguous or changed membership leaves the ordinary Desktop path. After a grant, drift or unreadable proof never retargets or replays the operation.
+The focus fallback in [`remembered_view_focus`](../../crates/tiler-core/src/world_tiling_views.rs#L439-L509) may consider only already-homed candidates. A born-fullscreen lifetime with no retained home never enters that fallback.
 
-## Core rules
+### 3. Shared per-output flights
 
-- A redundant select while its detached surface is current is a no-op: do not replace the current surface with the covered Desktop or mint a switch or focus effect.
-- [`adopt_idle_native_echoes`](../../crates/tiler-core/src/world_native.rs) may adopt a positively observed external switch onto a detached surface as the retained logical home's view only when that home is unambiguous. Keep the native Desktop current unknown rather than claiming it is visible. A Split View conflict between logical homes does not pick an arbitrary one.
-- Advance [`logical_focus_cursor`](../../crates/tiler-core/src/world_close_focus.rs) to the fullscreen target from proven host foreground, without a focus setter. A surface with two members does not prove which member has focus.
-- [`remembered_view_focus`](../../crates/tiler-core/src/world_tiling_views.rs) needs a fallback over grounded fullscreen members of the same logical home, including windows born fullscreen with no tile leaf and lifetimes no longer recorded in `last_active_window`. Reuse last-active/MRU precedence; break otherwise equal candidates deterministically without acquiring write authority.
-- Never add a detached surface to a workspace ring, publish the covered Desktop as physically current, or grant a frame, show-state, focus, raise, or membership setter because of the override.
+For a capability-enabled host-owned explicit select that changes the shared view, the parent operation remains `op-<cmdSeq>` and the batch mints **one View flight per affected live output**, each with its own frozen target workspace and nullable detached destination. The shared logical view and its single history entry are recorded once. Non-shared mode keeps the single-output flight.
+
+| Rule | Requirement |
+|---|---|
+| Frozen plan | Compute the per-output plan atomically from the pre-command reports: logical home, intended membership subject, exact current/physical refs, capability, and liveness. Later reports never add or retarget an override. |
+| Binding/evidence tuple | Bind and correlate every flight and attempt by exact `(op,out,ws)`. A sibling output's attempt can never prove another sibling. |
+| Duplicate identity | The wire codec and adapter spent/pending keys use `(op,out)`, not `op` alone; the current op-only view duplicate and the adapter's op-only `pending_views` key ([`world_runtime.rs`](../../crates/tiler-macos/src/world_runtime.rs#L831-L866)) are replaced. A duplicate `(op,out)` rejects the lane row. |
+| Termination | The existing single binding remains keyed by the issuing/focus output. Its terminal waits until every sibling flight admitted by the frozen plan has a latched verdict; no sibling completes the shared switch alone. |
+| Supersession | A newer command supersedes only the affected output's flight. It never re-mints a flight for an output already exact-current detached for the same logical home, nor for an obsolete/lost output. |
+| Redundant select | Already current on the exact detached surface for the same logical home: no View flight and no focus. A same-workspace selection with a null/ambiguous physical reading is not transformed into a Desktop write. |
+
+**Canonical shared reconciliation.** If physical siblings disagree, retain the completed shared logical selection; adopt a newer workspace only when the live siblings coherently report a common logical workspace. Keep each output's divergent physical snapshot and fence scoped to that output. Never elect an arbitrary sibling, reassert a shared selector, or overwrite one output from another.
+
+### 4. Cursor and focus supersession during a detached return
+
+On an admitted detached return, immediately clear [`logical_focus_cursor`](../../crates/tiler-core/src/world_close_focus.rs#L212-L219) and install a retained guard scoped to the affected outputs. For the remainder of the batch and across later reports, [`execution_subject`](../../crates/tiler-core/src/world_close_focus.rs#L171-L219) returns `None` for every implicit subject, including the observed-foreground fallback. Queued implicit commands fail closed as focus-unknown rather than acting on the departing window.
+
+The guard is released only by a newer coherent exact physical surface for an affected output **and** a trustworthy host foreground observation. A positive physical departure or explicit refusal may release it only with that fresh coherent foreground; read gaps never release it. Seeding uses the actual grounded member on that surface; a Split View peer is admissible only when live, eligible, and homed. Never guess among members, and never restore the cursor from an accepted post alone. Pending-focus supersession is scoped to the affected output, not the whole engine.
+
+`last_views` becomes a physical, typed per-output snapshot distinct from logical history: only a coherent Desktop or detached ref is stored, and a gap removes it. [`selector_hides_target`](../../crates/tiler-core/src/world_close_focus.rs#L441-L452) compares typed expected visibility (the frozen detached target, else the Desktop binding, else the target's own grounded detached surface), so a gap is never a change. Positive detached external adoption in [`adopt_idle_native_echoes`](../../crates/tiler-core/src/world_native.rs#L420-L462) is allowed only when exactly one retained logical home owns the grounded surface members and no view flight owns the output; ambiguous/Split View homes are not adopted. Adoption never claims the covered Desktop is current or visible.
+
+### 5. Closed v4 wire delta
+
+`HostCapabilities.detachedFullscreenView` is a **required boolean**; `true` only with `hostOwned: true`, no default or omission. KDE and Windows declare `false` with no behavior change. Existing capability keys are unchanged: `hostOwned`, `equalCount`, `sharedNativeRoster`, `birthClear`, `nativeSelectorScope`, `windowSuppression`, `maximize`, `fullscreen`, `nativeSticky`, `above`, `warp`, `tiledFloatTransfer`, `unavailableFacts`. Update codecs and active fixtures together; historical fixtures keep their exact bytes and are not a current-parse compatibility shape.
+
+Every new key is required-nullable where declared nullable. On an identifiable observation or attempt row, a missing required-nullable key holds that row (never a guessed value); structural identity and native order/occupancy violations still reject. On a grant (`TransferTargetV4`), a missing `detachedDestination` is a malformed grant and rejects with no actuation.
+
+**Shared reference types**
+
+| Type | Exact wire shape |
+|---|---|
+| `DetachedRef` | `{"kind":"detached","out":OutputId,"surface":NativeId}` exactly three required keys. `surface` is a bounded opaque native surface id in its own namespace (nonempty, same length/grammar bounds as `NativeWorkspaceId`, never compared with one). No extra keys. |
+| `ViewRef` | Either the existing native shape `{"kind":"native","out":OutputId,"ws":NativeWorkspaceId}` or `DetachedRef`. No logical arm. |
+
+`ViewRef` is used only by `ViewAttempt.{pre,post,base}` and `FocusChange::View.native`. `MemberAttempt.WorkspaceRef` is unchanged (`logical`/`native`) and cannot accept `detached`; the existing decoder already holds identifiable invalid member rows and grants them no authority ([`world_property_attempts.rs`](../../crates/tiler-protocol/src/world_property_attempts.rs#L367-L461), [`opt_workspace_ref_or_null`](../../crates/tiler-protocol/src/world_protocol.rs#L1122-L1162)).
+
+**Observation tri-state**
+
+`NativeObservation` keeps `out`, `order`, `occupancy`; `current` is required `ID|null`; new required keys are `currentKnown: bool` and `detachedCurrent: DetachedRef|null`.
+
+| `currentKnown` | `current` | `detachedCurrent` | Meaning |
+|---|---|---|---|
+| `false` | `null` | `null` | Read gap; retain the logical view, store no physical snapshot, and prove nothing. |
+| `true` | `null` | `null` | Known none of these surfaces. |
+| `true` | `ID` | `null` | User Desktop; `ID` names an `order` member, with a non-member or contradictory row handled by the existing conflict/duplicate lane. |
+| `true` | `null` | ref | Detached surface; `ref.out` equals the row output and the id never enters `order`/`occupancy`. |
+
+`false` with any non-null ref, both `current` and `detachedCurrent`, a detached id in `order`/`occupancy`, or a mismatched `ref.out` is invalid.
+
+`WindowFact` keeps its existing keys exactly (`win`, `out`, `rect`, `fullscreen`, `maximized`, `sticky`, `minimized`, `hints`, `nativeWs`, `hostHidden`, `privileged`, `managed`, `acceptsInput`, `activationInhibited`, `toolWindow`, `owned`, `transient`, `modal`, `resizable`, `above`, `below`, `owner`, `parent`, `role`, `appId`, `executable`, `processId`, `class`, `title`, `type`, `activationPolicy`, `layer`, `fullscreenOwner`, `fullscreenExitable`, `suppressionAvailable`, `visibility`) and adds required nullable `detachedSurface: DetachedRef|null`.
+
+| `nativeWs` | `detachedSurface` | Meaning |
+|---|---|---|
+| omitted, or `""` (legacy empty sentinel), or `detachedSurface` omitted | any | Gap; existing unknown semantics preserved. |
+| explicit `null` | explicit `null` | Known neither. |
+| `ID` | explicit `null` | User Desktop membership. |
+| explicit `null` | ref | Detached membership; `ref.out` equals the fact output and `fullscreen` must be `Some(true)`. |
+
+Both arms non-null, a detached ref with missing/`false` fullscreen, a mismatched output, or capability-false with a non-null detached value is invalid. With capability false, `nativeWs` keeps its exact existing encoding and state semantics (including `""`), and `detachedSurface` must be `null`. More than one live lifetime may share one detached surface on the same output; membership proves neither a logical home nor which member has focus.
+
+**Grant and attempt deltas**
+
+| Record | Keys and rules |
+|---|---|
+| `TransferTargetV4` | Existing `op`, `kind`, `win`, `out`, `ws`, `follow`, `held`, `cmdSeq`, `parent` unchanged (canonical decimal string or null for `cmdSeq`, opaque id or null for `parent`). Add required nullable `detachedDestination`, exactly `{"surface":DetachedRef,"member":WindowId}`. Only a standalone explicit keyboard `kind:"view"` flight with `follow:false`, `parent:null`, `cmdSeq` non-null, and `surface.out == out` may carry it; every other retained transfer carries null. |
+| `ViewAttempt` | Existing `kind`, `op`, `out`, `ws`, `disposition`, `pre`, `post`, `base`, `attemptMs` unchanged; `pre`/`post`/`base` are `ViewRef|null`; `attemptMs` is the canonical decimal string. Add required nullable `postMember: WindowId`, non-null only on an accepted disposition with an exact detached `post` and a grounded adapter-bracketed membership read; it must match the frozen intended lifetime to prove. `disposition` keeps `{"kind":"called","setter":"accepted"|"refused"|"threw"}`. |
+| `FocusChange::View` | Exact keys `kind`, `out`, `native`; `native` changes from an ID string to a non-null `ViewRef`, and `native.out` must equal `out`. A malformed ordered focus event rejects; a malformed grant rejects with no actuation. |
+| `MemberAttempt` | Unchanged keys `kind`, `op`, `win`, `out`, `ws`, `disposition`, `pre`, `post`, `attemptMs`; `WorkspaceRef` only, never `DetachedRef`. |
+
+**Hold versus reject**
+
+| Condition | Rule |
+|---|---|
+| Identifiable observation row with bad/conflicting detached fields | Hold the row, clear the affected physical/membership proof, and grant no fallback authority. Existing structural duplicate/output/order/occupancy refusals stay refusals. |
+| Capability-false non-null detached on a report lane | Hold when a stable row identity exists, otherwise reject. |
+| Detached id in `order`, occupancy, a logical ring, or a workspace binding | Structural contradiction: reject the row/reply and never bind it. |
+| Detached coexisting with native current/membership, non-`true` fullscreen, or mismatched output | Conflicting observation: hold; attempt/grant: hold or reject by lane identity. |
+| Malformed ordered focus event or malformed grant | Reject; no actuation. |
+| Bad/unknown matching attempt | Hold, never retry. |
+| Explicit refusal | Proves only with an unchanged readable preimage; otherwise holds as ambiguous. |
+| Duplicate view attempt `(op,out)` | Reject the duplicate lane row. |
+
+## Assumptions
+
+- **ASSUMPTION:** the host may rekey a fullscreen surface for the same lifetime, and may reorder Space/display/foreground notifications arbitrarily. Changed surfaces are always supersession; only same-coherent-report or adapter-bracketed observations prove. Two round trips do not establish a general lifetime or ordering guarantee.
+- **ASSUMPTION:** Split View may place several logical homes on one detached surface and may focus a peer rather than the intended member. Membership and physical surface never prove which member has focus; the cursor guard uses only a fresh actual foreground observation.
+- **ASSUMPTION:** the adapter truthfully withholds `postMember` unless it read that membership between two exact target samples. The wire carries the ID and timestamp, not the two samples, so the core cannot re-derive that bracket from the bare ID; an unattested or mismatched value holds.
+- **ASSUMPTION:** `DetachedRef.surface` and `NativeWorkspaceId` are disjoint namespaces even when their opaque strings collide.
+- **ASSUMPTION:** a host foreground reading is trustworthy only in a coherent report with readable physical current; unknown/gapped reads never ground a release. An accepted post alone is not foreground proof.
+
+Evidence gaps, not assumptions: same-SID access while away and after return is proved only on the tested single-window layout; lifetime rekey, notification ordering, Split View membership, unassisted Desktop focus, and the product redundant-refusal diagnostic remain unprobed.
+
+## Prospective tests
+
+| Area | Narrow assertions |
+|---|---|
+| Wire | Missing `detachedFullscreenView` rejects; non-host `true` rejects; capability-false non-null detached holds/rejects; tri-state and WindowFact tables round-trip; both arms or detached-in-order reject; `(op,out)` duplicate rejects; `MemberAttempt` with detached holds and grants no authority. |
+| Settlement A | Fresh exact detached current plus grounded member completes focusless with `Unproven`, no FocusRequest/arrival/setter; gap, Desktop, wrong surface, and wrong member hold. |
+| Settlement B | Accepted exact post plus bracketed `postMember` proves; refused, non-detached post, wrong member, unattested row hold; no retry. |
+| Proven then abandoned | Accepted post proves, then a known Desktop/other-surface departure adopts once with no replay and focus still `Unproven`; gap does not supersede. |
+| Holds | Detached retained home is not fenced and ordinary siblings tile; unknown membership still fences; born fullscreen stays unhomed with own writes fenced and no scope hold; fallback never invents a home. |
+| Shared flights | One shared op/history, per-output destinations, sibling proof isolation, terminal waits all planned siblings, latest-per-output supersession, lost output retires only its flight, common-newer adoption versus divergent-sibling retention. |
+| Redundant/no-op | Exact detached current same home sends no View/focus; ambiguous same-workspace never becomes a Desktop write. |
+| Cursor/guard | Cursor clears immediately; guard blocks same-batch and later implicit subjects; gaps do not release; departure/refusal plus fresh foreground releases; accepted post alone does not restore; Split View peer only when eligible/homed. |
+| Focus supersession | Typed `last_views` ignores gaps; different typed ref hides only with readable expectation; same expected does not; detached adoption only with unambiguous home and no owning flight. |
+| Authority | Detached refs never enter user Desktop current/order/occupancy/ring/binding; a detached current never implies the covered Desktop is current or visible. No write is authorized to the detached lifetime or the covered Desktop by the override. |
+
+## Host evidence
+
+| Decisive host fact | Result |
+|---|---|
+| Exact fixture lifetime survives both round trips; same detached SID present while away and after each return | Proved on the tested layout. |
+| Four legs reach exact SLS current without bounce; other display current preserved | Proved. |
+| No fullscreen-member writes during switching; only entry and teardown state requests | Proved. |
+| Teardown restores original currents/order and leaves no owned fixture lifetime or Space | Proved on the tested layout. |
+| Unassisted Desktop focus after pinned Mission Control | Not proved; the harness focused the owned Desktop sibling only after measuring away. |
+| General Space-notification order, lifetime rekey, Split View | Unprobed. |
+| Product redundant-refusal diagnostic and product switch-away | Not observed; no product route promoted. |
+
+Operational detail, timing samples, caveats, and recovery: [macOS probe record](macos-fullscreen-probe.md).
 
 ## Alternatives
 
-- **Reuse `focus_request.target` with adapter-only switching:** adequate to find an exact candidate, but not to settle a separate native scene through the current proof contract. Returning to the Desktop would satisfy the existing binding but not the requested fullscreen return.
-- **Report the user Desktop as current or map the fullscreen SID onto the logical home:** rejected; it invents physical currency, conflates transient and workspace identity, and risks granting writes to the covered Desktop.
-- **Treat fullscreen as an ordinary user Space:** rejected; changes ordinal/history/creation semantics and gives the separate host scene a logical identity it does not own.
-- **Only add a fullscreen SID to `after_shown`:** insufficient: a reply hint alone cannot prove operation-specific physical arrival or reconcile subsequent outside switches; default frozen members of the covered Desktop need not be visible.
-
-## Review and tests
-
-Test strict rejection of missing capability keys and invalid facts, capability-false round trips, competing members on one surface, per-output fan-out and supersession, redundant no-op, external adoption, and born-fullscreen focus fallback. Cover exact current/post/arrival agreement, stale or superseded proof, and no replay. Prove the settled logical view never implies the covered Desktop is current or authorizes a write.
-
-## Host evidence required
-
-Run signed SIP-on round trips `owned fullscreen → owned Desktop → same fullscreen` for the Dock gesture and pinned Mission Control AX separately. Record unchanged member identity, no fullscreen-window writes, the same detached SID while away and after return, other-display and pointer stability, and clean restoration. Capture the Space notification, exact SLS readback, and exact foreground observations on one monotonic clock; absence of a notification is not arrival proof. Split View membership and type are unverified: the signed fixture exposes individual fullscreen modes but no native Split View affordance.
-
-**Probe status:** the first signed run observed the exact fixture window as the focused fullscreen AX window, attached exclusively to a new SLS fullscreen Space. That per-window read did not enumerate all members of the Space. Neither route was measured: the pre-dispatch sentinel proof could not name the window via `AXWindows`, and the same proof refused explicit exit. Teardown tried ordinary restoration before the detached SID retired. A subsequent read-only inspection found the starting native currents and order restored and Mission Control closed. This proves a distinct detached SID on entry, not its lifetime while away, round-trip behavior, or notification ordering. Split View remains unprobed.
-
-The user reported switching apps after a black teardown screen that showed only the Dock. The evidence-first archive recorded the seven visibility differences under the explicit user drift waiver; it did not restore or touch those windows. A final read-only recheck found exact starting topology, no owned fixture lifetime or Space, and no blocking drift before the receipt was moved. Closing the still-fullscreen fixture window is a suspected cause of the black screen, not a measured host mechanism.
-
-The fixture requests exact windowed mode and waits for SLS to show the detached SID retired before closing the window. If retirement is not proved by the deadline, teardown requires a verified return to the saved starting current before allowing fixture shutdown. The previous signed attempt supplied only the body of the designated requirement to `--signer`; it stopped at signature bind after disposable-Space setup and never entered fullscreen. Pass the complete `designated => …` line from fixture signature verification, as one argument. The controller cleared that attempt's receipt without new residue; no owned processes remained.
-
-The corrected signed SIP-on run reached fullscreen. Pinned Mission Control switched away: exact SLS Desktop current was sampled at 952,876 µs on the probe clock (dispatch started at 1,124 µs); neither a notification from the display/Space guard nor exact Desktop-sibling foreground was sampled. The fixture app's AX focus still named the fullscreen member, not the Desktop sibling, so the return source guard refused before dispatch. The bounded harness repair explicitly focuses only the owned, windowed Desktop sibling **after** measuring away, then re-proves the exact source before dispatching return. No product guard changed.
-
-The signed retry completed both round trips with the same fixture lifetime and detached SID present while away and after both returns. All four legs held exact SLS arrival without bounce, preserved the other display's current, and issued no fullscreen member writes during switching. The only fullscreen member state requests were entry and teardown. The following are first **samples**, in µs from the retry's common monotonic clock. The guard coalesces active-Space and display-parameter notifications, so the table does not identify or time the Space notification alone. A dash means not sampled, not that the host never emitted a notification.
-
-| Route and direction | Dispatch start | Display/Space guard | Exact SLS current | Exact foreground |
-|---|---:|---:|---:|---:|
-| Pinned Mission Control → Desktop | 1,323 | — | 810,908 | — |
-| Pinned Mission Control → fullscreen | 3,933,392 | 4,657,459 | 4,696,186 | 4,702,120 |
-| Dock gesture → Desktop | 5,135,013 | 5,347,558 | 5,371,603 | 5,389,578 |
-| Dock gesture → fullscreen | 6,342,059 | 6,650,051 | 6,688,100 | 6,639,194 |
-
-The windowed-sibling setup fell between the away and return observations (Mission Control: 3,293,295–3,932,081 µs; Dock: 5,798,988–6,340,867 µs). The Dock return foreground sample preceded exact SLS current; it could not by itself prove physical arrival. The log retains only first observations, so it does not give a post-current foreground bracket for that leg. This proves host switching on the tested layout, not unassisted Desktop focus for Mission Control or a general notification order.
-
-These were the first live exercises of fullscreen-before-shutdown. Both runs retired the detached SID, restored the original currents and ordered topology, and left no owned fixture lifetime or Space and no pending receipt. The retry had only benign offscreen replacements in the controller comparison, with no new residue. Independent native rechecks confirmed restoration; every readable retry pointer sample matched the starting location. Exact Desktop currents and no remaining detached SID rule out a detached Space left current; pixels were not sampled, so visual absence of a black screen is unproven. Split View remains unprobed; the fixture has no native Split View affordance.
-
-Independently, the current product owner refuses a detached current before dispatch; its Dock gesture source fence and pinned Mission Control fallback still require ordinary user Spaces. These product refusals do not establish what the host mechanisms can do.
-
-A separate signed product switch-away candidate stopped during fullscreen
-setup, before either keyboard chord. The fixture accepted the fullscreen
-request, but within 2.5 seconds the controller never proved a new SLS
-current, the fixture member's AX focus and fullscreen state, and that member
-as the sole occupant in a full CG/SLS inventory. The failed subpredicate
-was not recorded. Unlike the host-only proof, the candidate focused before
-switching to the source Desktop and required a whole-Space member census.
-
-The controller retained a blocking recovery receipt. A read-only recheck
-found the starting currents restored, Mission Control closed and no
-fullscreen Space or fixture process, but an extra owned Desktop with
-offscreen system windows remained. The attempt measured neither the
-product's redundant refusal nor its switch-away timing. The candidate was
-removed without changing the existing product refusal or enabling return.
-
-Guarded empty-Desktop removal restored the exact starting topology; the
-extra Space's system windows disappeared. The only unmatched raw
-WindowServer row was confirmed at the CoreGraphics cursor-window level
-and was covered by the existing cursor waiver. The receipt was archived
-after preserving the readbacks.
-
-The single signed rerun reused the host-only entry sequence, including
-focus after switching to the owned source Desktop. On the entry clock,
-the first new current SID was sampled at 572,140 µs, its fullscreen type
-and the exact fixture window's singleton Space membership at 572,455 µs,
-and the exact AX-focused fullscreen window at 572,936 µs. The fixture
-posted the redundant keyboard chord and exact SLS readback still showed
-the detached surface current. The controller did not obtain the matching
-product refusal diagnostic within four seconds, so it did not post the
-away chord. The missing diagnostic does not prove where product delivery
-or processing stopped. Final readback found the original currents and
-order, Mission Control closed, no owned process or Space, and no pending
-receipt. No product route was promoted.
-
-The conservative contract still applies: keep temporary read gaps distinguishable from known absence, require bracketed physical readback around the exact foreground observation, and treat changed SID as supersession even for the same lifetime. The two round trips do not establish that the host never rekeys a fullscreen surface or guarantees event order.
+- **Reuse `focus_request.target` with adapter-only switching:** finds an exact candidate but cannot settle a separate native scene without inventing focus evidence or an arrival receipt.
+- **Report the user Desktop as current or map the fullscreen SID onto the logical home:** rejected; invents physical currency, conflates transient and workspace identity, and risks granting writes to the covered Desktop.
+- **Treat fullscreen as an ordinary user Space:** rejected; changes ordinal/history/creation semantics and gives a host scene a logical identity it does not own.
+- **Only add a fullscreen SID to `after_shown`:** insufficient; a reply hint cannot prove operation-specific physical arrival or reconcile outside switches.
+- **A separate singleton destination or second selection terminal:** rejected by Pass 2; it breaks Shared/multi-output and duplicates the existing proof engine.
