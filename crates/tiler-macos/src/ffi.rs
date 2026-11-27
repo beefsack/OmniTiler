@@ -7973,6 +7973,7 @@ mod macos {
     pub struct WorkspaceIndicator {
         item: objc2::rc::Retained<objc2_app_kit::NSStatusItem>,
         menu: objc2::rc::Retained<objc2_app_kit::NSMenu>,
+        native_capability_notice: Option<(String, objc2::rc::Retained<objc2_app_kit::NSMenuItem>)>,
         toggle_sender: std::sync::mpsc::SyncSender<IndicatorToggleClick>,
         /// Menu row targets, retained because `NSMenuItem` targets are
         /// weak references; the items live in `menu`, so the objects must
@@ -8037,6 +8038,20 @@ mod macos {
             // ordinals and unbound spares must stay refused), so AppKit's
             // auto-enabling must never override `setEnabled(false)`.
             menu.setAutoenablesItems(false);
+            let native_capability_notice =
+                crate::workspace_indicator::native_capability_notice(macos_major()).map(|text| {
+                    // SAFETY: a disabled notice has no action selector or target.
+                    let item = unsafe {
+                        objc2_app_kit::NSMenuItem::initWithTitle_action_keyEquivalent(
+                            mtm.alloc(),
+                            &NSString::from_str(&text),
+                            None,
+                            &NSString::from_str(""),
+                        )
+                    };
+                    item.setEnabled(false);
+                    (text, item)
+                });
             // One action target survives every render: the rebuild swaps
             // its slot map under the same retained object, so the button's
             // target can never dangle between renders.
@@ -8094,6 +8109,7 @@ mod macos {
             Ok(Self {
                 item,
                 menu,
+                native_capability_notice,
                 toggle_sender: toggles,
                 targets: std::cell::RefCell::new(Vec::new()),
                 toggle_target: std::cell::RefCell::new(None),
@@ -8245,6 +8261,9 @@ mod macos {
                 };
                 toggle.setToolTip(Some(&NSString::from_str(toggle_tip)));
                 self.menu.addItem(&toggle);
+                if let Some((_, notice)) = &self.native_capability_notice {
+                    self.menu.addItem(notice);
+                }
                 let mut targets = targets.iter();
                 for row in rows {
                     if row.separator {
@@ -8499,7 +8518,13 @@ mod macos {
                 button.setImage(Some(&image));
                 button.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
                 button.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
-                let description = indicator_accessibility_description(&accessible);
+                let mut description = indicator_accessibility_description(&accessible);
+                if let Some((notice, _)) = &self.native_capability_notice {
+                    if !description.is_empty() {
+                        description.push_str(". ");
+                    }
+                    description.push_str(notice);
+                }
                 button.setAccessibilityLabel(
                     (!description.is_empty())
                         .then(|| NSString::from_str(&description))

@@ -69,6 +69,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime_types::InputSemanticAction;
 
+/// Explain a host-level native gesture refusal without changing action
+/// admission. Mission Control still handles eligible existing-Space switches.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn native_capability_notice(macos_major: Option<u32>) -> Option<String> {
+    crate::space_switch_edges::gesture_payload_allowed(macos_major)
+        .err()
+        .map(|reason| {
+            format!(
+                "Native workspaces unavailable on this macOS: {reason}. Eligible existing Spaces can still be switched through Mission Control."
+            )
+        })
+}
+
 // -- Startup configuration ---------------------------------------------------
 
 /// Which rows the indicator shows. Default [`IndicatorMode::All`]: every
@@ -2147,6 +2160,20 @@ impl IndicatorDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_capability_notice_preserves_gate_reason() {
+        assert!(native_capability_notice(Some(26)).is_none());
+        for major in [Some(27), Some(28), None] {
+            let reason = crate::space_switch_edges::gesture_payload_allowed(major).unwrap_err();
+            let notice = native_capability_notice(major).unwrap();
+            assert!(notice.starts_with("Native workspaces unavailable on this macOS"));
+            assert!(notice.contains(&reason));
+            assert!(notice.contains(
+                "Eligible existing Spaces can still be switched through Mission Control."
+            ));
+        }
+    }
 
     fn occupancy(state: &[(SpaceOccupancy, Option<String>)]) -> Vec<SpaceOccupancy> {
         state.iter().map(|(o, _)| *o).collect()
