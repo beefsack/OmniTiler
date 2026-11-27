@@ -1,6 +1,6 @@
 # Proposal: return to a remembered native fullscreen member on macOS
 
-**Status:** rejected as written 2026-11-27, under revision. No wire, core, or return-route change is enabled by this proposal.
+**Status:** revised after the 2026-11-27 rejection, pending external re-review and host evidence. No wire, core, or return-route change is enabled by this proposal.
 
 ## Problem
 
@@ -57,6 +57,8 @@ Run signed SIP-on round trips `owned fullscreen → owned Desktop → same fulls
 **Probe status:** the first signed run observed the exact fixture window as the focused fullscreen AX window and as the sole member of a new SLS fullscreen Space. Neither route was measured: the pre-dispatch sentinel proof could not name the window via `AXWindows`, and the same proof refused explicit exit. Teardown tried ordinary restoration before the detached SID retired. A subsequent read-only inspection found the starting native currents and order restored and Mission Control closed. This proves a distinct detached SID on entry, not its lifetime while away, round-trip behavior, or notification ordering. Split View remains unprobed.
 
 The user reported switching apps after a black teardown screen that showed only the Dock. The evidence-first archive recorded the seven visibility differences under the explicit user drift waiver; it did not restore or touch those windows. A final read-only recheck found exact starting topology, no owned fixture lifetime or Space, and no blocking drift before the receipt was moved. Closing the still-fullscreen fixture window is a suspected cause of the black screen, not a measured host mechanism.
+
+The fixture now requests exact windowed mode and waits for SLS to show the detached SID retired before closing the window. If retirement is not proved by the deadline, teardown requires a verified return to the saved starting current before allowing fixture shutdown. The offline order test and signed build passed. The single signed rerun refused at the fixture signature bind: the launcher omitted the required `designated =>` prefix from `--signer`. It ran disposable-Space setup but did not enter fullscreen. The controller cleared the new receipt without new residue and no owned processes remained. That is controller cleanup evidence, not an independent native after-read or a live test of the new fullscreen teardown path. Neither switching route, detached SID stability, focus/notification ordering nor Split View is proven.
 
 Independently, the current product owner refuses a detached current before dispatch; its Dock gesture source fence and pinned Mission Control fallback still require ordinary user Spaces. These product refusals do not establish what the host mechanisms can do.
 
