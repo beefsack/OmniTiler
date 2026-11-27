@@ -8635,6 +8635,127 @@ mod trailing_join_tests {
     }
 
     #[test]
+    fn redundant_select_on_detached_fullscreen_reports_refusal_without_posting() {
+        use crate::workspace_select::{SelectGates, SelectionState, drain_claimed_select_with};
+
+        let desktop = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&desktop), RetainedCore::default());
+        let reconcile = |session: &mut WorldSession, retained: &mut RetainedCore, ctx| {
+            dispatch_report(
+                session,
+                retained,
+                &shared,
+                &inbox,
+                &focus_queue,
+                8,
+                crate::world_runtime::DispatchContext::Native(ctx),
+                Vec::new(),
+                None,
+                None,
+                false,
+                crate::world_command_map::OP_RECONCILE,
+                0,
+                0,
+                0,
+            )
+        };
+        assert!(matches!(
+            reconcile(&mut session, &mut retained, desktop),
+            DispatchVerdict::Applied { .. }
+        ));
+        // The physical current (900) is detached from the user Desktop
+        // order. The native report carries no current Desktop, while core
+        // retains the last logical view.
+        let fullscreen = Arc::new(NativeContext {
+            revision: 10,
+            domains: vec![domain(1, false), domain(277, false)],
+            skipped: Vec::new(),
+        });
+        {
+            let mut guard = lock_shared(&shared);
+            guard.native_context = Some(Arc::clone(&fullscreen));
+            guard.topology_revision = fullscreen.revision;
+        }
+        handle_select_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 1 }),
+            true,
+        );
+        let claim = lock_shared(&shared)
+            .select_pending
+            .pop_front()
+            .expect("core retains a redundant host-owned View flight");
+        let op = claim.operation_id.clone().expect("correlated operation");
+        assert_eq!(claim.select_native_binding.as_deref(), Some("space-1"));
+        assert_eq!(claim.select_baseline_sid, None);
+        let mut backend = FakeBackend::new(&[1, 277], 900, &[]);
+        let failure = drain_claimed_select_with(
+            &mut SelectionState::default(),
+            &mut backend,
+            claim,
+            &SelectGates {
+                session_unlocked: true,
+                secure_active: false,
+                lock_screen: false,
+            },
+            true,
+        )
+        .expect_err("the detached current fails the user-row preflight");
+        assert!(failure.reason.contains("workspace row/current identity unprovable"));
+        assert!(backend.selects.is_empty());
+        assert_eq!((backend.creates, backend.current), (0, 900));
+        process_job(
+            EngineJob::ViewAttempt {
+                operation_id: op.clone(),
+                setter: failure.setter,
+                pre_sid: failure.pre,
+                post_sid: failure.post,
+                baseline_sid: failure.baseline,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let report = build_dispatch_report(
+            &mut session,
+            &retained,
+            &crate::world_runtime::DispatchContext::Native(fullscreen),
+            &[],
+            3,
+            3,
+            None,
+            None,
+            None,
+            "req-3",
+        )
+        .expect("nonempty native context reports");
+        let [attempt] = report.view_attempts.as_slice() else {
+            panic!("exactly one refusal must reach core");
+        };
+        assert_eq!(attempt.operation_id, op);
+        assert_eq!(attempt.disposition, FrameSetter::Refused);
+        assert_eq!((attempt.pre.as_ref(), attempt.post.as_ref()), (None, None));
+        assert!(matches!(
+            tiler_protocol::world_admission::handle_report_checked(
+                session.engine_mut(),
+                &report,
+                &[],
+            )
+            .outcome,
+            WorldOutcome::Accepted(_)
+        ));
+    }
+
+    #[test]
     fn previous_toggle_binds_core_history_and_drains_reply_driven() {
         // Core previous outcome exercised end to end: dispatch numbered 2
         // (moves the view), drain it reply-driven, stage the proven
