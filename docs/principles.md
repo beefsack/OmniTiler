@@ -68,7 +68,8 @@ this model):
   - When fullscreen detection is uncertain, prefer leaving the window alone:
     the user can still act on it, while wrongly tiling a fullscreen game
     breaks it.
-  - Explicit user actions apply to fullscreen windows as to any window.
+  - Explicit user actions apply to fullscreen windows as to any window, and
+    always reach core ([Layering](#layering)).
   - Anti-cheat safety: nothing the tiler does to another process may look
     like cheating to anti-cheat systems
      ([mechanism limits](decisions/gaming.md#anti-cheat-mechanism-limits)).
@@ -154,6 +155,13 @@ this model):
   - Platforms capture input, promptly report host facts and outside changes,
     converge the host to the latest desired state and draw what core
     describes. They never decide policy.
+  - Platforms forward every explicit user command to core whatever state the
+    window is in (fullscreen, game, floating, focus). Core decides whether it
+    applies, no-ops or refuses, so a later core change reaches every platform
+    at once. Input capture may decline a chord only for mechanical reasons
+    unrelated to window state (no binding, missing permission, secure input).
+    After the reply, a platform refuses only what the host cannot carry out,
+    and reports it as native state, never as a local policy veto.
   - Core strives to stay platform agnostic: host differences reach core as
     platform-neutral capabilities, never as platform checks or platform-specific
     state.
