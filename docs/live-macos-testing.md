@@ -252,6 +252,7 @@ experiment.
   Space-mutating legs must first execute the owned away/return probe. Native
   product destinations are restricted to controller-created Spaces; creation
   is refused in the gated product and cleanup remains controller-owned.
+  The protected-window check excludes only WindowServer's runtime cursor level; pointer-moving legs check their owned pointer preimage separately.
   An offline-accepted controller still needs its first native proof. A missing
   owned preimage, probe failure, permission shortfall, residue or mismatch stops the
   leg; never remove a pending receipt merely to retry.

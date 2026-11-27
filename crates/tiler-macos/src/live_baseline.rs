@@ -153,6 +153,36 @@ impl Default for LiveBaselineReads {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+const WINDOW_SERVER_EXECUTABLE: &str =
+    "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/Resources/WindowServer";
+
+#[cfg(any(target_os = "macos", test))]
+fn is_window_server_cursor(
+    layer: i32,
+    cursor_level: i32,
+    executable: impl FnOnce() -> Option<String>,
+) -> bool {
+    layer == cursor_level && executable().as_deref() == Some(WINDOW_SERVER_EXECUTABLE)
+}
+
+fn window_server_cursor_filter() -> impl Fn(u32, i32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
+        let cursor_level = CGWindowLevelForKey(CGWindowLevelKey::CursorWindowLevelKey);
+        move |pid, layer| {
+            is_window_server_cursor(layer, cursor_level, || {
+                crate::ffi::process_executable_path(i32::try_from(pid).ok()?)
+            })
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        |_, _| false
+    }
+}
+
 impl BaselineReads for LiveBaselineReads {
     fn read_protected_windows(&mut self) -> Result<Vec<ProtectedWindow>, String> {
         // Conservative title-free superset of every window: bundle identity
@@ -162,8 +192,10 @@ impl BaselineReads for LiveBaselineReads {
         // preimage. Unknown-bundle rows are treated as protected downstream.
         let windows = crate::ffi::cg_window_list_basic()
             .map_err(|e| format!("protected-window list unreadable: {e}"))?;
+        let cursor = window_server_cursor_filter();
         Ok(windows
             .into_iter()
+            .filter(|window| !cursor(window.pid, window.layer))
             .map(|window| {
                 let bundle = crate::ffi::bundle_id_for_pid(window.pid as i32)
                     .filter(|bundle| !bundle.is_empty());
@@ -469,9 +501,15 @@ pub fn load_baseline_from(path: &Path) -> Result<LiveBaseline, String> {
     }
     let raw = std::fs::read_to_string(path)
         .map_err(|_| "baseline receipt unreadable; refusing".to_owned())?;
-    let baseline: LiveBaseline =
+    let mut baseline: LiveBaseline =
         serde_json::from_str(&raw).map_err(|_| "baseline receipt corrupt; refusing".to_owned())?;
     validate_baseline(&baseline)?;
+    // Old receipts include the cursor. Exclude it only when its current
+    // executable still proves the WindowServer owner.
+    let cursor = window_server_cursor_filter();
+    baseline
+        .protected_windows
+        .retain(|window| !cursor(window.pid, window.layer));
     Ok(baseline)
 }
 
@@ -843,6 +881,19 @@ pub fn compare_teardown(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn only_the_exact_window_server_cursor_is_excluded() {
+        let window_server = || Some(WINDOW_SERVER_EXECUTABLE.to_owned());
+        assert!(is_window_server_cursor(37, 37, window_server));
+        assert!(!is_window_server_cursor(36, 37, || {
+            panic!("wrong layer must not resolve owner")
+        }));
+        assert!(!is_window_server_cursor(37, 37, || None));
+        assert!(!is_window_server_cursor(37, 37, || Some(
+            "/tmp/WindowServer".to_owned()
+        )));
+    }
 
     fn holder(desktop: u32, enabled: bool) -> HolderBaseline {
         HolderBaseline {
