@@ -1016,11 +1016,35 @@ pub(crate) mod live {
         budget: &mut ActionBudget,
         cleanup: bool,
     ) -> Result<super::PressOutcome, McError> {
+        mc_goto_pinned_after(
+            sid, (display_index, pinned_cgid, pinned_uuid), prior, budget, cleanup, || {
+                if cleanup { Ok(()) } else { crate::space_synthetic_gate::require_mc_fallback() }
+            },
+        )
+    }
+
+    /// Signed fixture probe only: the harness proves the exact owned source
+    /// and destination immediately before opening Mission Control.
+    pub(crate) fn fixture_goto_pinned(
+        sid: u64,
+        pin: (usize, u32, &str),
+        prior: &TopologySnapshot,
+        budget: &mut ActionBudget,
+        fixture_source: impl FnOnce() -> Result<(), String>,
+    ) -> Result<super::PressOutcome, McError> {
+        mc_goto_pinned_after(sid, pin, prior, budget, false, fixture_source)
+    }
+
+    fn mc_goto_pinned_after(
+        sid: u64,
+        (display_index, pinned_cgid, pinned_uuid): (usize, u32, &str),
+        prior: &TopologySnapshot,
+        budget: &mut ActionBudget,
+        cleanup: bool,
+        source: impl FnOnce() -> Result<(), String>,
+    ) -> Result<super::PressOutcome, McError> {
         action_gates()?;
-        if !cleanup {
-            crate::space_synthetic_gate::require_mc_fallback()
-                .map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
-        }
+        source().map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
         let snap0 = fresh_snapshot()?;
         topology_preflight_matches(prior, &snap0)?;
         let (cgid, _) = display_cgid_of_pinned(&snap0, display_index, pinned_cgid, pinned_uuid)?;

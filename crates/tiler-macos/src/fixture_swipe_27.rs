@@ -253,6 +253,145 @@ fn swipe(
     }
 }
 
+fn prove_fullscreen(
+    leg: &mut LiveLeg<LiveLegTransport>,
+    driver: &FixtureDriver<'_, LiveTransport>,
+    pid: u32,
+    pin: &DisplayPin,
+    before: &TopologySnapshot,
+    (a, b): (&(String, u32), &(String, u32)),
+    (source, dest): (u64, u64),
+) -> Result<serde_json::Value, String> {
+    use crate::ffi::{self, SlsSpaceType};
+    for row in &before.displays {
+        require_user_temp(row.current.ok_or("starting current unreadable")?)
+            .map_err(|e| e.to_string())?;
+    }
+    driver.focus(&a.0, a.1).map_err(|(_, e)| e)?;
+    let mut detached = None;
+    let result = (|| {
+        driver.set_probe_fullscreen(a, true)?;
+        let pid_i32 = i32::try_from(pid).map_err(|e| e.to_string())?;
+        let entered_at = Instant::now();
+        let (fullscreen, full) = loop {
+            let snap = snapshot()?;
+            if let Some(sid) = snap.displays.get(pin.row).and_then(|row| row.current)
+                && !before.displays[pin.row].spaces.contains(&sid)
+                && ffi::sls_space_type(sid)? == SlsSpaceType::Fullscreen
+                && ffi::sls_spaces_for_window(a.1)? == [sid]
+            {
+                leg.note_fixture_fullscreen(sid);
+                detached = Some(sid);
+                if ffi::ax_focused_window_state(pid_i32, a.1) == Ok(Some(true)) {
+                    break (sid, snap);
+                }
+            }
+            if entered_at.elapsed() >= DEADLINE {
+                return Err("owned fixture never entered a distinct native fullscreen Space".to_owned());
+            }
+            ffi::pump_runloop_once(25);
+        };
+        let mut stripped = full.clone();
+        stripped.displays[pin.row].spaces.retain(|&sid| sid != fullscreen);
+        stripped.displays[pin.row].current = Some(source);
+        validate_goto_effect(before, &stripped, pin.row, source).map_err(|e| e.to_string())?;
+        if full.locate(fullscreen).map(|(row, _)| row) != Some(pin.row) {
+            return Err("fullscreen Space does not uniquely join the pinned display".to_owned());
+        }
+        let (guard, changes) = ffi::install_display_change_guard(&ffi::MainWakeSignal::detached())?;
+        let clock = Instant::now();
+        let mut budget = crate::mc_probe::ActionBudget::new(45);
+        let mut evidence = Vec::new();
+        for (mc, from, to, subject, arrival) in [
+            (true, fullscreen, dest, a, b), (true, dest, fullscreen, b, a),
+            (false, fullscreen, dest, a, b), (false, dest, fullscreen, b, a),
+        ] {
+            let stable = || -> Result<(), String> {
+                if ffi::sls_spaces_for_window(a.1)? != [fullscreen]
+                    || ffi::sls_space_type(fullscreen)? != SlsSpaceType::Fullscreen
+                    || ffi::sls_spaces_for_window(b.1)? != [dest]
+                {
+                    return Err("exact fixture Space membership or fullscreen type changed".to_owned());
+                }
+                Ok(())
+            };
+            let check_source = || {
+                let bounds = CGDisplay::new(pin.cg_id).bounds();
+                if observe(&full, pin)? != from
+                    || ffi::cg_display_uuid(pin.cg_id).as_deref() != Some(pin.uuid.as_str())
+                    || bounds.origin.x != pin.bounds.origin.x
+                    || bounds.origin.y != pin.bounds.origin.y
+                    || bounds.size.width != pin.bounds.size.width
+                    || bounds.size.height != pin.bounds.size.height
+                    || ffi::ax_focused_window_state(pid_i32, subject.1)? != Some(from == fullscreen)
+                {
+                    return Err("exact fixture fullscreen probe source changed".to_owned());
+                }
+                stable()?;
+                driver.prove_gesture_target(&subject.0, subject.1)
+            };
+            // The full comparison pins every other display to its previously
+            // verified User current, excluding any foreign fullscreen source.
+            let mut prior = full.clone();
+            prior.displays[pin.row].current = Some(from);
+            ffi::pump_runloop_once(1);
+            let _ = changes.take_changed();
+            let dispatch_started = clock.elapsed();
+            if mc {
+                let outcome = live::fixture_goto_pinned(
+                    to, (pin.row, pin.cg_id, &pin.uuid), &prior, &mut budget, check_source,
+                ).map_err(|e| e.to_string())?;
+                if outcome.mc_open || outcome.close_error.is_some() {
+                    return Err("pinned AX probe lacks exact Mission Control close".to_owned());
+                }
+            } else {
+                let (sign, steps) = crate::space_switch_edges::swipe_plan(&prior.displays[pin.row].spaces, from, to)?;
+                let events = prepare_gesture_27(sign, steps)?;
+                events.locate(objc2_core_foundation::CGPoint::new(
+                    pin.bounds.origin.x + pin.bounds.size.width / 2.0,
+                    pin.bounds.origin.y + pin.bounds.size.height / 2.0,
+                ));
+                events.post_after(check_source)?;
+            }
+            let (mut notification, mut current, mut foreground) = (None, None, None);
+            let wait = Instant::now();
+            loop {
+                ffi::pump_runloop_once(10);
+                if changes.take_changed() { notification.get_or_insert(clock.elapsed()); }
+                let sid = observe(&full, pin)?;
+                stable()?;
+                if sid == to { current.get_or_insert(clock.elapsed()); }
+                else if sid != from || current.is_some() { return Err("fullscreen probe landed on the wrong Space or bounced".to_owned()); }
+                if crate::focus::read_agreement(pid, arrival.1).is_ok() { foreground.get_or_insert(clock.elapsed()); }
+                if current.is_some_and(|first| clock.elapsed() - first >= STABLE)
+                    && (foreground.is_some() && notification.is_some() || wait.elapsed() >= DEADLINE)
+                { break; }
+                if wait.elapsed() >= DEADLINE { return Err("fullscreen probe did not reach exact stable arrival".to_owned()); }
+            }
+            let row = serde_json::json!({
+                "route": if mc { "mc-pinned" } else { "dock-swipe" },
+                "away": to == dest, "dispatch_started_us": dispatch_started.as_micros(),
+                "notification_sample_us": notification.map(|t| t.as_micros()),
+                "current_sample_us": current.map(|t| t.as_micros()),
+                "foreground_sample_us": foreground.map(|t| t.as_micros()),
+            });
+            eprintln!("fixture fullscreen probe {row}");
+            evidence.push(row);
+        }
+        drop(guard);
+        Ok(serde_json::json!({"arm":"fullscreen-host","same_fullscreen_sid":fullscreen,"switches":evidence}))
+    })();
+    let exit = driver.set_probe_fullscreen(a, false).and_then(|()| {
+        detached.map_or(Ok(()), |sid| leg.await_fixture_fullscreen_exit(sid))
+    });
+    match (result, exit) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(exit)) => Err(format!("{error}; fixture fullscreen exit refused: {exit}")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     leg: &mut LiveLeg<LiveLegTransport>,
     pid: u32,
@@ -295,6 +434,10 @@ pub(crate) fn run(
     let mut expected = entry;
     expected.displays[row].spaces.extend([source, dest]);
     validate_goto_effect(&expected, &before, row, source).map_err(|e| setup(e.to_string()))?;
+    if chord == crate::fixture_leg::SWIPE_27_FULLSCREEN_CHORD {
+        return prove_fullscreen(leg, &driver, pid, &pin, &before, (&a, &b), (source, dest))
+            .map_err(setup);
+    }
     let ring: Vec<_> = before.displays[row]
         .spaces
         .iter()

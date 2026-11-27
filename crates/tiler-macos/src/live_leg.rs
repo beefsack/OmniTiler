@@ -120,6 +120,7 @@ pub fn required_scope(chord_name: &str) -> Option<AdmissionScope> {
         crate::fixture_leg::APPLY_SEND_CHORD
             | crate::fixture_leg::SWIPE_27_CHORD
             | crate::fixture_leg::SWIPE_27_E1_CHORD
+            | crate::fixture_leg::SWIPE_27_FULLSCREEN_CHORD
     ) {
         return Some(AdmissionScope::SpaceMutating);
     }
@@ -1105,6 +1106,7 @@ pub struct LiveLeg<'a, T: LegTransport> {
     pending_launches: Vec<PendingLaunch>,
     owned_windows: Vec<OwnedWindow>,
     owned_spaces: Vec<(usize, u64)>,
+    fixture_fullscreen_sid: Option<u64>,
     owned_pids: Vec<u32>,
     /// Retained product exit-time `outcome.json` body: read while the
     /// product stops, before the owned run directory removal, and reported
@@ -1169,6 +1171,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             pending_launches: Vec::new(),
             owned_windows: Vec::new(),
             owned_spaces: Vec::new(),
+            fixture_fullscreen_sid: None,
             owned_pids: Vec::new(),
             product_outcome: None,
             retain_product_evidence: false,
@@ -1511,6 +1514,35 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         }
     }
 
+    pub(crate) fn note_fixture_fullscreen(&mut self, sid: u64) {
+        self.fixture_fullscreen_sid = Some(sid);
+    }
+
+    /// Pump the fixture main run loop until a fresh SLS read proves the
+    /// exact detached SID has left every row and current. A notification
+    /// alone does not prove the asynchronously retired Space is gone.
+    pub(crate) fn await_fixture_fullscreen_exit(&mut self, sid: u64) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        loop {
+            let topology = self.transport.space_snapshot()?;
+            if topology.displays.iter().all(|row| row.current != sid && !row.spaces.contains(&sid)) {
+                return Ok(());
+            }
+            if start.elapsed() >= std::time::Duration::from_secs(4) {
+                return Err(format!("fixture fullscreen SID {sid} did not retire"));
+            }
+            crate::ffi::pump_runloop_once(25);
+        }
+    }
+
+    fn restore_leg_currents(&mut self, residue: &mut Vec<String>) -> crate::space_probe::RestoreReport {
+        let restore = restore_starting_currents(&mut *self.transport, &self.baseline.native);
+        for failure in restore.failed.iter().chain(&restore.mc_notes) {
+            residue.push(format!("starting-Space restore: {failure}"));
+        }
+        restore
+    }
+
     /// Registered leg-created Spaces (display pins plus SIDs).
     pub fn owned_spaces(&self) -> &[(usize, u64)] {
         &self.owned_spaces
@@ -1837,15 +1869,11 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             .iter()
             .any(|entry| entry.what == "product");
         let product_absent = product_reaped && !pending_product;
-        // 2. Restore the starting Space (no-op readback when already exact).
-        let restore = restore_starting_currents(&mut *self.transport, &self.baseline.native);
-        for failure in &restore.failed {
-            residue.push(format!("starting-Space restore: {failure}"));
-        }
-        for note in &restore.mc_notes {
-            residue.push(format!("starting-Space restore: {note}"));
-        }
-        let current_restored = restore.clean();
+        // Ordinary legs return first. A fullscreen probe may have failed
+        // its explicit exit; in that case close the owned fixture before
+        // touching ordinary Spaces, then independently prove the SID gone.
+        let mut restore = self.fixture_fullscreen_sid.is_none()
+            .then(|| self.restore_leg_currents(&mut residue));
         // 3. Close exactly the registered run-owned fixture windows.
         for window in self.owned_windows.clone() {
             if let Err(e) =
@@ -1872,6 +1900,22 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         {
             residue.push(format!("owned fixture pid {} shutdown: {e}", record.pid));
         }
+        let spaces_ready = if let Some(sid) = self.fixture_fullscreen_sid {
+            match self.await_fixture_fullscreen_exit(sid) {
+                Ok(()) => {
+                    restore = Some(self.restore_leg_currents(&mut residue));
+                    true
+                }
+                Err(e) => {
+                    residue.push(format!("fullscreen teardown: {e}"));
+                    false
+                }
+            }
+        } else {
+            true
+        };
+        let current_restored = restore.as_ref().is_some_and(crate::space_probe::RestoreReport::clean);
+        let restored = restore.map_or_else(Vec::new, |report| report.restored);
         // 4b. The private store is product-owned state, not fixture state:
         // once product absence is proven, remove it even when fixture
         // shutdown failed. Receipts/logs stay for audit; an uncertain or
@@ -1883,7 +1927,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             residue.push(format!("owned private store cleanup: {e}"));
         }
         // 5. Remove only leg-created Spaces, each pinned and proven empty.
-        for (display, sid) in self.owned_spaces.clone() {
+        for (display, sid) in self.owned_spaces.clone().into_iter().filter(|_| spaces_ready) {
             match remove_owned_space(&mut *self.transport, display, sid) {
                 Ok(mc) => {
                     if let Some(note) = mc.shortfall_text("owned-Space removal") {
@@ -1965,7 +2009,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                     generation: self.generation,
                     product_reaped: product_absent,
                     current_restored,
-                    restored: restore.restored.clone(),
+                    restored: restored.clone(),
                     mismatches: mismatches.clone(),
                     residue: residue.clone(),
                     caffeinate_reaped,
@@ -1980,7 +2024,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             generation: self.generation,
             product_reaped: product_absent,
             current_restored,
-            restored: restore.restored,
+            restored,
             mismatches,
             residue,
             caffeinate_reaped,

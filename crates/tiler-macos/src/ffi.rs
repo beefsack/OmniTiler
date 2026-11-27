@@ -6239,6 +6239,16 @@ mod macos {
     /// a windowless app, a reserved PID, a zero window, or an unreadable
     /// join is `Err` with the leg named. Read-only; no focus effects.
     pub fn ax_focused_window_state(pid: i32, wid: u32) -> Result<Option<bool>, String> {
+        ax_fullscreen_focused_element(pid, wid).map(|window| ax_fullscreen_state(&window).ok())
+    }
+
+    /// The exact focused AX title; an unrelated focused window never joins.
+    pub(crate) fn ax_exact_focused_window_title(pid: i32, wid: u32) -> Option<String> {
+        let window = ax_fullscreen_focused_element(pid, wid).ok()?;
+        ax_window_title(&window).ok().flatten()
+    }
+
+    fn ax_fullscreen_focused_element(pid: i32, wid: u32) -> Result<AxElement, String> {
         if pid <= 1 {
             return Err(format!("focused window pid {pid} is reserved; refusing"));
         }
@@ -6278,7 +6288,7 @@ mod macos {
                 "AXFocusedWindow wid {fresh} != proven wid {wid}; refusing"
             ));
         }
-        Ok(ax_fullscreen_state(&window).ok())
+        Ok(window)
     }
 
     // -- Owned probe window (AppKit boundary; main thread only) --
@@ -11206,6 +11216,9 @@ mod macos {
         ))
     }
 }
+
+#[cfg(target_os = "macos")]
+pub(crate) use macos::ax_exact_focused_window_title;
 
 #[cfg(target_os = "macos")]
 pub use macos::{

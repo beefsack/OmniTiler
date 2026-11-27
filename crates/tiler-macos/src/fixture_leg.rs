@@ -116,6 +116,7 @@ pub const APPLY_SEND_CHORD: &str = "apply-send";
 /// Standalone, signed-fixture macOS 27 swipe probe.
 pub const SWIPE_27_CHORD: &str = "swipe-27";
 pub(crate) const SWIPE_27_E1_CHORD: &str = "swipe-27-e1";
+pub(crate) const SWIPE_27_FULLSCREEN_CHORD: &str = "swipe-27-fullscreen-host";
 
 /// Operator settle window (harness only): milliseconds the leg holds before
 /// its first chord and again after its last chord, so an operator can drive
@@ -825,7 +826,7 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
     if opts
         .chords
         .iter()
-        .any(|chord| matches!(chord.as_str(), SWIPE_27_CHORD | SWIPE_27_E1_CHORD))
+        .any(|chord| matches!(chord.as_str(), SWIPE_27_CHORD | SWIPE_27_E1_CHORD | SWIPE_27_FULLSCREEN_CHORD))
         && (opts.chords.len() != 1
             || opts.hover_probe
             || opts.corrupt_intent_store
@@ -1343,7 +1344,7 @@ fn run_leg_body_macos(
     leg.transport_mut()
         .set_fixture_control(parsed.socket.clone(), run_dir.clone());
     if let [chord] = opts.chords.as_slice()
-        && matches!(chord.as_str(), SWIPE_27_CHORD | SWIPE_27_E1_CHORD)
+        && matches!(chord.as_str(), SWIPE_27_CHORD | SWIPE_27_E1_CHORD | SWIPE_27_FULLSCREEN_CHORD)
     {
         let report = crate::fixture_swipe_27::run(
             leg,

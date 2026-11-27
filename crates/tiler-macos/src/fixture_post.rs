@@ -1199,18 +1199,34 @@ pub(crate) fn fixture_designated_tail(exe: &str) -> Result<String, String> {
     extract_designated_tail(&combined).map_err(|e| format!("signature: {e}"))
 }
 
-/// Truthful title for exactly one window of the fixture PID without Screen
-/// Recording: the fixture's own AX application element is enumerated (bounded
-/// by `MAX_WINDOWS`) and the element whose AX window id equals `wid` supplies
-/// its AX title. `None` when AX cannot name that window (never a guess).
+/// The ordinary AX list wins. Only an exact singleton fullscreen join
+/// admits a title from AXFocusedWindow when the list cannot name it.
+#[cfg(any(target_os = "macos", test))]
+fn fixture_ax_title(
+    listed: Option<String>,
+    singleton_type: impl FnOnce() -> Option<crate::ffi::SlsSpaceType>,
+    exact_focused: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    listed.or_else(|| {
+        (singleton_type() == Some(crate::ffi::SlsSpaceType::Fullscreen))
+            .then(exact_focused)
+            .flatten()
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn ax_title_for_wid(pid: u32, wid: u32) -> Option<String> {
-    let app = crate::ffi::AxElement::application(pid as i32)?;
-    let elements = app.windows().ok()?;
-    elements
-        .iter()
-        .find(|element| crate::ffi::ax_window_id(element) == Some(wid))
-        .and_then(|element| crate::ffi::ax_window_title(element).ok().flatten())
+    let pid = i32::try_from(pid).ok()?;
+    let app = crate::ffi::AxElement::application(pid)?;
+    let listed = app.windows().ok().and_then(|windows| {
+        windows.iter().find(|element| crate::ffi::ax_window_id(element) == Some(wid))
+            .and_then(|element| crate::ffi::ax_window_title(element).ok().flatten())
+    });
+    fixture_ax_title(listed, || {
+        let spaces = crate::ffi::sls_spaces_for_window(wid).ok()?;
+        let [sid] = spaces.as_slice() else { return None };
+        crate::ffi::sls_space_type(*sid).ok()
+    }, || crate::ffi::ax_exact_focused_window_title(pid, wid))
 }
 
 /// Plain-data process identity reads (no decisions): live bundle plus
@@ -1373,7 +1389,10 @@ impl FixtureTransport for LiveTransport {
             .into_iter()
             .find(|window| window.wid == wid)
             .map(|window| (window.pid, ax_title_for_wid(window.pid, wid)));
-        let ax_contains = ax_contains_wid(sess.pid, wid).is_ok();
+        // The title itself came from an exact AX id join; a fullscreen
+        // window may not be in AXWindows, but can still be AXFocusedWindow.
+        let ax_contains = cg_entry.as_ref().is_some_and(|(_, title)| title.is_some())
+            || ax_contains_wid(sess.pid, wid).is_ok();
         Ok(FullReads {
             socket_reply,
             bundle: identity.bundle,
@@ -1587,6 +1606,31 @@ impl<'a, T: FixtureTransport> std::fmt::Debug for FixtureDriver<'a, T> {
 
 #[cfg(target_os = "macos")]
 impl FixtureDriver<'_, LiveTransport> {
+    /// Set only the proved fixture incarnation's mode, outside a measured switch.
+    pub(crate) fn set_probe_fullscreen(
+        &self,
+        (caller, wid): &(String, u32),
+        fullscreen: bool,
+    ) -> Result<(), String> {
+        const REQUEST: &str = "fixture-harness-fullscreen";
+        if !self.admission.is_live() {
+            return Err("fullscreen setup requires live fixture admission".to_owned());
+        }
+        self.prove_full(caller, *wid, "fullscreen-mode-full")?;
+        self.prove_commit(caller, *wid, "fullscreen-mode-commit", false)?;
+        let mode = if fullscreen { "borderless_fullscreen" } else { "windowed" };
+        let reply = socket_round_trip(&self.session.socket_path, &serde_json::json!({
+            "v": 1, "request_id": REQUEST, "nonce": self.session.nonce,
+            "op": "set", "ids": [caller], "patch": {"mode": mode},
+        }), REQUEST)?;
+        let accepted = reply["ok"] == true && reply["result"]["windows"].as_array().is_some_and(|rows| {
+            matches!(rows.as_slice(), [row] if row["id"] == caller.as_str() && row["ok"] == true
+                && row["fields"].as_array().is_some_and(|fields| fields.iter().any(|field|
+                    field["field"] == "mode" && field["status"] == "accepted")))
+        });
+        accepted.then_some(()).ok_or_else(|| "fixture did not accept the mode request".to_owned())
+    }
+
     /// Move only the proved fixture incarnation through the nonce-gated
     /// frame setter. The caller must independently prove native placement.
     pub(crate) fn place_window(
@@ -2675,6 +2719,22 @@ mod tests {
         assert!(socket_path_valid("").is_err());
         assert!(socket_path_valid("/tmp/\0sock").is_err());
         assert!(socket_path_valid(&"x".repeat(105)).is_err());
+    }
+
+    #[test]
+    fn fixture_title_requires_singleton_fullscreen_for_focused_fallback() {
+        use crate::ffi::SlsSpaceType::{Fullscreen, User};
+        let sentinel = "OmniTilerTestWindow:a:abc123";
+        assert_eq!(
+            fixture_ax_title(Some(sentinel.to_owned()), || panic!("listed title wins"), || None),
+            Some(sentinel.to_owned()),
+        );
+        for kind in [None, Some(User)] {
+            assert_eq!(fixture_ax_title(None, || kind, || panic!("not fullscreen")), None);
+        }
+        assert_eq!(fixture_ax_title(None, || Some(Fullscreen), || None), None);
+        let title = fixture_ax_title(None, || Some(Fullscreen), || Some(sentinel.to_owned())).unwrap();
+        assert_eq!(parse_fixture_title(&title).unwrap(), ("a".to_owned(), "abc123".to_owned()));
     }
 
     #[test]
