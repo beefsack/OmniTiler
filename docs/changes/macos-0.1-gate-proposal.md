@@ -1,8 +1,10 @@
 # macOS 0.1 gate proposal
 
-- Status: APPROVED 2026-10-29 with amendments (D1-D3 as written, D4 amended,
+- Status: original approval 2026-10-29 with amendments (D1-D3 as written, D4 amended,
   D5/D6 rejected; see Proposed decisions and the [durable approval](../decisions/macos.md#macos-0-1-scope-and-gate)).
-  Native/physical acceptance remains pending; this is not release acceptance.
+  Gate amended 2026-11-27 (see [gate amendment](#gate-amendment-2026-11-27));
+  tallies and evidence counts below are the historical approval snapshot, not a
+  new pass. Native/physical acceptance remains pending; this is not release acceptance.
 - Basis: [shared scope and platform goals](../decisions/platforms.md#platform-scope)
   (2026-10-17/18) and the approved
   [57-check inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2)
@@ -70,6 +72,8 @@
   where the route changed. Latest source records take precedence over
   historical backlog wording.
 
+- The two tally tables below are the historical 2026-10-29 approval snapshot;
+  the 2026-11-27 amendment is recorded later and does not re-tally here.
 | Inventory | Applies as-is | Host-adapted | N/A | Extras |
 | --- | --- | --- | --- | --- |
 | Original 57 checks | 20 | 30 | 7 | Not counted here |
@@ -113,7 +117,7 @@ been recorded; the gate counts and MX6 remain unchanged.
 | 3 | W | Placement physical acceptance | X | Windows session-dogfood journey, not a macOS product check. macOS placement acceptance rides checks 13/18/44 and MX7. | **X**: [shared inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2). |
 | 4 | W | Windows parity/settings/tray physical | X | Windows Snap/Settings/tray/Explorer/DPI journey, not a macOS product check. macOS settings/indicator acceptance rides checks 12/20/22/29/37 and MX3/MX6/MX8. | **X**: [shared inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2). |
 | 5 | K | B9/R-FLT-06 on COSMIC | X | Reference-WM confirmation on COSMIC, not a macOS product check. macOS B9 remains check 7. | **X**: [shared inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2). |
-| 6 | M | B1/B2 repeats; held-key autorepeat | A | Repeat maximize/sticky native-change cycles and physical hold/release; one toggle per intended activation, no stuck consumption or OS leakage. | **O**: offline repeat/refusal rules only; physical delivery and native-change repetitions pending. |
+| 6 | M | B1/B2 repeats; held-key autorepeat | A | Repeat maximize cycles and physical hold/release; one toggle per intended activation, no stuck consumption or OS leakage. Native foreign-window sticky is excluded only under the [2026-11-27 amendment](#gate-amendment-2026-11-27); every other check-6 requirement stays must-pass. | **O**: offline repeat/refusal rules only; physical delivery and native-change repetitions pending. |
 | 7 | M | B9 unfloat while maximized | A | Clear/observe maximize, then fresh tiling admission; preserve focus and fixed-origin overrides. | **U**: no accepted macOS B9 journey; `maximized: false` assumptions are not capability proof ([risks](macos-world-v2-port.md#risks-and-open-evidence)). |
 | 8 | M | D7 tile-override restart | A | Same tile-override marker semantics on restart; markers confer no write/recovery authority. | **U**: no accepted macOS D7 restart journey located. |
 | 9 | M | D5 born-fullscreen exit, including games | H | On first native fullscreen exit, reclassify using current hints; no fullscreen geometry interference. Fullscreen windows stay untouched by ordinary tiling. Requires REQUIRED USER-RUN REAL GAME leg plus incremental game CPU/frame-time/input cost against tiler-off (idle cost is not a substitute). | **U**: restored-fullscreen outcomes remain TBD discriminators ([classification](macos-window-classification.md)); option A reporting selected, native user-run acceptance pending. |
@@ -139,7 +143,7 @@ been recorded; the gate counts and MX6 remain unchanged.
 | 29 | K | Tray Active status (`just dev`) | H | Menu-bar indicator liveness/Settings/Stop in development; no systemd equivalent. | **P**: indicator quick check passed; wider stale/dead-owner/status permutations pending. |
 | 30 | M | Process-loss and sleep, single output | H | Exact-owner loss/watchdog/independent restore plus native suspend/resume; reobserve rather than replay setters. | **U**: sleep/wake never exercised on macOS; no accepted recovery journey. Stop/restart is not sleep evidence. |
 | 31 | M | Native border delivery/suppression | H | Owned AppKit carrier replaces the KWin effect; click-through, foreground tracking, fullscreen suppression and recovery. | **O**: owned-fixture delivery only; fullscreen suppression, games and mixed-scale checks pending. |
-| 32 | M | Sticky adoption restart | H | Sticky only with positive all-Spaces proof; restart preserves proven sticky identity and visibility. | **U**: sticky scope needs a per-display verification plan; no accepted journey ([port record](macos-world-v2-port.md)). |
+| 32 | M | Sticky adoption restart | H | Native foreign-window all-Spaces sticky is a [documented native SIP-on limitation](#gate-amendment-2026-11-27), not a pass: no foreign tag write, no membership adoption and no restart claim. See [sticky prior art](macos-0.1-native-spaces-prior-art.md#sticky-with-sip-on); later virtualised output-local sticky is presentation only, never native proof. | **Documented limitation** (not P/O/U pass; the historical 2026-10-29 row was **U**): no accepted journey; one bounded negative probe is optional, not a prerequisite. |
 | 33 | M | Non-visible workspace tiling | H | Off-Space members retain background membership/planning without native geometry writes; project the latest state safely on reveal, without a workspace switch or focus steal for hidden admission. | **O**: offline membership/report facts only; native hide/reveal checkpoints (visible home, hidden intermediate, reveal with retained layout) pending. |
 | 34 | M | Gaming and work-area reliability | A | Preserve fullscreen/game non-interference, correct work areas after changes. Requires REQUIRED USER-RUN REAL GAME leg plus incremental game CPU/frame-time/input cost against tiler-off (idle cost is not a substitute). | **U**: reliability/game-safety work never exercised on macOS (ROI item 6); user-run acceptance pending. |
 | 35 | K | Custom Tile manual runtime | X | KDE-specific development component; no macOS counterpart. Core tiling remains covered elsewhere. | **X**: [shared inventory](../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2). |
@@ -204,6 +208,44 @@ been recorded; the gate counts and MX6 remain unchanged.
 | D5: file/CLI settings exception for 0.1 (REJECTED 2026-10-29) | Rejected: the native macOS Settings window IS 0.1 scope, so check 12 requires native Settings-window acceptance before 0.1 ships. Validated save/read/reload/default/predicate semantics still must-pass. User rationale: Windows/KDE Settings windows and validating shared settings-window elements across platforms. | The file/CLI route stays, but it does not substitute for the native Settings dialog. |
 | D6: post-0.1 underlay-feature sub-leg exception (REJECTED 2026-10-29) | Rejected: the product group-underlay visual legs in checks 23/44/N4 remain 0.1 scope. Attempt before 0.1 (Windows/KDE already have it), reference-first starting from sibling JankyBorders SkyLight-drawn borders (see [group underlay](macos-group-underlay.md) and [rendering routes](../research/macos-port/underlay-rendering-routes.md)). Existing border/preview/drag safety is unaffected. | On failure report evidence to the user; no automatic deferral. No other visual omission is implied or approved. |
 
+## Gate amendment 2026-11-27
+
+- Full multi-display native Spaces are newly included in 0.1 under SIP:
+  no pointer warp, no separate degraded mode and no virtualised fallback.
+  This amends the historical 2026-10-29 tally above without claiming a new
+  pass; see the
+  [scope decision](../decisions/macos.md#macos-0-1-scope-and-gate) and
+  [managed Spaces route](../decisions/macos.md#managed-native-spaces-input-and-transfers).
+- Capability fences for native switching, bridged sends and MC AX create/remove
+  stay in force until each one is cleared by its own short bounded probe with
+  exact target and readback proof and no replay. A failed or ambiguous probe
+  keeps the refusal; there is no blanket lift and no pass from a source read.
+- On macOS >=27 the pinned Dock-swipe payload must be ported and targeted at
+  the selected display, not limited to the same display, using the event's
+  location while the pointer stays put. MC AX is a fallback only when
+  separately proven and selected before dispatch; otherwise the switch
+  refuses. Pointer warping is not proposed.
+- MC AX readiness must be polled to the deadline before one press rather than
+  relying on the fixed 300 ms stabilization; fresh exact-SID readback and
+  deadline refusal stay mandatory, and the poll time is a bound, not a
+  mandatory sleep.
+- Warn in both the indicator and Settings when Stage Manager
+  (`com.apple.WindowManager` `GloballyEnabled`) or recent-use Space ordering
+  (`com.apple.dock` `mru-spaces`) can move Spaces. On a switch/move capability
+  failure show the notice "Native workspaces unavailable on this macOS" in
+  both the indicator and Settings; this is a capability notice inside native
+  Spaces, not a separate degraded mode.
+- The macOS 15 floor requires one single-display user-provided VM whose
+  permission grants are completed before release, covering switch, bridged
+  move and MC AX. Multi-display macOS 15 stays unverified unless suitable
+  hardware appears, and no 26/27 result transfers to 15.
+- Sticky: check 6 keeps physical hold/release, repeat/maximize and no-leak
+  assertions; only native foreign-window sticky is excluded. Check 32 is a
+  documented native SIP-on limitation, not a pass, per
+  [sticky prior art](macos-0.1-native-spaces-prior-art.md#sticky-with-sip-on).
+  One bounded negative probe may be recorded, but is not a prerequisite; later
+  virtualised output-local sticky is presentation only, never native proof.
+
 ## Known gaps, unresolved choices and blockers
 
 - Known gaps stay pending, never passed; no live substitution: v2
@@ -221,16 +263,20 @@ been recorded; the gate counts and MX6 remain unchanged.
   and [distribution](../decisions/platforms.md#macos-01-distribution) are
   decided; their acceptance remains open. Already-decided MC fallback,
   floor, and route-settings timing are not reopened.
-- macOS 15 floor: support promise retained; floor-release verification
-  deferred as explicit unverified risk.
+- macOS 15 floor: support promise retained; the 2026-11-27 amendment requires
+  one single-display user-provided VM with permission grants before release and
+  leaves multi-display 15 unverified unless suitable hardware appears. The
+  deferred floor verification was the historical 2026-10-29 snapshot.
 - Source ambiguity: macOS classification discriminators (AX-size-only
   admission, accessory documents, elevated-level standard windows,
   app-specific nonstandard documents, sheet identity, restored-fullscreen
   reference outcomes); group-underlay chord and rendering route;
   title-bar drag classification and cross-output integration; active-border
-  appearance pixels; sticky per-display scope; notch-straddling geometry;
-  separate-Spaces-off spanning domains. Each resolves through its
-  existing TBD row, not through this gate.
+  appearance pixels; notch-straddling geometry;
+  separate-Spaces-off spanning domains. Sticky per-display scope is no longer
+  an open gate question: it is a documented SIP-on limitation in the
+  [2026-11-27 amendment](#gate-amendment-2026-11-27). Each remaining item
+  resolves through its existing TBD row, not through this gate.
 - MX8 remains pending installed validation of the selected signed/notarized
   DMG and Homebrew Cask; no installed pass is claimed.
 - Reliability and game safety are absolute: sleep/wake, output hotplug,

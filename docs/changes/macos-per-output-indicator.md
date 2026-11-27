@@ -59,9 +59,10 @@ this change.
 
 The shared presentation applies in both [workspace modes](macos-virtualised-workspaces-mode.md).
 This implementation covers native Spaces, the only mode shipping in 0.1.
-Virtualised workspaces become the default when they ship after 0.1;
-their logical-workspace click routing is implemented and proven separately,
-and native Spaces become opt-in with documented limitations.
+Virtualised workspaces become the fresh-install default after 0.1 only once
+the [safety gates](../decisions/platforms.md#macos-01-release-scope) pass.
+Their logical-workspace click routing is implemented and proven separately;
+native Spaces become opt-in with documented limitations.
 
 Groups are ordered by global frame x, with the primary first on a tie.
 Each group has its own current highlight; separators appear only between

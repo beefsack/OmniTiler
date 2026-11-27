@@ -2,15 +2,13 @@
 
 **Status:** Decisions confirmed 2026-11-26/27 and recorded in the owning
 [decisions](../decisions.md). No new native acceptance is claimed. MX6 and
-the fullscreen fixture procedure are tracked separately. The existing
-[native gate](macos-0.1-gate-proposal.md) stays in place, including workspace,
-drag, fullscreen-carry, Settings, and underlay.
-
-The [native Spaces prior art](macos-0.1-native-spaces-prior-art.md) informs
-implementation and the next sticky discriminator. Keep native Spaces and
-native macOS functions with SIP on and the cross-platform consistency rule.
-An impossible feature is a Spaces-mode limitation; a separate virtualised
-mode remains a later user decision.
+the fullscreen fixture procedure are tracked separately. The native gate keeps
+workspace, drag, fullscreen-carry, Settings and underlay requirements; its
+[current scope](../decisions/macos.md#macos-0-1-scope-and-gate) supersedes the
+earlier options for native multi-display, sticky and the macOS 15 floor check.
+The [workspace-mode decision](../decisions/platforms.md#macos-01-release-scope)
+keeps 0.1 SIP-on native only and sets a gated virtualised default for fresh
+installs after 0.1.
 
 **Evidence key:** Tagged external citations are source inspection only, not
 native execution or accepted evidence. AeroSpace v0.21.3-Beta is the latest
@@ -129,11 +127,9 @@ no claim of exact native preimage).
 
 ## 4. Sticky float
 
-Check 6 (M/A/O) reads: "Repeat maximize/sticky native-change cycles and
-physical hold/release; one toggle per intended activation, no stuck
-consumption or OS leakage." Check 32 (M/H/U) reads: "Sticky only with positive
-all-Spaces proof; restart preserves proven sticky identity and visibility."
-Both are at `docs/changes/macos-0.1-gate-proposal.md:100,126`. The current
+The original checks 6 and 32 required repeated sticky transitions and positive
+all-Spaces/restart proof. The current
+[gate proposal](macos-0.1-gate-proposal.md) reflects the approved amendment. The
 limit is macOS unsupported (`docs/decisions/window-state.md:55-60`,
 `docs/decisions/contract.md:187`); both native sticky and suppression are
 absent (`crates/tiler-macos/src/world_connection.rs:49-62`,
@@ -149,10 +145,10 @@ yabai v7.1.25 `doc/yabai.asciidoc:666-668` and `src/window_manager.c:2215-2230`
 use a scripting addition / partial SIP; this is not evidence for the selected
 SIP-on host or an acceptable security change.
 
-**Pending:** macOS currently does not advertise sticky. Run the bounded
-SIP-on live probe before deciding its release disposition; checks 6 and 32
-remain unchanged. Neither no-op nor refusal passes the current positive
-journeys.
+**Disposition, 2026-11-27:** Foreign per-window sticky is a documented SIP-on
+native Spaces limitation. Check 6 retains its non-sticky requirements; check
+32 is not a native pass. A single bounded negative probe is optional evidence,
+not a release prerequisite.
 
 ## 5. Confirmed TD decisions
 
@@ -181,8 +177,9 @@ lifecycle and release-artifact acceptance remain open. See the
 
 ### TD6 — macOS 15 floor
 
-Keep macOS 15 as the support floor. R2/F4 was verified offline; live macOS 15
-Mission Control is still unverified and is an explicit risk. See the
+Keep macOS 15 as the support floor. R2/F4 was verified offline; a live
+single-display VM check is now required before release. It does not verify
+multi-display on macOS 15. See the
 [platform decision](../decisions/platforms.md#macos-phase-0-and-host-foundations)
 and [gate proposal](macos-0.1-gate-proposal.md).
 

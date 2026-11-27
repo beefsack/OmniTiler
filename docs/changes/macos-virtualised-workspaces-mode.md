@@ -1,16 +1,14 @@
 # macOS two-mode workspaces: native Spaces and virtualised mode
 
-- Status: design/options only, 2026-11-27. In principle, the user has selected a
-  configurable two-mode design: virtualised rows and native Spaces are both
-  selectable, with native limitations documented. Default mode, timing, switching
-  and adapter split are not decided. No runtime, gate, default, migration or
-  policy change is made here; the current 0.1 baseline remains native Spaces with SIP on.
-- Evidence: tagged citations are source inspection at that tag, not observed
-  behavior; local documents are records. `[INFERENCE]` marks design reasoning.
-  No virtual switch, Mission Control, Dock/App Exposé, Stage Manager or crash behavior was measured.
-- Baseline: [macOS 0.1 release scope](../decisions/platforms.md#macos-01-release-scope)
-  keeps native Spaces and SIP enabled. Shipping virtual mode in 0.1 or as the
-  default would require revisiting that baseline.
+- Status: mode count, release timing and gated fresh-install default approved
+  2026-11-27. The [release decision](../decisions/platforms.md#macos-01-release-scope)
+  supersedes the native-default/virtual-opt-in recommendation in the original
+  options. Mode changes, migration and adapter split remain design questions.
+- Evidence: External Review: macOS Workspace Modes for OmniTiler, 2026-11-27.
+  `rift v0.8.6` provides watchdog and overlap-scoring prior art, `OmniWM v0.8.0`
+  native Space/fullscreen exclusion, `HyprMac v0.29.0` the outermost-corner
+  fallback, and `Defi v0.11.0` evidence for the empty-workspace focus hazard.
+  Tagged citations are source evidence, not OmniTiler native acceptance.
 
 ## Terms and rejected end states
 
@@ -25,36 +23,37 @@
 
 - **A, native-only (ruled out as an end state):** no selectable virtual mode.
 - **C, native plus managed pinning only (ruled out as an end state):** serially re-moving a pin is neither native all-Spaces stickiness nor a virtual mode.
+- **SIP-off native tier (permanently rejected):** Dock injection violates the
+  [anti-cheat rule](../decisions/gaming.md#anti-cheat-mechanism-limits) and is
+  incompatible with notarized Developer ID distribution.
 
-Native limitations to document: native switch animation and latency, dependence
-on Mission Control topology and the guarded native selector, currently scoped
-to one observed display ([managed Spaces decision](../decisions/macos.md#managed-native-spaces-input-and-transfers)),
-and no verified SIP-on foreign-window sticky route. Dedicated native fullscreen
-Spaces remain host-owned; they are not ordinary tiling workspaces.
+Native limitations to document include dependence on guarded native routes
+and no verified SIP-on foreign-window sticky route. The
+[native 0.1 scope](../decisions/macos.md#managed-native-spaces-input-and-transfers)
+includes multiple displays, with individual actions refusing until proven.
+Dedicated native fullscreen Spaces remain host-owned.
 
 ## Decision 1: which mode is the default
 
 | Configuration | First-run safety | Stranding and rescue | Mission Control expectation | Gate effect |
 | --- | --- | --- | --- | --- |
-| **Native default, virtual opt-in** (recommended) | New users see current native behavior and SIP-on routes; no window is parked before consent | Only opted-in users can strand windows; the virtual path still needs its own rescue floor and loss report | Matches current macOS: real Spaces and real fullscreen | Default path keeps existing gate answers; virtual path adds evidence but does not turn open gates into passes |
-| **Virtual default, native opt-in** | First run can park windows and expose slivers before the user understands the mode | Every new user is exposed to stranding; rescue must be default-safe, not an advanced path | Mission Control shows the underlying native Space(s), not the workspace list users switch through | Adds virtual recovery, fullscreen, M8 and shell proof to the default path; requires a gate amendment and migration story, without satisfying native 6/32 |
+| **Native default, virtual opt-in** (superseded for post-0.1 fresh installs) | New users see existing native behavior and SIP-on routes | Virtual opt-in still needs its own rescue floor | Mission Control shows real Spaces | No change to native acceptance |
+| **Virtual default, native opt-in** (selected after safety gates) | Parking is default only after recovery and safety proof | Watchdog and durable pre-park journal recover from abrupt owner loss | Mission Control shows underlying native Spaces, not virtual rows | Requires separate virtual acceptance; does not prove native sticky |
 
-Native default is the safer first-run and support story. Virtual default is
-defensible only if the virtual path has exact restore or an accepted rescue floor,
-and if the product is willing to make Mission Control expectations part of first
-run. Neither is decided; this note recommends native default.
+Before the default flips, prove out-of-process restoration after `SIGKILL`
+from a durable pre-park frame journal, overlap-minimising edge/corner parking
+with a global outermost-corner fallback, and empty-workspace focus fencing.
+Keep “Displays have separate Spaces” on; observe native Space topology and
+fullscreen read-only, excluding off-Space and fullscreen windows from virtual
+writes. Native Spaces remain the sole 0.1 mode. The later default applies to
+fresh installs; existing-install migration is not decided here.
 
 ## Decision 2: ship virtual mode in 0.1 or after it
 
 | Timing | Cost and test burden | Sticky 6/32, indicator, M8, scopes |
 | --- | --- | --- |
-| **After 0.1** (recommended) | Keeps 0.1 on the native acceptance matrix; virtual parking, reveal, rescue and per-app guards add a later medium-to-large block | Native 6/32 and M8 remain open; the grouped indicator needs native click proof regardless. Prove the virtual actuator, scope behavior and recovery separately before shipping it |
-| **In 0.1** | Adds two-mode recovery, geometry, fullscreen, shell and input matrices to the release gate; highest near-term schedule risk | Requires explicit gate amendments, not treating virtual pinning as 6/32 evidence. Prove both click routes, M8 across outputs and each shipped scope; native acceptance is not waived |
-
-The 0.1 scope record already treats virtual mode as later. Shipping it in 0.1
-would turn every open virtual unknown into a release gate; after 0.1 keeps the
-native product and the virtual experiment separable. Recommendation only, not a
-decision.
+| **After 0.1** (selected) | Keeps 0.1 on the native acceptance matrix; virtual parking, reveal, rescue and per-app guards require later proof | Native sticky is a documented limitation; prove virtual output-local sticky, selection, recovery and scope independently |
+| **In 0.1** (rejected) | Would add two-mode recovery, geometry, fullscreen, shell and input proofs to the release gate | Would not prove native acceptance |
 
 ## Decision 3: restart/per-session mode or live switch
 
@@ -97,20 +96,17 @@ rescue, not exact restore. Do not act on arbitrary off-screen windows.
 ## Shared menu-bar indicator
 
 One shared menu-bar indicator, each display's group separated, not a physical
-carrier per output, is the selected presentation. That does not by itself amend
-the gate or prove click routing. The current record still hides the item on
-ambiguous multi-display attribution (`docs/changes/macos-workspace-indicator.md:27-31`;
-MX6 `docs/changes/macos-0.1-gate-proposal.md:190`), so adoption needs a gate
-update and new acceptance evidence.
+carrier per output, is the selected presentation. Hide under ambiguous
+output-to-workspace attribution, not merely because multiple displays exist.
+The physical grouped-item check is separate from single-display MX6.
 
 The modes cannot share one target token:
 
 - **Native rows** carry the observed immutable SID plus UI generation and topology
   revision through click admission/native drain
   (`docs/changes/macos-workspace-indicator.md:68-71`). A click resolves a display
-  and exact SID, then uses the guarded selector; that selector requires one
-  observed display (`docs/decisions/macos.md:6`), so a shared item must still
-  choose one group/SID per click. Grouping in UI is not multi-display acceptance.
+  and exact SID, then uses a capability-checked selector. Grouping in UI is
+  not multi-display acceptance.
 - **Virtual rows** carry a logical workspace ID plus output. A click selects the
   row and parks/unparks; no MC AX or Dock swipe for inactive rows. Pins and native
   fullscreen may still need SID work, so the SID is not globally irrelevant.
@@ -174,18 +170,18 @@ each virtual mode; don't promise isolation or native integration.
 
 | Area | Native mode | Virtual mode |
 | --- | --- | --- |
-| Sticky (6/32) | Open with no measurement: the [bounded SIP-on probe](macos-0.1-native-spaces-prior-art.md#bounded-signed-fixture-probe-2026-11-27) stopped before a write | Parking does not provide all-Spaces membership. Pins can only be presentation, not native carry |
-| Indicator | Exact native SID per click, guarded selector, currently single-display | Logical row plus output; no SID selection for inactive rows, but pins/fullscreen may need native targeting |
+| Sticky (6/32) | Documented SIP-on foreign per-window limitation; the [bounded probe](macos-0.1-native-spaces-prior-art.md#bounded-signed-fixture-probe-2026-11-27) stopped before a write | Output-local sticky presentation, not native all-Spaces membership |
+| Indicator | Exact native SID per click and capability-checked selector | Logical row plus output; no SID selection for an inactive virtual row |
 | Switch latency/animation | Host Space animation; MX1 recorded an 88-98 ms native follow, not generalized and not a virtual comparison | Parking frame writes and activation replace the animation; latency, focus and view settlement unquantified |
 | Fullscreen (MX5) | Native fullscreen Space remains host-owned | Fence parking while fullscreen; retain logical home and settle windowed return without forcing fullscreen exit |
 | M8 cross-output | [M8](v4-migration.md#m1-m9-technical-resolution) needs target-display frame plus native Space membership; provisional `tiledFloatTransfer=false` is not a general move ban | Logical membership is easier to change; display/Space reassociation still needs native arrival proof for that substrate, not a position-setter return |
 | Hidden members (33); selection/sends (14/15/42/43, MX1) | Off-Space windows receive no background geometry writes; membership and selection are native | Park once, keep background layout logical, and verify hide/reveal and arrival before focus. Parked isn't minimized, closed or reliably invisible to shell UI. The parking actuator and logical selection require gate re-mapping, not reuse of the original proofs |
 
-An output-local sticky **presentation** is a real gain of the virtual-mode
-configurations (the former B/D): exclude an authorized pin from parking so it
-stays at home on its output without a per-switch move. Preserving its home
-and pin intent over restart would need a lifetime-scoped record. The pin does
-not follow to another output or native Space, and does not close 6/32.
+Virtualised mode will provide output-local sticky **presentation**: exclude
+an authorized pin from parking so it stays visible on its home output without
+a per-switch move. Preserving pin intent over restart would need a
+lifetime-scoped record. The pin does not follow to another output or native
+Space and is not native sticky proof.
 
 [Workspace scope](../decisions/workspaces.md#workspace-scope-vocabulary) is
 separate from the actuator. `per-output-local` uses independent rings and
@@ -199,21 +195,16 @@ macOS mode, its backing/pager proof isn't a virtual visibility receipt.
 
 ## Recommendation (provisional, not decided)
 
-Adopt the two-mode design, provisionally with:
+The restart/per-session and common-adapter recommendations are provisional:
 
-1. **Native default, virtual opt-in**, with explicit sliver/rescue/MC explanation.
-2. **Virtual mode after 0.1**, preserving the native release matrix.
-3. **Restart/per-session switching first**; live switch only with migration,
+1. **Restart/per-session switching first**; live switch only with migration,
    rollback and fault tests.
-4. **One common macOS adapter with a mode seam**, sharing AX/observation/guards
+2. **One common macOS adapter with a mode seam**, sharing AX/observation/guards
    and branching at membership, parking, persistence and selection.
 
-Before shipping virtual mode: require crash-safe exact restore or an accepted
-rescue floor with a loss report (never call a cascade exact); measured
-geometry/reveal/fullscreen/shell/per-app results; a written pin/lease contract
-separating output-local presentation from native carry; and an explicit gate
-mapping that leaves native 6/32 open unless their own evidence or an authorized
-amendment resolves them. Update the grouped indicator gate separately.
+The approved default gates are listed under [Decision 1](#decision-1-which-mode-is-the-default).
+Define separate virtual proof for geometry, shell and per-app behavior and a
+pin/lease contract that distinguishes output-local presentation from native carry.
 
 ## Material unknowns
 
@@ -225,9 +216,9 @@ amendment resolves them. Update the grouped indicator gate separately.
   game fullscreen/timing are unmeasured; mixed-scale/mirrored/stacked displays,
   hotplug, sleep/wake and Spaces auto-rearrange remain open, and the one-pixel
   reveal is expected, not universally proven.
-- The shared multi-display indicator has no recorded acceptance; native SID
-  targeting remains single-display at the selector boundary. Gate 6/32 have no
-  positive SIP-on route; no virtual actuator changes that.
+- Physical acceptance of the shared multi-display indicator is pending.
+  There is no positive native SIP-on sticky evidence; virtual sticky is not
+  evidence for it.
 
 ## Chosen tags
 

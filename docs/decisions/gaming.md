@@ -1,11 +1,11 @@
 # Gaming
 
 ### Anti-cheat mechanism limits
-- Decision: interact with other processes only through host window-management mechanisms; never inject code, access process memory or send synthetic input.
+- Decision: interact with other processes only through host window-management mechanisms; never inject code or access process memory. Synthetic input is prohibited except for Dock Space gestures and title-bar drags used for [macOS native Space switching or sends](macos.md#managed-native-spaces-input-and-transfers). Never dispatch the exception while a fullscreen or game window has focus.
 - Why: anti-cheat false positives put user game accounts at risk.
 - Assumes / revisit if: these mechanisms are those anti-cheat systems flag; revisit after anti-cheat research. Current code audit against this list remains outstanding.
-- Status: active, 2026-10-30
-- Evidence: [Gaming Compatibility](../principles.md#gaming-compatibility), [interface review](../changes/core-interface-review.md).
+- Status: active, 2026-11-27; the scoped macOS exception supersedes the blanket synthetic-input ban only for these actions.
+- Evidence: User 2026-11-27; [Gaming Compatibility](../principles.md#gaming-compatibility), [interface review](../changes/core-interface-review.md).
 
 ### Fullscreen-state based protection
 - Decision: Fullscreen windows (exclusive and borderless-windowed fullscreen, games included) remain workspace members; explicit user workspace actions apply. The tiler never tiles, resizes, focuses, overlays or intercepts input for a fullscreen window unasked. A windowed game is an ordinary window.

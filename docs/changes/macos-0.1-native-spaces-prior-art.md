@@ -1,8 +1,35 @@
 # macOS 0.1: native Spaces prior art
 
-Source inspection only; no native acceptance or changes to product behavior, decisions, or gates. The selected route keeps native Spaces and native macOS functions with SIP enabled, while retaining the Windows/KDE user-visible model.
+Source-inspection prior art only; this study makes no native acceptance claim and changes no product behavior. The selected route keeps native Spaces and native macOS functions with SIP enabled, while retaining the Windows/KDE user-visible model. The [2026-11-27 gate amendment](macos-0.1-gate-proposal.md#gate-amendment-2026-11-27) records the approved limitations separately.
 
-For the separate, undecided virtual-workspace alternatives, see [macOS virtualised-workspaces mode](macos-virtualised-workspaces-mode.md).
+For the separate virtual-workspace alternatives that ship after 0.1, see [macOS virtualised-workspaces mode](macos-virtualised-workspaces-mode.md).
+
+## External review (2026-11-27)
+
+External review dated 2026-11-27 treated these named pins as relevant prior
+art: **WhichSpace v1.5.0** (>=27 payload gating and event-targeted switching),
+**rift v0.8.6** (augmented >=27 gesture payload), **yabai v7.1.25** (pinned
+pre-27 payload and bridged move, including pointer warp that is not adopted)
+and **OmniWM v0.8.0** (26+/arm64, read-only native Space inventory with
+fullscreen excluded from managed switching).
+No native pass or product change follows from the review itself.
+
+- `crates/tiler-macos/src/space_switch_edges.rs:41,95` refuses the pinned
+  Dock-swipe payload on macOS >=27 (the rift augmented payload needs an exact
+  observed family select). In the current baseline on 27 all switches fall
+  back to Mission Control AX under the [managed Spaces decision](../decisions/macos.md#managed-native-spaces-input-and-transfers);
+  the [2026-11-27 amendment](macos-0.1-gate-proposal.md#gate-amendment-2026-11-27)
+  requires separate proof and pre-dispatch selection, otherwise refusal.
+  The MC AX route uses fixed 300 ms stabilization (`crates/tiler-macos/src/mc_probe.rs:70`,
+  `crates/tiler-macos/src/mc_lifecycle.rs:612`).
+- Measured switch latency is ~1.0–1.1 s on 27 with two extended displays
+  ([indicator record](macos-workspace-indicator.md#two-extended-displays-2026-11-27-before-the-click-model-fix));
+  the 50–62 ms figures predate 27 ([managed workspaces](macos-managed-workspaces.md#send-latency-work-2026-10-20))
+  and are not a 27 result.
+- E1 criterion (switch probe): accept only when the target display's current
+  Space alone changes, the pointer stays put, no Mission Control flash is
+  visible, and fresh readback proves the exact SID. <150 ms is a probe target,
+  not evidence by itself.
 
 ## Fn/Globe as a tiler modifier
 
@@ -42,13 +69,13 @@ Per-display **presentation** is feasible in prior art; a reliable SIP-on **selec
 
 **Options and consequences.** Safe-hide prevents misrouting but fails coverage if kept as the whole answer. A single mirrored item with labelled output groups can cover the display data without overlay side effects, but is not a pager per physical output. Dedicated nonactivating windows per output are closest to Windows/KDE; they need hotplug/reanchor, fullscreen/game suppression, and routable exact-target clicks regardless of where menu bar, pointer or focus happen to be. Copying yabai's pointer warp and corrective click makes the gesture visible and can alter focus; global Desktop shortcuts cannot stand in for exact destinations. A direct SA selector changes the security posture and is out of scope. Mission Control AX is visible and hierarchy-sensitive, but is the strongest SIP-on route to test first because it explicitly addresses the target display without pointer warp.
 
-**Recommendation — keep the 0.1 blocker and pursue a per-output pager.** Separate the surface from the actuator: project the existing core rows (including only a core-designated unbound spare) by exact output/workspace, then reconstruct and compare the fresh UUID↔managed row↔SID binding at action time. Prefer the existing Mission Control route extended to validate the correct AX display group and current order before one press, then verify exact SID arrival **on the target row** and no unrelated row changed; do not replay or silently fall back on a failed read. Accept visible Mission Control only if it meets consistency and safety, otherwise report the failing discriminator, not success. In unified mode show one shared native selection, never independent current Spaces; state the mode explicitly. Preserve safe-hide/disarmed clicks for unknown topology, fullscreen/game suppression and stale tickets. Later source-to-native discriminators: two displays with focus/menu bar/pointer disagreeing; inactive-output empty target; reorder/unplug during pending click; explicit unified-mode run; fullscreen on either output; suppression and return. No clean secondary-output acceptance follows from source.
+**Recommendation at survey time — keep the 0.1 blocker and pursue a per-output pager.** Separate the surface from the actuator: project the existing core rows (including only a core-designated unbound spare) by exact output/workspace, then reconstruct and compare the fresh UUID↔managed row↔SID binding at action time. Prefer the existing Mission Control route extended to validate the correct AX display group and current order before one press, then verify exact SID arrival **on the target row** and no unrelated row changed; do not replay or silently fall back on a failed read. Accept visible Mission Control only if it meets consistency and safety, otherwise report the failing discriminator, not success. In unified mode show one shared native selection, never independent current Spaces; state the mode explicitly. Preserve safe-hide/disarmed clicks for unknown topology, fullscreen/game suppression and stale tickets. Later source-to-native discriminators: two displays with focus/menu bar/pointer disagreeing; inactive-output empty target; reorder/unplug during pending click; explicit unified-mode run; fullscreen on either output; suppression and return. No clean secondary-output acceptance follows from source. **Superseded 2026-11-27:** the user selected one shared `NSStatusItem` with per-display groups and rejected an app-owned nonactivating strip ([selected design](macos-per-output-indicator.md#selected-design-and-implementation-scope)); the safety assertions above still apply, but a per-output pager is not the selected 0.1 surface.
 
 OmniTiler currently fences both managed-row and core pager counts (`crates/tiler-macos/src/workspace_indicator.rs:319-359`) and actuation (`crates/tiler-macos/src/workspace_select.rs:746-758`); existing pager rows already carry output/workspace/native identity (`crates/tiler-macos/src/pager.rs:47-85`). The [MX6 fixture gap](macos-core-trailing-pager.md#offline-empty-destination-diagnosis) is independent: native current changed on the empty destination while core kept the prior current because hidden inventory was incomplete. Capture correlated facts and distinguish native landing, painted current, accepted core publication, and click authority; rendering read-only native current must not grant authority or fabricate occupancy.
 
 ## Sticky with SIP on
 
-The [sticky contract](../decisions/window-state.md#sticky-floating) is per window: visible on every managed workspace of its home output, with defined sticky-off behavior. [Checks 6 and 32](macos-0.1-gate-proposal.md) require real repeated activation and positive all-Spaces/restart proof. Partial membership counts, app-level placement, and serial movement are not equivalent.
+The [sticky contract](../decisions/window-state.md#sticky-floating) is per window: visible on every managed workspace of its home output, with defined sticky-off behavior. [Check 6](macos-0.1-gate-proposal.md#original-checks-1-53) keeps physical hold/release, repeat/maximize and no-leak assertions; only native foreign-window sticky is excluded by the [2026-11-27 amendment](macos-0.1-gate-proposal.md#gate-amendment-2026-11-27). [Check 32](macos-0.1-gate-proposal.md#original-checks-1-53) is a documented native SIP-on limitation, not a pass. Partial membership counts, app-level placement, and serial movement are not equivalent.
 
 | Candidate | Mechanism, SIP and version limits | Fidelity or failure |
 | --- | --- | --- |
@@ -57,9 +84,9 @@ The [sticky contract](../decisions/window-state.md#sticky-floating) is per windo
 | Dock All Desktops | [Apple's Assign apps to spaces](https://support.apple.com/guide/mac-help/work-in-multiple-spaces-mh14112/mac): user assigns an **app**, SIP on. No supported AppleScript/defaults setter found. `System Events` would be fragile AX UI scripting, not an app-independent per-window API; `com.apple.spaces` `app-bindings` writes, schema and reload semantics unverified. Adjacent tools read/watch the plist, not a verified assignment API (`spaces-renamer v2.0.0:SpacesRenamer/Utils.swift:14`; `WhichSpace v1.4.5:WhichSpace/SpaceMonitor.swift:10`; `AltTab v11.10.2:docs/contributing.md:134`, `changelog.md:1654,1726`). | App-wide (not a specific lifetime), and home-output/future-Space scope and restart evidence unknown. Multi-membership is not positive proof of sticky, and even empty membership can mean invalid window ID (`AltTab v11.10.2:src/macos/CGSCallScheduler.swift:78-83`, `src/switcher/state/TrackedWindowState.swift:787`). User action can be a future adoption discriminator only, not the product toggle. |
 | Move on each switch / virtual parking | Hammerspoon 1.1.1 uses private `SLSMoveWindowsToManagedSpace` or (14.5+) a compat-ID rewrite with user-Space/type restrictions; a single-destination dispatch without arrival proof, no Dock SA. AeroSpace beta uses SIP-on AX frame parking and proportional unpark, not a Space membership write (`Hammerspoon 1.1.1:extensions/spaces/libspaces.m:142-200`; `AeroSpace v0.21.3-Beta:Sources/AppBundle/tree/MacWindow.swift:123-186`, `Sources/AppBundle/layout/refresh.swift:164-200`). | Re-move can race and lag a native switch, mutates actual home, cannot provide overlapping visibility, and needs crash/restart recovery. Parking only emulates virtual visibility; it cannot keep a foreign window visible across real native Space changes. |
 
-**Options and consequences.** Preserve positive sticky checks and unsupported/refusal behavior until a conforming native mechanism is demonstrated; test user Dock assignments only as a potential read/adopt observation (not a toggle); or request an explicit 0.1 gate amendment once impossibility for the selected posture is established. Neither Dock SA/partial SIP, app-wide automation nor serial re-move is an acceptable substitute under the selected contract. Source absence is not proof that a normal SIP-on connection cannot write a foreign tag, and even a returned success would not prove home-output scope or new-Space/restart behavior.
+**Options and consequences.** At survey time, preserve positive sticky checks and unsupported/refusal behavior until a conforming native mechanism is demonstrated; test user Dock assignments only as a potential read/adopt observation (not a toggle); request an explicit gate amendment when impossibility for the selected posture is established — done 2026-11-27 as a documented limitation, not a pass. Neither Dock SA/partial SIP, app-wide automation nor serial re-move is an acceptable substitute under the selected contract. Source absence is not proof that a normal SIP-on connection cannot write a foreign tag, and even a returned success would not prove home-output scope or new-Space/restart behavior. One bounded negative probe may be recorded inside the signed-fixture guard; it is not a prerequisite for the documented limitation.
 
-**Recommendation — keep sticky unsupported and leave checks 6/32 unchanged.** No conforming SIP-on route surfaced. Before dropping the sticky parts, resolve the remaining negative evidence question and obtain explicit approval; no source-only impossibility or pass claim. If native verification is later authorized, compare exact membership sets and fresh visibility on two outputs, across a newly added managed Space and restart, including unstick with same-app sibling unaffected ([existing discriminator](macos-world-v2-port.md#sticky-per-display-verification-plan)). If an amendment is eventually approved, retain check 6's maximize and physical hold/release requirements; replace check 32's positive sticky assertion with an unsupported/no-mutation/no-adoption requirement rather than marking it passed.
+**Recommendation — keep native foreign sticky unsupported under the approved 2026-11-27 amendment.** No conforming SIP-on route surfaced, and none is claimed; no source-only impossibility or pass claim. Check 6 retains physical hold/release, repeat/maximize and no-leak requirements, excluding only native foreign sticky; check 32 is a documented SIP-on limitation with no mutation or adoption and no pass. Later virtualised output-local sticky is presentation only, never native all-Spaces proof. If native verification is later authorized, compare exact membership sets and fresh visibility on two outputs, across a newly added managed Space and restart, including unstick with same-app sibling unaffected ([existing discriminator](macos-world-v2-port.md#sticky-per-display-verification-plan)).
 
 ### Bounded signed-fixture probe (2026-11-27)
 
@@ -72,9 +99,11 @@ The [sticky contract](../decisions/window-state.md#sticky-floating) is per windo
   tried to join the fixture window, the controller had already finished and
   closed it; there was no authenticated target and no tag mutation. The
   controller restored the original topology and left no owned residue.
-- No foreign tag efficacy or post-switch membership was measured. The
-  current unsupported behavior and checks 6 and 32 are unchanged; the
-  conditional gate amendment was not triggered.
+- No foreign tag efficacy or post-switch membership was measured. At probe
+  time the unsupported behavior and checks 6 and 32 were unchanged and the
+  conditional gate amendment had not been triggered; the separate
+  2026-11-27 [gate amendment](macos-0.1-gate-proposal.md#gate-amendment-2026-11-27)
+  now documents the limitation without treating this stopped probe as a pass.
 - The launcher did not forward the settle environment through `open`,
   and the sidecar waited on process arguments unavailable through
   LaunchServices. The pager returned and tore down automatically with
@@ -91,8 +120,9 @@ The [sticky contract](../decisions/window-state.md#sticky-floating) is per windo
   that keeps the exact signed fixture owner authenticated after its AX
   title is no longer readable off-Space. Adding those pieces and a
   pinned empty away Space was more than a small diagnostic change.
-  No tag was written and no new measurement was taken. Checks 6 and 32
-  retain their existing requirements.
+  No tag was written and no new measurement was taken. At probe time checks
+  6 and 32 retained their then-existing requirements; the later 2026-11-27
+  amendment is recorded in the [gate proposal](macos-0.1-gate-proposal.md#gate-amendment-2026-11-27).
 
 ## Project-owned native fullscreen
 

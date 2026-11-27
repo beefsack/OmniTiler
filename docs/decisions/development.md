@@ -15,6 +15,13 @@
 - Status: active, confirmed 2026-11-10
 - Evidence: User 2026-11-10; source-read pre-port review: `just/macos.just:81-104` (signed build/launch and stop), `crates/tiler-macos/src/input_session_physical.rs:65` (foreground logs), `crates/tiler-macos/src/dev_selection.rs:11-20` (current user Space/scoping); [preview guide](../changes/macos-dogfood-preview.md), [review limits](../changes/v4-phase3-macos-port.md#pre-port-review-outcomes-2026-11-10).
 
+### macOS live fixture harness cost
+- Decision: Keep additions to the macOS live harness to roughly 250 lines or less. Retire the `float-sequences` diagnostic arm that uses the fixture-only float-reply hold hook; this does not change product float behavior. Freeze the existing guarded two-launch fixture controller; do not build it out now.
+- Why: Prefer narrowly scoped evidence over expanding controller infrastructure.
+- Assumes / revisit if: The frozen controller and its evidence remain available; the freeze is not a claim of broader native acceptance.
+- Status: active, 2026-11-27.
+- Evidence: User 2026-11-27; `crates/tiler-macos/src/fixture_leg.rs` (`FLOAT_SEQUENCES_CHORD`, `hold_float_reply`); [guarded controller and its results](../changes/archive/macos-guarded-two-launch-fixture.md#outcome).
+
 ### Project name
 - Decision: project is OmniTiler for KDE, Windows and later macOS. Display/upper CamelCase `OmniTiler`; lower CamelCase `omniTiler`; lowercase IDs/packages/binaries/files/snake identifiers/KWin and KPackage IDs/systemd/Nix/shortcut prefixes `omnitiler`; env/macros `OMNITILER_`; reverse DNS `com.omnitiler.*`, object paths `/com/omnitiler/...`. Preserve functional suffixes; internal generic crate names unchanged; no host-format exceptions. GitHub repo `beefsack/OmniTiler`; OBS/AUR package names `omnitiler`, `omnitiler-native-effect`. `omnitiler.com` belongs to project and backs reverse DNS, future homepage not live; package homepage remains GitHub. Pre-release rename has no migrations/shims; old installed state ceases use.
 - Why: reflect supported platforms.
