@@ -66,8 +66,6 @@ pub const MC_ACTION_PRESS: &str = "AXPress";
 pub const MC_ACTION_REMOVE_DESKTOP: &str = "AXRemoveDesktop";
 /// MC-group poll bound (Hammerspoon 2 s parity) per open/close wait.
 pub const MC_GROUP_POLL_MS: u64 = 2_000;
-/// Post-toggle stabilize delay before traversal (Hammerspoon `MCwaitTime`).
-pub const MC_STABILIZE_MS: u64 = 300;
 /// Per-element AX messaging timeout (seconds) for every traversal leg.
 pub const MC_AX_TIMEOUT_SECS: f32 = 2.0;
 /// Bound per action including its readback.

@@ -38,9 +38,8 @@ use crate::mc_probe::{
 use crate::mc_probe::{
     DOCK_BUNDLE_ID, MC_ACTION_PRESS, MC_ACTION_REMOVE_DESKTOP, MC_ACTION_TIMEOUT_MS,
     MC_AX_TIMEOUT_SECS, MC_GROUP_POLL_MS, MC_ID_DISPLAY, MC_ID_ROOT, MC_ID_SPACES,
-    MC_ID_SPACES_ADD, MC_ID_SPACES_LIST, MC_STABILIZE_MS, McSurfaceExposure, mc_owner,
-    mc_presentation_cg_owner, record_mc_owner, require_ax_trust, require_unlocked_session,
-    select_mc_surface,
+    MC_ID_SPACES_ADD, MC_ID_SPACES_LIST, McSurfaceExposure, mc_owner, mc_presentation_cg_owner,
+    record_mc_owner, require_ax_trust, require_unlocked_session, select_mc_surface,
 };
 // Read-only observation helpers live in `mc_observe`; re-exported here so
 // existing `mc_lifecycle::…` paths keep working with no interface change.
@@ -608,8 +607,35 @@ pub(crate) mod live {
         }
     }
 
-    fn stabilize() {
-        std::thread::sleep(std::time::Duration::from_millis(MC_STABILIZE_MS));
+    /// Once MC is present, its exact action child can still be absent while
+    /// AppKit is constructing the display strip. Read only until it is
+    /// ready; never retry a press.
+    fn await_mc_child(
+        mut read: impl FnMut() -> Result<crate::ffi::AxElement, McError>,
+    ) -> Result<crate::ffi::AxElement, McError> {
+        use std::time::{Duration, Instant};
+        action_gates()?;
+        let deadline = Instant::now() + Duration::from_millis(MC_GROUP_POLL_MS);
+        loop {
+            let result = read();
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match result {
+                Ok(child) if !remaining.is_zero() => return Ok(child),
+                Err(e @ (McError::Ownership(_) | McError::Unsupported(_))) => return Err(e),
+                result => {
+                    if !remaining.is_zero() {
+                        std::thread::sleep(remaining.min(Duration::from_millis(25)));
+                        if Instant::now() < deadline {
+                            continue;
+                        }
+                    }
+                    let cause = result.err().map_or_else(String::new, |e| format!(": {e}"));
+                    return Err(McError::Blocked(format!(
+                        "Mission Control action child was not ready within {MC_GROUP_POLL_MS}ms{cause}"
+                    )));
+                }
+            }
+        }
     }
 
     /// Fresh display join from one snapshot: SLS in-row identifier → CG
@@ -696,6 +722,32 @@ pub(crate) mod live {
         })
     }
 
+    fn await_add_child(cgid: u32) -> Result<crate::ffi::AxElement, McError> {
+        await_mc_child(|| {
+            child_with_id(&spaces_group(cgid)?, MC_ID_SPACES_ADD)?
+                .ok_or_else(|| McError::System("mc.spaces.add missing for display".to_owned()))
+        })
+    }
+
+    fn await_list_child(
+        cgid: u32,
+        index: usize,
+        expected_count: usize,
+    ) -> Result<crate::ffi::AxElement, McError> {
+        await_mc_child(|| {
+            let children = spaces_list_children(&spaces_group(cgid)?)?;
+            if children.len() != expected_count {
+                return Err(McError::Blocked(format!(
+                    "AX list count {} != SLS row count {expected_count}; refusing index dispatch",
+                    children.len()
+                )));
+            }
+            children.into_iter().nth(index).ok_or_else(|| {
+                McError::Blocked("Mission Control target Space child is missing".to_owned())
+            })
+        })
+    }
+
     /// Fresh SLS rows → snapshot.
     pub fn fresh_snapshot() -> Result<TopologySnapshot, McError> {
         let rows = crate::ffi::sls_display_rows()
@@ -703,9 +755,8 @@ pub(crate) mod live {
         Ok(TopologySnapshot::from_rows(&rows))
     }
 
-    /// Per-action gates: fresh unlocked-session verdict plus observed AX
-    /// trust. Runs at leg start, immediately pre-toggle, post-delay, and
-    /// immediately pre-press.
+    /// Fresh unlocked-session verdict plus observed AX trust before opening,
+    /// during readiness traversal, and immediately before a press.
     pub fn action_gates() -> Result<(), McError> {
         super::require_unlocked_session(&crate::ffi::session_state())?;
         super::require_ax_trust(crate::ffi::ax_is_process_trusted())?;
@@ -770,9 +821,9 @@ pub(crate) mod live {
         }
     }
 
-    /// Shared leg skeleton: budgeted open → stabilize → caller press →
-    /// finish (close attempt folded into the outcome). Error paths close MC
-    /// only when this leg opened it.
+    /// Shared leg skeleton: budgeted open → caller waits for its exact child
+    /// and presses → finish (close attempt folded into the outcome).
+    /// Error paths close MC only when this leg opened it.
     fn run_mc_leg(
         open_spend: &str,
         dismissal: super::McDismissal,
@@ -782,7 +833,6 @@ pub(crate) mod live {
     ) -> Result<super::PressOutcome, McError> {
         super::spend_leg(budget, cleanup, open_spend)?;
         let opened = mc_open()?;
-        stabilize();
         match press(budget) {
             Ok(outcome) => Ok(finish_press(outcome, dismissal)),
             Err(e) => {
@@ -815,7 +865,7 @@ pub(crate) mod live {
             super::McDismissal::Manual,
             budget,
             cleanup,
-            |b| mc_add_pressed(cgid, b, cleanup),
+            |b| mc_add_pressed(&await_add_child(cgid)?, b, cleanup),
         )
     }
 
@@ -842,6 +892,7 @@ pub(crate) mod live {
             budget,
             cleanup,
             |b| {
+                let add = await_add_child(cgid)?;
                 let fresh = fresh_snapshot()?;
                 let (cgid_fresh, _) =
                     display_cgid_of_pinned(&fresh, display, pinned_cgid, pinned_uuid)?;
@@ -850,23 +901,19 @@ pub(crate) mod live {
                         "CG display ID changed during open (was {cgid}, now {cgid_fresh}); refusing stale dispatch"
                     )));
                 }
-                mc_add_pressed(cgid, b, cleanup)
+                mc_add_pressed(&add, b, cleanup)
             },
         )
     }
 
     fn mc_add_pressed(
-        cgid: u32,
+        add: &crate::ffi::AxElement,
         budget: &mut ActionBudget,
         cleanup: bool,
     ) -> Result<super::PressOutcome, McError> {
-        action_gates()?;
-        let spaces = spaces_group(cgid)?;
-        let add = child_with_id(&spaces, MC_ID_SPACES_ADD)?
-            .ok_or_else(|| McError::System("mc.spaces.add missing for display".to_owned()))?;
         super::spend_leg(budget, cleanup, "add-press")?;
         action_gates()?;
-        crate::ffi::ax_perform_action(&add, MC_ACTION_PRESS).map_err(|code| {
+        crate::ffi::ax_perform_action(add, MC_ACTION_PRESS).map_err(|code| {
             McError::Dispatch(format!(
                 "mc.spaces.add press refused: {}",
                 crate::ffi::ax_error_name(code)
@@ -915,17 +962,17 @@ pub(crate) mod live {
         budget: &mut ActionBudget,
         cleanup: bool,
     ) -> Result<super::PressOutcome, McError> {
-        action_gates()?;
+        let (d0, i0) = snap0.locate(sid).ok_or_else(|| {
+            McError::Ownership(format!("Space {sid} lost its pre-open join; refusing"))
+        })?;
+        let target = await_list_child(cgid, i0, snap0.displays[d0].spaces.len())?;
         let snap1 = fresh_snapshot()?;
         let (d1, i1) = snap1.locate(sid).ok_or_else(|| {
             McError::Ownership(format!(
                 "Space {sid} moved during open; ownership uncertain — refusing"
             ))
         })?;
-        let (d0, i0) = snap0.locate(sid).ok_or_else(|| {
-            McError::Ownership(format!("Space {sid} lost its pre-open join; refusing"))
-        })?;
-        if (d1, i1) != (d0, i0) || snap1.displays[d1].identifier != snap0.displays[d0].identifier {
+        if (d1, i1) != (d0, i0) || snap1.displays[d1] != snap0.displays[d0] {
             return Err(McError::Blocked(format!(
                 "topology drifted during open (was display {d0} index {i0}, now {d1}/{i1}); refusing stale dispatch"
             )));
@@ -936,18 +983,9 @@ pub(crate) mod live {
                 "CG display ID changed during open (was {cgid}, now {cgid_fresh}); refusing stale dispatch"
             )));
         }
-        let children = spaces_list_children(&spaces_group(cgid_fresh)?)?;
-        if children.len() != snap1.displays[d1].spaces.len() {
-            return Err(McError::Blocked(format!(
-                "AX list count {} != SLS row count {} for display {d1}; refusing index dispatch",
-                children.len(),
-                snap1.displays[d1].spaces.len()
-            )));
-        }
-        let target = &children[i1];
         super::spend_leg(budget, cleanup, "goto-press")?;
         action_gates()?;
-        crate::ffi::ax_perform_action(target, MC_ACTION_PRESS).map_err(|code| {
+        crate::ffi::ax_perform_action(&target, MC_ACTION_PRESS).map_err(|code| {
             McError::Dispatch(format!(
                 "goto press refused: {}",
                 crate::ffi::ax_error_name(code)
@@ -1002,7 +1040,7 @@ pub(crate) mod live {
             budget,
             cleanup,
             |b| {
-                action_gates()?;
+                let target = await_list_child(cgid, i0, snap0.displays[d0].spaces.len())?;
                 let snap1 = fresh_snapshot()?;
                 topology_preflight_matches(prior, &snap1)?;
                 let (d1, i1) = snap1.locate(sid).ok_or_else(|| {
@@ -1019,18 +1057,9 @@ pub(crate) mod live {
                         "pinned topology drifted during open (was display {d0} index {i0}, now {d1}/{i1}); refusing stale dispatch"
                     )));
                 }
-                let children = spaces_list_children(&spaces_group(cgid_fresh)?)?;
-                if children.len() != snap1.displays[d1].spaces.len() {
-                    return Err(McError::Blocked(format!(
-                        "AX list count {} != SLS row count {} for pinned display {d1}; refusing index dispatch",
-                        children.len(),
-                        snap1.displays[d1].spaces.len()
-                    )));
-                }
-                let target = &children[i1];
                 super::spend_leg(b, cleanup, "goto-press")?;
                 action_gates()?;
-                crate::ffi::ax_perform_action(target, MC_ACTION_PRESS).map_err(|code| {
+                crate::ffi::ax_perform_action(&target, MC_ACTION_PRESS).map_err(|code| {
                     McError::Dispatch(format!(
                         "pinned goto press refused: {}",
                         crate::ffi::ax_error_name(code)
@@ -1076,17 +1105,17 @@ pub(crate) mod live {
         budget: &mut ActionBudget,
         cleanup: bool,
     ) -> Result<super::PressOutcome, McError> {
-        action_gates()?;
+        let (d0, i0) = snap0.locate(sid).ok_or_else(|| {
+            McError::Ownership(format!("Space {sid} lost its pre-open join; refusing"))
+        })?;
+        let target = await_list_child(cgid, i0, snap0.displays[d0].spaces.len())?;
         let snap1 = fresh_snapshot()?;
         let (d1, i1) = snap1.locate(sid).ok_or_else(|| {
             McError::Ownership(format!(
                 "Space {sid} moved during open; ownership uncertain — cleanup blocked"
             ))
         })?;
-        let (d0, i0) = snap0.locate(sid).ok_or_else(|| {
-            McError::Ownership(format!("Space {sid} lost its pre-open join; refusing"))
-        })?;
-        if (d1, i1) != (d0, i0) || snap1.displays[d1].identifier != snap0.displays[d0].identifier {
+        if (d1, i1) != (d0, i0) || snap1.displays[d1] != snap0.displays[d0] {
             return Err(McError::Blocked(format!(
                 "topology drifted during open (was display {d0} index {i0}, now {d1}/{i1}); refusing stale dispatch"
             )));
@@ -1097,18 +1126,9 @@ pub(crate) mod live {
                 "CG display ID changed during open (was {cgid}, now {cgid_fresh}); refusing stale dispatch"
             )));
         }
-        let children = spaces_list_children(&spaces_group(cgid_fresh)?)?;
-        if children.len() != snap1.displays[d1].spaces.len() {
-            return Err(McError::Blocked(format!(
-                "AX list count {} != SLS row count {} for display {d1}; refusing index dispatch",
-                children.len(),
-                snap1.displays[d1].spaces.len()
-            )));
-        }
-        let target = &children[i1];
         super::spend_leg(budget, cleanup, "remove-press")?;
         action_gates()?;
-        crate::ffi::ax_perform_action(target, MC_ACTION_REMOVE_DESKTOP).map_err(|code| {
+        crate::ffi::ax_perform_action(&target, MC_ACTION_REMOVE_DESKTOP).map_err(|code| {
             McError::System(format!(
                 "remove-desktop refused: {}",
                 crate::ffi::ax_error_name(code)
