@@ -68,6 +68,8 @@ mod fixture_pager;
 pub mod fixture_post;
 pub mod fixture_restart;
 pub mod fixture_sample;
+#[cfg(target_os = "macos")]
+mod fixture_swipe_27;
 pub mod fixture_zoom;
 pub mod focus;
 pub mod focus_diagnose;

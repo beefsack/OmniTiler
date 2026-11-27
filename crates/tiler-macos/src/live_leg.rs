@@ -114,9 +114,11 @@ pub fn required_scope(chord_name: &str) -> Option<AdmissionScope> {
     ) {
         return Some(AdmissionScope::PostOnly);
     }
-    // The explicit-Apply one-send arm posts one controller-derived numbered
-    // send-follow; the controller handles it (never the post resolver).
-    if chord_name == crate::fixture_leg::APPLY_SEND_CHORD {
+    // These diagnostic arms switch Spaces, but never through the post resolver.
+    if matches!(
+        chord_name,
+        crate::fixture_leg::APPLY_SEND_CHORD | crate::fixture_leg::SWIPE_27_CHORD
+    ) {
         return Some(AdmissionScope::SpaceMutating);
     }
     if crate::fixture_post::resolve_fixture_chord(chord_name).is_some() {

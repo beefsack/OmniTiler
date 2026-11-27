@@ -2067,6 +2067,17 @@ impl<'a, T: FixtureTransport> FixtureDriver<'a, T> {
         };
         serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
     }
+
+    /// Recheck the current signed fixture target for a non-chord effect.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn prove_gesture_target(&self, caller: &str, wid: u32) -> Result<(), String> {
+        if !self.admission.is_live() || !caller_id_valid(caller) || wid == 0 {
+            return Err("fixture gesture requires live admission and a valid window".to_owned());
+        }
+        self.prove_full(caller, wid, "gesture-full")?;
+        self.prove_selected(wid, "gesture-selected")?;
+        self.prove_commit(caller, wid, "gesture-commit", true)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

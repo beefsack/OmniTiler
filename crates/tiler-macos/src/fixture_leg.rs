@@ -113,6 +113,9 @@ pub(crate) const PAGER_SWITCH_CHORD: &str = "pager-switch";
 /// hardcoded user ordinal) and performs no settings writes.
 pub const APPLY_SEND_CHORD: &str = "apply-send";
 
+/// Standalone, signed-fixture macOS 27 swipe probe.
+pub const SWIPE_27_CHORD: &str = "swipe-27";
+
 /// Operator settle window (harness only): milliseconds the leg holds before
 /// its first chord and again after its last chord, so an operator can drive
 /// extra owned fixture windows over the announced control socket and read
@@ -818,6 +821,17 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
             "pager-switch must run alone without a corrupt store".to_owned(),
         ));
     }
+    if opts.chords.iter().any(|chord| chord == SWIPE_27_CHORD)
+        && (opts.chords.as_slice() != [SWIPE_27_CHORD]
+            || opts.hover_probe
+            || opts.corrupt_intent_store
+            || opts.focus_follows_cursor)
+    {
+        return Err((
+            2,
+            "swipe-27 must run alone without other probe options".to_owned(),
+        ));
+    }
     // The explicit-Apply one-send arm is exactly one Compatible send-follow
     // with no other effect: it refuses every extra chord, an Authentic
     // preset (which writes holders), and the diagnostic probes before any
@@ -1324,6 +1338,22 @@ fn run_leg_body_macos(
     })?;
     leg.transport_mut()
         .set_fixture_control(parsed.socket.clone(), run_dir.clone());
+    if opts.chords.as_slice() == [SWIPE_27_CHORD] {
+        let report = crate::fixture_swipe_27::run(
+            leg,
+            parsed.pid,
+            &parsed.socket,
+            &nonce,
+            &announcement,
+            &opts.signer,
+        )?;
+        return Ok(LegReports {
+            chords: vec![report],
+            hover_probe: None,
+            owned_space: None,
+            corrupt_store: None,
+        });
+    }
     // Owned windows: one caller per chord, spawned through the control
     // socket, then joined to native window IDs before anything posts.
     // Registration precedes action: unjoined callers refuse with no posts.
