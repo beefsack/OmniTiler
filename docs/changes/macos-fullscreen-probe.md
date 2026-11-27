@@ -53,6 +53,16 @@ The single signed rerun reused the host-only entry sequence, including focus aft
 
 The fixture posted the redundant keyboard chord, and exact SLS readback still showed the detached surface current. The controller did not obtain the matching product refusal diagnostic within four seconds, so it did not post the away chord. The missing diagnostic does not prove where product delivery or processing stopped. Final readback found the original currents and order, Mission Control closed, no owned process or Space, and no pending receipt. No product route was promoted.
 
+## Offline diagnosis
+
+The old controller kept at most 64 lines with the candidate's `tiler-macos select ` prefix and converted every read error to an empty list. A replay produced the historical `lines:[]` for empty product output, for the generic `tiler-macos dev select … refused` and runtime/core refusal records, and for an unreadable stderr file. The positive control—the candidate's exact route, phase, anchor and target line—matched. Clean teardown had removed the unfiltered logs and final tap counters, so the historical stop layer cannot be recovered. The fixture's `posted` receipt proves submission, not tap delivery.
+
+The bounded source check found no unconditional fullscreen drop: [input eligibility](../../crates/tiler-macos/src/input_eligibility.rs#L430-L463) admits known fullscreen and the numbered chord uses the same mapping as the fixture; [owner selection](../../crates/tiler-macos/src/select_owner.rs#L164-L202) admits the eligible pinned two-display keyboard route without requiring a user-Desktop current. This is not proof that run-time topology, anchor, or command admission succeeded. The [pre-core refusal](../../crates/tiler-macos/src/runtime_thread.rs#L1345-L1350), [core rejection](../../crates/tiler-macos/src/world_dispatch.rs#L1627-L1636), and candidate owner refusal are emitted by different paths.
+
+The diagnostic repair passed nine targeted offline tests. The repaired harness separates no matching tap delivery, pre-core refusal, core refusal and stderr access failure; a generic owner refusal or near-miss candidate line cannot authorize the away chord. It retains unfiltered product stdout/stderr, separate LaunchServices stderr, and the product's terminal tap counters. This verifies the oracle, not the live route.
+
+Mission Control's host-only away leg reached the exact Desktop SID while AX still named the fullscreen member. This does not block a physical switch-away proof that separately checks exact current and unchanged detached membership; it does block claiming that the Desktop sibling gained foreground.
+
 ## Restoration and evidence boundaries
 
 Both completed host runs were the first live exercises of fullscreen-before-shutdown. They retired the detached SID, restored the original currents and ordered topology, and left no owned fixture lifetime or Space and no pending receipt. The retry had only benign offscreen replacements in the controller comparison, with no new residue. Independent native rechecks confirmed restoration; every readable retry pointer sample matched the starting location. Exact Desktop currents and no remaining detached SID rule out a detached Space left current; pixels were not sampled, so visual absence of a black screen is unproven.
