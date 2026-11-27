@@ -3,14 +3,11 @@
 //! Scoped input eligibility: lock-free cached gate after suppression
 //! (consume-first, Windows parity).
 //!
-//! Normal `tile --input tap` must not ACT on 17 chords globally when the
-//! foreground is outside the bundle scope or fullscreen. The fix is
-//! eligibility AFTER suppression, with refusal owner-side before anything
-//! becomes an action: owned chords always consume while interception is
-//! held (out-of-scope/fullscreen hits suppress and forward to the owner,
-//! which drops them without effects — dropping already-consumed hits does
-//! NOT restore passthrough, and that is exactly the point: nothing native
-//! receives them either).
+//! Normal `tile --input tap` must not act globally outside the configured
+//! bundle scope. Owned chords consume while interception is held; the
+//! owner forwards eligible hits and refuses out-of-scope hits without
+//! restoring native passthrough. Fullscreen alone does not refuse an
+//! explicit command.
 //!
 //! Ownership and isolation (no new threads, no new channels):
 //! - Each per-app AX owner publishes ONLY its own PID's candidate facts to

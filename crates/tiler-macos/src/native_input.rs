@@ -54,14 +54,13 @@
 //! to lock-free caches; the tap callback always consumes owned exact chords
 //! while interception is held, and the input owner refuses each consumed hit
 //! owner-side without effects while its own category reads ineligible.
-//! Fullscreen/game foregrounds consume-then-refuse instead of passing
-//! through natively. Only the global lock / Secure Input / unknown-session
-//! release passes events untouched from inside the callback. The tap owner
-//! recreates its guard on return from a global release to avoid a
-//! user-disabled sticky cycle. Scoped sources start ineligible until attested
-//! (hits refuse until then); the `input-session` fixture uses an explicit
-//! unrestricted test gate for its known post targets (strict per-edge oracle
-//! still enforced).
+//! Fullscreen alone does not refuse an explicit command. Only the global
+//! lock / Secure Input / unknown-session release passes events untouched
+//! from inside the callback. The tap owner recreates its guard on return
+//! from a global release to avoid a user-disabled sticky cycle. Scoped
+//! sources start ineligible until attested (hits refuse until then); the
+//! `input-session` fixture uses an explicit unrestricted test gate for its
+//! known post targets (strict per-edge oracle still enforced).
 
 use std::sync::{
     Arc, Mutex,

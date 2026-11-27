@@ -745,9 +745,9 @@ mod category_gate_tests {
     fn consumed_refusal_is_the_complement_of_allowed() {
         // Consume-first: every disallowed hit consumes, then refuses here
         // with a category-only token; every allowed hit dispatches (`None`).
-        // Basic ineligible (fullscreen/out-of-scope/stale facts, zero user
-        // currents, focus/Space mismatch) refuses as basic; select
-        // ineligible refuses as select; eligible dispatches unchanged.
+        // Basic ineligible (e.g. out-of-scope, stale, or unproven focus)
+        // refuses as basic; select ineligible refuses as select; eligible
+        // dispatches unchanged.
         assert_eq!(
             consumed_refusal(false, false, Some(true)),
             Some("consumed-refused-basic")
