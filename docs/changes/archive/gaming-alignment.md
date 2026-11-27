@@ -13,8 +13,8 @@ Apply the parent orientation toggle to focused fullscreen members (User 2026-11-
 ## Audit outcomes
 
 - Explicit workspace switch dispatch is separate from native actuation. Keep exact arrival, unmanageable/unknown foreground, automatic-action, native sends and protected-window write fences. The macOS detached fullscreen return still needs product proof; Windows selection ingress still applies fullscreen suspension before dispatch.
-- ASSUMPTION: presentation suspension and any future documented Xbox-mode pause do not blanket-disable explicit shortcuts. Host-owned chords and safety/permission boundaries still win.
-- ASSUMPTION: directional focus still skips occluded local siblings; the horizontal-only fullscreen crossing in core leaves a vertical parity gap. Keep fullscreen sticky refusal pending a design that cannot write or reveal the fullscreen member. Keep macOS fullscreen-exit restoration and ownership proof; do not infer exitability.
+- Decision (User 2026-11-28): presentation suspension and any future documented Xbox-mode pause do not blanket-disable explicit shortcuts. Host-owned chords and safety/permission boundaries still win.
+- Decision (User 2026-11-28): directional focus still skips occluded local siblings; the horizontal-only fullscreen crossing in core leaves a vertical parity gap. Keep fullscreen sticky refusal pending a design that cannot write or reveal the fullscreen member. Keep macOS fullscreen-exit restoration and ownership proof; do not infer exitability.
 - The shared fullscreen-float target already has a Windows keyboard command route and macOS adapter integration; the older adapter-absence wording overstated the gap. Native acceptance is still required.
 
 ## Outcome and evidence
