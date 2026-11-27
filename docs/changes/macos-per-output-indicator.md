@@ -105,6 +105,15 @@ not a guessed highlight or stale click authority.
   for native switching and rebuilds. No physical click or painted pixels
   were observed; the existing fixture supplies no verifiable status-item
   capture target. Physical click and appearance remain open for MX6.
+- Signed SIP-on menu-stop proof: AXPress on the exact scoped product's status
+  item showed its native mirror menu with 11 positioned rows. The product's
+  controller requested exact-run stop while the menu was still tracking; no
+  row was selected and no separate dismiss was sent. From first observing the
+  stop file, AX showed the menu and status item gone in about 230 ms and the
+  product process was gone in about 254 ms. The terminal outcome was
+  `stopped` / `Clean`, with no topology failures. The controller restored
+  the starting native topology, reaped the fixture, and left no receipt or
+  new residue. This proves menu-open stop, not a grouped left-click switch.
 
 ## Bounded physical check (after implementation)
 
