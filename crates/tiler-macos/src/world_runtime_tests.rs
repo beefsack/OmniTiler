@@ -2363,6 +2363,101 @@ fn presentation_suspends_for_unhomed_native_fullscreen_focus() {
     );
 }
 
+#[test]
+fn current_native_fullscreen_focus_reaches_core_without_a_user_domain() {
+    use crate::runtime_native::{scoped_focus_candidate, update_observed_focus};
+    use crate::runtime_types::{FocusEvidence, ScopedWindowMeta};
+    use tiler_core::world_report::NativeWorkspaceFact;
+
+    let (pid, wid, fullscreen_sid) = (1001, 1, 12);
+    let mut ctx = cursor_ctx();
+    ctx.domains[0].current = false;
+    let mut retained = retained_with_tiled(pid, wid, ctx.domains[0].bounds);
+    let focused = window_id(pid, wid);
+    retained.window_domains.remove(&focused);
+    let app = retained.apps.get_mut(&pid).unwrap();
+    let mut window = app.windows.pop().unwrap();
+    window.fullscreen = true;
+    let entry = app.roster.get_mut(&wid).unwrap();
+    entry.spaces.clear();
+    entry.observed = Some(window);
+    entry.fullscreen_meta = true;
+
+    let mut snapshot = ScopedBackendSnapshot::from_unscoped(vec![window], Some(wid), ctx.revision);
+    snapshot.focus_cg_owned = true;
+    let evidence = FocusEvidence {
+        frontmost_pid: Some(pid),
+        frontmost_bundle: None,
+        ax_focus: Some((pid, Some(wid))),
+    };
+    snapshot.focus_evidence = Some(evidence.clone());
+    snapshot.meta.push(ScopedWindowMeta {
+        wid,
+        spaces: vec![fullscreen_sid],
+        fullscreen: true,
+        minimized: false,
+        hidden: false,
+        role: None,
+        subrole: None,
+        modal: None,
+        resizable: None,
+        layer: None,
+        app_id: None,
+        activation_policy: None,
+    });
+    let candidate = |snapshot: &ScopedBackendSnapshot| {
+        scoped_focus_candidate(pid, snapshot, |_| false, |sid| sid == fullscreen_sid)
+    };
+    for (front, ax, cg, sid) in [
+        (Some(pid + 1), evidence.ax_focus, true, fullscreen_sid),
+        (Some(pid), Some((pid, Some(wid + 1))), true, fullscreen_sid),
+        (Some(pid), evidence.ax_focus, false, fullscreen_sid),
+        (Some(pid), evidence.ax_focus, true, fullscreen_sid + 1),
+    ] {
+        let mut unproven = snapshot.clone();
+        let focus = unproven.focus_evidence.as_mut().unwrap();
+        focus.frontmost_pid = front;
+        focus.ax_focus = ax;
+        unproven.focus_cg_owned = cg;
+        unproven.meta[0].spaces[0] = sid;
+        assert_eq!(candidate(&unproven), None);
+    }
+    let mut ordinary = snapshot.clone();
+    ordinary.meta.clear();
+    ordinary.windows[0].fullscreen = false;
+    assert_eq!(
+        scoped_focus_candidate(pid, &ordinary, |candidate| candidate == wid, |_| false),
+        Some(wid)
+    );
+    let observed = candidate(&snapshot);
+    assert_eq!(observed, Some(wid));
+    update_observed_focus(&mut retained, pid, &snapshot, observed);
+    let mut session = cursor_session();
+    let report = build_dispatch_report(
+        &mut session,
+        &retained,
+        &DispatchContext::Native(std::sync::Arc::new(ctx)),
+        &[],
+        1,
+        1,
+        None,
+        None,
+        None,
+        "req-1",
+    )
+    .unwrap();
+    assert_eq!(report.focused_global, focused);
+    assert!(report.foreground_known);
+    assert!(report.windows.iter().any(|window| {
+        window.window.0 == focused
+            && window.fullscreen == Some(true)
+            && window.native_workspace == NativeWorkspaceFact::Omitted
+    }));
+    let reply = accepted_reply(&mut session, &report);
+    assert_eq!(reply.presentation.suspended_output, Some(domain_key().output));
+    assert!(reply.focus_request.is_none());
+}
+
 fn desire_row<'a>(
     reply: &'a tiler_core::world_report::WorldReplyV4,
     window: &str,

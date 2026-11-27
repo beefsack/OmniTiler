@@ -447,6 +447,56 @@ pub(crate) fn update_observed_focus(
         }
     }
 }
+
+/// A native fullscreen observation may report focus without supplying any
+/// user-domain home or granting write authority. The ordinary route still
+/// requires exactly the same current-user membership and focus evidence.
+pub(crate) fn scoped_focus_candidate(
+    pid: u32,
+    snapshot: &ScopedBackendSnapshot,
+    current_user_member: impl FnOnce(u32) -> bool,
+    current_fullscreen_sid: impl FnOnce(u64) -> bool,
+) -> Option<u32> {
+    let wid = snapshot.focused_wid?;
+    let evidence = snapshot.focus_evidence.as_ref()?;
+    if !global_focus_agrees(
+        pid,
+        wid,
+        evidence.frontmost_pid,
+        evidence.ax_focus,
+        snapshot.focus_cg_owned,
+    ) {
+        return None;
+    }
+    if current_user_member(wid) {
+        return Some(wid);
+    }
+    let window = snapshot.meta.iter().find(|row| row.wid == wid)?;
+    let [sid] = window.spaces.as_slice() else {
+        return None;
+    };
+    (window.fullscreen
+        && !window.minimized
+        && !window.hidden
+        && snapshot.windows.iter().any(|window| window.wid == wid)
+        && current_fullscreen_sid(*sid))
+    .then_some(wid)
+}
+
+fn is_published_current_sid(
+    topology: &crate::topology::TopologySnapshot,
+    revision: u64,
+    sid: u64,
+) -> bool {
+    if revision != topology.revision || sid == 0 {
+        return false;
+    }
+    let mut rows = topology.rows.iter().filter(|row| row.spaces.contains(&sid));
+    rows.next()
+        .is_some_and(|row| row.current == Some(sid) && row.identifier.is_some())
+        && rows.next().is_none()
+}
+
 /// Handle one native scoped observation job: admission fences mirror
 /// the legacy arm (lifetime, termination, sequence, context revision);
 /// membership-scoped planning converges through one complete world report.
@@ -885,31 +935,26 @@ pub(crate) fn handle_scoped_observation(
     let member_windows: Vec<ObservedWindow> = members.values().flatten().copied().collect();
     let member_count = member_windows.len() as u64;
     entry.windows = member_windows;
-    // Global-focus truth gate on the worker-stamped evidence: the
-    // app-local window promotes only on full workspace+AX+CG agreement AND
-    // current-domain membership (a hidden-Space window can never hold
-    // global focus: the user is looking at the current Space). Anything
-    // else arrives unfocused (authoritative loss for exactly this PID when
-    // it previously held focus).
-    let candidate = match snapshot.focused_wid {
-        Some(wid)
-            if members.iter().any(|(key, windows)| {
-                ctx.is_current(key) && windows.iter().any(|w| w.wid == wid)
-            }) =>
-        {
-            snapshot.focus_evidence.as_ref().and_then(|evidence| {
-                global_focus_agrees(
-                    pid,
-                    wid,
-                    evidence.frontmost_pid,
-                    evidence.ax_focus,
-                    snapshot.focus_cg_owned,
+    let candidate = scoped_focus_candidate(
+        pid,
+        &snapshot,
+        |wid| {
+            members
+                .iter()
+                .any(|(key, windows)| ctx.is_current(key) && windows.iter().any(|w| w.wid == wid))
+        },
+        |sid| {
+            let published = lock_shared(shared)
+                .topology
+                .as_ref()
+                .is_some_and(|topology| is_published_current_sid(topology, ctx.revision, sid));
+            published
+                && matches!(
+                    crate::ffi::sls_space_type(sid),
+                    Ok(crate::ffi::SlsSpaceType::Fullscreen)
                 )
-                .then_some(wid)
-            })
-        }
-        _ => None,
-    };
+        },
+    );
     entry.focused_wid = candidate;
     // `entry` is not used below: the borrow ends here (NLL), so
     // focus bookkeeping and member mapping may hold `retained`.

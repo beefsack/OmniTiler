@@ -2,7 +2,7 @@
 
 ### Shared visual safety
 - Decision: no border or group visual shows while a window is maximized or fullscreen. Hide native active border for applet popup; restore for ordinary focus. Do not infer fullscreen from output-sized/borderless geometry where native flag exists.
-- macOS reads the focused window's native fullscreen state from its observed roster, even when a fullscreen Space has no user-domain binding.
+- macOS reads the focused window's fullscreen state from its observed roster. If no user domain is current on that display, it reports native fullscreen focus only when AX and CG agree with the foreground and the window belongs to the exact current fullscreen Space. This grants no window-write authority.
 - Why: not recorded.
 - Assumes / revisit if: native committed state, not requested maximize state, controls suppression; no polling, timers or geometry heuristics.
 - Status: active, 2026-09-21
