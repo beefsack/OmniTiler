@@ -54,7 +54,7 @@ Test strict rejection of missing capability keys and invalid facts, capability-f
 
 Run signed SIP-on round trips `owned fullscreen → owned Desktop → same fullscreen` for the Dock gesture and pinned Mission Control AX separately. Record unchanged member identity, no fullscreen-window writes, the same detached SID while away and after return, other-display and pointer stability, and clean restoration. Capture the Space notification, exact SLS readback, and exact foreground observations on one monotonic clock; absence of a notification is not arrival proof. Split View membership and type are unverified: the signed fixture exposes individual fullscreen modes but no native Split View affordance.
 
-**Probe status:** the first signed run observed the exact fixture window as the focused fullscreen AX window and as the sole member of a new SLS fullscreen Space. Neither route was measured: the pre-dispatch sentinel proof could not name the window via `AXWindows`, and the same proof refused explicit exit. Teardown tried ordinary restoration before the detached SID retired. A subsequent read-only inspection found the starting native currents and order restored and Mission Control closed. This proves a distinct detached SID on entry, not its lifetime while away, round-trip behavior, or notification ordering. Split View remains unprobed.
+**Probe status:** the first signed run observed the exact fixture window as the focused fullscreen AX window, attached exclusively to a new SLS fullscreen Space. That per-window read did not enumerate all members of the Space. Neither route was measured: the pre-dispatch sentinel proof could not name the window via `AXWindows`, and the same proof refused explicit exit. Teardown tried ordinary restoration before the detached SID retired. A subsequent read-only inspection found the starting native currents and order restored and Mission Control closed. This proves a distinct detached SID on entry, not its lifetime while away, round-trip behavior, or notification ordering. Split View remains unprobed.
 
 The user reported switching apps after a black teardown screen that showed only the Dock. The evidence-first archive recorded the seven visibility differences under the explicit user drift waiver; it did not restore or touch those windows. A final read-only recheck found exact starting topology, no owned fixture lifetime or Space, and no blocking drift before the receipt was moved. Closing the still-fullscreen fixture window is a suspected cause of the black screen, not a measured host mechanism.
 
@@ -76,5 +76,20 @@ The windowed-sibling setup fell between the away and return observations (Missio
 These were the first live exercises of fullscreen-before-shutdown. Both runs retired the detached SID, restored the original currents and ordered topology, and left no owned fixture lifetime or Space and no pending receipt. The retry had only benign offscreen replacements in the controller comparison, with no new residue. Independent native rechecks confirmed restoration; every readable retry pointer sample matched the starting location. Exact Desktop currents and no remaining detached SID rule out a detached Space left current; pixels were not sampled, so visual absence of a black screen is unproven. Split View remains unprobed; the fixture has no native Split View affordance.
 
 Independently, the current product owner refuses a detached current before dispatch; its Dock gesture source fence and pinned Mission Control fallback still require ordinary user Spaces. These product refusals do not establish what the host mechanisms can do.
+
+A separate signed product switch-away candidate stopped during fullscreen
+setup, before either keyboard chord. The fixture accepted the fullscreen
+request, but within 2.5 seconds the controller never proved a new SLS
+current, the fixture member's AX focus and fullscreen state, and that member
+as the sole occupant in a full CG/SLS inventory. The failed subpredicate
+was not recorded. Unlike the host-only proof, the candidate focused before
+switching to the source Desktop and required a whole-Space member census.
+
+The controller retained a blocking recovery receipt. A read-only recheck
+found the starting currents restored, Mission Control closed and no
+fullscreen Space or fixture process, but an extra owned Desktop with
+offscreen system windows remained. The attempt measured neither the
+product's redundant refusal nor its switch-away timing. The candidate was
+removed without changing the existing product refusal or enabling return.
 
 The conservative contract still applies: keep temporary read gaps distinguishable from known absence, require bracketed physical readback around the exact foreground observation, and treat changed SID as supersession even for the same lifetime. The two round trips do not establish that the host never rekeys a fullscreen surface or guarantees event order.
