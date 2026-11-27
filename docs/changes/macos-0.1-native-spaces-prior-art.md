@@ -90,6 +90,21 @@ Control-click to the verified product status item and opened its menu rather
 than selecting a Space; it does not qualify the gesture route. Grouped
 indicator clicks keep their pinned Mission Control path.
 
+The next signed SIP-on grouped-indicator probe mapped an enabled owned
+Desktop segment into the exact product AX status item. The independent
+frontmost CG hit at that point was a WindowServer layer-24 window, not the
+product. The guard refused before posting: zero pointer clicks, no
+indicator select and no Dock gesture timing. AX identity by itself does not
+prove delivery of a plain click on this system-hosted carrier. The Dock
+route remains unpromoted for grouped clicks.
+
+The temporary candidate wrote its setup evidence inside the owned product
+run directory, so teardown retained a receipt rather than deleting an
+unknown leaf. A final read-only recheck found exact starting currents and
+order with no remaining owned Space or process; the receipt was archived
+after preserving that evidence. The candidate and its writer were discarded;
+the unknown-leaf refusal remains in place.
+
 The signed Mission Control pair used the same fresh owned-Space switch and
 exact SID/close proof before and after replacing the fixed delay. The switch
 took 1,050 ms before and 757 ms with child-readiness polling. Other measured
