@@ -92,4 +92,23 @@ offscreen system windows remained. The attempt measured neither the
 product's redundant refusal nor its switch-away timing. The candidate was
 removed without changing the existing product refusal or enabling return.
 
+Guarded empty-Desktop removal restored the exact starting topology; the
+extra Space's system windows disappeared. The only unmatched raw
+WindowServer row was confirmed at the CoreGraphics cursor-window level
+and was covered by the existing cursor waiver. The receipt was archived
+after preserving the readbacks.
+
+The single signed rerun reused the host-only entry sequence, including
+focus after switching to the owned source Desktop. On the entry clock,
+the first new current SID was sampled at 572,140 µs, its fullscreen type
+and the exact fixture window's singleton Space membership at 572,455 µs,
+and the exact AX-focused fullscreen window at 572,936 µs. The fixture
+posted the redundant keyboard chord and exact SLS readback still showed
+the detached surface current. The controller did not obtain the matching
+product refusal diagnostic within four seconds, so it did not post the
+away chord. The missing diagnostic does not prove where product delivery
+or processing stopped. Final readback found the original currents and
+order, Mission Control closed, no owned process or Space, and no pending
+receipt. No product route was promoted.
+
 The conservative contract still applies: keep temporary read gaps distinguishable from known absence, require bracketed physical readback around the exact foreground observation, and treat changed SID as supersession even for the same lifetime. The two round trips do not establish that the host never rekeys a fullscreen surface or guarantees event order.
