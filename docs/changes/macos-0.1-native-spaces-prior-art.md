@@ -68,6 +68,15 @@ restored the starting current and ordered topology with no residue. This
 is candidate encoding and same-display routing evidence, not E1;
 the pointer started on the target display and the product was not launched.
 
+The signed two-display E1 run stopped before posting a gesture. With the
+pointer on the other display, the pinned target display passed the owned
+Space return probe and reached its owned source SID. The signed fixture
+window did not acquire membership on that SID after placement, so the
+probe refused before testing the CGEvent location. Teardown completed and
+removed the restoration receipt. This is a fixture-placement failure, not
+evidence that Dock ignores event location. Product dispatch stays fenced;
+there is no E1 latency, indicator-click, or keyboard result.
+
 ## Fn/Globe as a tiler modifier
 
 A public CG event tap can observe secondary-Fn **on events the OS produces** ([Apple flag docs](https://developer.apple.com/documentation/coregraphics/cgeventflags/masksecondaryfn)); the physical key's edge is commonly reported as `flagsChanged` at keycode 63, not ordinary key-down/up. Do not match the flag by itself: Hammerspoon also observes it on navigation/arrows and function keys. Prior art tracks the physical Fn edge when present, but it cannot guarantee observing it, infer it from every flagged event, or reserve the chord before OS handling (`swift-macos-tap-detection commit 33c746520b0e8abef3036a2edf852cd59f8650d6:Sources/TapDetection/KeyTapDetector.swift:327-365`, `Hammerspoon 1.1.1:extensions/eventtap/libeventtap_event.m:1549`, `Karabiner-Elements v16.3.0:src/share/monitor/event_tap_monitor.hpp:176-275`). Apple describes the CG flag as primarily found on laptops. External Apple keyboards may provide an Apple vendor Fn usage; generic firmware-only Fn can produce just the translated key, with no host Fn edge. No per-device identity is established at the session-tap layer. USB/Bluetooth, vendor usages and devices should be treated as contrasts, not inferred from their keycap (`Karabiner-Elements v16.3.0:vendor/vendor/include/pqrs/hid/usage.hpp:714-727,745-746`, [Apple F-key setting](https://support.apple.com/en-us/102439)).

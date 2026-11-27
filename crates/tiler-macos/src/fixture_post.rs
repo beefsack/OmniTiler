@@ -170,6 +170,15 @@ pub fn send_fixture_spawn(
     nonce: &str,
     ids: &[&str],
 ) -> Result<serde_json::Value, String> {
+    send_fixture_spawn_at(socket_path, nonce, ids, None)
+}
+
+pub(crate) fn send_fixture_spawn_at(
+    socket_path: &str,
+    nonce: &str,
+    ids: &[&str],
+    position: Option<[i32; 2]>,
+) -> Result<serde_json::Value, String> {
     if ids.is_empty() {
         return Err("spawn: no caller ids; refusing an empty spawn".to_owned());
     }
@@ -178,8 +187,15 @@ pub fn send_fixture_spawn(
             return Err("spawn: caller id malformed; refusing".to_owned());
         }
     }
-    let windows: Vec<serde_json::Value> =
-        ids.iter().map(|id| serde_json::json!({"id": id})).collect();
+    let windows: Vec<_> = ids
+        .iter()
+        .map(|id| match position {
+            Some(position) => serde_json::json!({
+                "id": id, "position_outer_px": position, "size_px": [400, 300],
+            }),
+            None => serde_json::json!({"id": id}),
+        })
+        .collect();
     let request = serde_json::json!({
         "v": 1,
         "request_id": SOCKET_SPAWN_REQUEST_ID,

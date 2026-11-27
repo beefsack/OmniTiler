@@ -233,6 +233,14 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
     spaces: &mut S,
     starting: &NativeBaseline,
 ) -> Result<SpaceProbeProof, ProbeFailure> {
+    probe_return_to_starting_on(spaces, starting, 0)
+}
+
+pub(crate) fn probe_return_to_starting_on<S: NativeSpaces>(
+    spaces: &mut S,
+    starting: &NativeBaseline,
+    display: usize,
+) -> Result<SpaceProbeProof, ProbeFailure> {
     let fail = |stage: &'static str,
                 error: String,
                 mut residue: Vec<String>,
@@ -253,15 +261,14 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
         }
     };
     let starting_topo = SpaceTopology::from_baseline(starting);
-    let Some(first) = starting_topo.displays.first() else {
+    let Some(row) = starting_topo.displays.get(display) else {
         return Err(ProbeFailure {
             stage: "probe-entry",
-            error: "starting topology has no displays; refusing".to_owned(),
+            error: format!("starting topology has no display {display}; refusing"),
             residue: Vec::new(),
         });
     };
-    let display = 0;
-    let starting_sid = first.current;
+    let starting_sid = row.current;
     let mut steps = Vec::new();
     let mut mc_notes: Vec<String> = Vec::new();
     // Entry: the current must already be the starting current; a drifted

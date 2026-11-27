@@ -115,6 +115,7 @@ pub const APPLY_SEND_CHORD: &str = "apply-send";
 
 /// Standalone, signed-fixture macOS 27 swipe probe.
 pub const SWIPE_27_CHORD: &str = "swipe-27";
+pub(crate) const SWIPE_27_E1_CHORD: &str = "swipe-27-e1";
 
 /// Operator settle window (harness only): milliseconds the leg holds before
 /// its first chord and again after its last chord, so an operator can drive
@@ -821,8 +822,11 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
             "pager-switch must run alone without a corrupt store".to_owned(),
         ));
     }
-    if opts.chords.iter().any(|chord| chord == SWIPE_27_CHORD)
-        && (opts.chords.as_slice() != [SWIPE_27_CHORD]
+    if opts
+        .chords
+        .iter()
+        .any(|chord| matches!(chord.as_str(), SWIPE_27_CHORD | SWIPE_27_E1_CHORD))
+        && (opts.chords.len() != 1
             || opts.hover_probe
             || opts.corrupt_intent_store
             || opts.focus_follows_cursor)
@@ -1338,7 +1342,9 @@ fn run_leg_body_macos(
     })?;
     leg.transport_mut()
         .set_fixture_control(parsed.socket.clone(), run_dir.clone());
-    if opts.chords.as_slice() == [SWIPE_27_CHORD] {
+    if let [chord] = opts.chords.as_slice()
+        && matches!(chord.as_str(), SWIPE_27_CHORD | SWIPE_27_E1_CHORD)
+    {
         let report = crate::fixture_swipe_27::run(
             leg,
             parsed.pid,
@@ -1346,6 +1352,7 @@ fn run_leg_body_macos(
             &nonce,
             &announcement,
             &opts.signer,
+            chord,
         )?;
         return Ok(LegReports {
             chords: vec![report],
@@ -1797,8 +1804,18 @@ pub(crate) fn spawn_owned_windows(
     nonce: &str,
     callers: &[String],
 ) -> Result<(), String> {
+    spawn_owned_windows_at(socket, nonce, callers, None)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn spawn_owned_windows_at(
+    socket: &str,
+    nonce: &str,
+    callers: &[String],
+    position: Option<[i32; 2]>,
+) -> Result<(), String> {
     let ids: Vec<&str> = callers.iter().map(String::as_str).collect();
-    let reply = crate::fixture_post::send_fixture_spawn(socket, nonce, &ids)
+    let reply = crate::fixture_post::send_fixture_spawn_at(socket, nonce, &ids, position)
         .map_err(|e| format!("fixture-leg: window spawn refused ({e})"))?;
     let windows = reply
         .get("result")

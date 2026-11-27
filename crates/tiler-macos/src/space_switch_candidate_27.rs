@@ -47,11 +47,10 @@
 //! Pre-27 behavior is untouched: [`crate::space_switch_edges::gesture_event`]
 //! and `post_gesture_pairs` keep the pinned yabai 6-field branch.
 //!
-//! Scope boundary kept from the product route: this candidate is same-display
-//! adjacency only (no pointer warp, no display targeting, no Mission Control
-//! open/close) and never selects a fullscreen Space. Fullscreen/game
-//! suppression and the display-targeted E1 proof stay with the product route
-//! and its separate unit; nothing here changes them.
+//! This candidate never warps the pointer, opens Mission Control, or selects
+//! a fullscreen Space. The fixture may set the event location for E1, as in
+//! WhichSpace v1.5.0 `postSwipeGesture` (:955-957); this does not enable a
+//! product route. The caller owns the focused-window and arrival proofs.
 
 use crate::space_switch_edges::{
     GESTURE_FIELD_HID_TYPE, GESTURE_FIELD_MOTION, GESTURE_FIELD_PHASE, GESTURE_FIELD_PROGRESS,
@@ -371,6 +370,13 @@ pub(crate) struct PreparedGesture27 {
 #[cfg(target_os = "macos")]
 #[allow(dead_code)] // Guarded-probe API; no product route may call it yet.
 impl PreparedGesture27 {
+    /// Set the reconstructed event location without moving the pointer.
+    pub(crate) fn locate(&self, location: objc2_core_foundation::CGPoint) {
+        for event in &self.events {
+            objc2_core_graphics::CGEvent::set_location(Some(event), location);
+        }
+    }
+
     /// Number of prepared events (three phases per step).
     #[must_use]
     pub(crate) fn event_count(&self) -> usize {

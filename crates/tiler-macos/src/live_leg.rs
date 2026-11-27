@@ -54,7 +54,7 @@ use crate::live_baseline::{
     persist_baseline_to, remove_baseline_receipt,
 };
 use crate::space_probe::{
-    NativeSpaces, SpaceProbeProof, probe_return_to_starting, remove_owned_space,
+    NativeSpaces, SpaceProbeProof, probe_return_to_starting_on, remove_owned_space,
     restore_starting_currents,
 };
 
@@ -117,7 +117,9 @@ pub fn required_scope(chord_name: &str) -> Option<AdmissionScope> {
     // These diagnostic arms switch Spaces, but never through the post resolver.
     if matches!(
         chord_name,
-        crate::fixture_leg::APPLY_SEND_CHORD | crate::fixture_leg::SWIPE_27_CHORD
+        crate::fixture_leg::APPLY_SEND_CHORD
+            | crate::fixture_leg::SWIPE_27_CHORD
+            | crate::fixture_leg::SWIPE_27_E1_CHORD
     ) {
         return Some(AdmissionScope::SpaceMutating);
     }
@@ -1549,8 +1551,13 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
     /// reported); it never falls back to synthetic chords or foreign-target
     /// input.
     pub fn prove_return(&mut self) -> Result<ReturnProof, (i32, String)> {
-        let probe = probe_return_to_starting(&mut *self.transport, &self.baseline.native)
-            .map_err(|failure| (1, format!("leg return-probe: {failure}")))?;
+        self.prove_return_on(0)
+    }
+
+    pub(crate) fn prove_return_on(&mut self, display: usize) -> Result<ReturnProof, (i32, String)> {
+        let probe =
+            probe_return_to_starting_on(&mut *self.transport, &self.baseline.native, display)
+                .map_err(|failure| (1, format!("leg return-probe: {failure}")))?;
         let mc_open_after = self.transport.mc_present();
         self.probe_proven = true;
         Ok(ReturnProof {

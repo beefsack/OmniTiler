@@ -435,14 +435,22 @@ pub(crate) struct EstablishedOwnedSpace {
 pub(crate) fn establish_post_only_owned_space(
     leg: &mut LiveLeg<LiveLegTransport>,
 ) -> Result<EstablishedOwnedSpace, (i32, String)> {
-    leg.prove_return()?;
+    establish_post_only_owned_space_on(leg, 0)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn establish_post_only_owned_space_on(
+    leg: &mut LiveLeg<LiveLegTransport>,
+    display: usize,
+) -> Result<EstablishedOwnedSpace, (i32, String)> {
+    leg.prove_return_on(display)?;
     let before = leg.transport_mut().space_snapshot().map_err(|e| {
         (
             1,
             format!("fixture-leg: post-only starting snapshot unreadable ({e})"),
         )
     })?;
-    let row = before.displays.first().ok_or_else(|| {
+    let row = before.displays.get(display).ok_or_else(|| {
         (
             1,
             "fixture-leg: post-only starting snapshot has no display; refusing".to_owned(),
@@ -465,7 +473,7 @@ pub(crate) fn establish_post_only_owned_space(
             .iter()
             .map(|member| (member.bundle.as_str(), &member.spaces)),
     );
-    let created = leg.transport_mut().space_create(0).map_err(|e| {
+    let created = leg.transport_mut().space_create(display).map_err(|e| {
         (
             1,
             format!("fixture-leg: post-only owned Space creation refused ({e})"),
@@ -474,14 +482,14 @@ pub(crate) fn establish_post_only_owned_space(
     let sid = created.sid;
     // Register before any later refusal so teardown removes exactly this
     // owned Space.
-    leg.note_owned_space(0, sid);
+    leg.note_owned_space(display, sid);
     if let Some(shortfall) = created.mc.shortfall_text("post-only owned Space create") {
         return Err((
             1,
             format!("fixture-leg: post-only owned Space creation: {shortfall}"),
         ));
     }
-    leg.transport_mut().space_goto(0, sid).map_err(|e| {
+    leg.transport_mut().space_goto(display, sid).map_err(|e| {
         (
             1,
             format!("fixture-leg: post-only owned Space switch refused ({e})"),
@@ -493,14 +501,14 @@ pub(crate) fn establish_post_only_owned_space(
             format!("fixture-leg: post-only owned Space switch unverified ({e})"),
         )
     })?;
-    let after_row = after.displays.first().ok_or_else(|| {
+    let after_row = after.displays.get(display).ok_or_else(|| {
         (
             1,
             "fixture-leg: post-only switch snapshot has no display; refusing".to_owned(),
         )
     })?;
     let evidence = PostOnlyOwnedSpace {
-        display: 0,
+        display,
         n: occupancy.n,
         n_kind: occupancy.n_kind,
         n_unreadable_windows: occupancy.n_unreadable_windows,
