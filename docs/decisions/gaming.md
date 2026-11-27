@@ -1,7 +1,7 @@
 # Gaming
 
 ### Anti-cheat mechanism limits
-- Decision: interact with other processes only through host window-management mechanisms; never inject code or access process memory. Synthetic input is prohibited except for Dock Space gestures and title-bar drags used for [macOS native Space switching or sends](macos.md#managed-native-spaces-input-and-transfers). Never dispatch the exception while a fullscreen or game window has focus.
+- Decision: interact with other processes only through host window-management mechanisms; never inject code or access process memory. Synthetic input is prohibited except for Dock Space gestures and title-bar drags used for [macOS native Space switching or sends](macos.md#managed-native-spaces-input-and-transfers). Never dispatch the exception while a fullscreen window has focus, games included per the [fullscreen-state rule](#fullscreen-state-based-protection).
 - Why: anti-cheat false positives put user game accounts at risk.
 - Assumes / revisit if: these mechanisms are those anti-cheat systems flag; revisit after anti-cheat research. Current code audit against this list remains outstanding.
 - Status: active, 2026-11-27; the scoped macOS exception supersedes the blanket synthetic-input ban only for these actions.

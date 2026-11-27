@@ -115,6 +115,12 @@ pub trait SwipePoster: Send {
     fn post_pairs(&mut self, sign: f64, pairs: usize) -> PairsPosted;
     /// Post exactly one pending release edge (`ended`) for `sign`.
     fn release(&mut self, sign: f64) -> Result<(), String>;
+    /// Fresh fullscreen/focus fence for the pinned target display
+    /// immediately before the FIRST gesture post of one dispatch. Production
+    /// ([`LiveSwipePoster`]) reads the live focused window plus that
+    /// display's current Space; scripted test posters record/allow it.
+    /// Refusal posts nothing; releases never call it.
+    fn fence(&mut self, display_id: &str) -> Result<(), String>;
 }
 
 /// Injectable live-gate seam: fresh session reads on the calling (owner)
@@ -352,6 +358,13 @@ impl SwipePoster for LiveSwipePoster {
 
     fn release(&mut self, sign: f64) -> Result<(), String> {
         crate::space_switch_edges::post_gesture_release(sign)
+    }
+
+    fn fence(&mut self, display_id: &str) -> Result<(), String> {
+        // Fresh live fence for the pinned display immediately before the
+        // first gesture post: exactly focused nonfullscreen window/app plus
+        // that display's ordinary current Space. A refusal posts nothing.
+        crate::space_synthetic_gate::require_swipe_target(0, Some(display_id))
     }
 }
 
@@ -750,6 +763,12 @@ pub fn execute_dock_swipe_select(
                 "dock-swipe refused: plan is a no-op yet native current reads {}; refusing without posting",
                 row0.current
             ),
+        ));
+    }
+    if let Err(e) = seams.poster.fence(&row0.display_id) {
+        return Err(refused(
+            Some(row0.current),
+            format!("dock-swipe refused: {e}; no swipe dispatched"),
         ));
     }
     eprintln!(

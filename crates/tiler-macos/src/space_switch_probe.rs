@@ -562,7 +562,7 @@ fn run_synthetic_leg(
                 post_arrow_held(child, slot, pid, wid, &helper_path, keycode)
             }
             PairKind::Gesture { sign } => {
-                post_gesture_held(child, slot, pid, wid, &helper_path, sign)
+                post_gesture_held(child, slot, pid, wid, &helper_path, display, sign)
             }
         },
         Err(e) => PairOutcome::Refused(format!("helper Child unavailable: {e}")),

@@ -122,6 +122,16 @@ pub trait SendNativeReaders: Send {
     fn hid_mouse(&mut self, step: DragStep, point: (f64, f64)) -> Result<(), String>;
     /// One tagged HID key edge (own-switch provenance).
     fn hid_key(&mut self, keycode: u32, flags: u64, down: bool) -> Result<(), String>;
+    /// Fresh fullscreen/focus/current fence for one synthetic title-bar
+    /// drag leg of the exactly proven `(pid, wid)`: the focused window must
+    /// be that window and nonfullscreen in AX and by every native Space
+    /// membership, and the target display's current Space must be ordinary.
+    /// Scripted readers keep the no-op default; the live readers enforce it
+    /// at the actual OS-post seam. Refusal posts nothing.
+    fn synthetic_fence(&mut self, pid: u32, wid: u32) -> Result<(), String> {
+        let _ = (pid, wid);
+        Ok(())
+    }
     /// Fresh current Space for the single display (`None` = unknown).
     fn read_current(&mut self) -> Option<u64>;
     /// Bridged-route availability for the fast send path: true only when
@@ -321,6 +331,23 @@ impl SendNativeReaders for OsSendReaders {
             Some(crate::input_match::OWN_SWITCH_USER_DATA),
         )?;
         Ok(())
+    }
+    fn synthetic_fence(&mut self, pid: u32, wid: u32) -> Result<(), String> {
+        let published = self.handle.published_display_inputs().ok_or_else(|| {
+            "drag fence refused: display snapshot unpublished (no main-thread publish yet)"
+                .to_owned()
+        })?;
+        if published.displays.len() != 1 {
+            return Err(format!(
+                "drag fence refused: single-display rule ({} published displays)",
+                published.displays.len()
+            ));
+        }
+        let pinned_uuid = published.displays[0]
+            .uuid
+            .as_deref()
+            .ok_or_else(|| "drag fence refused: pinned display has no managed UUID".to_owned())?;
+        crate::space_synthetic_gate::require_window_target(pid, wid, 0, Some(pinned_uuid))
     }
     fn read_current(&mut self) -> Option<u64> {
         self.fresh_topology().ok().map(|topo| topo.row.current)
@@ -1184,8 +1211,10 @@ impl<R: SendNativeReaders> ManagedSendBackend for LiveManagedSendBackend<R> {
         // grab starts. The permit is consumed (dropped) — one proof never
         // authorizes two legs. The fixture gate fences the destination
         // first: an unowned goal refuses before any grab state.
-        let _ = permit;
         self.gate_destination(goal)?;
+        self.readers
+            .synthetic_fence(permit.pid(), permit.wid())
+            .map_err(|e| format!("leg-setup fullscreen fence refused: {e}"))?;
         self.check_anchor(goal)?;
         self.goal = Some(goal);
         // Start the leg clock and the settle-pair log baseline, then emit

@@ -344,8 +344,9 @@ pub(crate) fn gesture_event(
 /// tap: exact 6-field pinned branch, no cursor warp/click. The session
 /// gates plus the exact held-helper proof plus the shared bundle/oracle
 /// boundary (identical to the keyboard path) run before EACH post
-/// including `ended`. When `ended` is refused after `began` posted, the
-/// pair reports [`PairOutcome::Pending`] — never a blind `ended`.
+/// including `ended`, and one fresh fullscreen/focus/current fence runs
+/// before the first post. When `ended` is refused after `began` posted,
+/// the pair reports [`PairOutcome::Pending`] — never a blind `ended`.
 #[cfg(target_os = "macos")]
 pub(crate) fn post_gesture_held(
     child: &mut std::process::Child,
@@ -353,6 +354,7 @@ pub(crate) fn post_gesture_held(
     pid: u32,
     wid: u32,
     helper_path: &str,
+    display: usize,
     sign: f64,
 ) -> PairOutcome {
     use crate::synth::{OwnedPostTarget, boundary_gate};
@@ -373,6 +375,9 @@ pub(crate) fn post_gesture_held(
     }
     if let Err(e) = edge_synth_gates("gesture-began") {
         return PairOutcome::Refused(e.to_string());
+    }
+    if let Err(e) = crate::space_synthetic_gate::require_window_target(pid, wid, display, None) {
+        return PairOutcome::Refused(format!("gesture began refused: {e}"));
     }
     let target = match OwnedPostTarget::from_held_child(child, pid, wid, helper_path) {
         Ok(t) => t,
@@ -425,6 +430,7 @@ pub(crate) fn post_gesture_held(
     _pid: u32,
     _wid: u32,
     _helper_path: &str,
+    _display: usize,
     _sign: f64,
 ) -> PairOutcome {
     PairOutcome::Refused("gesture posts are macOS-only".to_owned())

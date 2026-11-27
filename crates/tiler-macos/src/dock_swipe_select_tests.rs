@@ -88,6 +88,10 @@ impl SwipePoster for FakePoster {
         self.released.push(sign);
         self.releases.pop_front().unwrap_or(Ok(()))
     }
+
+    fn fence(&mut self, _display_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 struct FakeGates {
@@ -924,6 +928,10 @@ fn cancel_during_settlement_refuses_without_history() {
         }
 
         fn release(&mut self, _sign: f64) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn fence(&mut self, _display_id: &str) -> Result<(), String> {
             Ok(())
         }
     }

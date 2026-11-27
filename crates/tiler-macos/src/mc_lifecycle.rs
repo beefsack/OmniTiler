@@ -888,6 +888,10 @@ pub(crate) mod live {
         cleanup: bool,
     ) -> Result<super::PressOutcome, McError> {
         action_gates()?;
+        if !cleanup {
+            crate::space_synthetic_gate::require_mc_fallback()
+                .map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
+        }
         let snap0 = fresh_snapshot()?;
         let (d0, _) = snap0.locate(sid).ok_or_else(|| {
             McError::Ownership(format!(
@@ -975,6 +979,10 @@ pub(crate) mod live {
         cleanup: bool,
     ) -> Result<super::PressOutcome, McError> {
         action_gates()?;
+        if !cleanup {
+            crate::space_synthetic_gate::require_mc_fallback()
+                .map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
+        }
         let snap0 = fresh_snapshot()?;
         topology_preflight_matches(prior, &snap0)?;
         let (cgid, _) = display_cgid_of_pinned(&snap0, display_index, pinned_cgid, pinned_uuid)?;

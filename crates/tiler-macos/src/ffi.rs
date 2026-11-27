@@ -6230,6 +6230,57 @@ mod macos {
         })
     }
 
+    /// Fresh bounded focus confirmation for exactly one proven window: the
+    /// `AXFocusedWindow` of `pid` must still join `wid` (nonzero) with
+    /// per-element messaging timeouts, and the joined window's
+    /// `AXFullScreen`/`AXFullscreen` state is returned. `Ok(None)` means the
+    /// exact window is still focused but its fullscreen attribute is
+    /// unreadable — the caller must fail closed. A different focused window,
+    /// a windowless app, a reserved PID, a zero window, or an unreadable
+    /// join is `Err` with the leg named. Read-only; no focus effects.
+    pub fn ax_focused_window_state(pid: i32, wid: u32) -> Result<Option<bool>, String> {
+        if pid <= 1 {
+            return Err(format!("focused window pid {pid} is reserved; refusing"));
+        }
+        if wid == 0 {
+            return Err("focused window wid is 0; refusing".to_owned());
+        }
+        let app = AxElement::application(pid)
+            .ok_or_else(|| format!("focused window app pid {pid} unavailable"))?;
+        let timeout = ax_set_messaging_timeout(&app, 2.0);
+        if timeout != 0 {
+            return Err(format!(
+                "focused window app timeout unset: {}",
+                ax_error_name(timeout)
+            ));
+        }
+        let value = app
+            .copy_attribute("AXFocusedWindow")
+            .map_err(|code| format!("AXFocusedWindow unreadable: {}", ax_error_name(code)))?;
+        let window_inner: CFRetained<AXUIElement> = value
+            .downcast()
+            .map_err(|_| "AXFocusedWindow is not an AXUIElement".to_owned())?;
+        let window = AxElement {
+            inner: window_inner,
+            _not_send: std::marker::PhantomData,
+        };
+        let timeout = ax_set_messaging_timeout(&window, 2.0);
+        if timeout != 0 {
+            return Err(format!(
+                "focused window timeout unset: {}",
+                ax_error_name(timeout)
+            ));
+        }
+        let fresh =
+            ax_window_id_detailed(&window).map_err(|e| format!("AXFocusedWindow join: {e}"))?;
+        if fresh != wid {
+            return Err(format!(
+                "AXFocusedWindow wid {fresh} != proven wid {wid}; refusing"
+            ));
+        }
+        Ok(ax_fullscreen_state(&window).ok())
+    }
+
     // -- Owned probe window (AppKit boundary; main thread only) --
 
     /// Main-thread-owned host runloop wake (self-pipe runloop source).
@@ -10961,20 +11012,21 @@ pub use macos::{
     ax_app_focus_leg, ax_attribute_names, ax_bool_attribute, ax_children, ax_direct_focused_read,
     ax_display_id, ax_element_at_position, ax_element_attribute, ax_elements_equal,
     ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_hit_test_detail, ax_hit_test_owner, ax_identifier,
-    ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
-    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events,
-    drain_app_events_counted, frontmost_app, host_now_ns, host_timebase, hotkey_read,
-    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, mach_absolute_time_ticks, macos_major, mc_launch_toggle,
-    mouse_buttons_pressed, mouse_counts_snapshot, natural_scrolling_preference,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
-    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
+    ax_focused_window_state, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
+    ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
+    ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
+    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
+    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app, host_now_ns,
+    host_timebase, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
+    mach_absolute_time_ticks, macos_major, mc_launch_toggle, mouse_buttons_pressed,
+    mouse_counts_snapshot, natural_scrolling_preference, ns_app_identity_for_pid,
+    ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces, own_bundle_id,
+    process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
     run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
     secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
     slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
@@ -11581,6 +11633,10 @@ mod stub {
         Err("macOS-only".to_owned())
     }
 
+    pub fn ax_focused_window_state(_pid: i32, _wid: u32) -> Result<Option<bool>, String> {
+        Err("macOS-only".to_owned())
+    }
+
     pub fn ax_get_frame(_element: &AxElement) -> Result<AxFrame, i32> {
         Err(AX_NOT_IMPLEMENTED)
     }
@@ -12163,11 +12219,11 @@ pub use stub::{
     app_hidden_for_pid, audit_self, ax_action_names, ax_app_focus_leg, ax_attribute_names,
     ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
     ax_element_attribute, ax_elements_equal, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
-    ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
-    ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
-    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_focused_preimage_evidence, ax_focused_window_state, ax_fullscreen_state, ax_get_frame,
+    ax_hit_test_detail, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
+    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
+    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
+    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
     ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
     border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
     cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,

@@ -145,6 +145,7 @@ pub mod space_switch_edges;
 pub mod space_switch_probe;
 #[cfg(test)]
 mod space_switch_probe_tests;
+pub(crate) mod space_synthetic_gate;
 pub mod spaces;
 pub mod stage_timing;
 pub mod symbolic_hotkeys;

@@ -191,7 +191,19 @@ mod live_impl {
             let (keycode, flags, _) = self.chords.for_goal(goal, self.temp);
             self.keycode = keycode;
             self.flags = flags;
-            self.refresh_grab("leg-setup")
+            self.refresh_grab("leg-setup")?;
+            // Fresh fullscreen/focus/current fence for this synthetic
+            // title-bar drag leg (before any post). The exactly focused
+            // window must be this owned helper, nonfullscreen in AX and by
+            // every native Space membership, and the target display's
+            // current Space must be ordinary.
+            crate::space_synthetic_gate::require_window_target(
+                self.pid,
+                self.wid,
+                self.display,
+                None,
+            )
+            .map_err(|e| format!("leg-setup fullscreen fence refused: {e}"))
         }
 
         fn post_mouse(&mut self, step: DragStep) -> Result<(), String> {
