@@ -9864,12 +9864,10 @@ mod macos {
                     // always consume (suppress when armed, forward the hit)
                     // while interception is held; the input owner refuses
                     // consumed hits after suppression without effects (see
-                    // `consumed_refusal`), so fullscreen/game foregrounds
-                    // consume-then-refuse instead of passing through
-                    // natively. Only the global `gated` release above passes
-                    // untouched. Dropping already-consumed hits would NOT
-                    // restore passthrough; the owner drops them before they
-                    // become actions instead.
+                    // `consumed_refusal`) if another eligibility gate
+                    // denies. Known fullscreen is not a reason to refuse
+                    // an armed command. Only the global `gated` release
+                    // above passes the exact chord untouched.
                     // Disable notifications are control events, not chords:
                     // record them regardless of scoped eligibility (an
                     // ineligible interval must never swallow a disable the

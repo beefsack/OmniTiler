@@ -57,14 +57,11 @@
 //! - per-PID record: the foreground PID's publisher record must name the
 //!   same bundle, the same topology revision, and a fresh timestamp, with
 //!   the selected direct window agreeing with the app-local focused window;
-//! - current user Spaces: one set of current user Space IDs across displays
-//!   (multi-display supported: each display contributes its own current).
-//!   The focused window must sit exactly on one of them
-//!   (`spaces == [sid]` with `sid` in the set; sticky/other-Space/unknown/
-//!   non-user currents deny);
-//! - show state: non-fullscreen/non-minimized/non-hidden (owned native
-//!   fullscreen explicitly allowed only via `allow_fullscreen`, e.g. the
-//!   proven helper independent-exit leg; normal tile denies fullscreen);
+//! - current Spaces: the focused window must sit on its current user Space,
+//!   or (with known fullscreen show state) its exact current fullscreen
+//!   Space. Sticky, other-Space and unknown membership still deny;
+//! - show state: non-minimized and non-hidden, with fullscreen known
+//!   but not a veto on an explicit command;
 //! - session: unlocked, Secure Input not active, frontmost readable and not
 //!   the lock screen.
 //!
@@ -140,26 +137,20 @@ pub struct EligibilityFacts {
     pub lock_screen: bool,
     /// Focused window Spaces (empty = unknown, denies).
     pub window_spaces: Vec<u64>,
-    /// Current user Space IDs across displays (empty = unknown, denies).
-    /// Multi-display supported: each display contributes its own current
-    /// user Space; the focused window must sit exactly on one of them.
-    /// Never invented from geometry — published from snapshot/SLS rows with
-    /// user-type filtering (see [`select_user_currents`]).
+    /// User currents, or native fullscreen currents for an exactly joined
+    /// fullscreen foreground. Never inferred from geometry.
     pub current_spaces: Vec<u64>,
     /// Show state (None = unknown, denies).
     pub fullscreen: Option<bool>,
     pub minimized: Option<bool>,
     pub hidden_app: Option<bool>,
-    /// Explicit user allow for owned native fullscreen (helper
-    /// independent-exit leg only; normal tile false).
-    pub allow_fullscreen: bool,
 }
 
 /// Pure eligibility verdict over plain facts. `Ok(())` means eligible;
 /// `Err(reason)` names the denial with a static token. Unknown/stale
-/// denies; out-of-scope, fullscreen (unless explicitly allowed),
-/// minimized, hidden, wrong-Space, lock, Secure Input, and foreground
-/// disagreement all deny. No titles, keys, or content anywhere.
+/// denies; out-of-scope, minimized, hidden, wrong-Space, lock, Secure
+/// Input, and foreground disagreement all deny. Known fullscreen is
+/// not a reason to drop an explicit command.
 pub fn eligibility_verdict(facts: &EligibilityFacts) -> Result<(), String> {
     if !facts.session_unlocked {
         return Err("session-not-unlocked".to_owned());
@@ -193,10 +184,8 @@ pub fn eligibility_verdict(facts: &EligibilityFacts) -> Result<(), String> {
         Some(false) => {}
         _ => return Err("hidden-or-unknown".to_owned()),
     }
-    match facts.fullscreen {
-        Some(false) => {}
-        Some(true) if facts.allow_fullscreen => {}
-        _ => return Err("fullscreen-or-unknown".to_owned()),
+    if facts.fullscreen.is_none() {
+        return Err("fullscreen-or-unknown".to_owned());
     }
     Ok(())
 }
@@ -247,6 +236,7 @@ pub struct EligibilityFactsStore {
 struct StoreInner {
     apps: BTreeMap<u32, AppEligibilityRecord>,
     current_spaces: Vec<u64>,
+    fullscreen_spaces: Vec<u64>,
     revision: u64,
 }
 
@@ -275,17 +265,21 @@ impl EligibilityFactsStore {
         inner.apps.insert(record.pid, record);
     }
 
-    /// Publish the tile-supplied current context (current user Space IDs
-    /// plus the snapshot-revision fingerprint). Called by the tile main
-    /// loop from snapshots it already took (no new OS reads for the store
-    /// itself); an empty set denies downstream. The list is sorted and
-    /// deduped here so evidence diffs stay deterministic.
-    pub fn publish_context(&self, current_spaces: Vec<u64>, revision: u64) {
+    /// Publish typed currents from a fresh native snapshot. The fullscreen
+    /// SIDs are separate so passive consumers of `context` see only users.
+    pub fn publish_context(
+        &self,
+        mut current_spaces: Vec<u64>,
+        mut fullscreen_spaces: Vec<u64>,
+        revision: u64,
+    ) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let mut sorted = current_spaces;
-        sorted.sort_unstable();
-        sorted.dedup();
-        inner.current_spaces = sorted;
+        current_spaces.sort_unstable();
+        current_spaces.dedup();
+        fullscreen_spaces.sort_unstable();
+        fullscreen_spaces.dedup();
+        inner.current_spaces = current_spaces;
+        inner.fullscreen_spaces = fullscreen_spaces;
         inner.revision = revision;
     }
 
@@ -295,6 +289,7 @@ impl EligibilityFactsStore {
     pub fn invalidate_context(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         inner.current_spaces = Vec::new();
+        inner.fullscreen_spaces.clear();
     }
 
     /// Drop one PID's record (worker terminate/vanish/lock-stop path):
@@ -322,27 +317,17 @@ impl EligibilityFactsStore {
         let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         (inner.current_spaces.clone(), inner.revision)
     }
-}
 
-/// Select the current user Space IDs from per-display current candidates
-/// (pure, no OS calls): keeps `Some` entries that read user-typed, drops
-/// `None`/non-user currents, dedupes, and sorts for deterministic evidence.
-/// Non-user (fullscreen/system) currents are excluded here — never admitted
-/// as eligibility currents. The caller performs the live type reads and
-/// passes the outcomes; an empty result denies downstream.
-#[must_use]
-pub fn select_user_currents(
-    currents: Vec<Option<u64>>,
-    is_user_space: &dyn Fn(u64) -> bool,
-) -> Vec<u64> {
-    let mut out: Vec<u64> = currents
-        .into_iter()
-        .flatten()
-        .filter(|sid| is_user_space(*sid))
-        .collect();
-    out.sort_unstable();
-    out.dedup();
-    out
+    /// Explicit input sees proven native fullscreen currents as well as
+    /// user currents without promoting fullscreen SIDs to user domains.
+    pub(crate) fn explicit_context(&self) -> (Vec<u64>, Vec<u64>, u64) {
+        let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        (
+            inner.current_spaces.clone(),
+            inner.fullscreen_spaces.clone(),
+            inner.revision,
+        )
+    }
 }
 
 /// Pure attest snapshot (no OS calls anywhere on this path): cheap live
@@ -363,8 +348,8 @@ pub struct AttestSnapshot {
     pub record: Option<AppEligibilityRecord>,
     pub record_updated_ms: u64,
     pub context_currents: Vec<u64>,
+    pub context_fullscreen_currents: Vec<u64>,
     pub context_revision: u64,
-    pub allow_fullscreen: bool,
     pub now_ms: u64,
 }
 
@@ -373,9 +358,8 @@ pub struct AttestSnapshot {
 /// SLPS/workspace disagreement, out-of-scope, missing/stale/mismatched
 /// publisher record (wrong PID, bundle drift, revision superseded, older
 /// than [`FACTS_TTL`]), selected-window disagreement, and (via
-/// [`eligibility_verdict`]) wrong-Space plus minimized/hidden/fullscreen
-/// show state. A hung publisher (stale record) denies immediately without
-/// blocking the gate.
+/// [`eligibility_verdict`]) wrong-Space plus minimized/hidden/unknown
+/// show state. A hung publisher denies immediately without blocking.
 pub fn attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
     if !s.session_unlocked {
         return Err("session-not-unlocked".to_owned());
@@ -421,6 +405,14 @@ pub fn attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
     if record.selected != Some((frontmost, Some(focused))) {
         return Err("selected-disagreement".to_owned());
     }
+    let current_spaces = if record.fullscreen == Some(true)
+        && record.spaces.len() == 1
+        && s.context_fullscreen_currents.contains(&record.spaces[0])
+    {
+        &s.context_fullscreen_currents
+    } else {
+        &s.context_currents
+    };
     eligibility_verdict(&EligibilityFacts {
         frontmost_pid: Some(frontmost),
         frontmost_bundle: s.frontmost_bundle.clone(),
@@ -431,28 +423,20 @@ pub fn attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
         secure_active: None,
         lock_screen: false,
         window_spaces: record.spaces.clone(),
-        current_spaces: s.context_currents.clone(),
+        current_spaces: current_spaces.clone(),
         fullscreen: record.fullscreen,
         minimized: record.minimized,
         hidden_app: record.hidden_app,
-        allow_fullscreen: s.allow_fullscreen,
     })
 }
 
 /// Select-only attest verdict over one snapshot: the no-focus eligibility
 /// for the armed select chords. Same session/Secure Input/lock-screen,
 /// frontmost-known, foreground-agreement, and scope gates as
-/// [`attest_verdict`], plus at least one current user Space — but NO
-/// per-PID publisher record, NO focused-window/Space-membership join, and
-/// NO show-state legs. That is the whole point: an empty Space has no
-/// focused window on it, yet must still navigate; publisher staleness (a
-/// hung app) must never wedge Space switching. Unsafe contexts still deny
-/// (locked/unknown session, Secure Input, lock screen, unreadable or
-/// disagreeing foreground, out-of-scope frontmost, or zero user currents —
-/// e.g. a fullscreen game current — consume-then-refuse owner-side, never
-/// dispatch; lock / Secure Input / unknown-session additionally release
-/// interception via the global gate). Denials carry the same static tokens
-/// suffixed `-select` so basic vs select causation stays distinguishable.
+/// [`attest_verdict`], plus at least one typed current — but no per-PID
+/// record, focused-window join or show state. A known fullscreen current
+/// admits the chord; core resolves the logical workspace if available.
+/// Denials carry `-select` to distinguish them from the basic lane.
 pub fn select_attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
     if !s.session_unlocked {
         return Err("session-not-unlocked-select".to_owned());
@@ -475,7 +459,7 @@ pub fn select_attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
     if !s.scope_allowed {
         return Err("out-of-scope-select".to_owned());
     }
-    if s.context_currents.is_empty() {
+    if s.context_currents.is_empty() && s.context_fullscreen_currents.is_empty() {
         return Err("no-current-user-space-select".to_owned());
     }
     Ok(())
@@ -629,7 +613,6 @@ mod tests {
             fullscreen: Some(false),
             minimized: Some(false),
             hidden_app: Some(false),
-            allow_fullscreen: false,
         }
     }
 
@@ -661,8 +644,8 @@ mod tests {
             record: Some(record(4242, now_ms)),
             record_updated_ms: now_ms,
             context_currents: vec![1],
+            context_fullscreen_currents: Vec::new(),
             context_revision: 9,
-            allow_fullscreen: false,
             now_ms,
         }
     }
@@ -673,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_scope_unknown_and_fullscreen_deny() {
+    fn out_of_scope_unknown_and_unreadable_showstate_deny() {
         // Out of scope denies.
         let mut f = eligible_facts();
         f.scope_allowed = false;
@@ -694,11 +677,9 @@ mod tests {
             eligibility_verdict(&f).unwrap_err(),
             "foreground-disagreement"
         );
-        // Fullscreen denies for normal tile, passes with explicit owned allow.
+        // Known fullscreen is not a veto on an explicit chord.
         let mut f = eligible_facts();
         f.fullscreen = Some(true);
-        assert!(eligibility_verdict(&f).is_err());
-        f.allow_fullscreen = true;
         assert!(eligibility_verdict(&f).is_ok());
         // Minimized/hidden/unknown show state denies.
         for (mini, hidden, full) in [
@@ -819,11 +800,10 @@ mod tests {
         let mut s = snapshot(10_000);
         s.record.as_mut().unwrap().selected = Some((4242, Some(9)));
         assert_eq!(attest_verdict(&s).unwrap_err(), "selected-disagreement");
-        // Fullscreen, wrong Space, and out-of-scope deny through the same
-        // shared verdict as the tile effect fence.
+        // Unreadable show state, wrong Space and out-of-scope still deny.
         let mut s = snapshot(10_000);
-        s.record.as_mut().unwrap().fullscreen = Some(true);
-        assert!(attest_verdict(&s).is_err());
+        s.record.as_mut().unwrap().fullscreen = None;
+        assert_eq!(attest_verdict(&s).unwrap_err(), "fullscreen-or-unknown");
         let mut s = snapshot(10_000);
         s.record.as_mut().unwrap().spaces = vec![2];
         assert!(attest_verdict(&s).is_err());
@@ -855,22 +835,56 @@ mod tests {
     }
 
     #[test]
-    fn select_user_currents_drops_unknown_and_nonuser() {
-        let no_fs = |sid: u64| sid != 22;
-        // Nones drop, non-user (22 here) is excluded, dupes collapse,
-        // order is sorted for deterministic evidence.
-        assert_eq!(
-            select_user_currents(vec![Some(22), None, Some(11), Some(11)], &no_fs),
-            vec![11]
-        );
-        // Two valid currents both survive (multi-display homing).
-        let all_user = |_: u64| true;
-        assert_eq!(
-            select_user_currents(vec![Some(22), Some(11)], &all_user),
-            vec![11, 22]
-        );
-        // All unknown/non-user: empty denies downstream.
-        assert!(select_user_currents(vec![None, Some(22)], &no_fs).is_empty());
+    fn explicit_fullscreen_foreground_attests_both_categories() {
+        let mut s = snapshot(10_000);
+        s.context_currents.clear();
+        s.context_fullscreen_currents = vec![22];
+        let record = s.record.as_mut().unwrap();
+        record.spaces = vec![22];
+        record.fullscreen = Some(true);
+        assert!(attest_verdict(&s).is_ok());
+        assert!(select_attest_verdict(&s).is_ok());
+        use crate::config::ProbeModifier;
+        use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
+        use crate::native_input::{
+            drain_received_hit, tap_specs_for, tile_catalogue, triage_consumed_hit,
+        };
+        let modifier = ProbeModifier::Ctrl;
+        let (flags, flags_mask) = crate::input::cg_flag_bits(modifier);
+        let basic = attest_verdict(&s).is_ok();
+        let select = Some(select_attest_verdict(&s).is_ok());
+        let mut bindings = tile_catalogue();
+        bindings.extend(crate::workspace_select::bindings());
+        let specs = tap_specs_for(modifier, &bindings);
+        let digit = crate::desktop_shortcuts::desktop_digit_keycode(2).unwrap();
+        for key in [0x04, digit] {
+            let tuning = TapTuning {
+                want_flags: flags,
+                flags_mask,
+                want_code: i64::from(key),
+            };
+            let down = |code| {
+                decide_tap_event(TapKeyKind::KeyDown, flags, code, tuning, true, &mut false)
+            };
+            let matched = down(i64::from(key));
+            assert!(matched.matched && matched.suppress);
+            let unmatched = down(0x00);
+            assert!(!unmatched.matched && !unmatched.suppress);
+            let decision = triage_consumed_hit(&specs, key, flags, true, basic, select);
+            assert_eq!(decision, "dispatch");
+            let hit = crate::ffi::TapHit {
+                key_code: key,
+                down: true,
+                flags,
+                tap_us: 0,
+            };
+            assert_eq!(drain_received_hit(&hit, decision).unwrap().key_code, key);
+        }
+        s.record.as_mut().unwrap().spaces = vec![23];
+        assert_eq!(attest_verdict(&s).unwrap_err(), "not-on-current-user-space");
+        s.scope_allowed = false;
+        assert_eq!(attest_verdict(&s).unwrap_err(), "out-of-scope");
+        assert_eq!(select_attest_verdict(&s).unwrap_err(), "out-of-scope-select");
     }
 
     #[test]
@@ -901,10 +915,11 @@ mod tests {
         assert!(store.snapshot_for(9999).is_some());
         // Context publish/invalidate round-trips (multi-display sets
         // survive verbatim, sorted).
-        store.publish_context(vec![22, 11], 9);
+        store.publish_context(vec![22, 11], vec![44], 9);
         assert_eq!(store.context(), (vec![11, 22], 9));
+        assert_eq!(store.explicit_context(), (vec![11, 22], vec![44], 9));
         store.invalidate_context();
-        assert_eq!(store.context(), (Vec::new(), 9));
+        assert_eq!(store.explicit_context(), (Vec::new(), Vec::new(), 9));
     }
 }
 
@@ -928,7 +943,7 @@ mod select_attest_tests {
             record_updated_ms: 0,
             context_currents: vec![11],
             context_revision: 9,
-            allow_fullscreen: false,
+            context_fullscreen_currents: Vec::new(),
             now_ms,
         }
     }
@@ -954,11 +969,10 @@ mod select_attest_tests {
     #[test]
     fn select_denies_unsafe_contexts() {
         // Locked/unknown session, Secure Input, lock screen, unreadable or
-        // disagreeing foreground, out-of-scope frontmost, and zero user
-        // currents (e.g. a fullscreen game current) all deny the select
-        // verdict: the owner refuses those consumed hits without effects
-        // (lock / Secure Input / unknown-session additionally release
-        // interception via the global gate, so those keys pass untouched).
+        // disagreeing foreground, out-of-scope frontmost, and no known
+        // typed currents deny the select verdict: the owner refuses those
+        // consumed hits without effects. The global gate still releases
+        // interception on lock, Secure Input or unknown session.
         for name in [
             "session",
             "secure",

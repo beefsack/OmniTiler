@@ -308,7 +308,6 @@ pub fn attest_tile_eligibility(
     basic_cache: &EligibilityCache,
     select_cache: &EligibilityCache,
     store: Option<&Arc<EligibilityFactsStore>>,
-    allow_fullscreen: bool,
     last_attest: &mut Option<Instant>,
 ) -> bool {
     use crate::input_eligibility::{attest_verdict, select_attest_verdict};
@@ -322,7 +321,7 @@ pub fn attest_tile_eligibility(
     }
     *last_attest = Some(Instant::now());
     let now = crate::input_eligibility::now_ms();
-    let snapshot = match attest_live(scope, store, allow_fullscreen, now) {
+    let snapshot = match attest_live(scope, store, now) {
         Ok(snapshot) => snapshot,
         Err(_) => {
             // Unreadable facts deny both caches (unknown/stale denies).
@@ -355,7 +354,6 @@ pub fn attest_tile_eligibility(
 fn attest_live(
     scope: &TileScope,
     store: Option<&Arc<EligibilityFactsStore>>,
-    allow_fullscreen: bool,
     now_ms: u64,
 ) -> Result<crate::input_eligibility::AttestSnapshot, String> {
     use crate::input_eligibility::AttestSnapshot;
@@ -381,7 +379,7 @@ fn attest_live(
         None => false,
     };
     let store = store.ok_or_else(|| "facts-unavailable".to_owned())?;
-    let (context_currents, context_revision) = store.context();
+    let (context_currents, context_fullscreen_currents, context_revision) = store.explicit_context();
     let pid = frontmost_pid.ok_or_else(|| "frontmost-unknown".to_owned())?;
     let record = store.snapshot_for(pid);
     let record_updated_ms = record.as_ref().map(|r| r.updated_ms).unwrap_or(0);
@@ -397,8 +395,8 @@ fn attest_live(
         record,
         record_updated_ms,
         context_currents,
+        context_fullscreen_currents,
         context_revision,
-        allow_fullscreen,
         now_ms,
     })
 }
@@ -1187,19 +1185,16 @@ impl InputSource for TapTileSource {
             // Scoped eligibility AFTER suppression (consume-first): refresh
             // both caches from cheap live reads plus a plain store snapshot
             // (cadence-throttled; unknown/stale denies) but never park or
-            // release here — ineligible foregrounds (out-of-scope,
-            // fullscreen/game, wrong Space, stale/unknown facts, zero user
-            // currents, focus mismatches) consume, and each consumed hit
-            // refuses owner-side below without effects. Only the global
-            // gate above releases interception. No AX runs on this thread:
-            // per-app facts arrive via the shared store from each AX
-            // owner's already-read snapshots.
+            // release here — out-of-scope, wrong Space, stale/unknown
+            // facts and focus mismatches may consume and then refuse
+            // owner-side below. Known fullscreen is not a command veto.
+            // Only the global gate above releases interception. No AX runs
+            // here; per-app facts come from the AX owners' snapshots.
             attest_tile_eligibility(
                 &self.scope,
                 &self.eligibility,
                 &self.eligibility_select,
                 self.facts.as_ref(),
-                false,
                 &mut self.last_attest,
             );
             if self.was_ineligible {
@@ -1340,10 +1335,9 @@ impl InputSource for TapTileSource {
                     // Consume-first owner refusal: a consumed hit triages on
                     // the fresh per-category caches and only `dispatch`,
                     // `forward-up`, and `forward-unowned` become actions —
-                    // refused hits (fullscreen/game, out-of-scope,
-                    // stale/unknown facts, zero user currents, focus/Space
-                    // mismatch, basic and select alike) drop here without
-                    // effects (see `drain_received_hit`).
+                    // refused hits (out-of-scope, stale/unknown facts, no
+                    // known current, focus/Space mismatch) drop here
+                    // without effects (see `drain_received_hit`).
                     let decision = self.triage_drain_decision(&hit);
                     match drain_received_hit(&hit, decision) {
                         Some(event) => return Some(event),

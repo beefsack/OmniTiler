@@ -2339,25 +2339,25 @@ mod native {
         }
     }
 
-    /// Publish the eligibility current context from a snapshot the main
-    /// thread already took: every user-typed current Space (one per
-    /// display - multi-display supported, each display homes its own
-    /// current) plus the snapshot-revision fingerprint the backends stamp
-    /// their records with. Type checks are the only new reads (SLS type
-    /// calls the main thread already makes each cadence; no AX anywhere).
-    /// Non-user currents are excluded; an empty set denies downstream until
-    /// a clean snapshot republishes. Never invented from geometry.
+    /// Publish typed currents from the snapshot already taken on this
+    /// thread. Passive effects use only user currents; the explicit input
+    /// owner also sees exact fullscreen currents, without creating a
+    /// logical workspace or rebinding a fullscreen SID as a user Space.
     fn publish_snapshot_context(
         store: &crate::input_eligibility::EligibilityFactsStore,
         snapshot: &TopologySnapshot,
     ) {
-        let candidates: Vec<Option<u64>> = snapshot.rows.iter().map(|row| row.current).collect();
-        let currents = crate::input_eligibility::select_user_currents(candidates, &|sid| {
-            crate::ffi::sls_space_type(sid)
-                .ok()
-                .is_some_and(|t| t == crate::ffi::SlsSpaceType::User)
-        });
-        store.publish_context(currents, snapshot.revision);
+        use crate::ffi::SlsSpaceType;
+        let mut users = Vec::new();
+        let mut fullscreen = Vec::new();
+        for sid in snapshot.rows.iter().filter_map(|row| row.current) {
+            match crate::ffi::sls_space_type(sid) {
+                Ok(SlsSpaceType::User) => users.push(sid),
+                Ok(SlsSpaceType::Fullscreen) => fullscreen.push(sid),
+                _ => {}
+            }
+        }
+        store.publish_context(users, fullscreen, snapshot.revision);
     }
 
     pub(super) fn run(request: TileRequest) -> Result<String, (i32, String)> {

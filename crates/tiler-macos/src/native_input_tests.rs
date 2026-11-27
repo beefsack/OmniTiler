@@ -795,8 +795,8 @@ fn drain_wiring_never_escapes_refused_hits() {
             let decision = triage_consumed_hit(specs, key_code, flags, down, basic, select);
             (decision, drain_received_hit(&hit, decision))
         };
-    // Refused basic down: no escape (fullscreen/out-of-scope/stale facts
-    // and every other basic denial).
+    // Refused basic down: no escape (out-of-scope, stale facts, and other
+    // basic denials).
     let (decision, event) = drain(&basic_specs, KEY_H, ctrl_flags, true, false, Some(false));
     assert_eq!(decision, "consumed-refused-basic");
     assert_eq!(event, None);
