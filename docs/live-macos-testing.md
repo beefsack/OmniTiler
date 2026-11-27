@@ -256,6 +256,7 @@ experiment.
   An offline-accepted controller still needs its first native proof. A missing
   owned preimage, probe failure, permission shortfall, residue or mismatch stops the
   leg; never remove a pending receipt merely to retry.
+  A retained receipt whose cause is diagnosed may be archived manually: preserve the evidence first, write a recovery note, and move the receipt last; never delete it.
 - Foreign (non-fixture) applications are only for application-specific
   investigations after first trying the fixture, with the approved scope
   naming them explicitly. Rationale: fixture windows are predictable,
