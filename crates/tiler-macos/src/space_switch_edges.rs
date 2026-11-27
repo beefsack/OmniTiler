@@ -13,11 +13,15 @@
 //!
 //! Prior art (local checkouts first; pinned upstream URLs only):
 //! gesture fields + began/ended session posts + same-display scope follow
-//! yabai `space_manager_focus_space_using_gesture`
-//! (https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L927-L1035);
+//! yabai v7.1.25 `space_manager_focus_space_using_gesture`
+//! (https://github.com/asmvik/yabai/blob/02de172f8706c3e2eaa679478897d7346e82b564/src/space_manager.c#L920-L981);
 //! the ≥27 coupling follows rift `src/sys/space_switch.rs`
-//! (https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/sys/space_switch.rs#L170-L223),
-//! whose augmented payload is NOT used here; the effective-table Fn-bit
+//! (https://github.com/acsandmann/rift/blob/f13c2513ed96c081e727b6b7d1294b3bdc368f93/src/sys/space_switch.rs#L170-L223)
+//! and WhichSpace v1.5.0
+//! (https://github.com/gechr/WhichSpace/blob/07deeea8a5e6cb766e005e51aa2385b520ccb489/WhichSpace/SpaceSwitcher.swift#L936-L1205),
+//! whose augmented payload is NOT used on this product path; the explicit
+//! probe-only candidate lives in `crate::space_switch_candidate_27` and is
+//! not reachable from [`gesture_payload_allowed`]. The effective-table Fn-bit
 //! strip follows Hammerspoon `extensions/hotkey/libhotkey.m`
 //! (https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/hotkey/libhotkey.m#L208-L241).
 
@@ -85,9 +89,11 @@ pub fn swipe_plan(full_order: &[u64], current: u64, target: u64) -> Result<(f64,
     Ok((sign, delta.unsigned_abs() as usize))
 }
 
-/// Pure version gate: the yabai 6-field branch is the only candidate here.
-/// macOS ≥27 refuses (the rift augmented payload needs an exact observed
-/// family select; never blindly used). Unknown refuses the same way.
+/// Pure version gate for the PRODUCT route: the yabai 6-field branch is the
+/// only shape dispatched here. macOS ≥27 refuses (the probe-only serialized
+/// candidate in `crate::space_switch_candidate_27` needs an exact observed
+/// family select and signed proof; it is never reachable through this gate).
+/// Unknown refuses the same way.
 pub fn gesture_payload_allowed(major: Option<u32>) -> Result<(), String> {
     match major {
         Some(m) if m < GESTURE_NEW_PAYLOAD_MAJOR => Ok(()),

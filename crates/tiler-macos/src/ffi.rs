@@ -1739,6 +1739,113 @@ mod macos {
         u32::try_from(version.majorVersion).ok()
     }
 
+    /// `mach_absolute_time` ticks as a safe wrapper. The probe-only macOS 27+
+    /// gesture payload stamps this into CGEvent field 169 and the IOHID queue
+    /// header exactly as WhichSpace v1.5.0 `augmentedDockSwipe` /
+    /// `iohidPayload` and rift v0.8.6 `cg_event_timestamp_or_now` do.
+    #[allow(deprecated)]
+    pub fn mach_absolute_time_ticks() -> u64 {
+        // SAFETY: maintained `libc` binding with no arguments and no memory
+        // access; the deprecated re-export is intentional (the crate avoids a
+        // new dependency for one call, same as `host_timebase`).
+        unsafe { libc::mach_absolute_time() }
+    }
+
+    /// One integer-like preference value from `application_id` in the
+    /// current user's domain and `host_name` (WhichSpace v1.5.0
+    /// `preferenceInt` via `CFPreferencesCopyValue`). `None` when absent or
+    /// not an integer/boolean; callers apply the tagged defaults.
+    fn preference_integer(
+        key: &str,
+        application_id: &objc2_core_foundation::CFString,
+        host_name: &objc2_core_foundation::CFString,
+    ) -> Option<i64> {
+        use objc2_core_foundation::{
+            CFBoolean, CFNumber, CFNumberType, CFPreferencesCopyValue, CFString,
+            kCFPreferencesCurrentUser,
+        };
+        // SAFETY: CoreFoundation lifetime-static constant, read-only here;
+        // the binding is a `&'static CFString`, never mutated.
+        let current_user = unsafe { kCFPreferencesCurrentUser };
+        let key = CFString::from_str(key);
+        let value = CFPreferencesCopyValue(&key, application_id, current_user, host_name)?;
+        if let Some(number) = value.downcast_ref::<CFNumber>() {
+            let mut out: i64 = 0;
+            // SAFETY: `out` is a valid `i64` and `SInt64Type` writes exactly
+            // eight bytes; a false return leaves the initialised zero.
+            let ok = unsafe {
+                number.value(
+                    CFNumberType::SInt64Type,
+                    std::ptr::from_mut(&mut out).cast(),
+                )
+            };
+            return ok.then_some(out);
+        }
+        value
+            .downcast_ref::<CFBoolean>()
+            .map(|boolean| if boolean.value() { 1 } else { 0 })
+    }
+
+    /// The `com.apple.swipescrolldirection` integer preference from the
+    /// any-application domain, any host (WhichSpace v1.5.0
+    /// `preferenceInt`). `None` means absent/unreadable; the caller applies
+    /// the tagged default (on). A `defaults write` can disagree with Dock's
+    /// live state until login; this read makes no stronger claim.
+    pub fn natural_scrolling_preference() -> Option<i64> {
+        use objc2_core_foundation::{kCFPreferencesAnyApplication, kCFPreferencesAnyHost};
+        // SAFETY: CoreFoundation lifetime-static constants, read-only here;
+        // both bindings are `&'static CFString`, never mutated.
+        let (any_application, any_host) =
+            unsafe { (kCFPreferencesAnyApplication, kCFPreferencesAnyHost) };
+        preference_integer("com.apple.swipescrolldirection", any_application, any_host)
+    }
+
+    /// The six read-only horizontal Space-swipe preference values WhichSpace
+    /// v1.5.0 `spaceSwipeGestureSettingEnabled` inspects: AppleMultitouch
+    /// trackpad three/four, Bluetooth trackpad three/four (any host), then
+    /// the global three/four keys (current host). No write, no private
+    /// `MTTGestureBackEnd` call: the candidate refuses when none are enabled.
+    pub fn space_swipe_gesture_preferences() -> [Option<i64>; 6] {
+        use objc2_core_foundation::{
+            CFString, kCFPreferencesAnyApplication, kCFPreferencesAnyHost,
+            kCFPreferencesCurrentHost,
+        };
+        // SAFETY: CoreFoundation lifetime-static constants, read-only here;
+        // the bindings are `&'static CFString`, never mutated.
+        let (any_application, any_host, current_host) = unsafe {
+            (
+                kCFPreferencesAnyApplication,
+                kCFPreferencesAnyHost,
+                kCFPreferencesCurrentHost,
+            )
+        };
+        let apple = CFString::from_str("com.apple.AppleMultitouchTrackpad");
+        let bluetooth = CFString::from_str("com.apple.driver.AppleBluetoothMultitouch.trackpad");
+        [
+            preference_integer("TrackpadThreeFingerHorizSwipeGesture", &apple, any_host),
+            preference_integer("TrackpadFourFingerHorizSwipeGesture", &apple, any_host),
+            preference_integer("TrackpadThreeFingerHorizSwipeGesture", &bluetooth, any_host),
+            preference_integer("TrackpadFourFingerHorizSwipeGesture", &bluetooth, any_host),
+            preference_integer(
+                "com.apple.trackpad.threeFingerHorizSwipeGesture",
+                any_application,
+                current_host,
+            ),
+            preference_integer(
+                "com.apple.trackpad.fourFingerHorizSwipeGesture",
+                any_application,
+                current_host,
+            ),
+        ]
+    }
+
+    /// Whether any mouse button is currently pressed. WhichSpace v1.5.0 uses
+    /// `NSEvent.pressedMouseButtons != 0`; a held button means WindowServer
+    /// drag tracking swallows synthetic swipes without a failure signal.
+    pub fn mouse_buttons_pressed() -> bool {
+        objc2_app_kit::NSEvent::pressedMouseButtons() != 0
+    }
+
     /// Host monotonic timebase `(numer, denom)` for [`host_now_ns`]:
     /// maintained `libc::mach_timebase_info` binding, fail-closed (`None`)
     /// on a nonzero return or a zero denominator. The `libc` re-export is
@@ -10864,7 +10971,8 @@ pub use macos::{
     cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events,
     drain_app_events_counted, frontmost_app, host_now_ns, host_timebase, hotkey_read,
     hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    launch_date_for_pid, mach_absolute_time_ticks, macos_major, mc_launch_toggle,
+    mouse_buttons_pressed, mouse_counts_snapshot, natural_scrolling_preference,
     ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
     own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
     run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
@@ -10874,7 +10982,7 @@ pub use macos::{
     sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
     sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
     sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
-    sls_window_at_point, terminate_process, warp_cursor_position,
+    sls_window_at_point, space_swipe_gesture_preferences, terminate_process, warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -11690,6 +11798,22 @@ mod stub {
         None
     }
 
+    pub fn mach_absolute_time_ticks() -> u64 {
+        0
+    }
+
+    pub fn natural_scrolling_preference() -> Option<i64> {
+        None
+    }
+
+    pub fn space_swipe_gesture_preferences() -> [Option<i64>; 6] {
+        [None; 6]
+    }
+
+    pub fn mouse_buttons_pressed() -> bool {
+        false
+    }
+
     pub fn running_apps() -> Vec<(i32, String)> {
         Vec::new()
     }
@@ -12049,7 +12173,8 @@ pub use stub::{
     cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
     copy_symbolic_hotkeys, frontmost_app, host_now_ns, host_timebase, hotkey_read,
     hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    launch_date_for_pid, mach_absolute_time_ticks, macos_major, mc_launch_toggle,
+    mouse_buttons_pressed, mouse_counts_snapshot, natural_scrolling_preference,
     ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
     own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
     run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
@@ -12059,7 +12184,7 @@ pub use stub::{
     sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
     sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
     sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
-    sls_window_at_point, terminate_process, warp_cursor_position,
+    sls_window_at_point, space_swipe_gesture_preferences, terminate_process, warp_cursor_position,
 };
 
 #[cfg(test)]

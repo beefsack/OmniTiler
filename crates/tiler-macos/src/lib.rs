@@ -140,6 +140,7 @@ pub mod space_grab_diagnose;
 pub mod space_join;
 pub mod space_probe;
 pub mod space_recovery;
+pub(crate) mod space_switch_candidate_27;
 pub mod space_switch_edges;
 pub mod space_switch_probe;
 #[cfg(test)]
