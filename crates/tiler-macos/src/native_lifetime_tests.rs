@@ -25,7 +25,8 @@ use crate::runtime_core::{
     snapshot_is_covering,
 };
 use crate::runtime_types::{
-    NativeContext, NativeDomain, ObservedWindow, ScopedBackendSnapshot, ScopedWindowMeta,
+    NativeContext, NativeDomain, ObservedWindow, RetainedFullscreenRead, ScopedBackendSnapshot,
+    ScopedWindowMeta,
 };
 use crate::world_builder::{ReportInput, build_report};
 use crate::world_runtime::WorldSession;
@@ -743,6 +744,7 @@ fn parked_detached_membership_refreshes_only_exact_same_lifetime_and_sid() {
         layer: 0,
         onscreen: false,
         bounds: Some((20, 20, 100, 100)),
+        retained: RetainedFullscreenRead::NotAttempted,
     });
     mark_roster_incomplete(&mut retained, 1001, "blank-hidden");
     let desktop_homes =
@@ -850,6 +852,7 @@ fn away_topology_publication_can_precede_the_parked_anchor_reread() {
         layer: 0,
         onscreen: false,
         bounds: Some((0, 0, 2240, 1260)),
+        retained: RetainedFullscreenRead::NotAttempted,
     });
     assert!(apply_roster_covering(&mut retained, 12_168, &parked, &ctx).is_empty());
     assert!(rehydrate_cg_alive(&mut retained, 12_168, &parked, &ctx, true).is_empty());
@@ -857,6 +860,86 @@ fn away_topology_publication_can_precede_the_parked_anchor_reread() {
     assert!(after_reread.windows.iter().any(|w| {
         w.window.0 == w0_id && w.detached_surface.as_ref() == Some(&fullscreen)
     }));
+}
+
+#[test]
+fn windowed_ax_row_retained_read_proves_detached_without_desktop_home() {
+    use crate::runtime_core::{note_scoped_members, rehydrate_cg_alive};
+    use crate::runtime_types::CgAliveDetail;
+    use crate::world_runtime::{DispatchContext, build_dispatch_report};
+    use tiler_core::world_engine::WorldEngine;
+
+    const PID: u32 = 29_325;
+    const WID: u32 = 10_945;
+    const HOME: u64 = 327;
+    const SURFACE: u64 = 329;
+    let mut preimage = two_display_ctx();
+    for (domain, sid) in preimage.domains.iter_mut().zip([HOME, 328, 156]) {
+        domain.space = sid;
+        domain.workspace = WorkspaceId(crate::topology::workspace_key(sid));
+        domain.current = sid != 328;
+    }
+    let home = DomainKey {
+        output: preimage.domains[0].output.clone(),
+        workspace: preimage.domains[0].workspace.clone(),
+    };
+    let w0 = crate::runtime_types::window_id(PID, WID);
+    let windowed = observed(WID, 0, 0, 800, 632);
+    let initial = scoped_snapshot(
+        vec![windowed], vec![vec![HOME]], 0, preimage.revision, true, vec![WID],
+    );
+    let mut session = session_native();
+    let mut cap = crate::world_connection::macos_capabilities();
+    cap.detached_fullscreen_view = true;
+    let engine =
+        WorldEngine::new_test_bound_with_capabilities(GENERATION, session.incarnation(), cap)
+            .expect("capability-enabled test handshake");
+    session.sequencer().bind_generation(engine.core_generation());
+    *session.engine_mut() = engine;
+
+    // Attempt 1's windowed member disappears from AXWindows at entry.
+    for (outcome, typed) in [
+        (RetainedFullscreenRead::NotAttempted, true),
+        (RetainedFullscreenRead::Refused, true),
+        (RetainedFullscreenRead::Proved, false),
+        (RetainedFullscreenRead::Proved, true),
+    ] {
+        let mut retained = retained_with_roster(PID, 1);
+        assert!(apply_roster_covering(&mut retained, PID, &initial, &preimage).is_empty());
+        note_scoped_members(&mut retained, PID, &BTreeMap::from([(home.clone(), vec![windowed])]));
+        assert!(retained.window_domains.contains_key(&w0));
+        assert!(retained.apps[&PID].roster[&WID].detached_membership.is_none());
+        let mut ctx = preimage.clone();
+        ctx.revision += 1;
+        ctx.domains[0].current = false;
+        if typed {
+            ctx.detached_spaces.insert(SURFACE, (1, true));
+        }
+        let mut entry = scoped_snapshot(Vec::new(), Vec::new(), 0, ctx.revision, true, vec![WID]);
+        entry.cg_alive.push(CgAliveDetail {
+            wid: WID, spaces: vec![SURFACE], layer: 0, onscreen: false,
+            bounds: Some((0, 0, 2240, 1260)), retained: outcome,
+        });
+        mark_roster_incomplete(&mut retained, PID, "blank-hidden");
+        assert!(rehydrate_cg_alive(&mut retained, PID, &entry, &ctx, true).is_empty());
+        assert!(!retained.window_domains.contains_key(&w0));
+        let app = &retained.apps[&PID];
+        let proved = typed && outcome == RetainedFullscreenRead::Proved;
+        assert_eq!(app.roster[&WID].detached_membership, proved.then_some((ctx.revision, SURFACE)));
+        assert_eq!(app.roster[&WID].observed.map(|obs| obs.fullscreen), Some(proved));
+        assert_eq!(app.roster_incomplete, !proved);
+        if proved {
+            let report = build_dispatch_report(
+                &mut session, &retained, &DispatchContext::Native(Arc::new(ctx)), &[],
+                1, 1, None, None, None, "req-native-fullscreen",
+            )
+            .expect("native context reports");
+            let fact = report.windows.iter().find(|row| row.window.0 == w0).expect("parked member");
+            assert_eq!(fact.detached_surface.as_ref().and_then(crate::runtime_types::detached_sid), Some(SURFACE));
+            assert_eq!(fact.fullscreen, Some(true));
+            assert_eq!(fact.native_workspace, tiler_core::world_report::NativeWorkspaceFact::Null);
+        }
+    }
 }
 
 /// Selected classification exclusions never hold: a new accessory /
@@ -3275,6 +3358,7 @@ mod stale_anchor_fence {
             layer: 0,
             onscreen: false,
             bounds: Some((0, 0, 2240, 1260)),
+            retained: RetainedFullscreenRead::NotAttempted,
         });
         assert!(
             apply_roster_covering(&mut fixture.retained, PID, &parked, &fixture.ctx)

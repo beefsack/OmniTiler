@@ -794,8 +794,25 @@ pub(crate) fn handle_scoped_observation(
             } else {
                 "preserved-hidden"
             };
+            // Structured evidence the failed acceptance capture lacked:
+            // the detail's fresh singleton only when it is a typed detached
+            // surface, plus the exact retained-anchor read outcome.
+            let detail = snapshot.cg_alive.iter().find(|d| d.wid == wid);
+            let detached_sid = detail
+                .and_then(|d| d.singleton())
+                .filter(|sid| ctx.detached_owner(*sid).is_some());
+            let retained = detail.map_or("not-applicable", |d| d.retained.token());
             crate::diag_cause::emit_close_absence_id(
-                pid, generation, seq, wid, cg, &home, fate, covering,
+                pid,
+                generation,
+                seq,
+                wid,
+                cg,
+                &home,
+                fate,
+                covering,
+                detached_sid,
+                retained,
             );
         }
     }

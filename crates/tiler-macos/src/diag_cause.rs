@@ -879,7 +879,10 @@ pub(crate) fn emit_batch_done(
 /// wid (`owned|absent|unknown`), `home` the retained domain (`out:ws`,
 /// `unavailable` when unhomed), `fate` the read-only mirror verdict
 /// (`retained-cg-alive|retained-unknown-oracle|pruned|preserved-hidden`),
-/// `covering` whether the snapshot claims whole-scope truth. Every missing
+/// `covering` whether the snapshot claims whole-scope truth. `detached_sid`
+/// is the detail's fresh singleton only when it names a typed detached
+/// surface (`0` otherwise); `retained` is the exact retained-anchor read
+/// outcome (`not-applicable` with no AX-omitted detail). Every missing
 /// candidate logs (analysis selects the first); nothing is destroyed here.
 /// Disabled: one gate plus one clock read.
 #[allow(clippy::too_many_arguments)]
@@ -892,12 +895,14 @@ pub(crate) fn emit_close_absence_id(
     home: &str,
     fate: &'static str,
     covering: bool,
+    detached_sid: Option<u64>,
+    retained: &'static str,
 ) {
     if !enabled() {
         return;
     }
     eprintln!(
-        "tiler-diag stage=close-absence stamp_us={} pid={} gen={} obs={} wid={} cg={} home={} fate={} covering={}",
+        "tiler-diag stage=close-absence stamp_us={} pid={} gen={} obs={} wid={} cg={} home={} fate={} covering={} detached={} retained={}",
         crate::stage_timing::now_us(),
         pid,
         generation,
@@ -907,6 +912,8 @@ pub(crate) fn emit_close_absence_id(
         diag_id(home),
         fate,
         u64::from(covering),
+        detached_sid.unwrap_or_default(),
+        retained,
     );
 }
 

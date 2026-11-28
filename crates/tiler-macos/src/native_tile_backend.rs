@@ -973,6 +973,10 @@ pub fn build_scoped_snapshot(
             layer,
             onscreen,
             bounds,
+            // The pure builder never reads a retained anchor; the native
+            // owner stamps the exact proof after the snapshot (capability
+            // gated), so every other caller keeps the old semantics.
+            retained: crate::runtime_types::RetainedFullscreenRead::NotAttempted,
         });
     }
     cg_alive.sort_by_key(|d| d.wid);
@@ -1798,6 +1802,46 @@ mod native {
                 let cg_owned: BTreeSet<u32> = outcome.cg_owner_wids.iter().copied().collect();
                 self.ax_anchors
                     .note_genuine_snapshot(retained, outcome.cg_complete, &cg_owned);
+            }
+            // Exact retained-anchor proof for AX-omitted, typed detached
+            // singletons. `cg_alive` already names only AX-absent CG-owned
+            // wids; this reuses the selection-side owner read (bound
+            // identity, exact anchor WID, positive AX fullscreen and
+            // not-minimized, fresh unique layer-0 CG row, fresh singleton
+            // SLS) without a write. The production capability constant
+            // keeps every extra read off; without it (or without a typed
+            // singleton/anchor) the detail keeps the old same-SID refresh
+            // semantics. An attempted read that fails stays `Refused`
+            // (fail closed), never silently downgraded to `NotAttempted`.
+            if crate::world_connection::DETACHED_FULLSCREEN_VIEW
+                && snapshot.revision == ctx.revision
+                && snapshot.cg_complete
+            {
+                for detail in &mut snapshot.cg_alive {
+                    let Some(sid) = detail.singleton() else {
+                        continue;
+                    };
+                    if ctx.detached_owner(sid).is_none()
+                        || detail.layer != 0
+                        || !detail.frame_live()
+                        || self.ax_anchors.retained(detail.wid).is_none()
+                    {
+                        continue;
+                    }
+                    let proved = self
+                        .read_retained_membership_native(detail.wid)
+                        .is_some_and(|read| {
+                            read.wid == detail.wid
+                                && read.owner_pid == Some(self.pid)
+                                && read.spaces.len() == 1
+                                && read.spaces[0] == sid
+                        });
+                    detail.retained = if proved {
+                        crate::runtime_types::RetainedFullscreenRead::Proved
+                    } else {
+                        crate::runtime_types::RetainedFullscreenRead::Refused
+                    };
+                }
             }
             // Bounded selected-oracle focus leg on THIS owning thread (never
             // the main thread, which performs no AX reads): the worker

@@ -689,7 +689,10 @@ pub struct ExcludedOmission {
 /// Multi-Space, empty, unhomed, degenerate-frame, missing-entry, and
 /// shared-SID multi-output details hold unknown, never a guessed home.
 /// Hidden/minimized flags are never refreshed here: the roster keeps its
-/// retained truth for those.
+/// retained truth for those. `retained` is the one exception: it carries
+/// the outcome of the exact retained-anchor AX read (never a guess), and
+/// only a positive fullscreen/not-minimized read may refresh the report's
+/// fullscreen fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CgAliveDetail {
     pub wid: u32,
@@ -703,6 +706,44 @@ pub struct CgAliveDetail {
     /// entry is missing; non-positive width/height when degenerate:
     /// both hold unknown, never a guessed home).
     pub bounds: Option<(i32, i32, i32, i32)>,
+    /// Outcome of the exact retained-anchor read for this wid (the same
+    /// owner-thread proof used by detached selection). `NotAttempted`
+    /// keeps the old same-SID refresh semantics; a refused read never
+    /// refreshes; a proved read is the only source of a fullscreen fact
+    /// for an AX-omitted lifetime.
+    pub retained: RetainedFullscreenRead,
+}
+
+/// Exact retained-anchor read outcome for one AX-omitted, typed-detached
+/// singleton. Tri-state because "no read was applicable", "the read was
+/// attempted and refused", and "the read positively proved fullscreen"
+/// have different refresh semantics (never collapsed into a bool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RetainedFullscreenRead {
+    /// No exact retained anchor applied (capability off, no anchor, or the
+    /// detail was not a typed detached singleton). Existing refresh rules.
+    #[default]
+    NotAttempted,
+    /// A read was attempted and any leg failed. Fail closed: never refresh
+    /// detached membership from this detail and never grant a Desktop home.
+    Refused,
+    /// The exact retained anchor positively read `AXFullScreen == true`
+    /// and `AXMinimized == false` with the bound identity, a fresh unique
+    /// layer-0 CG row, and fresh singleton SLS membership matching the
+    /// typed detached SID. The only source of a fresh fullscreen fact here.
+    Proved,
+}
+
+impl RetainedFullscreenRead {
+    /// Stable diagnostic token (never a state claim).
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "not-attempted",
+            Self::Refused => "refused",
+            Self::Proved => "proved",
+        }
+    }
 }
 
 impl CgAliveDetail {

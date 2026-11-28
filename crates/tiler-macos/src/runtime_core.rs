@@ -1163,6 +1163,13 @@ pub(crate) fn preserve_non_covering_hidden(
 /// and shared-SID multi-output details all hold unknown, never a guessed home.
 /// With detached capability, an exact fresh fullscreen SID can refresh the
 /// same already-witnessed detached lifetime without giving it a Desktop home.
+/// An AX-omitted lifetime may also carry the exact retained-anchor read
+/// outcome: a positive fullscreen/not-minimized proof parks it on that typed
+/// detached surface even before any earlier fullscreen witness, refreshes
+/// the report's fullscreen fact from that actual read (never from stale
+/// metadata), and never grants a Desktop home; a refused attempt fails closed
+/// with the hold intact. A detail with no attempted read keeps the old
+/// same-SID rules.
 /// Shared SIDs never arbitrate on the stale retained rect. Only retained live roster rows
 /// re-home (classifier-excluded rows never do; minimized/hidden sources
 /// ride the minimized path); hidden/minimized flags are never refreshed
@@ -1218,16 +1225,23 @@ pub(crate) fn rehydrate_cg_alive(
                 contradicted.push(detail.wid);
                 continue;
             };
+            use crate::runtime_types::RetainedFullscreenRead::{NotAttempted, Proved};
+            let proved = detail.retained == Proved;
+            let already_parked = detail.retained == NotAttempted
+                && obs.fullscreen
+                && entry.detached_membership.is_some_and(|(_, prior)| prior == sid);
             if detached_enabled
                 && snapshot.revision == ctx.revision
                 && snapshot.cg_complete
-                && obs.fullscreen
-                && entry.detached_membership.is_some_and(|(_, prior)| prior == sid)
+                && (proved || already_parked)
                 && ctx.detached_owner(sid).is_some()
             {
-                // No Desktop homing or actuation: fresh same-owner SLS/CG
-                // evidence refreshes an already-observed fullscreen lifetime.
-                parked.insert(detail.wid, sid);
+                parked.insert(detail.wid, (sid, proved));
+                contradicted.push(detail.wid);
+                continue;
+            }
+            // A failed or ungrounded anchor read cannot grant a Desktop home.
+            if detail.retained != NotAttempted {
                 contradicted.push(detail.wid);
                 continue;
             }
@@ -1301,7 +1315,17 @@ pub(crate) fn rehydrate_cg_alive(
         if detached_enabled {
             for (&wid, entry) in &mut app.roster {
                 if !live.contains(&wid) {
-                    entry.detached_membership = parked.get(&wid).map(|&sid| (ctx.revision, sid));
+                    let proof = parked.get(&wid);
+                    entry.detached_membership = proof.map(|&(sid, _)| (ctx.revision, sid));
+                    if proof.is_some_and(|&(_, proved)| proved) {
+                        // Report fullscreen only from the actual matching
+                        // positive retained read; geometry keeps the
+                        // retained last AX truth (never fabricated).
+                        if let Some(obs) = entry.observed.as_mut() {
+                            obs.fullscreen = true;
+                        }
+                        entry.fullscreen_meta = true;
+                    }
                 }
             }
         }

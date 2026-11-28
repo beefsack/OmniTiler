@@ -32,7 +32,8 @@ use crate::runtime_core::{
     rehydrate_cg_alive, snapshot_is_covering,
 };
 use crate::runtime_types::{
-    CgAliveDetail, NativeContext, ObservedWindow, ScopedBackendSnapshot, ScopedWindowMeta,
+    CgAliveDetail, NativeContext, ObservedWindow, RetainedFullscreenRead, ScopedBackendSnapshot,
+    ScopedWindowMeta,
 };
 use crate::topology::{PointsRect, TopologySnapshot};
 use crate::world_builder::{ReportInput, build_report};
@@ -2286,6 +2287,7 @@ fn live_snapshot(
                 layer: 0,
                 onscreen: false,
                 bounds: Some((8, 38, 2224, 1123)),
+                retained: RetainedFullscreenRead::NotAttempted,
             })
             .collect(),
         revision,
@@ -4222,6 +4224,7 @@ fn cg_alive_skips_excluded_and_foreign_lifetimes() {
         layer: 0,
         onscreen: false,
         bounds: Some((8, 38, 2224, 1123)),
+        retained: RetainedFullscreenRead::NotAttempted,
     });
     snap.cg_alive.sort_by_key(|d| d.wid);
     snap.cg_owner_wids.push(77);
@@ -4582,6 +4585,7 @@ fn non_covering_contradicted_facts_drop_stale_home() {
             layer: 0,
             onscreen: false,
             bounds: Some((8, 38, 2224, 1123)),
+            retained: RetainedFullscreenRead::NotAttempted,
         });
         snap.cg_alive.sort_by_key(|d| d.wid);
         snap.cg_owner_wids.sort_unstable();
