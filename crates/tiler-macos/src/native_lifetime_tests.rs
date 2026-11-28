@@ -2070,3 +2070,503 @@ fn reconnect_drops_phantom_rows_and_keeps_only_live_targets() {
         }
     );
 }
+
+// ---------------------------------------------------------------------------
+// Product AX snapshot auxiliary exposure (capture3 entry proxy). A positively
+// read non-standard auxiliary (`AXWindow`/`AXUnknown`) is never a snapshot
+// member: it must not join a roster/tiled set, must not mint CG-alive
+// evidence as if AX had omitted it, and must not refuse the whole snapshot
+// for its own unread frame/fullscreen/minimized/CG legs. Recognized
+// dialog/sheet/floating shapes and unknown reads keep their existing
+// behavior (published raw facts / whole-snapshot refusal).
+// ---------------------------------------------------------------------------
+
+fn auxiliary_entry_outcome() -> crate::native_facts::NativeReadOutcome {
+    use crate::classifier::{ROLE_WINDOW, SUBROLE_UNKNOWN};
+    use crate::ffi::{AxFrame, CgBounds};
+    use crate::native_facts::{CgWindowEntry, NativeReadOutcome, NativeWindowFacts};
+
+    const PID: u32 = 12_168;
+    const W0: u32 = 10_747;
+    const AUX: u32 = 10_815;
+    const W1: u32 = 10_808;
+
+    fn frame(x: f64, y: f64, w: f64, h: f64) -> AxFrame {
+        AxFrame { x, y, w, h }
+    }
+    fn window_facts(
+        wid: u32,
+        role: &str,
+        subrole: &str,
+        frame: AxFrame,
+        fullscreen: bool,
+        layer: i32,
+        onscreen: bool,
+    ) -> NativeWindowFacts {
+        NativeWindowFacts {
+            wid,
+            role: Some(role.to_owned()),
+            subrole: Some(subrole.to_owned()),
+            fullscreen: Some(fullscreen),
+            minimized: Some(false),
+            modal: Some(false),
+            size_settable: Some(true),
+            min_size: None,
+            max_size: None,
+            frame: Some(frame),
+            cg_layer: Some(layer),
+            cg_onscreen: Some(onscreen),
+        }
+    }
+    fn cg_entry(wid: u32, layer: i32, onscreen: bool, frame: &AxFrame) -> CgWindowEntry {
+        CgWindowEntry {
+            wid,
+            layer,
+            onscreen,
+            bounds: CgBounds {
+                x: frame.x,
+                y: frame.y,
+                w: frame.w,
+                h: frame.h,
+            },
+        }
+    }
+    // Capture3 entry: fullscreen Space 320 is current; AXWindows lists only
+    // the same-owner full-size AXWindow/AXUnknown proxy (fullscreen false),
+    // the true w0 is omitted while live/offscreen at CG layer 0, and the
+    // Away sibling w1 stays a CG row.
+    let full = frame(0.0, 0.0, 2240.0, 1260.0);
+    let away = frame(110.0, 110.0, 800.0, 632.0);
+    let home = frame(100.0, 100.0, 800.0, 632.0);
+    // Eight hidden AppKit auxiliary CG rows and the 32pt surface are
+    // roster-unknown CG-owned wids: they must never fence a hold.
+    let hidden = frame(0.0, 0.0, 2240.0, 0.0);
+    NativeReadOutcome {
+        pid: PID,
+        requested: 1,
+        observed: 1,
+        failed: 0,
+        first_cause: String::new(),
+        windows: vec![window_facts(
+            AUX,
+            ROLE_WINDOW,
+            SUBROLE_UNKNOWN,
+            full,
+            false,
+            0,
+            true,
+        )],
+        cg_complete: true,
+        cg_owner_wids: vec![10_900, W0, AUX, W1, 10_901],
+        cg_entries: vec![
+            cg_entry(10_900, 0, false, &hidden),
+            cg_entry(W0, 0, false, &full),
+            cg_entry(AUX, 0, true, &full),
+            cg_entry(W1, 0, false, &away),
+            cg_entry(10_901, 0, false, &home),
+        ],
+    }
+}
+
+#[test]
+fn auxiliary_entry_proxy_is_never_a_member_and_keeps_known_windows() {
+    use crate::classifier::ActivationPolicy;
+    use crate::native_facts::NativeAppFacts;
+    use crate::native_tile_backend::build_scoped_snapshot;
+    use crate::runtime_core::{preserve_non_covering_hidden, rehydrate_cg_alive};
+
+    const PID: u32 = 12_168;
+    const W0: u32 = 10_747;
+    const AUX: u32 = 10_815;
+    const W1: u32 = 10_808;
+
+    let mut ctx = two_display_ctx();
+    for (domain, sid) in ctx.domains.iter_mut().zip([317, 319, 156]) {
+        domain.space = sid;
+        domain.workspace = WorkspaceId(crate::topology::workspace_key(sid));
+        domain.current = sid == 156;
+    }
+    ctx.detached_spaces.insert(320, (1, true));
+
+    // The tiled set retained from before entry: both members windowed on
+    // their own Desktops.
+    let mut retained = retained_with_roster(PID, 1);
+    {
+        let app = retained.apps.get_mut(&PID).expect("roster owner");
+        for (wid, sid, frame) in [(W0, 317, (100, 100, 800, 632)), (W1, 319, (110, 110, 800, 632))] {
+            app.roster.insert(
+                wid,
+                RosterEntry {
+                    observed: Some(observed(wid, frame.0, frame.1, frame.2, frame.3)),
+                    spaces: vec![sid],
+                    detached_membership: None,
+                    fullscreen_meta: false,
+                    minimized_meta: false,
+                    hidden_meta: false,
+                    excluded: None,
+                    role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                    subrole: Some(crate::classifier::SUBROLE_STANDARD.to_owned()),
+                    modal: Some(false),
+                    resizable: Some(true),
+                    layer: Some(0),
+                    app_id: None,
+                    activation_policy: None,
+                },
+            );
+        }
+    }
+    for (wid, sid) in [(W0, 317), (W1, 319)] {
+        retained.window_domains.insert(
+            crate::runtime_types::window_id(PID, wid),
+            DomainKey {
+                output: OutputId("macos-display-1".to_owned()),
+                workspace: WorkspaceId(crate::topology::workspace_key(sid)),
+            },
+        );
+    }
+
+    let outcome = auxiliary_entry_outcome();
+    let spaces_of = |wid: u32| match wid {
+        W0 | AUX => Ok(vec![320u64]),
+        W1 => Ok(vec![319u64]),
+        _ => Ok(Vec::new()),
+    };
+    let app = NativeAppFacts {
+        pid: PID,
+        hidden: false,
+        activation_policy: ActivationPolicy::Regular,
+        is_own_bundle: false,
+        app_id: Some("com.example.fixture".to_owned()),
+    };
+    // Production snapshot from the real capture3 entry shape: the only AX
+    // row is the auxiliary, so it must neither refuse nor publish.
+    let snap = build_scoped_snapshot(
+        PID,
+        ctx.revision,
+        &outcome,
+        &app,
+        &spaces_of,
+        None,
+        false,
+        false,
+    )
+    .expect("a positively read auxiliary never refuses the whole snapshot");
+    assert!(snap.windows.is_empty(), "auxiliary never a live member");
+    assert!(snap.meta.is_empty(), "auxiliary never a roster meta row");
+    assert!(
+        snap.excluded_reasons.is_empty(),
+        "auxiliary is not an exclusion row either"
+    );
+    assert!(
+        !snap.cg_alive.iter().any(|d| d.wid == AUX),
+        "an AX-enumerated auxiliary never rides AX-absent CG-alive evidence"
+    );
+    let w0_detail = snap
+        .cg_alive
+        .iter()
+        .find(|d| d.wid == W0)
+        .expect("the AX-omitted true member keeps fresh CG evidence");
+    assert_eq!(w0_detail.spaces, vec![320]);
+    assert!(!w0_detail.onscreen, "offscreen fullscreen liveness still counts");
+    assert!(w0_detail.bounds.is_some_and(|(_, _, w, h)| w > 0 && h > 0));
+    assert!(!snapshot_is_covering(
+        snap.windows.is_empty(),
+        snap.excluded > 0
+    ));
+
+    // Production non-covering roster path: no explicit close, the known
+    // tiled sibling keeps its provable home, and the auxiliary never enters
+    // the roster.
+    let pruned = prune_current_homed_with_oracle(&mut retained, PID, &snap, &ctx);
+    assert!(pruned.is_empty(), "no inferred close: {pruned:?}");
+    assert!(
+        preserve_non_covering_hidden(&retained, PID, &snap, &ctx).is_empty(),
+        "fresh CG evidence suppresses stale-home preservation"
+    );
+    mark_roster_incomplete(&mut retained, PID, "blank-hidden");
+    let rehomed = rehydrate_cg_alive(&mut retained, PID, &snap, &ctx, true);
+    assert!(
+        rehomed
+            .get(&DomainKey {
+                output: OutputId("macos-display-1".to_owned()),
+                workspace: WorkspaceId(crate::topology::workspace_key(319)),
+            })
+            .is_some_and(|windows| windows.iter().any(|w| w.wid == W1)),
+        "the Away sibling keeps its provable home: {rehomed:?}"
+    );
+    assert!(!retained.apps[&PID].roster.contains_key(&AUX));
+    assert!(retained.apps[&PID].roster.contains_key(&W0));
+    assert!(retained.apps[&PID].roster.contains_key(&W1));
+    assert_eq!(
+        retained.apps[&PID].roster[&W0].detached_membership, None,
+        "a windowed anchor at entry never seeds a detached surface"
+    );
+    assert!(
+        retained.apps[&PID].roster[&W0].spaces.is_empty(),
+        "the detached SID is not fabricated into a Desktop home"
+    );
+    audit_roster_hold(&mut retained, PID, &ctx, true);
+    assert!(
+        retained.apps[&PID].roster_incomplete,
+        "the unproven fullscreen state stays fail-closed until the next read"
+    );
+    assert_eq!(retained.apps[&PID].roster_cause, "blank-hidden");
+}
+
+/// The combined condition the entry proxy alone cannot prove: a genuine
+/// prior-fullscreen lifetime (w0 already carries an exact detached fact)
+/// whose next read lists ONLY the auxiliary proxy in AX while fresh CG/SLS
+/// still names w0. w0 must stay retained with its detached fact published
+/// under the fresh revision, and the proxy must never become a lifetime.
+#[test]
+fn retained_fullscreen_survives_auxiliary_only_proxy_listing() {
+    use crate::classifier::ActivationPolicy;
+    use crate::native_facts::NativeAppFacts;
+    use crate::native_tile_backend::build_scoped_snapshot;
+    use crate::runtime_core::rehydrate_cg_alive;
+
+    const PID: u32 = 12_168;
+    const W0: u32 = 10_747;
+    const AUX: u32 = 10_815;
+
+    let mut ctx = two_display_ctx();
+    for (domain, sid) in ctx.domains.iter_mut().zip([317, 319, 156]) {
+        domain.space = sid;
+        domain.workspace = WorkspaceId(crate::topology::workspace_key(sid));
+        domain.current = sid == 156;
+    }
+    ctx.detached_spaces.insert(320, (1, true));
+
+    // Genuine prior fullscreen: w0 is the AX member on the detached Space
+    // with fresh CG liveness, so the product roster path seeds the exact
+    // detached fact (never fabricated from a windowed anchor).
+    let mut retained = retained_with_roster(PID, 1);
+    let mut fullscreen = observed(W0, 0, 0, 2240, 1260);
+    fullscreen.fullscreen = true;
+    let seeding = scoped_snapshot(
+        vec![fullscreen],
+        vec![vec![320]],
+        0,
+        ctx.revision,
+        true,
+        vec![W0],
+    );
+    assert!(
+        apply_roster_covering(&mut retained, PID, &seeding, &ctx).is_empty(),
+        "seeding fullscreen observation closes nothing"
+    );
+    assert_eq!(
+        retained.apps[&PID].roster[&W0].detached_membership,
+        Some((ctx.revision, 320)),
+        "the prior fullscreen lifetime is a genuine retained fact"
+    );
+    assert!(retained.apps[&PID].roster[&W0].spaces.is_empty());
+
+    // Next read at the fresh revision: AX lists only the same-owner
+    // AXWindow/AXUnknown proxy; fresh CG/SLS still names exact w0 (layer 0,
+    // offscreen, full frame) on the detached Space.
+    ctx.revision += 1;
+    let mut outcome = auxiliary_entry_outcome();
+    outcome.cg_owner_wids = vec![W0, AUX];
+    outcome
+        .cg_entries
+        .retain(|entry| entry.wid == W0 || entry.wid == AUX);
+    let app = NativeAppFacts {
+        pid: PID,
+        hidden: false,
+        activation_policy: ActivationPolicy::Regular,
+        is_own_bundle: false,
+        app_id: Some("com.example.fixture".to_owned()),
+    };
+    let spaces_of = |wid: u32| match wid {
+        W0 => Ok(vec![320u64]),
+        _ => Ok(Vec::new()),
+    };
+    let entry = build_scoped_snapshot(
+        PID,
+        ctx.revision,
+        &outcome,
+        &app,
+        &spaces_of,
+        None,
+        false,
+        false,
+    )
+    .expect("an auxiliary-only AX listing never refuses the entry snapshot");
+    assert!(entry.windows.is_empty(), "auxiliary never a live member");
+    assert!(entry.meta.is_empty(), "auxiliary never a roster meta row");
+    assert!(entry.excluded_reasons.is_empty());
+    assert!(
+        !entry.cg_alive.iter().any(|d| d.wid == AUX),
+        "an AX-enumerated auxiliary never rides AX-absent CG-alive evidence"
+    );
+    let detail = entry
+        .cg_alive
+        .iter()
+        .find(|d| d.wid == W0)
+        .expect("exact w0 keeps its fresh CG/SLS evidence");
+    assert_eq!(detail.spaces, vec![320]);
+    assert_eq!((detail.layer, detail.onscreen), (0, false));
+    assert_eq!(detail.bounds, Some((0, 0, 2240, 1260)));
+
+    // Retention: the AX-absent but CG-alive anchor is never closed, and the
+    // parked reread publishes its detached fact under the fresh revision
+    // without fabricating a Desktop home or a proxy lifetime.
+    assert!(
+        apply_roster_covering(&mut retained, PID, &entry, &ctx).is_empty(),
+        "fresh CG liveness closes nothing"
+    );
+    assert!(
+        retained.apps[&PID].roster.contains_key(&W0),
+        "w0 stays a retained lifetime through the proxy-only listing"
+    );
+    assert_eq!(
+        retained.apps[&PID].roster[&W0].detached_membership,
+        Some((ctx.revision - 1, 320)),
+        "the prior detached fact holds until the parked reread"
+    );
+    assert!(retained.apps[&PID].roster_incomplete);
+    assert_eq!(retained.apps[&PID].roster_cause, "cg-alive");
+
+    let extra = rehydrate_cg_alive(&mut retained, PID, &entry, &ctx, true);
+    assert!(extra.is_empty(), "no Desktop home fabricated: {extra:?}");
+    assert_eq!(
+        retained.apps[&PID].roster[&W0].detached_membership,
+        Some((ctx.revision, 320)),
+        "the detached fact is republished under the valid revision"
+    );
+    assert!(retained.apps[&PID].roster[&W0].spaces.is_empty());
+    assert!(
+        retained.apps[&PID].roster[&W0]
+            .observed
+            .is_some_and(|w| w.fullscreen),
+        "the retained anchor keeps its fullscreen observation"
+    );
+    assert!(
+        !retained.apps[&PID].roster.contains_key(&AUX),
+        "the proxy never mints a roster lifetime"
+    );
+    assert_eq!(retained.apps[&PID].roster.len(), 1);
+    assert!(
+        !retained.apps[&PID].roster_incomplete,
+        "the exact parked lifetime lifts the hold"
+    );
+}
+
+#[test]
+fn snapshot_fence_ignores_auxiliary_legs_and_refuses_unknown_members() {
+    use crate::classifier::{
+        ActivationPolicy, ROLE_SHEET, ROLE_WINDOW, SUBROLE_DIALOG, SUBROLE_STANDARD, SUBROLE_UNKNOWN,
+    };
+    use crate::ffi::AxFrame;
+    use crate::native_facts::{NativeAppFacts, NativeReadOutcome, NativeWindowFacts};
+    use crate::native_tile_backend::build_scoped_snapshot;
+
+    const PID: u32 = 12_168;
+    const WID: u32 = 10_815;
+
+    fn facts(wid: u32, role: Option<&str>, subrole: Option<&str>) -> NativeWindowFacts {
+        NativeWindowFacts {
+            wid,
+            role: role.map(str::to_owned),
+            subrole: subrole.map(str::to_owned),
+            fullscreen: Some(false),
+            minimized: Some(false),
+            modal: Some(false),
+            size_settable: Some(true),
+            min_size: None,
+            max_size: None,
+            frame: Some(AxFrame {
+                x: 0.0,
+                y: 0.0,
+                w: 2240.0,
+                h: 1260.0,
+            }),
+            cg_layer: Some(0),
+            cg_onscreen: Some(true),
+        }
+    }
+    fn outcome(windows: Vec<NativeWindowFacts>) -> NativeReadOutcome {
+        NativeReadOutcome {
+            pid: PID,
+            requested: windows.len(),
+            observed: windows.len(),
+            failed: 0,
+            first_cause: String::new(),
+            windows,
+            cg_complete: true,
+            cg_owner_wids: vec![WID],
+            cg_entries: Vec::new(),
+        }
+    }
+    fn build(read: &NativeReadOutcome) -> Result<ScopedBackendSnapshot, String> {
+        let app = NativeAppFacts {
+            pid: PID,
+            hidden: false,
+            activation_policy: ActivationPolicy::Regular,
+            is_own_bundle: false,
+            app_id: None,
+        };
+        build_scoped_snapshot(PID, 7, read, &app, &|_| Ok(vec![320u64]), None, false, false)
+    }
+    fn drop_leg(facts: &mut NativeWindowFacts, leg: &str) {
+        match leg {
+            "frame" => facts.frame = None,
+            "fullscreen" => facts.fullscreen = None,
+            "minimized" => facts.minimized = None,
+            "cg" => {
+                facts.cg_layer = None;
+                facts.cg_onscreen = None;
+            }
+            other => panic!("unknown leg {other}"),
+        }
+    }
+
+    // The auxiliary's own legs are irrelevant: each missing leg still
+    // yields a successful, memberless snapshot.
+    for leg in ["frame", "fullscreen", "minimized", "cg"] {
+        let mut aux = facts(WID, Some(ROLE_WINDOW), Some(SUBROLE_UNKNOWN));
+        drop_leg(&mut aux, leg);
+        let snap = build(&outcome(vec![aux]))
+            .unwrap_or_else(|e| panic!("auxiliary {leg} leg refused the snapshot: {e}"));
+        assert!(snap.windows.is_empty() && snap.meta.is_empty());
+        assert!(snap.excluded_reasons.is_empty());
+    }
+    // Unknown reads stay fail-closed: an ordinary shape with any missing
+    // member leg still refuses the whole snapshot.
+    for leg in ["frame", "fullscreen", "minimized", "cg"] {
+        let mut ordinary = facts(WID, Some(ROLE_WINDOW), Some(SUBROLE_STANDARD));
+        drop_leg(&mut ordinary, leg);
+        assert!(build(&outcome(vec![ordinary])).is_err(), "ordinary {leg}");
+    }
+    // A missing kind is unknown, not an auxiliary: it must refuse too.
+    let mut unknown = facts(WID, None, None);
+    drop_leg(&mut unknown, "fullscreen");
+    assert!(build(&outcome(vec![unknown])).is_err());
+    let mut unknown_subrole = facts(WID, Some(ROLE_WINDOW), None);
+    drop_leg(&mut unknown_subrole, "cg");
+    assert!(build(&outcome(vec![unknown_subrole])).is_err());
+
+    // Recognized float semantics keep publishing raw facts: dialog and
+    // sheet members are never pre-omitted.
+    const DIALOG_WID: u32 = 10_816;
+    const SHEET_WID: u32 = 10_817;
+    let dialog = facts(DIALOG_WID, Some(ROLE_WINDOW), Some(SUBROLE_DIALOG));
+    let sheet = facts(SHEET_WID, Some(ROLE_SHEET), None);
+    let snap = build(&outcome(vec![dialog, sheet])).expect("recognized floats publish");
+    assert_eq!(snap.windows.len(), 2);
+    assert_eq!(
+        snap.meta
+            .iter()
+            .find(|m| m.wid == DIALOG_WID)
+            .and_then(|m| m.subrole.as_deref()),
+        Some(SUBROLE_DIALOG)
+    );
+    assert_eq!(
+        snap.meta
+            .iter()
+            .find(|m| m.wid == SHEET_WID)
+            .and_then(|m| m.role.as_deref()),
+        Some(ROLE_SHEET)
+    );
+}

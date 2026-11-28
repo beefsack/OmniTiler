@@ -14,7 +14,10 @@
 //! enumeration anchor future captures, never a post-read re-join), publishes live rows with raw
 //! nullable facts for every in-scope safely observed window (the core owns
 //! classification; the producer never pre-omits accessory/prohibited,
-//! nonordinary-layer, or unknown-role shapes), attaches per-window Space
+//! nonordinary-layer, or unknown-role shapes — the one exception is a
+//! positively read `AXWindow`/`AXUnknown` non-standard auxiliary, which can
+//! never be a tile or recognized float member and is therefore never
+//! published nor allowed to refuse the snapshot), attaches per-window Space
 //! membership, and actuates through fenced setters. Observer notifications
 //! trigger rereads (same [`crate::ffi::Phase1Observer`] shape as the Phase 1
 //! backend).
@@ -748,7 +751,10 @@ pub(crate) fn classify_retained_membership(
 /// whole-snapshot refusal on the first incomplete leg, per-window Space
 /// membership, and raw nullable facts for every in-scope safely observed
 /// window (the core classifies; the producer never pre-omits
-/// accessory/prohibited/nonordinary-layer/unknown-role shapes). Only
+/// accessory/prohibited/nonordinary-layer/unknown-role shapes — except a
+/// positively read `AXWindow`/`AXUnknown` non-standard auxiliary, which is
+/// never a tile or recognized float member and is neither published nor
+/// allowed to refuse the snapshot). Only
 /// genuinely incomplete captures refuse whole, own-process rows omit, and
 /// minimized/hidden-app rows omit into the retained minimized path.
 /// `focused_wid` plus `focus_cg_owned` ride for the worker-stamped evidence
@@ -766,12 +772,26 @@ pub fn build_scoped_snapshot(
 ) -> Result<ScopedBackendSnapshot, String> {
     use crate::classifier::ExcludeReason;
 
+    // Positively read non-standard auxiliaries (`AXWindow` + `AXUnknown`,
+    // e.g. capture3's fullscreen presentation proxy) are never snapshot
+    // members: the classifier excludes the shape (`UnknownRole`) and the v4
+    // core holds it (never a tile, never a recognized float). They are
+    // therefore omitted here without a policy echo and, crucially, their
+    // own unread legs never refuse the whole snapshot. Everything else
+    // (recognized dialog/sheet/floating shapes, unknown reads, ordinary
+    // windows) keeps the existing fail-closed fence and publication.
+    let mut auxiliary_wids: Vec<u32> = Vec::new();
+
     // Whole-snapshot completeness fence (no classifier policy here): an
     // incomplete native read never publishes as a complete replacement
     // (which would invent destruction). Frame, fullscreen, minimized, and
     // the CG layer/onscreen join must all read; a missing CG join never
     // defaults to layer 0.
     for facts in &outcome.windows {
+        if facts.is_nonstandard_auxiliary() {
+            auxiliary_wids.push(facts.wid);
+            continue;
+        }
         let missing = if facts.frame.is_none() {
             Some("frame")
         } else if facts.fullscreen.is_none() {
@@ -795,6 +815,10 @@ pub fn build_scoped_snapshot(
     let mut excluded_reasons =
         Vec::<crate::runtime_types::ExcludedOmission>::with_capacity(outcome.windows.len());
     for facts in &outcome.windows {
+        // Never published to the roster or meta (see the fence above).
+        if facts.is_nonstandard_auxiliary() {
+            continue;
+        }
         // Own-process-only suppression stays at the producer: the current
         // process never binds, even under its own bundle in another process.
         if app_facts.is_own_bundle {
@@ -913,6 +937,9 @@ pub fn build_scoped_snapshot(
         .iter()
         .map(|w| w.wid)
         .chain(excluded_reasons.iter().map(|o| o.wid))
+        // An AX-enumerated auxiliary is not AX-absent: it never mints
+        // CG-alive evidence (it is not a retained lifetime).
+        .chain(auxiliary_wids.iter().copied())
         .collect();
     let cg_entry_of = |wid: u32| outcome.cg_entries.iter().find(|e| e.wid == wid);
     let mut cg_alive = Vec::new();
@@ -1716,7 +1743,15 @@ mod native {
             // reports honestly and publishes nothing (retained state
             // preserved) — a failed subscription is never assumed success.
             if let Some(observer) = self.observer.as_mut() {
-                let wids: Vec<u32> = outcome.windows.iter().map(|w| w.wid).collect();
+                // A positively read non-standard auxiliary is not a
+                // snapshot member (see `build_scoped_snapshot`), so it
+                // never joins the window-level watch set either.
+                let wids: Vec<u32> = outcome
+                    .windows
+                    .iter()
+                    .filter(|w| !w.is_nonstandard_auxiliary())
+                    .map(|w| w.wid)
+                    .collect();
                 observer
                     .sync_windows(&wids, messaging_secs())
                     .map_err(|reason| format!("subscription sync pid {}: {reason}", self.pid))?;

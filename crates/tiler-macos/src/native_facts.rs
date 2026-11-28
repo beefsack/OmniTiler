@@ -69,7 +69,29 @@ pub struct NativeWindowFacts {
     pub cg_onscreen: Option<bool>,
 }
 
+/// True only for a positively read non-standard auxiliary window: `AXRole`
+/// `AXWindow` with `AXSubrole` `AXUnknown` (macOS's fullscreen presentation /
+/// toolbar proxy surfaces, e.g. capture3 WID 10815). Both legs must have
+/// read; a missing role or subrole stays unknown and fail-closed. This shape
+/// is never a tile (legacy classifier: `UnknownRole`) and never a recognized
+/// float member (dialog/sheet/floating keep their own subroles), so it is
+/// not a snapshot member: it is neither published to the roster nor allowed
+/// to refuse the whole snapshot for its own unread legs.
+#[must_use]
+pub(crate) fn is_nonstandard_auxiliary(role: Option<&str>, subrole: Option<&str>) -> bool {
+    role == Some(crate::classifier::ROLE_WINDOW)
+        && subrole == Some(crate::classifier::SUBROLE_UNKNOWN)
+}
+
 impl NativeWindowFacts {
+    /// Positively read non-standard auxiliary (see
+    /// [`is_nonstandard_auxiliary`]): never a snapshot member, never an
+    /// anchor subject.
+    #[must_use]
+    pub(crate) fn is_nonstandard_auxiliary(&self) -> bool {
+        is_nonstandard_auxiliary(self.role.as_deref(), self.subrole.as_deref())
+    }
+
     /// Classifier AX inputs. `None` while `fullscreen` or `minimized` is
     /// unknown. HONESTY (whole-snapshot rule): a `None` here must make the
     /// caller refuse the incomplete whole snapshot (see
@@ -233,8 +255,10 @@ pub struct CgWindowEntry {
 /// joined window (partial facts included; classification gates
 /// completeness separately via [`Self::classify_all`]). Any failed leg fails
 /// the whole read with requested/observed/failed counts plus the first
-/// cause; truncation past [`crate::config::MAX_WINDOWS`] fails too (a capped
-/// subset must never publish as a complete replacement).
+/// cause, except a positively read non-standard auxiliary
+/// ([`is_nonstandard_auxiliary`]), which is carried as a shape-only row and
+/// never becomes a member; truncation past [`crate::config::MAX_WINDOWS`]
+/// fails too (a capped subset must never publish as a complete replacement).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeReadOutcome {
     pub pid: u32,
@@ -273,6 +297,12 @@ impl NativeReadOutcome {
     ) -> Result<Vec<ClassifiedRead>, IncompleteRead> {
         let mut out = Vec::with_capacity(self.windows.len());
         for facts in &self.windows {
+            // A positively read non-standard auxiliary is not a member:
+            // its unread legs must not refuse the whole snapshot (it can
+            // never tile or float). Unknown-role reads still refuse below.
+            if facts.is_nonstandard_auxiliary() {
+                continue;
+            }
             let missing = if facts.fullscreen.is_none() {
                 Some("fullscreen")
             } else if facts.minimized.is_none() {
@@ -413,11 +443,12 @@ pub fn read_app_window_facts(pid: u32) -> Result<NativeReadOutcome, String> {
 /// Owner-thread retaining read: the EXACT `AxElement` handles enumerated
 /// and read in this same genuine snapshot alongside their plain facts.
 /// Returns `(outcome, retained)` where `retained` holds one handle per
-/// successfully read wid (first handle wins on duplicate wids; failed legs
-/// retain nothing). Handles stay on the calling owner thread and must be
-/// consumed there (anchor admission); they are never sent to another thread
-/// (e.g. never via `EngineJob` — `AxElement` is `!Send`). On `Err` nothing
-/// retains (handles drop here on the owner thread).
+/// successfully read member wid (first handle wins on duplicate wids;
+/// failed legs retain nothing; a non-standard auxiliary retains nothing —
+/// it is never a capture subject). Handles stay on the calling owner thread
+/// and must be consumed there (anchor admission); they are never sent to
+/// another thread (e.g. never via `EngineJob` — `AxElement` is `!Send`). On
+/// `Err` nothing retains (handles drop here on the owner thread).
 pub fn read_app_window_facts_retaining(
     pid: u32,
 ) -> Result<(NativeReadOutcome, Vec<(u32, AxElement)>), String> {
@@ -517,6 +548,38 @@ pub fn read_app_window_facts_with_cg_retaining(
             fail("window identity join failed".to_owned());
             continue;
         };
+        // Kind before the member legs: a positively read non-standard
+        // auxiliary (`AXWindow`/`AXUnknown`) is not a snapshot member, so
+        // its frame/min/max/fullscreen/minimized legs are irrelevant and
+        // must not refuse the whole read. Capture3's fullscreen proxy is
+        // exactly this shape and its admission is decided by identity plus
+        // kind alone; an unknown kind stays fail-closed below.
+        let role = ax_string_attribute(&window, "AXRole").ok().flatten();
+        let subrole = ax_string_attribute(&window, "AXSubrole").ok().flatten();
+        let joined_cg = cg_entries
+            .binary_search_by_key(&wid, |e| e.wid)
+            .ok()
+            .map(|i| &cg_entries[i]);
+        if is_nonstandard_auxiliary(role.as_deref(), subrole.as_deref()) {
+            // Shape-only row (identity plus the CG join; no AX member leg,
+            // no anchor): the snapshot producer omits it, and it must not
+            // fail the read for a missing frame or fact leg.
+            out.push(NativeWindowFacts {
+                wid,
+                role,
+                subrole,
+                fullscreen: None,
+                minimized: None,
+                modal: None,
+                size_settable: None,
+                min_size: None,
+                max_size: None,
+                frame: None,
+                cg_layer: joined_cg.map(|w| w.layer),
+                cg_onscreen: joined_cg.map(|w| w.onscreen),
+            });
+            continue;
+        }
         let frame = match ax_get_frame(&window) {
             Ok(frame) => Some(frame),
             Err(code) => {
@@ -529,10 +592,6 @@ pub fn read_app_window_facts_with_cg_retaining(
         // advisory) from transient failures (fail the window, hence the
         // read, preserving retained state); classification gates
         // completeness for the rest via `classify_all`.
-        let joined_cg = cg_entries
-            .binary_search_by_key(&wid, |e| e.wid)
-            .ok()
-            .map(|i| &cg_entries[i]);
         let min_size = match ax_min_size(&window) {
             Ok(bound) => bound,
             Err(code) => {
@@ -542,8 +601,8 @@ pub fn read_app_window_facts_with_cg_retaining(
         };
         out.push(NativeWindowFacts {
             wid,
-            role: ax_string_attribute(&window, "AXRole").ok().flatten(),
-            subrole: ax_string_attribute(&window, "AXSubrole").ok().flatten(),
+            role,
+            subrole,
             fullscreen: ax_fullscreen_state(&window).ok(),
             minimized: ax_bool_attribute(&window, "AXMinimized").ok(),
             modal: ax_bool_attribute(&window, "AXModal").ok(),
