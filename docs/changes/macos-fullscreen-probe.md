@@ -16,6 +16,18 @@ The macOS adapter now uses exact typed source/target checks before Mission Contr
 
 Offline gate: protocol 399 passed; core 2,862 passed; macOS library 1,867 passed and 3 ignored. Workspace compile-only built 88 test executables. Clippy reported only the existing Windows log-sink and macOS fixture-test warnings; KWin typecheck passed.
 
+The candidate passed 1,894 macOS library tests (3 ignored); all-target Clippy matched the existing baseline. Both candidate bundles built and passed independent signature verification: product 216 s, fixture 144 s, verification 1.36 s. The signed read-only preflight confirmed Accessibility, event posting, an unlocked session without Secure Input, and readable topology and pointer with Mission Control closed.
+
+The signed Authentic sequence stopped in `detached-away-prepare` after 10 s overall. It created the owned home Desktop and joined the subject, but the oracle counted an all-Spaces desktop window and three additional unclassified rows in its raw membership inventory. That inventory cannot prove the fixture predicate: a fresh owned Desktop may still contain positively identified system surfaces. This was a harness failure, not a product refusal or an input disturbance. No retry was taken. The product tap did not launch, fullscreen setup did not run, no chord was posted, and no fullscreen member was written.
+
+| Leg | Result | Timing |
+| --- | --- | --- |
+| Redundant | Not reached; exact running tap bindings and native dispatch not sampled | — |
+| Away | Not reached | — |
+| Return | Not reached | — |
+
+Controller teardown was clean. Independent readback matched both displays' starting currents and ordered Spaces, the starting pointer without a warp, and closed Mission Control; no owned process, owned Space, or recovery receipt remained. Neither route was enabled or advertised. The candidate was not merged: the membership oracle needs an authenticated caller/window join and must distinguish proven system/fixture auxiliaries from other user windows, refusing unreadable or ambiguous membership.
+
 ## Scope and sample rules
 
 Signed, SIP-on, host-only fixture runs exercised an owned windowed Desktop sibling and the same window's detached fullscreen Space through pinned Mission Control and the Dock gesture. A separate product switch-away candidate and a single signed rerun tested the product path; neither established a product route.
