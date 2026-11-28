@@ -9,7 +9,10 @@
 //! it empty. [`restore_starting_currents`] is the separate teardown restore:
 //! a no-op readback when already exact, one goto attempt per drifted display
 //! otherwise, never a creation. [`remove_owned_space`] removes exactly one
-//! leg-created Space after pinning its display and proving emptiness.
+//! leg-created Space after pinning its display and proving emptiness;
+//! [`remove_owned_space_typed`] is the active `LiveLeg` teardown variant,
+//! whose live seam re-reads the shared owned-space membership authority
+//! instead of the default empty gate.
 //!
 //! The orchestration below is shared by production and tests: production
 //! runs it through [`LiveNativeSpaces`] (the existing owned public Mission
@@ -137,6 +140,20 @@ pub trait NativeSpaces {
     fn space_remove(&mut self, sid: u64) -> Result<McLegState, String>;
     /// Prove `sid` currently holds no tiler-relevant occupants.
     fn space_require_empty(&mut self, sid: u64) -> Result<(), String>;
+    /// Emptiness authority for removing a Space this leg created. The
+    /// default keeps the strict empty gate for non-live/test transports; the
+    /// live seam overrides it with the shared typed offscreen-system-chrome
+    /// membership authorization. Probe-creation removal never uses this.
+    fn space_require_owned_empty(&mut self, sid: u64) -> Result<(), String> {
+        self.space_require_empty(sid)
+    }
+    /// Remove one leg-created Space under the owned-space authority. Default
+    /// delegates to [`NativeSpaces::space_remove`]; the live seam uses the
+    /// typed pre-press re-read. Creation/probe removal stays on
+    /// [`NativeSpaces::space_remove`].
+    fn space_remove_owned(&mut self, sid: u64) -> Result<McLegState, String> {
+        self.space_remove(sid)
+    }
     /// Mission Control presence readback (`None` when unreadable; never a
     /// claim). Closing presence after a probe or restore.
     fn mc_present(&mut self) -> Option<bool>;
@@ -561,6 +578,27 @@ pub fn restore_starting_currents<S: NativeSpaces>(
     report
 }
 
+/// Pin one owned SID to its creation display and refuse any move/ambiguity.
+/// Shared by the plain and owned-authority removal seams.
+fn pin_owned_display<S: NativeSpaces>(
+    spaces: &mut S,
+    display: usize,
+    sid: u64,
+) -> Result<(), String> {
+    let topo = spaces
+        .space_snapshot()
+        .map_err(|e| format!("owned-space removal: snapshot unreadable ({e}); refusing"))?;
+    match topo.locate(sid) {
+        Some((found_display, _)) if found_display == display => Ok(()),
+        Some((found_display, _)) => Err(format!(
+            "owned-space removal: Space {sid} now on display {found_display} (created on {display}); ownership uncertain, refusing"
+        )),
+        None => Err(format!(
+            "owned-space removal: Space {sid} not uniquely located; ownership uncertain, refusing"
+        )),
+    }
+}
+
 /// Remove exactly one leg-created Space: pin it to its creation display,
 /// re-prove emptiness, remove, and let the seam verify absence. Returns the
 /// verified Mission Control close state so a teardown can report a close
@@ -571,26 +609,33 @@ pub fn remove_owned_space<S: NativeSpaces>(
     display: usize,
     sid: u64,
 ) -> Result<McLegState, String> {
-    let topo = spaces
-        .space_snapshot()
-        .map_err(|e| format!("owned-space removal: snapshot unreadable ({e}); refusing"))?;
-    match topo.locate(sid) {
-        Some((found_display, _)) if found_display == display => {}
-        Some((found_display, _)) => {
-            return Err(format!(
-                "owned-space removal: Space {sid} now on display {found_display} (created on {display}); ownership uncertain, refusing"
-            ));
-        }
-        None => {
-            return Err(format!(
-                "owned-space removal: Space {sid} not uniquely located; ownership uncertain, refusing"
-            ));
-        }
-    }
+    pin_owned_display(spaces, display, sid)?;
     spaces.space_require_empty(sid).map_err(|e| {
         format!("owned-space removal: Space {sid} not provably empty ({e}); never forced")
     })?;
     spaces.space_remove(sid).map_err(|e| {
+        format!(
+            "owned-space removal: Space {sid} removal refused ({e}); residue: owned Space remains"
+        )
+    })
+}
+
+/// Remove exactly one leg-created Space through the owned-space authority:
+/// the caller's in-memory creation proof is the ownership claim, the pinned
+/// display still refuses a move, and emptiness is re-read live through the
+/// shared typed membership gate (offscreen system chrome only; unknown
+/// membership refuses). Used by active `LiveLeg` teardown; the creation
+/// probe keeps [`remove_owned_space`] and its strict empty gate.
+pub fn remove_owned_space_typed<S: NativeSpaces>(
+    spaces: &mut S,
+    display: usize,
+    sid: u64,
+) -> Result<McLegState, String> {
+    pin_owned_display(spaces, display, sid)?;
+    spaces.space_require_owned_empty(sid).map_err(|e| {
+        format!("owned-space removal: Space {sid} not provably owned-empty ({e}); never forced")
+    })?;
+    spaces.space_remove_owned(sid).map_err(|e| {
         format!(
             "owned-space removal: Space {sid} removal refused ({e}); residue: owned Space remains"
         )
@@ -711,6 +756,26 @@ impl NativeSpaces for LiveNativeSpaces {
             .map_err(|e| format!("Space {sid} not provably empty ({e})"))
     }
 
+    fn space_require_owned_empty(&mut self, sid: u64) -> Result<(), String> {
+        let snapshot = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| {
+            format!("owned-space recovery: fresh topology unreadable ({e}); refusing")
+        })?;
+        crate::owned_recovery::verify_owned_space_members(sid, &snapshot)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn space_remove_owned(&mut self, sid: u64) -> Result<McLegState, String> {
+        let mut budget = self.budget();
+        let mut dispatched = false;
+        crate::owned_recovery::remove_owned_sid_typed(sid, &mut budget, false, &mut dispatched)
+            .map(|(_, close)| McLegState {
+                closed: close.is_none(),
+                shortfall: close,
+            })
+            .map_err(|e| format!("remove Space {sid} refused ({e})"))
+    }
+
     fn mc_present(&mut self) -> Option<bool> {
         crate::mc_lifecycle::live::mc_group_present().ok()
     }
@@ -772,6 +837,11 @@ mod tests {
         rogue: Option<Rogue>,
         /// SIDs the model treats as occupied (emptiness refuses).
         occupied: Vec<u64>,
+        /// When true, the owned-space authority refuses independently of
+        /// [`Self::occupied`]: proves the typed teardown seam consults the
+        /// shared owned gate instead of silently falling back to the default
+        /// empty gate.
+        owned_refuse: bool,
         log: Vec<&'static str>,
     }
 
@@ -795,6 +865,7 @@ mod tests {
                 fail: None,
                 rogue: None,
                 occupied: Vec::new(),
+                owned_refuse: false,
                 log: Vec::new(),
             }
         }
@@ -915,6 +986,19 @@ mod tests {
             self.locate(sid)
                 .map(|_| ())
                 .ok_or_else(|| format!("model Space {sid} unknown"))
+        }
+
+        fn space_require_owned_empty(&mut self, sid: u64) -> Result<(), String> {
+            self.log.push("owned-empty");
+            if self.owned_refuse {
+                return Err(format!("model owned authority refuses Space {sid}"));
+            }
+            self.space_require_empty(sid)
+        }
+
+        fn space_remove_owned(&mut self, sid: u64) -> Result<McLegState, String> {
+            self.log.push("remove-owned");
+            self.space_remove(sid)
         }
 
         fn mc_present(&mut self) -> Option<bool> {
@@ -1124,5 +1208,29 @@ mod tests {
         assert!(model.locate(temp).is_none());
         // Unknown SID refuses.
         assert!(remove_owned_space(&mut model, 0, 999_999).is_err());
+    }
+
+    #[test]
+    fn typed_removal_uses_owned_authority_not_the_default_gate() {
+        let mut model = ModelSpaces::new(vec![(vec![11, 22], 11)]);
+        let temp = model.space_create(0).expect("create").sid;
+        // The owned authority refuses while the default empty gate would
+        // allow: the typed teardown route must surface that refusal and never
+        // silently fall back to the plain gate.
+        model.owned_refuse = true;
+        let err = remove_owned_space_typed(&mut model, 0, temp).unwrap_err();
+        assert!(err.contains("owned-empty"), "unexpected: {err}");
+        assert!(model.locate(temp).is_some(), "owned refusal never removes");
+        assert!(
+            !model.log.contains(&"remove-owned"),
+            "no removal press after an owned refusal"
+        );
+        model.owned_refuse = false;
+        remove_owned_space_typed(&mut model, 0, temp).expect("typed removal");
+        assert!(model.locate(temp).is_none());
+        assert!(
+            model.log.contains(&"remove-owned"),
+            "typed removal dispatches through the owned route"
+        );
     }
 }

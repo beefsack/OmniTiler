@@ -38,6 +38,17 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             space,
             allow_untested,
         } => tiler_macos::workspace_select::remove_empty(space, allow_untested),
+        Command::McRemoveOwnedEmpty {
+            space,
+            allow_untested,
+            verify_restored,
+        } => {
+            if verify_restored {
+                tiler_macos::workspace_select::verify_owned_restored(space)
+            } else {
+                tiler_macos::workspace_select::remove_empty_owned(space, allow_untested)
+            }
+        }
         Command::SpacesSelect { display, actions } => {
             tiler_macos::workspace_select::run(display, &actions)
         }

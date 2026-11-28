@@ -2546,6 +2546,73 @@ pub fn remove_empty(space: u64, allow_untested: bool) -> Result<String, (i32, St
     if ok { Ok(body) } else { Err((1, body)) }
 }
 
+/// Explicit receipt-bound recovery of one proven owned Space. This is the
+/// only seam that can remove a Space whose members are system chrome: it
+/// never relaxes the default emptiness gate above, and it is reachable only
+/// through the explicit `--owned-receipt` opt-in. The retained receipt set
+/// must name the exact SID (never an operator-only SID), the fresh topology
+/// must be its preimage plus one non-current User append, and every member
+/// must re-read live as an offscreen WindowManager/Dock/WindowServer/Finder/
+/// ControlCenter surface before the shared removal dispatch runs.
+pub fn remove_empty_owned(space: u64, allow_untested: bool) -> Result<String, (i32, String)> {
+    if space == 0 || !allow_untested {
+        return Err((
+            2,
+            "mc-remove-empty --owned-receipt needs nonzero SID and --allow-untested".to_owned(),
+        ));
+    }
+    use crate::mc_lifecycle::live;
+    let (receipt, baseline) =
+        crate::owned_recovery::load_persisted_owned_receipt(space).map_err(|e| (1, e))?;
+    live::action_gates().map_err(|e| (1, e.to_string()))?;
+    let mut awake = live::CaffeinateGuard::spawn(60).map_err(|e| (1, e.to_string()))?;
+    let mut budget = crate::mc_probe::ActionBudget::new(60);
+    let mut dispatched = false;
+    let result = crate::owned_recovery::remove_owned_sid_verified(
+        &receipt,
+        &mut budget,
+        false,
+        &mut dispatched,
+    )
+    .map(|(proof, close)| serde_json::json!({"proof":proof,"close_shortfall":close}))
+    .map_err(|e| e.to_string());
+    let closed = live::mc_close().map_err(|e| e.to_string());
+    // Do not snapshot a new geometry preimage under an already-open MC
+    // transform. Compare to the leg's original, persisted baseline.
+    let restoration = crate::live_baseline::capture_baseline(&mut crate::live_baseline::LiveBaselineReads)
+        .map(|after| crate::live_baseline::compare_teardown(&baseline, &after, &[]));
+    let restored = restoration
+        .as_ref()
+        .is_ok_and(|rows| rows.iter().all(|row| row.benign));
+    let reaped = awake.stop();
+    let ok = result
+        .as_ref()
+        .is_ok_and(|v| v["close_shortfall"].is_null())
+        && closed.is_ok()
+        && restored
+        && reaped;
+    let body = serde_json::json!({"action":"mc-remove-empty-owned","space":space,"result":result,
+        "remove_dispatched":dispatched,"mc_close":closed,"restoration":restoration,"caffeinate_reaped":reaped,"complete":ok}).to_string();
+    if ok { Ok(body) } else { Err((1, body)) }
+}
+
+/// Read-only verification of a retained recovery receipt after removal.
+pub fn verify_owned_restored(space: u64) -> Result<String, (i32, String)> {
+    let (_, baseline) =
+        crate::owned_recovery::load_persisted_owned_receipt(space).map_err(|e| (1, e))?;
+    let after = crate::live_baseline::capture_baseline(&mut crate::live_baseline::LiveBaselineReads)
+        .map_err(|e| (1, e))?;
+    let mismatches = crate::live_baseline::compare_teardown(&baseline, &after, &[]);
+    let mc_closed = crate::mc_lifecycle::live::mc_closed_verified().map_err(|e| (1, e.to_string()))?;
+    let complete = mc_closed && mismatches.iter().all(|row| row.benign);
+    let body = serde_json::json!({
+        "action": "mc-verify-owned-restored", "space": space, "mutates": false, "complete": complete,
+        "mc_closed": mc_closed, "native": after.native, "mismatches": mismatches,
+    })
+    .to_string();
+    if complete { Ok(body) } else { Err((1, body)) }
+}
+
 impl SelectionBackend for NativeSelection {
     fn display_count(&mut self) -> Result<usize, String> {
         fresh_display_count()

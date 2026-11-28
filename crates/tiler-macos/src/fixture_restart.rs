@@ -243,8 +243,6 @@ pub fn run_fixture_restart(opts: FixtureRestartOpts) -> Result<String, (i32, Str
             format!("fixture-restart: interrupt arm refused ({error})"),
         )
     })?;
-    #[cfg(target_os = "macos")]
-    ensure_appkit_singleton();
     let mut transport = LiveLegTransport::new();
     // Two product lifetimes plus the fixed setup/mutation/hydration/teardown
     // margin (exactly 300 s at the documented 90 s + 90 s shape). The
@@ -283,9 +281,4 @@ pub fn run_fixture_restart(opts: FixtureRestartOpts) -> Result<String, (i32, Str
     });
     envelope["mode"] = serde_json::json!(opts.mode.as_str());
     Ok(envelope.to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn ensure_appkit_singleton() {
-    crate::fixture_leg::ensure_appkit_singleton();
 }

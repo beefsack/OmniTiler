@@ -106,6 +106,7 @@ pub mod native_tile_backend;
 #[cfg(test)]
 mod native_tile_backend_tests;
 pub mod owned_control;
+pub mod owned_recovery;
 pub mod ownership;
 pub mod pager;
 pub mod pager_highlight;

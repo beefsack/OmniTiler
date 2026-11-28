@@ -767,23 +767,6 @@ fn completed_envelope(
     envelope
 }
 
-/// Create AppKit's shared application singleton on the main thread.
-///
-/// `NSScreen.screensHaveSeparateSpaces` answers with a stale `false` until
-/// that singleton exists (a fresh process prints `false` cold and `true`
-/// after `NSApplication.shared`), so a baseline captured before the leg
-/// initializes AppKit stores an untruthful preimage for an unchanged Mission
-/// Control setting. The singleton handle is benign: no `finishLaunching`, no
-/// activation policy change, no activation, and no focus effect.
-#[cfg(target_os = "macos")]
-pub(crate) fn ensure_appkit_singleton() {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
-    if let Some(mtm) = MainThreadMarker::new() {
-        let _ = NSApplication::sharedApplication(mtm);
-    }
-}
-
 /// Development-only fixture leg runner: the complete real entry point.
 /// Exit codes: 2 usage/validation, 1 live-gate/proof/teardown failure with
 /// evidence. Every failure path runs the leg teardown (starting-Space
@@ -909,16 +892,7 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
     settle_ms(opts.seconds).map_err(|e| (2, e))?;
     let _interrupt = crate::space_drag_diag_live::InterruptArmed::arm()
         .map_err(|e| (2, format!("fixture-leg: interrupt arm refused ({e})")))?;
-    // The baseline precedes every effect, so the AppKit singleton must exist
-    // before it: `NSScreen.screensHaveSeparateSpaces` answers with a stale
-    // `false` default until the shared application exists, while the
-    // teardown read (after the return probe and observation setup) sees the
-    // real Mission Control setting. Initializing here keeps both edges of
-    // the unchanged-setting comparison on the same truthful value; it does
-    // not call `finishLaunching`, set an activation policy, activate, or
-    // take focus.
-    #[cfg(target_os = "macos")]
-    ensure_appkit_singleton();
+    // LiveLeg's native baseline uses the AppKit-initializing mode getter.
     let mut transport = LiveLegTransport::new();
     let mut leg = LiveLeg::begin(&mut transport, opts.seconds.saturating_add(60))?;
     // From here every failure runs the teardown: finish consumes the leg.

@@ -1157,6 +1157,7 @@ pub(crate) mod live {
         sid: u64,
         budget: &mut ActionBudget,
         cleanup: bool,
+        verify: impl FnOnce(&TopologySnapshot) -> Result<(), McError>,
     ) -> Result<super::PressOutcome, McError> {
         action_gates()?;
         let snap0 = fresh_snapshot()?;
@@ -1171,7 +1172,7 @@ pub(crate) mod live {
             super::McDismissal::Manual,
             budget,
             cleanup,
-            |b| mc_remove_pressed(sid, &snap0, cgid, b, cleanup),
+            |b| mc_remove_pressed(sid, &snap0, cgid, b, cleanup, verify),
         )
     }
 
@@ -1181,6 +1182,7 @@ pub(crate) mod live {
         cgid: u32,
         budget: &mut ActionBudget,
         cleanup: bool,
+        verify: impl FnOnce(&TopologySnapshot) -> Result<(), McError>,
     ) -> Result<super::PressOutcome, McError> {
         let (d0, i0) = snap0.locate(sid).ok_or_else(|| {
             McError::Ownership(format!("Space {sid} lost its pre-open join; refusing"))
@@ -1203,6 +1205,7 @@ pub(crate) mod live {
                 "CG display ID changed during open (was {cgid}, now {cgid_fresh}); refusing stale dispatch"
             )));
         }
+        verify(&snap1)?;
         super::spend_leg(budget, cleanup, "remove-press")?;
         action_gates()?;
         crate::ffi::ax_perform_action(&target, MC_ACTION_REMOVE_DESKTOP).map_err(|code| {
@@ -1362,6 +1365,7 @@ pub(crate) mod live {
         _sid: u64,
         _budget: &mut ActionBudget,
         _cleanup: bool,
+        _verify: impl FnOnce(&TopologySnapshot) -> Result<(), McError>,
     ) -> Result<super::PressOutcome, McError> {
         unsupported("Mission Control lifecycle")
     }
@@ -1519,6 +1523,42 @@ pub(crate) fn remove_sid_verified(
     remove_dispatched: &mut bool,
 ) -> Result<(crate::mc_probe::EmptySummary, Option<String>), McError> {
     let scan = verify_space_empty(temp)?;
+    let close = remove_sid_dispatched(temp, budget, cleanup, remove_dispatched)?;
+    Ok((scan, close))
+}
+
+/// Post-scan removal dispatch shared by the default emptiness path and the
+/// receipt-bound owned recovery: fresh eligibility, SID-accepting press, and
+/// exact removal-effect readback. The caller supplies the already-proven
+/// emptiness authority (default scan or receipt-bound recovery proof), so
+/// this core never re-derives or widens it. Returns the Mission Control close
+/// shortfall; `None` means the leg verified Mission Control absent, never
+/// merely a missing presence read.
+/// Sets `remove_dispatched` once a press is sent, even when the effect stays
+/// unverified — cleanup must never replay it.
+pub(crate) fn remove_sid_dispatched(
+    temp: u64,
+    budget: &mut ActionBudget,
+    cleanup: bool,
+    remove_dispatched: &mut bool,
+) -> Result<Option<String>, McError> {
+    remove_sid_dispatched_checked(temp, budget, cleanup, remove_dispatched, |_| Ok(()))
+}
+
+/// Same dispatch with one caller-supplied pre-dispatch verification run
+/// after the fresh eligibility/locate gates and immediately before the SID
+/// press. The receipt-bound owned recovery uses it for its independent live
+/// re-read; the default emptiness path passes the no-op above.
+pub(crate) fn remove_sid_dispatched_checked<F>(
+    temp: u64,
+    budget: &mut ActionBudget,
+    cleanup: bool,
+    remove_dispatched: &mut bool,
+    verify: F,
+) -> Result<Option<String>, McError>
+where
+    F: FnOnce(&TopologySnapshot) -> Result<(), McError>,
+{
     let pre = live::fresh_snapshot()?;
     let di = removal_eligibility(&pre, temp)?;
     let (ldi, _) = pre.locate(temp).ok_or_else(|| {
@@ -1531,7 +1571,7 @@ pub(crate) fn remove_sid_verified(
             "temp Space {temp} joined display {ldi}, eligibility said {di}; ownership uncertain — cleanup blocked"
         )));
     }
-    let outcome = live::mc_remove_sid(temp, budget, cleanup)?;
+    let outcome = live::mc_remove_sid(temp, budget, cleanup, verify)?;
     *remove_dispatched = true;
     let mut after = outcome.after.ok_or_else(|| {
         McError::Blocked(format!(
@@ -1540,7 +1580,7 @@ pub(crate) fn remove_sid_verified(
         ))
     })?;
     if validate_removal_effect(&pre, &after, temp).is_ok() {
-        return Ok((scan, outcome.close_error));
+        return Ok(outcome.close_error);
     }
     // Async settle: the press was sent; poll fresh readbacks (never a
     // replay) until the removal lands or the bounded window expires.
@@ -1551,7 +1591,7 @@ pub(crate) fn remove_sid_verified(
         match live::fresh_snapshot() {
             Ok(s) => {
                 if validate_removal_effect(&pre, &s, temp).is_ok() {
-                    return Ok((scan, outcome.close_error));
+                    return Ok(outcome.close_error);
                 }
                 last = validate_removal_effect(&pre, &s, temp).unwrap_err();
                 after = s;

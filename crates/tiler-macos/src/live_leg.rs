@@ -54,7 +54,7 @@ use crate::live_baseline::{
     persist_baseline_to, remove_baseline_receipt,
 };
 use crate::space_probe::{
-    NativeSpaces, SpaceProbeProof, probe_return_to_starting_on, remove_owned_space,
+    NativeSpaces, SpaceProbeProof, probe_return_to_starting_on, remove_owned_space_typed,
     restore_starting_currents,
 };
 
@@ -483,6 +483,14 @@ impl NativeSpaces for LiveLegTransport {
 
     fn space_require_empty(&mut self, sid: u64) -> Result<(), String> {
         self.spaces.space_require_empty(sid)
+    }
+
+    fn space_require_owned_empty(&mut self, sid: u64) -> Result<(), String> {
+        self.spaces.space_require_owned_empty(sid)
+    }
+
+    fn space_remove_owned(&mut self, sid: u64) -> Result<crate::space_probe::McLegState, String> {
+        self.spaces.space_remove_owned(sid)
     }
 
     fn mc_present(&mut self) -> Option<bool> {
@@ -1992,9 +2000,11 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         {
             residue.push(format!("owned private store cleanup: {e}"));
         }
-        // 5. Remove only leg-created Spaces, each pinned and proven empty.
+        // 5. Remove only leg-created Spaces, each pinned and re-proven through
+        // the owned-space authority (the in-memory creation registration is
+        // the ownership claim; the live seam re-reads typed membership).
         for (display, sid) in self.owned_spaces.clone().into_iter().filter(|_| spaces_ready) {
-            match remove_owned_space(&mut *self.transport, display, sid) {
+            match remove_owned_space_typed(&mut *self.transport, display, sid) {
                 Ok(mc) => {
                     if let Some(note) = mc.shortfall_text("owned-Space removal") {
                         residue.push(format!("owned Space {sid}: {note}"));

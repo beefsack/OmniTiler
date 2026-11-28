@@ -10887,10 +10887,14 @@ mod macos {
     /// thread (unknown, never guessed). The pure layer homes unified
     /// (non-separate) sessions conservatively: a single SLS row shares its
     /// current Space across displays; anything else refuses.
+    /// Standalone probes must initialize AppKit first: `NSScreen` returns a
+    /// stale `false` before the shared application exists. Creating the
+    /// singleton neither finishes launching nor activates the application.
     pub fn ns_separate_spaces() -> Option<bool> {
         use objc2::MainThreadMarker;
-        use objc2_app_kit::NSScreen;
+        use objc2_app_kit::{NSApplication, NSScreen};
         let mtm = MainThreadMarker::new()?;
+        let _ = NSApplication::sharedApplication(mtm);
         Some(NSScreen::screensHaveSeparateSpaces(mtm))
     }
 

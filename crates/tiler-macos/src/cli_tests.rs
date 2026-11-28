@@ -3627,6 +3627,39 @@ fn empty_removal_needs_explicit_nonzero_sid_and_opt_in() {
             allow_untested: true
         }
     ));
+    // The receipt-bound recovery is a distinct explicit opt-in; it never
+    // masquerades as the default emptiness command.
+    let owned = parse_args(&argv(&[
+        "mc-remove-empty",
+        "--space",
+        "2",
+        "--allow-untested",
+        "--owned-receipt",
+    ]))
+    .unwrap();
+    assert!(owned.may_mutate);
+    assert!(matches!(
+        owned.command,
+        Command::McRemoveOwnedEmpty {
+            space: 2,
+            allow_untested: true,
+            verify_restored: false,
+        }
+    ));
+    let verify = parse_args(&argv(&[
+        "mc-remove-empty", "--space", "2", "--allow-untested", "--owned-receipt",
+        "--verify-restored",
+    ]))
+    .unwrap();
+    assert!(!verify.may_mutate);
+    assert!(matches!(
+        verify.command,
+        Command::McRemoveOwnedEmpty { verify_restored: true, .. }
+    ));
+    assert!(parse_args(&argv(&[
+        "mc-remove-empty", "--space", "2", "--allow-untested", "--verify-restored",
+    ]))
+    .is_err());
 }
 
 #[test]

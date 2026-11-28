@@ -65,27 +65,6 @@ fn chord_post_waits_for_focus_eligibility() {
 }
 
 #[test]
-fn appkit_singleton_precedes_the_baseline() {
-    // `NSScreen.screensHaveSeparateSpaces` answers with a stale `false`
-    // until AppKit's shared application exists; a baseline captured
-    // before that stores an untruthful preimage and the unchanged
-    // Mission Control setting then compares unequal at teardown.
-    // The leg source is production-only now that its tests live in
-    // `fixture_leg_tests.rs`.
-    let source = include_str!("fixture_leg.rs");
-    let init_at = source
-        .find("ensure_appkit_singleton();")
-        .expect("fixture leg initializes the AppKit singleton");
-    let begin_at = source
-        .find("LiveLeg::begin(")
-        .expect("fixture leg captures its baseline");
-    assert!(
-        init_at < begin_at,
-        "AppKit singleton must exist before the baseline preimage"
-    );
-}
-
-#[test]
 fn settle_window_is_bounded_and_lifetime_fitted() {
     // Unset/empty/zero: no hold at all (unchanged leg timing).
     assert_eq!(settle_ms_from(None, 90).expect("unset"), 0);

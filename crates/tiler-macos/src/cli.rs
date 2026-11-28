@@ -329,6 +329,14 @@ pub enum Command {
         space: u64,
         allow_untested: bool,
     },
+    /// Receipt-bound recovery of one proven owned Space whose only members
+    /// are positively authenticated offscreen system surfaces. Never the
+    /// default emptiness gate: explicit `--owned-receipt` opt-in only.
+    McRemoveOwnedEmpty {
+        space: u64,
+        allow_untested: bool,
+        verify_restored: bool,
+    },
     SpacesSelect {
         display: usize,
         actions: Vec<crate::runtime_types::InputSemanticAction>,
@@ -775,6 +783,11 @@ pub fn help_text() -> String {
              \x20 cg-inspect (read-only unfiltered title-free window snapshot)\n\
              \x20 cg-diff --before PATH --after PATH [--benign-pid PID ...] (read-only title-free compare over two cg-inspect dumps: missing/added/drifted windows; exit 1 on drift, never clean over roster changes; a listed pid's offscreen identical-geometry replacement classifies as benign host churn with the raw roster retained)\n\
              \x20 mc-remove-empty --space SID --allow-untested (one exact noncurrent empty user SID, no broad cleanup)\n\
+             \x20 mc-remove-empty --space SID --allow-untested --owned-receipt (receipt-bound recovery of one\n\
+             \x20 \x20 leg-created noncurrent User SID recorded by the retained receipt set: exact preimage\n\
+             \x20 \x20 plus one append, re-read live; every member offscreen WindowManager/Dock/WindowServer/\n\
+             \x20 \x20 Finder/ControlCenter chrome, unknown membership refuses; default emptiness unchanged)\n\
+             \x20 \x20 Add --verify-restored to compare the retained preimage without any live action.\n\
              \x20 spaces-select [--display N] --action ID [--action ID ...]\n\
              \x20 \x20 (select-only batch, e.g. workspace-select-0, workspace-select-1, workspace-previous; changes persist, history lasts this invocation; the product tile arms the 18 existing-Space selects as hotkeys, trailing select-0 stays explicit-only)\n\
              \x20 spaces-grab-diagnose (bounded owned helper, unfiltered CG/AX/input hit snapshots before/after MC; zero synthetic posts)\n\
@@ -3370,6 +3383,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
         "mc-remove-empty" => {
             let mut space = None;
             let mut allow_untested = false;
+            let mut owned_receipt = false;
+            let mut verify_restored = false;
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -3381,6 +3396,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                         )?);
                     }
                     "--allow-untested" => allow_untested = true,
+                    "--owned-receipt" => owned_receipt = true,
+                    "--verify-restored" => verify_restored = true,
                     other => return Err(format!("mc-remove-empty: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -3391,9 +3408,20 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             if !allow_untested {
                 return Err("mc-remove-empty needs --allow-untested".to_owned());
             }
-            Command::McRemoveEmpty {
-                space,
-                allow_untested,
+            if verify_restored && !owned_receipt {
+                return Err("--verify-restored needs --owned-receipt".to_owned());
+            }
+            if owned_receipt {
+                Command::McRemoveOwnedEmpty {
+                    space,
+                    allow_untested,
+                    verify_restored,
+                }
+            } else {
+                Command::McRemoveEmpty {
+                    space,
+                    allow_untested,
+                }
             }
         }
         "spaces-select" => {
@@ -3531,6 +3559,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::ProcIdentity { .. }
             | Command::WorkspaceIndicatorStatus
             | Command::McMembers { .. }
+            | Command::McRemoveOwnedEmpty { verify_restored: true, .. }
     );
     Ok(CliRequest {
         modifier,
