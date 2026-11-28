@@ -2,6 +2,20 @@
 
 **Status:** operational host evidence only. No product route, wire, or core behavior was enabled. The design record is [the core proposal](macos-fullscreen-return-core-proposal.md).
 
+## Pass 4 signed acceptance
+
+The release gate stays off while the protocol, core and macOS review findings are corrected. Offline regressions must distinguish each defect from the corrected behavior; the protocol/core and macOS suites, workspace compile and baseline Clippy, and KWin typecheck must pass before signing.
+
+The fixture controller must pin the owned home and away Desktops, the exact output, and the detached SID and member lifetime. Under Authentic it must prove both numbered chords are armed before posting, then prove redundant refusal with zero native dispatch, away with exactly one native selection and unchanged fullscreen, and return to the same detached SID and member. No fullscreen-member writes are permitted during those legs. Stop at the first failed proof; one restart is permitted after a proved external disturbance and verified restoration. Promote only after all three legs pass. Verify starting currents and order, pointer, Mission Control, and absence of owned processes and any pending receipt after teardown.
+
+The protocol round-trip regression rejected the old native occupancy delimiter with `encode-mismatch` and passed with the corrected delimiter. The report-wrapper assertion now includes the contract-required `detachedSurface` in held-row key order; `floating` remains the sole retired key in that test. All 16 tests in `report_optionals` passed.
+
+Core regression coverage distinguishes the remembered member from fact order, ordinary external supersession from successful arrival, detached pre-attempt departure from a read gap, same-reply Desktop adoption, both gesture-barrier refusal lanes, and an already-current shared sibling's cursor guard. The core library suite passed 2,542 tests; the core integration suites passed as well.
+
+The macOS adapter now uses exact typed source/target checks before Mission Control opens and before it presses the Space, with other displays' currents still required to be user Desktops. The adapter honors eligible existing-Desktop selections without a numbered-only restriction and withholds detached attempt evidence when the capability is off.
+
+Offline gate: protocol 399 passed; core 2,862 passed; macOS library 1,867 passed and 3 ignored. Workspace compile-only built 88 test executables. Clippy reported only the existing Windows log-sink and macOS fixture-test warnings; KWin typecheck passed.
+
 ## Scope and sample rules
 
 Signed, SIP-on, host-only fixture runs exercised an owned windowed Desktop sibling and the same window's detached fullscreen Space through pinned Mission Control and the Dock gesture. A separate product switch-away candidate and a single signed rerun tested the product path; neither established a product route.
