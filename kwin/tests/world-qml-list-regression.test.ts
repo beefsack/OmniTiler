@@ -75,7 +75,7 @@ const REPLY_TEXT = JSON.stringify({
             cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         },
     ],
-    transfers: [{ op: TRANSFER_OP, kind: "view", win: "", out: OUT, ws: WS_B, follow: false, held: false, cmdSeq: null, parent: null }],
+    transfers: [{ op: TRANSFER_OP, kind: "view", win: "", out: OUT, ws: WS_B, follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
     dragPreview: null,
 });
 

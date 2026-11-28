@@ -971,7 +971,7 @@ describe("world trace observe-flight reconnect diagnostics", () => {
                 { id: WS, out: OUT, bind: WS, scope: { kind: "workspace", out: OUT, ws: WS }, order: 0, mode: "tiled", exist: true, hold: "" },
             ],
             transfers: [
-                { op: "op-held-1", kind: "window", win: WIN_A, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null },
+                { op: "op-held-1", kind: "window", win: WIN_A, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null },
             ],
         });
         h.runTimers();
@@ -1072,11 +1072,11 @@ describe("world trace observe-flight reconnect diagnostics", () => {
         const transfers: Record<string, unknown>[] = [];
         for (let i = 3; i <= 10; i += 1) {
             windows.push(winRow(`win-${i}`));
-            transfers.push({ op: `op-${i}`, kind: "window", win: `win-${i}`, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null });
+            transfers.push({ op: `op-${i}`, kind: "window", win: `win-${i}`, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null });
         }
         transfers.push(
-            { op: "op-1", kind: "window", win: LONG, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null },
-            { op: "op-2", kind: "window", win: WIN_B, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null },
+            { op: "op-1", kind: "window", win: LONG, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null },
+            { op: "op-2", kind: "window", win: WIN_B, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null },
         );
         const workspaces: Record<string, unknown>[] = [
             { id: WS, out: OUT, bind: WS, scope: { kind: "workspace", out: OUT, ws: WS }, order: 0, mode: "tiled", exist: true, hold: "" },
@@ -1150,7 +1150,7 @@ describe("world trace observe-flight reconnect diagnostics", () => {
             ],
             workspaces,
             transfers: [
-                { op: "op-rel", kind: "window", win: WIN_A, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null },
+                { op: "op-rel", kind: "window", win: WIN_A, out: OUT, ws: WS, follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null },
             ],
         });
         h.runTimers();
@@ -1193,7 +1193,7 @@ describe("world trace observe-flight reconnect diagnostics", () => {
                     { id: WS2, out: OUT, bind: WS2, scope: { kind: "workspace", out: OUT, ws: WS2 }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 transfers: [
-                    { op: "op-move-1", kind: "window", win: WIN_A, out: OUT, ws: WS2, follow: false, held: false, cmdSeq: null, parent: null },
+                    { op: "op-move-1", kind: "window", win: WIN_A, out: OUT, ws: WS2, follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
                 ],
             }),
         );

@@ -604,10 +604,13 @@ export class WorldAdapterState {
         return true;
     }
 
-    // Record one raw mechanical view attempt. Latest-wins per owning view
-    // phase; null refs ride as unknown (never forged proof), and only the
-    // native namespace is admitted: a logical view ref has no wire
-    // spelling and refuses here, never reaching the report lane.
+    // Record one raw mechanical view attempt. Latest-wins per retained View
+    // identity `(op,out)`: one operation may switch distinct outputs, while
+    // a repeat of the same pair replaces its predecessor. Null refs ride as
+    // unknown (never forged proof), and only the native namespace is
+    // admitted: a logical view ref has no wire spelling and refuses here,
+    // never reaching the report lane. Canonical ids cannot contain NUL, so
+    // the composite map key is unambiguous.
     recordViewAttempt(attempt: WorldViewAttempt): boolean {
         if (encodeV4ViewAttempt(attempt) === null) {
             return false;
@@ -619,7 +622,7 @@ export class WorldAdapterState {
             post: attempt.post === null ? null : { ...attempt.post },
             base: attempt.base === null ? null : { ...attempt.base },
         };
-        this.viewAttempts.set(clean.op, clean);
+        this.viewAttempts.set(`${clean.op}\u0000${clean.out}`, clean);
         while (this.viewAttempts.size > MAX_VIEW_ATTEMPTS) {
             const oldest = this.viewAttempts.keys().next();
             if (oldest.done === true) {
@@ -727,7 +730,11 @@ export class WorldAdapterState {
 
     viewAttemptsForReport(): WorldViewAttempt[] {
         return [...this.viewAttempts.values()]
-            .sort((a, b) => (a.op < b.op ? -1 : a.op > b.op ? 1 : 0))
+            .sort((a, b) => {
+                const ka = `${a.op}\u0000${a.out}`;
+                const kb = `${b.op}\u0000${b.out}`;
+                return ka < kb ? -1 : ka > kb ? 1 : 0;
+            })
             .map((a) => ({ ...a }));
     }
 
@@ -802,9 +809,10 @@ export class WorldAdapterState {
             JSON.stringify(a.base) === JSON.stringify(b.base) &&
             a.attemptMs === b.attemptMs;
         for (const sent of this.inFlight.delivered.views) {
-            const live = this.viewAttempts.get(sent.op);
+            const key = `${sent.op}\u0000${sent.out}`;
+            const live = this.viewAttempts.get(key);
             if (live !== undefined && sameView(live, sent)) {
-                this.viewAttempts.delete(sent.op);
+                this.viewAttempts.delete(key);
                 retired += 1;
             }
         }

@@ -348,6 +348,7 @@ fn cross_reply(rig: &CrossRig, target: Rect) -> tiler_core::world_report::WorldR
             held: false,
             command_seq: None,
             parent: None,
+            detached_destination: None,
         });
     reply.outputs.push(tiler_core::world_report::OutputDesire {
         output: OutputId(rig.tgt_out.clone()),

@@ -1535,8 +1535,18 @@ function parseTransferRow(e: unknown): WorldReplyTransfer {
         throw new Error("transfer-keys");
     }
     const o = e as Record<string, unknown>;
-    if (!hasExactKeys(o, ["op", "kind", "win", "out", "ws", "follow", "held", "cmdSeq", "parent"])) {
+    if (!hasExactKeys(o, [
+        "op", "kind", "win", "out", "ws", "follow", "held", "cmdSeq", "parent",
+        "detachedDestination",
+    ])) {
         throw new Error("transfer-keys");
+    }
+    // Required nullable detached destination. This host declares
+    // `detachedFullscreenView:false` and has no detached grant driver, so
+    // every non-null arm refuses without inspecting its shape; only the
+    // explicit null spelling is accepted and consumed here.
+    if (o["detachedDestination"] !== null) {
+        throw new Error("tr-detached-destination");
     }
     const kind = o["kind"];
     const win = o["win"];
@@ -2248,7 +2258,31 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         const windows: WorldReplyWindow[] = winRaw.map(parseWindowRow);
         unique(windows, (w) => w.win, "duplicate-window");
         const transfers: WorldReplyTransfer[] = trRaw.map(parseTransferRow);
-        unique(transfers, (t) => t.op, "duplicate-transfer");
+        // Retained View identity is `(op,out)`: one operation may switch
+        // distinct outputs. Every other kind keeps operation identity, so
+        // an equal pair, a repeated non-view operation, or any mix of view
+        // and non-view rows sharing one operation refuses.
+        const transferKindByOp = new Map<string, WorldReplyTransfer["kind"]>();
+        const seenViewPair = new Set<string>();
+        for (const t of transfers) {
+            const prior = transferKindByOp.get(t.op);
+            if (t.kind === "view") {
+                if (prior !== undefined && prior !== "view") {
+                    throw new Error("duplicate-transfer");
+                }
+                const pair = `${t.op}\u0000${t.out}`;
+                if (seenViewPair.has(pair)) {
+                    throw new Error("duplicate-transfer");
+                }
+                seenViewPair.add(pair);
+                transferKindByOp.set(t.op, "view");
+            } else {
+                if (prior !== undefined) {
+                    throw new Error("duplicate-transfer");
+                }
+                transferKindByOp.set(t.op, t.kind);
+            }
+        }
         const operationSettled: WorldReplyOperationSettlement[] = opSettledRaw.map(parseOperationSettledRow);
         unique(operationSettled, (o) => `${o.win}\u0000${o.kind}`, "duplicate-operation");
         const nativeCreations: WorldNativeCreation[] = creationsRaw.map(parseNativeCreationRow);
@@ -3152,7 +3186,8 @@ function encodeV4WindowRow(w: RawWindowFact, hostOwned: boolean): string | null 
         `"activationPolicy":null,"layer":null,` +
         `"fullscreenOwner":null,"fullscreenExitable":${encodeV4NullableBool(w.fullScreenable)},` +
         `"suppressionAvailable":false,` +
-        `"visibility":{"visible":${encodeV4NullableBool(visible)},"suppressionOwned":false}}`;
+        `"visibility":{"visible":${encodeV4NullableBool(visible)},"suppressionOwned":false},` +
+        `"detachedSurface":null}`;
     return row;
 }
 
@@ -3261,14 +3296,18 @@ function encodeV4NativeRow(n: {
         }
         occupancy.push(`{"native":${encodeV4String(o.native)},"count":${count}}`);
     }
-    // Empty current is not the non-ordered surface: it spells null, which
-    // preserves a non-ordered surface truthfully instead of holding.
+    // Empty current is the read gap: `currentKnown:false` with null current
+    // preserves it truthfully instead of holding, while any readable current
+    // is known. Native order/current stay Desktop-only; this capability-false
+    // host never reports a detached current.
     const current = n.current === "" ? "null" : encodeV4NullableId(n.current);
     if (current === null) {
         return null;
     }
+    const currentKnown = encodeV4Bool(n.current !== "");
     return `{"out":${encodeV4String(n.out)},"order":[${order.join(",")}],` +
-        `"current":${current},"occupancy":[${occupancy.join(",")}]}`;
+        `"current":${current},"occupancy":[${occupancy.join(",")}],` +
+        `"currentKnown":${currentKnown},"detachedCurrent":null}`;
 }
 
 // Adapter-local FrameWitness producer: the captured LOCAL invalidation
@@ -3727,7 +3766,10 @@ function encodeV4ReportFocusChanges(changes: FocusChanges | null, prefix: string
                     (event.win === null || event.win === "" || isOpaqueId(event.win))) {
                     rows.push(`{"kind":"foreground","win":${event.win === null ? "null" : esc(event.win)}}`);
                 } else if (event.kind === "view" && isOpaqueId(event.out) && isOpaqueId(event.native)) {
-                    rows.push(`{"kind":"view","out":${esc(event.out)},"native":${esc(event.native)}}`);
+                    // The local tracker records the native selector string;
+                    // the wire spelling is the exact tagged ViewRef object.
+                    rows.push(`{"kind":"view","out":${esc(event.out)},"native":` +
+                        `{"kind":"native","out":${esc(event.out)},"ws":${esc(event.native)}}}`);
                 } else {
                     return null;
                 }
@@ -4062,7 +4104,7 @@ export function encodeV4ViewAttempt(a: WorldViewAttempt): string | null {
     return `{"kind":"view","op":${encodeV4String(a.op)},"out":${encodeV4String(a.out)},` +
         `"ws":${encodeV4String(a.ws)},"disposition":${disposition},` +
         `"pre":${pre},"post":${post},"base":${base},` +
-        `"attemptMs":${encodeV4String(a.attemptMs)}}`;
+        `"attemptMs":${encodeV4String(a.attemptMs)},"postMember":null}`;
 }
 
 // Canonical v4 native-state attempt writer: the exact required keys in

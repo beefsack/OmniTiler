@@ -965,6 +965,7 @@ fn production_ambiguous_view_arms_at_most_once() {
             held: false,
             command_seq: None,
             parent: None,
+            detached_destination: None,
         });
     // Uncertain hide leg: the first attempt is ambiguous ...
     S_ADMIT.with(|m| {
@@ -1169,6 +1170,7 @@ fn memberless_migration_actuates_views_without_members() {
             held: false,
             command_seq: None,
             parent: None,
+            detached_destination: None,
         });
     let mut members = Vec::new();
     let mut views = Vec::new();

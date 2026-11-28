@@ -320,6 +320,7 @@ fn window_transfer(
         held,
         command_seq: None,
         parent: None,
+        detached_destination: None,
     }
 }
 
@@ -333,6 +334,7 @@ fn view_transfer(op: &str, out: &str, ws: &str) -> TransferTargetV4 {
         held: false,
         command_seq: None,
         parent: None,
+        detached_destination: None,
     }
 }
 
@@ -3598,6 +3600,7 @@ fn migration_partial_holds_then_completes_with_refill() {
         held: false,
         command_seq: None,
         parent: None,
+        detached_destination: None,
     });
     reply.transfers.push(TransferTargetV4 {
         operation_id: format!("{mig}-refill"),
@@ -3608,6 +3611,7 @@ fn migration_partial_holds_then_completes_with_refill() {
         held: false,
         command_seq: None,
         parent: Some(mig.to_owned()),
+        detached_destination: None,
     });
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 1);
@@ -3704,6 +3708,7 @@ fn migration_held_refill_never_actuates() {
         held: false,
         command_seq: None,
         parent: None,
+        detached_destination: None,
     });
     reply.transfers.push(TransferTargetV4 {
         operation_id: format!("{mig}-refill"),
@@ -3714,6 +3719,7 @@ fn migration_held_refill_never_actuates() {
         held: true,
         command_seq: None,
         parent: Some(mig.to_owned()),
+        detached_destination: None,
     });
     let (_, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(
@@ -5587,6 +5593,7 @@ fn migration_reply(out: &str, ws: &str, refill_ws: &str, mig: &str) -> WorldRepl
         held: false,
         command_seq: None,
         parent: None,
+        detached_destination: None,
     });
     reply.transfers.push(TransferTargetV4 {
         operation_id: format!("{mig}-refill"),
@@ -5597,6 +5604,7 @@ fn migration_reply(out: &str, ws: &str, refill_ws: &str, mig: &str) -> WorldRepl
         held: false,
         command_seq: None,
         parent: Some(mig.to_owned()),
+        detached_destination: None,
     });
     reply
 }

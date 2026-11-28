@@ -389,7 +389,8 @@ export function buildHandshakeRequest(
         `"windowSuppression":${capabilities.windowSuppression},"maximize":${capabilities.maximize},` +
         `"fullscreen":${capabilities.fullscreen},"nativeSticky":${capabilities.nativeSticky},` +
         `"above":${capabilities.above},"warp":${capabilities.warp},` +
-        `"tiledFloatTransfer":${capabilities.tiledFloatTransfer},"unavailableFacts":[${facts}]}}`;
+        `"tiledFloatTransfer":${capabilities.tiledFloatTransfer},"unavailableFacts":[${facts}],` +
+        `"detachedFullscreenView":false}}`;
     if (utf8ByteLength(out) > WORLD_MAX_REQUEST_BYTES) {
         return null;
     }

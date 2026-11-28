@@ -402,7 +402,7 @@ describe("world raw mechanical attempts", () => {
                         visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-link-member", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null },
+                    { op: "op-link-member", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null, detachedDestination: null },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -539,7 +539,7 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
+                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
                 ];
             });
             const expected = {
@@ -589,7 +589,7 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
+                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -639,8 +639,8 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-d", out: "out-1", ws: "w1", alloc: null, frame: null, frame_auth: "hold", frame_hold: "unreadable", member_auth: "hold", member_hold: "unreadable", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [{ property: "maximized", value: false, auth: "controlled", reason: "", cmdSeq: null, automaticClear: true }] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null },
-                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
+                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null, detachedDestination: null },
+                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -708,6 +708,37 @@ describe("world attempt retention", () => {
         // Generation rotation clears every retained attempt.
         state.onDiscovery("gen-2", "adapter-a");
         assert.equal(state.framesForReport().length, 0);
+    });
+    it("keys view attempts by (op,out), keeps distinct outputs, and acks the exact pair", () => {
+        const state = new WorldAdapterState("adapter-a", "owner-a");
+        const view = (op: string, out: string, ws: string): Record<string, unknown> => ({
+            op, out, ws,
+            disposition: { kind: "called", setter: "accepted" },
+            pre: null, post: null, base: null, attemptMs: "7",
+        });
+        assert.equal(state.recordViewAttempt(view("op-1", "out-1", "w1") as never), true);
+        // The same operation on a distinct output is a distinct View.
+        assert.equal(state.recordViewAttempt(view("op-1", "out-2", "w2") as never), true);
+        // A repeat of the same pair stays latest-wins.
+        assert.equal(state.recordViewAttempt(view("op-1", "out-1", "w9") as never), true);
+        const rows = state.viewAttemptsForReport();
+        assert.equal(rows.length, 2, "distinct (op,out) pairs coexist");
+        assert.deepEqual(rows.map((r) => `${r.op}:${r.out}:${r.ws}`), [
+            "op-1:out-1:w9", "op-1:out-2:w2",
+        ], "ordered by pair, latest-wins per pair");
+        // Opaque ids cannot contain NUL; the composite key stays unambiguous.
+        assert.equal(state.recordViewAttempt(view("op\u0000x", "out-1", "w1") as never), false);
+        assert.equal(state.recordViewAttempt(view("op-2", "out\u0000x", "w1") as never), false);
+        // Delivery acks retire the exact pair only; a newer update survives.
+        const flight = state.beginCapture("src-1", null);
+        assert.ok(flight !== null);
+        assert.equal(flight.delivered.views.length, 2);
+        assert.equal(state.recordViewAttempt(view("op-1", "out-2", "w3") as never), true);
+        assert.equal(state.ackDelivered("src-1", true), 1);
+        const surviving = state.viewAttemptsForReport();
+        assert.equal(surviving.length, 1);
+        assert.equal(surviving[0]?.out, "out-2");
+        assert.equal(surviving[0]?.ws, "w3", "newer out-2 update survives its predecessor ack");
     });
     it("allocates ordered frame attemptId, preserves it across retry, acks by ID, and allows null attemptMs", () => {
         const state = new WorldAdapterState("adapter-a", "owner-a");
@@ -914,8 +945,8 @@ describe("world empty migration controlled scope", () => {
         ],
         outputs,
         windows: [], transfers: [
-            { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
-            { op: "op-1-refill", kind: "view", win: "", out: "out-a", ws: "wr", follow: false, held: false, cmdSeq: null, parent: "op-1" },
+            { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
+            { op: "op-1-refill", kind: "view", win: "", out: "out-a", ws: "wr", follow: false, held: false, cmdSeq: null, parent: "op-1", detachedDestination: null },
         ],
         focusRequest: null, dragPreview: null, gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [],
         nativeCreations: [], warpRequest: null,
@@ -1185,7 +1216,7 @@ describe("world setter attempt correspondence", () => {
                     frame_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
+                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             ),
             dispatchWatermark: "0",
@@ -1263,8 +1294,8 @@ describe("world setter attempt correspondence", () => {
                     },
                 ],
                 [
-                    { op: "op-7", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
-                    { op: "op-8", kind: "migration", win: "", out: "out-b", ws: "w9", follow: false, held: false, cmdSeq: null, parent: null },
+                    { op: "op-7", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
+                    { op: "op-8", kind: "migration", win: "", out: "out-b", ws: "w9", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
                 ],
                 [
                     { id: "w1", out: "out-b", bind: "wb1", scope: { kind: "output", out: "out-b" }, order: 0, mode: "tiled", exist: true, hold: "" },
@@ -1323,7 +1354,7 @@ describe("world setter attempt correspondence", () => {
                     frame_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
+                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             ),
             dispatchWatermark: "0",
@@ -1404,7 +1435,7 @@ describe("world setter attempt correspondence", () => {
                     frame_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-10", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null }],
+                [{ op: "op-10", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 [{ id: "w1", out: "out-b", bind: "wb1", scope: { kind: "output", out: "out-b" }, order: 0, mode: "tiled", exist: true, hold: "" }],
                 [{ scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "controlled", reason: "" }],
             ),
@@ -1473,7 +1504,7 @@ describe("world setter attempt correspondence", () => {
                     frame_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
+                [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             ),
             dispatchWatermark: "0",
@@ -1519,7 +1550,7 @@ describe("world setter attempt correspondence", () => {
                 frame_op: "", floating: false, float_origin: "",
                 cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
-            [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: true, cmdSeq: null, parent: null }],
+            [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null }],
             [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
         );
         applyWorldReply({ ...env, reply: heldReply });

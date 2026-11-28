@@ -107,6 +107,56 @@ describe("world-reply-v4", () => {
         assert.equal(parseWorldReply(boundText(longParent)), null);
     });
 
+    it("requires explicit null detachedDestination and keys View duplicates by (op,out)", () => {
+        const rowsOf = (reply: Record<string, unknown>): Array<Record<string, unknown>> => {
+            const rows = reply["transfers"];
+            assert.ok(Array.isArray(rows));
+            return rows as Array<Record<string, unknown>>;
+        };
+        // The amended fixture carries the required explicit null and parses.
+        assert.ok(isCoreWorldReply(parseWorldReply(boundText(clone("reply-transfer-view.json")))));
+        const missing = clone("reply-transfer-view.json");
+        Reflect.deleteProperty(rowsOf(missing)[0] as Record<string, unknown>, "detachedDestination");
+        assert.equal(parseWorldReply(boundText(missing)), null, "missing detachedDestination refuses");
+        // Non-null refuses regardless of shape: exact grant or arbitrary text.
+        for (const value of [
+            { surface: { kind: "detached", out: "out-a", surface: "native-a" }, member: "win-a" },
+            "null",
+            0,
+            false,
+        ]) {
+            const bad = clone("reply-transfer-view.json");
+            rowsOf(bad)[0]!["detachedDestination"] = value;
+            assert.equal(parseWorldReply(boundText(bad)), null, `non-null ${JSON.stringify(value)} refuses`);
+        }
+        // Same (op,out) view pair and repeated non-view ops refuse.
+        const samePair = clone("reply-transfer-view.json");
+        rowsOf(samePair).push({ ...rowsOf(samePair)[0]! });
+        assert.equal(parseWorldReply(boundText(samePair)), null);
+        const sameWindow = clone("reply-transfer-window.json");
+        rowsOf(sameWindow).push({ ...rowsOf(sameWindow)[0]! });
+        assert.equal(parseWorldReply(boundText(sameWindow)), null);
+        // A View shares one op only with another View on a distinct output.
+        const distinctOut = clone("reply-transfer-view.json");
+        rowsOf(distinctOut).push({ ...rowsOf(distinctOut)[0]!, out: "out-b" });
+        const parsedDistinct = parseWorldReply(boundText(distinctOut));
+        assert.ok(isCoreWorldReply(parsedDistinct), "distinct-out view pair accepts");
+        assert.equal(parsedDistinct.transfers.length, 2);
+        // Mixed view/window rows sharing one op refuse in either order.
+        const windowFirst = clone("reply-transfer-window.json");
+        rowsOf(windowFirst).push({
+            ...rowsOf(clone("reply-transfer-view.json"))[0]!,
+            op: rowsOf(windowFirst)[0]!.op,
+        });
+        assert.equal(parseWorldReply(boundText(windowFirst)), null);
+        const viewFirst = clone("reply-transfer-view.json");
+        rowsOf(viewFirst).push({
+            ...rowsOf(clone("reply-transfer-window.json"))[0]!,
+            op: rowsOf(viewFirst)[0]!.op,
+        });
+        assert.equal(parseWorldReply(boundText(viewFirst)), null);
+    });
+
     it("dragPreview and core reply lanes decode truthfully", () => {
         const drag = parseWorldReply(boundText(doc("reply-result-drag-left.json")));
         assert.ok(isCoreWorldReply(drag));

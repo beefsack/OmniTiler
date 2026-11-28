@@ -1068,7 +1068,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest,
             }));
             assert.equal(h.world.currentDesktop.id, "ws2", "view switch actuates");
@@ -1121,7 +1121,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-2", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-2", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-2", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-2", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "mismatched view echo stops the focus setter");
@@ -1176,7 +1176,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-3", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-3", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-3", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-3", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "unlisted activation stops focus");
@@ -1212,7 +1212,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-6", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-6", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-6", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-6", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.currentDesktop.id, "ws2", "view switch actuates");
@@ -1244,7 +1244,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-7", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-7", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-7", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-7", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "rejected view echo stops the focus setter");
@@ -1271,7 +1271,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-8", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-8", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-8", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-8", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "wrong-output echo stops the focus setter");
@@ -1298,7 +1298,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-9", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-9", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-9", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-9", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "foreign activation stops the focus setter");
@@ -1325,7 +1325,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-10", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-10", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-10", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-10", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "activation naming a non-foreground member stops the focus setter");
@@ -1352,7 +1352,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-11", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-11", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-11", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-11", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "stale-lifetime activation stops the focus setter");
@@ -1379,7 +1379,7 @@ describe("world entry discovery and observation", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-12", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-12", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
                 focusRequest: { id: "focus-view-12", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-12", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
             }));
             assert.equal(h.world.focused.length, 0, "post-echo home drift stops the focus setter");
@@ -1570,7 +1570,7 @@ describe("world entry discovery and observation", () => {
                 { id: "ws2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
             ],
             outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         }));
         // No chained view traffic: the flight settles with no further
         // switch-view/restore dispatch.
@@ -2429,7 +2429,7 @@ describe("world entry all-mode native coverage", () => {
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-                transfers: [{ op: "op-view-option-race", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+                transfers: [{ op: "op-view-option-race", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
             }));
             assert.equal(h.world.currentDesktop.id, "ws1");
             assert.deepEqual(h.world.outputDesktopWrites, []);

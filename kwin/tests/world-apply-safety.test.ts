@@ -218,7 +218,7 @@ function focusReqRow(id: string, target: string): Record<string, unknown> {
 // Stable core window-transfer identity the membership legs ride under (v4
 // authorizes no move without one).
 function moveTransfer(): Record<string, unknown> {
-    return { op: "op-1", kind: "window", win: "win-tiled", out: "out-1", ws: "ws-2", follow: false, held: false, cmdSeq: null, parent: null };
+    return { op: "op-1", kind: "window", win: "win-tiled", out: "out-1", ws: "ws-2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null };
 }
 
 function start(surface: object) {

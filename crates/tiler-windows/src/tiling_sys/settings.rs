@@ -102,6 +102,7 @@ pub(super) fn windows_capabilities() -> HostCapabilities {
             FactName::ActivationPolicy,
             FactName::Layer,
         ],
+        detached_fullscreen_view: false,
     }
 }
 

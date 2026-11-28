@@ -106,7 +106,9 @@ describe("v4 connection codecs (handshake + settings)", () => {
         assert.deepEqual(Object.keys(caps), [
             "hostOwned", "equalCount", "sharedNativeRoster", "birthClear", "nativeSelectorScope", "windowSuppression",
             "maximize", "fullscreen", "nativeSticky", "above", "warp", "tiledFloatTransfer", "unavailableFacts",
+            "detachedFullscreenView",
         ]);
+        assert.equal(caps["detachedFullscreenView"], false, "KDE declares no detached fullscreen view");
         // A request never parses as a reply (exact type tag).
         assert.equal(parseHandshakeReply(text as string), null);
         const acceptText = handshakeAccept("adapter-a", "req-1", GEN);

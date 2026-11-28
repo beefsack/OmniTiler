@@ -339,7 +339,17 @@ describe("v4 focus-change intervals", () => {
             { kind: "foreground", win: "" },
             { kind: "foreground", win: "win-d" },
         ] as const;
-        assert.deepEqual(buildInner(surface, { after: null, events }).value["focusChanges"], { after: null, events });
+        // The local tracker holds the native selector string; the wire
+        // ViewRef is the exact tagged nested object.
+        const wireEvents = [
+            { kind: "foreground", win: null },
+            { kind: "view", out: "out-1", native: { kind: "native", out: "out-1", ws: "ws2" } },
+            { kind: "foreground", win: "" },
+            { kind: "foreground", win: "win-d" },
+        ];
+        assert.deepEqual(buildInner(surface, { after: null, events }).value["focusChanges"], { after: null, events: wireEvents });
+        assert.ok(buildInner(surface, { after: null, events }).json.includes(
+            '"native":{"kind":"native","out":"out-1","ws":"ws2"}'), "view event spells a nested native ViewRef");
     });
 
     it("keeps ordered unproved activity even when a later proved-own effect wins the readback", () => {
@@ -465,7 +475,7 @@ describe("v4 inner report shape", () => {
             "owner", "parent", "role", "appId", "executable", "processId",
             "class", "title", "type", "activationPolicy", "layer",
             "fullscreenOwner", "fullscreenExitable", "suppressionAvailable",
-            "visibility",
+            "visibility", "detachedSurface",
         ]);
         assert.deepEqual(row["rect"], [8, 9, 800, 600]);
         assert.deepEqual(row["hints"], { minW: 104, minH: 122, maxW: 2147483647, maxH: 2147483647 });
@@ -485,6 +495,7 @@ describe("v4 inner report shape", () => {
         }
         assert.equal(row["suppressionAvailable"], false);
         assert.deepEqual(row["visibility"], { visible: null, suppressionOwned: false });
+        assert.equal(row["detachedSurface"], null, "this host declares no detached fullscreen surface");
     });
 
     it("omits nativeWs when membership is not exactly one desktop", () => {
@@ -492,6 +503,36 @@ describe("v4 inner report shape", () => {
         const { value } = buildInner(makeSurface([multi]));
         const row = (value["windows"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
         assert.ok(!("nativeWs" in row), "multi-homed nativeWs must omit, never guess");
+    });
+
+    it("emits native currentKnown/detachedCurrent and spells an empty current as a gap", () => {
+        const { value } = buildInner(makeSurface([makeWin({})]));
+        const rows = value["native"] as Array<Record<string, unknown>>;
+        assert.equal(rows.length, 1);
+        const row = rows[0] as Record<string, unknown>;
+        assert.deepEqual(Object.keys(row), [
+            "out", "order", "current", "occupancy", "currentKnown", "detachedCurrent",
+        ]);
+        assert.equal(row["current"], "native-a");
+        assert.equal(row["currentKnown"], true);
+        assert.equal(row["detachedCurrent"], null);
+        // Empty current is the read gap, never a non-ordered surface.
+        const obs = observe(makeSurface([makeWin({})]));
+        const gapJson = buildWorldReportV4InnerJson({
+            focusChanges: null,
+            observation: { ...obs, native: [{ ...obs.native[0]!, current: "" }] },
+            creationAttempts: [],
+            frameAttempts: [],
+            memberAttempts: [],
+            viewAttempts: [],
+            stateAttempts: [],
+            intentRecords: [],
+        });
+        assert.ok(gapJson !== null);
+        const gapRow = (JSON.parse(gapJson) as Record<string, unknown>)["native"] as Array<Record<string, unknown>>;
+        assert.equal(gapRow[0]?.["current"], null);
+        assert.equal(gapRow[0]?.["currentKnown"], false);
+        assert.equal(gapRow[0]?.["detachedCurrent"], null);
     });
 
     it("maps native minimized/hostHidden to visibility without inventing primary", () => {
@@ -820,8 +861,9 @@ describe("v4 member/view attempt lanes", () => {
             .filter((r) => r["kind"] === "view");
         assert.equal(rows.length, 1);
         assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
-            "kind", "op", "out", "ws", "disposition", "pre", "post", "base", "attemptMs",
+            "kind", "op", "out", "ws", "disposition", "pre", "post", "base", "attemptMs", "postMember",
         ]);
+        assert.equal(rows[0]?.["postMember"], null, "no detached post proof on a capability-false host");
         assert.ok(json.includes('"base":{"kind":"native","out":"out-2","ws":"d1"}'), "baseline spells kind/out/ws");
         for (const sidecar of ["nativePre", "nativePost", "nativeBase"]) {
             assert.ok(!json.includes(`"${sidecar}"`), `retired ${sidecar} must be absent`);

@@ -2106,6 +2106,7 @@ fn unknown_baseline_holds_transfer_without_supersession() {
                 held: false,
                 command_seq: None,
                 parent: None,
+                detached_destination: None,
             });
         reply
     }
@@ -2794,6 +2795,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
             held: false,
             command_seq: None,
             parent: None,
+            detached_destination: None,
         });
     let mut native =
         assemble_with_views(&mut env, moving_prims(), Some((out.clone(), ws2.clone())));
@@ -2922,6 +2924,7 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
             held: false,
             command_seq: None,
             parent: None,
+            detached_destination: None,
         });
     let mut native =
         assemble_with_views(&mut env2, moving_prims(), Some((out2.clone(), ws2.clone())));

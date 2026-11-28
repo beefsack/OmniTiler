@@ -636,7 +636,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "one native membership attempt");
         // The native side applied synchronously, so read-back proof settles
@@ -650,7 +650,7 @@ describe("world actuation identity and proof", () => {
         // with read-back proof and issues no second setter call.
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "confirmed without repeating the setter");
         h.runTimers();
@@ -674,7 +674,7 @@ describe("world actuation identity and proof", () => {
                 { scope: { kind: "workspace", out: "out", ws: "ws2" }, auth: "untouched", reason: "" },
             ],
             windows: [boundaryRow("win-a", "ws2"), untouchedRow("win-b", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "boundary membership actuates natively");
         assert.equal(h.world.geometryWrites.length, 0, "no frame writes on the floating side");
@@ -706,7 +706,7 @@ describe("world actuation identity and proof", () => {
                 { scope: { kind: "workspace", out: "out", ws: "ws2" }, auth: "untouched", reason: "" },
             ],
             windows: [boundaryRow("win-a", "ws2"), untouchedRow("win-b", "ws2")],
-            transfers: [{ op: "op-9", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: true, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-9", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: true, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "both-floating membership actuates natively");
         assert.equal(h.world.geometryWrites.length, 0, "both-floating writes no frames");
@@ -722,13 +722,13 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         // Live still shows the source: the retry flight must not re-attempt.
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "ambiguous op never repeats");
         h.runTimers();
@@ -742,7 +742,7 @@ describe("world actuation identity and proof", () => {
         h.fire("windowActivated");
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "late proof confirms without a second attempt");
         h.runTimers();
@@ -757,7 +757,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         h.runTimers();
@@ -767,7 +767,7 @@ describe("world actuation identity and proof", () => {
         // No repeat while ambiguous.
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         // The fault clears but nothing converged natively: the ambiguous
@@ -776,7 +776,7 @@ describe("world actuation identity and proof", () => {
         h.fire("windowActivated");
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "ambiguous op never repeats");
         h.runTimers();
@@ -788,7 +788,7 @@ describe("world actuation identity and proof", () => {
         h.fire("windowActivated");
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: true, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "proof confirms without a second attempt");
         h.runTimers();
@@ -801,7 +801,7 @@ describe("world actuation identity and proof", () => {
         h2.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h2, rev2, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         h2.runTimers();
         // Read-back proof wins over the throw (no new attempt above);
@@ -815,7 +815,7 @@ describe("world actuation identity and proof", () => {
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);
         const viewTransfer = (held: boolean): Record<string, unknown> => ({
-            op: "op-1", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held, cmdSeq: null, parent: null,
+            op: "op-1", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held, cmdSeq: null, parent: null, detachedDestination: null,
         });
         dispatchAndReply(h, rev, {
             outputs: [{ out: "out", view: "ws2", mode: "tiled", hold: "" }],
@@ -843,7 +843,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: true, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: true, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         assert.deepEqual(h.world.viewSwitches, ["ws2"], "follow switches under the same op");
@@ -861,7 +861,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelative(1);
         dispatchAndReply(h, rev, {
             windows: [{ ...winRow("win-a", "ws2"), out: "out-2" }],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.deepEqual(h.world.outputWrites, ["win-a=>out-2"], "output send ran first");
         assert.equal(h.world.membershipCalls.length, 1, "desktop set ran second");
@@ -870,7 +870,7 @@ describe("world actuation identity and proof", () => {
         // No repeat once homed across outputs.
         dispatchAndReply(h, rev, {
             windows: [{ ...winRow("win-a", "ws2"), out: "out-2" }],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.deepEqual(h.world.outputWrites, ["win-a=>out-2"], "cross-output target never re-actuates");
     });
@@ -882,19 +882,19 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1, "confirmation issues no new attempt");
         // A distinct newer operation back to ws1 is a new actuation.
         h.handle?.requestWorkspaceRelativeMove(-1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws1")],
-            transfers: [{ op: "op-2", kind: "window", win: "win-a", out: "out", ws: "ws1", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-2", kind: "window", win: "win-a", out: "out", ws: "ws1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 2, "fresh distinct op actuates");
     });
@@ -906,7 +906,7 @@ describe("world actuation identity and proof", () => {
         h.handle?.requestWorkspaceRelativeMove(1, true);
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, 1);
         // The user drags win-a to a third workspace outside the operation
@@ -917,7 +917,7 @@ describe("world actuation identity and proof", () => {
         const callsBefore = h.world.membershipCalls.length;
         dispatchAndReply(h, rev, {
             windows: [winRow("win-a", "ws2")],
-            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null }],
+            transfers: [{ op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null }],
         });
         assert.equal(h.world.membershipCalls.length, callsBefore, "external input is never fought");
         h.runTimers();
@@ -942,8 +942,8 @@ describe("world actuation identity and proof", () => {
         both.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, String(rev.n), {
             windows: [winRow("win-a", "ws2"), winRow("win-b", "ws1")],
             transfers: [
-                { op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null },
-                { op: "op-2", kind: "window", win: "win-b", out: "out", ws: "ws1", follow: false, held: false, cmdSeq: null, parent: null },
+                { op: "op-1", kind: "window", win: "win-a", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
+                { op: "op-2", kind: "window", win: "win-b", out: "out", ws: "ws1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null },
             ],
         }));
         assert.equal(h.world.membershipCalls.length, callsBefore + 2, "self feedback never stops sibling work");
@@ -1269,7 +1269,7 @@ describe("world actuation identity and proof", () => {
         // It must stay held with no switch until the native is bound and
         // observed, then actuate exactly once as the positive control.
         const viewTransfer: Record<string, unknown> = {
-            op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null, parent: null,
+            op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null,
         };
         // Baseline: an unbound row alone authorizes nothing.
         dispatchAndReply(h, rev, { workspaces: [unbound], transfers: [viewTransfer] });
@@ -1347,7 +1347,7 @@ describe("world actuation identity and proof", () => {
         const unbound = unboundRow("wl-1");
         const desires = [desire("op-native-1", "wl-1")];
         const viewTransfer: Record<string, unknown> = {
-            op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null, parent: null,
+            op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null, parent: null, detachedDestination: null,
         };
         // Mint once through the ordinary applied publication.
         dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires, transfers: [viewTransfer] });

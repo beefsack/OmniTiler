@@ -3327,6 +3327,7 @@ mod apply_diag_tests {
                 held: false,
                 command_seq: None,
                 parent: None,
+                detached_destination: None,
             }],
             focus_request: None,
             drag_preview: None,

@@ -132,7 +132,7 @@ function coreReply(workspaces: Array<Record<string, unknown>>, transfers: Array<
             visibility: null, visibility_auth: "untouched", visibility_hold: "",
             state: [],
         }],
-        transfers: transfers.map((t) => ({ ...t, cmdSeq: null, parent: null })),
+        transfers: transfers.map((t) => ({ ...t, cmdSeq: null, parent: null, detachedDestination: null })),
         focusRequest: null,
         dragPreview: null,
         intentDesired: [], switchSettled: [], diagnostics: [],

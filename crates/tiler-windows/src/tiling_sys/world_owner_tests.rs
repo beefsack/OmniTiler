@@ -327,6 +327,7 @@ fn clamped_target_holds_scope_without_transfer() {
                 visible: Some(true),
                 suppression_owned: None,
             },
+            detached_surface: None,
         }
     }
     let owner = "tiler-windows".to_owned();
@@ -523,6 +524,7 @@ fn tiled_mover_adopts_once_and_floating_mover_half_snaps() {
                 visible: Some(true),
                 suppression_owned: None,
             },
+            detached_surface: None,
         }
     }
     for floating_source in [false, true] {

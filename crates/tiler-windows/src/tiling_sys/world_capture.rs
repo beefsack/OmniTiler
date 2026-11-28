@@ -980,6 +980,7 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
                 .or_else(|| live.map(|read| read.visible)),
             suppression_owned: Some(suppression_owned),
         },
+        detached_surface: None,
     }
 }
 
