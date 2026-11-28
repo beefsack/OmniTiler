@@ -493,6 +493,130 @@ impl WorldTransaction<'_> {
 }
 
 impl WorldTransaction<'_> {
+    /// Frozen grant-time physical preimage for one selection view obligation.
+    /// `None` when no matching binding/target exists or the target carried no
+    /// readable preimage: a supersession never guesses an absent baseline.
+    fn selection_view_preimage(
+        &self,
+        parent_op: &str,
+        output: &OutputId,
+    ) -> Option<crate::world_report::ViewRef> {
+        let binding = self
+            .world
+            .settlement
+            .retained_selection
+            .values()
+            .find(|binding| {
+                binding.parent_op == parent_op && binding.view_targets.contains_key(output)
+            })?;
+        let target = binding.view_targets.get(output)?;
+        target.preimage.clone()
+    }
+
+    /// A pending view flight is externally superseded before any attempt
+    /// when the output now reads a coherent known Desktop different from its
+    /// frozen grant-time preimage. Read gaps, gesture-barrier reports,
+    /// unchanged preimages, correlated attempts, and any non-Desktop read
+    /// hold for the ordinary settlement lanes.
+    fn pre_attempt_desktop_departure(&self, retained: &RetainedTransfer) -> Option<String> {
+        if retained.pending_view.is_some() || self.world.staged.gesture_barrier {
+            return None;
+        }
+        let output = &retained.target.target_output;
+        let current = self.physical_current_ref(output)?;
+        let crate::world_report::ViewRef::Native { workspace, .. } = &current else {
+            return None;
+        };
+        let preimage =
+            self.selection_view_preimage(&retained.target.operation_id, output)?;
+        if current == preimage {
+            return None;
+        }
+        let logical = self.native_logical(output, workspace.as_str())?;
+        self.known_workspace(output, &logical).then_some(logical)
+    }
+
+    /// Adopt one externally observed Desktop logical for one output, recording
+    /// physical history exactly like the ordinary external echo lane.
+    pub(crate) fn adopt_observed_logical_view(&mut self, output: &OutputId, logical: &str) {
+        self.world
+            .workspace
+            .views
+            .insert(output.0.clone(), logical.to_owned());
+        let ring = self
+            .world
+            .workspace
+            .mapping
+            .get(&output.0)
+            .cloned()
+            .unwrap_or_default();
+        self.world
+            .workspace
+            .history
+            .observe(&output.0, logical, &ring);
+    }
+
+    /// The common known logical Desktop across every live output, or `None`
+    /// for any gap, non-Desktop, unknown, or divergent sibling. Shared-mode
+    /// external adoption requires exactly this coherent common view.
+    pub(crate) fn shared_common_desktop_logical(&self) -> Option<String> {
+        let mut common: Option<String> = None;
+        for screen in &self.world.staged.screens {
+            let output = &screen.output;
+            let Some(crate::world_report::ViewRef::Native { workspace, .. }) =
+                self.physical_current_ref(output)
+            else {
+                return None;
+            };
+            let logical = self.native_logical(output, workspace.as_str())?;
+            if !self.known_workspace(output, &logical) {
+                return None;
+            }
+            match &common {
+                None => common = Some(logical),
+                Some(existing) if *existing == logical => {}
+                Some(_) => return None,
+            }
+        }
+        common
+    }
+
+    /// Adopt one coherent common Desktop logical across every live output.
+    /// Shared mode only; the ring and single shared history stay canonical.
+    pub(crate) fn adopt_shared_logical_view(&mut self, logical: &str) {
+        let live: Vec<String> = self
+            .world
+            .staged
+            .screens
+            .iter()
+            .map(|screen| screen.output.0.clone())
+            .collect();
+        let mut changed = false;
+        for output in &live {
+            if !self
+                .world
+                .workspace
+                .views
+                .get(output)
+                .is_some_and(|view| view == logical)
+            {
+                self.world
+                    .workspace
+                    .views
+                    .insert(output.clone(), logical.to_owned());
+                changed = true;
+            }
+        }
+        if changed {
+            let ring = live
+                .first()
+                .and_then(|output| self.world.workspace.mapping.get(output))
+                .cloned()
+                .unwrap_or_default();
+            self.world.workspace.history.observe_shared(&ring, logical);
+        }
+    }
+
     /// Settle retained view targets with staged native proof before
     /// staging. Host-owned only: native-free views ride the frozen
     /// selection binding (ordinary, follow, migration, and policy routes
