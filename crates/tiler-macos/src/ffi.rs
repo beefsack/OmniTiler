@@ -1400,6 +1400,8 @@ mod macos {
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
 
+    use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
+
     use objc2_application_services::{AXError, AXObserver, AXUIElement, AXValue, AXValueType};
     use objc2_core_foundation::{
         CFArray, CFDictionary, CFFileDescriptor, CFNumber, CFOptionFlags, CFRetained, CFRunLoop,
@@ -9611,9 +9613,82 @@ mod macos {
         pub unnotified_disables: u32,
     }
 
+    /// Pre-install chord table plus one KeyDown pending flag per chord.
+    /// Construction is pure (no OS touch): the same preparation the live tap
+    /// uses is available to offline tests. Pending state is per chord, so the
+    /// table has no fixed capacity and one row's arm/clear never touches
+    /// another row's suppression state.
+    pub(crate) struct TapChordTable {
+        chords: Vec<(TapTuning, u32, AtomicBool)>,
+    }
+
+    impl TapChordTable {
+        pub(crate) fn prepare(chords: &[TapChordSpec]) -> Result<Self, TapSetupError> {
+            if chords.is_empty() {
+                return Err(TapSetupError::Runloop("empty chord table".to_owned()));
+            }
+            let chords = chords
+                .iter()
+                .map(|spec| {
+                    (
+                        TapTuning {
+                            want_flags: spec.want_flags,
+                            flags_mask: spec.flags_mask,
+                            want_code: spec.want_code,
+                        },
+                        spec.key_code,
+                        AtomicBool::new(false),
+                    )
+                })
+                .collect();
+            Ok(Self { chords })
+        }
+
+        /// One callback match pass: first exact chord wins. Each chord reads
+        /// its own pending flag and the flag is written back only when the
+        /// decision changed it (no per-event atomic store otherwise).
+        pub(crate) fn step(
+            &self,
+            tap_kind: TapKeyKind,
+            flags: u64,
+            code: i64,
+            suppress_armed: bool,
+        ) -> Option<(u32, bool)> {
+            for (tuning, key_code, pending) in &self.chords {
+                let before = pending.load(Ordering::SeqCst);
+                let mut pending_now = before;
+                let decision = decide_tap_event(
+                    tap_kind,
+                    flags,
+                    code,
+                    *tuning,
+                    suppress_armed,
+                    &mut pending_now,
+                );
+                if pending_now != before {
+                    pending.store(pending_now, Ordering::SeqCst);
+                }
+                if decision.matched {
+                    return Some((*key_code, decision.suppress));
+                }
+            }
+            None
+        }
+
+        #[cfg(test)]
+        pub(crate) fn chord_count(&self) -> usize {
+            self.chords.len()
+        }
+
+        #[cfg(test)]
+        pub(crate) fn pending_at(&self, index: usize) -> bool {
+            self.chords[index].2.load(Ordering::SeqCst)
+        }
+    }
+
     struct TapMultiShared {
         tx: SyncSender<TapHit>,
-        chords: Vec<(crate::input_match::TapTuning, u32, bool)>,
+        table: TapChordTable,
         suppress_armed: bool,
         matched: AtomicU32,
         suppressed: AtomicU32,
@@ -9621,8 +9696,6 @@ mod macos {
         /// Disable cause observed by the callback: 0 none, 1 timeout
         /// (recovered inside `pump`), 2 user (refused by the caller).
         disable_kind: AtomicU32,
-        /// Per-chord KeyDown pending bit (chord count capped at 64).
-        pending: AtomicU64,
         reenables: AtomicU32,
         /// Observed user-disable notifications (terminal evidence; each one
         /// is a logged recoverable state for the owner, never terminal by
@@ -9749,11 +9822,11 @@ mod macos {
     }
 
     impl TapSource {
-        /// Create the tap over `chords` (1..=64 exact chords). Fails closed
-        /// when creation is denied (no consent) — a denial is `Err`, never a
-        /// silent success. `suppress_armed` arms exact-chord KeyDown/KeyUp
-        /// pair suppression for the tile catalogue; unmatched events always
-        /// pass (`Keep`).
+        /// Create the tap over `chords` (non-empty exact chords; no fixed
+        /// count cap). Fails closed when creation is denied (no consent) — a
+        /// denial is `Err`, never a silent success. `suppress_armed` arms
+        /// exact-chord KeyDown/KeyUp pair suppression for the tile catalogue;
+        /// unmatched events always pass (`Keep`).
         pub fn create(
             chords: &[TapChordSpec],
             suppress_armed: bool,
@@ -9807,44 +9880,20 @@ mod macos {
             tx: &SyncSender<TapHit>,
             stall_once_ms: u64,
         ) -> Result<Self, TapSetupError> {
-            use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
             use core_graphics::event::{
                 CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
                 CGEventType, CallbackResult, EventField,
             };
 
-            if chords.is_empty() {
-                return Err(TapSetupError::Runloop("empty chord table".to_owned()));
-            }
-            if chords.len() > 64 {
-                return Err(TapSetupError::Runloop(format!(
-                    "chord table too large ({})",
-                    chords.len()
-                )));
-            }
-            let table: Vec<(TapTuning, u32, bool)> = chords
-                .iter()
-                .map(|spec| {
-                    (
-                        TapTuning {
-                            want_flags: spec.want_flags,
-                            flags_mask: spec.flags_mask,
-                            want_code: spec.want_code,
-                        },
-                        spec.key_code,
-                        spec.select,
-                    )
-                })
-                .collect();
+            let table = TapChordTable::prepare(chords)?;
             let shared = Arc::new(TapMultiShared {
                 tx: tx.clone(),
-                chords: table,
+                table,
                 suppress_armed,
                 matched: AtomicU32::new(0),
                 suppressed: AtomicU32::new(0),
                 deliveries: AtomicU32::new(0),
                 disable_kind: AtomicU32::new(0),
-                pending: AtomicU64::new(0),
                 reenables: AtomicU32::new(0),
                 user_disables: AtomicU32::new(0),
                 unnotified: AtomicU32::new(0),
@@ -9958,34 +10007,14 @@ mod macos {
                     }
                     // First exact match wins (tables are duplicate-free, so
                     // at most one arm matches). Minimal per-chord work:
-                    // exact compare plus a non-blocking forward.
-                    let mut hit: Option<(u32, bool)> = None;
-                    for (index, (tuning, key_code, _)) in
-                        callback_shared.chords.iter().enumerate()
-                    {
-                        let mut pending =
-                            (callback_shared.pending.load(Ordering::SeqCst) >> index) & 1 == 1;
-                        let decision = decide_tap_event(
-                            tap_kind,
-                            flags,
-                            code,
-                            *tuning,
-                            callback_shared.suppress_armed,
-                            &mut pending,
-                        );
-                        if pending {
-                            callback_shared.pending.fetch_or(1u64 << index, Ordering::SeqCst);
-                        } else {
-                            callback_shared
-                                .pending
-                                .fetch_and(!(1u64 << index), Ordering::SeqCst);
-                        }
-                        if decision.matched {
-                            hit = Some((*key_code, decision.suppress));
-                            break;
-                        }
-                    }
-                    match hit {
+                    // exact compare plus a non-blocking forward, with one
+                    // per-chord pending flag updated only when it changes.
+                    match callback_shared.table.step(
+                        tap_kind,
+                        flags,
+                        code,
+                        callback_shared.suppress_armed,
+                    ) {
                         Some((key_code, suppress)) => {
                             callback_shared.matched.fetch_add(1, Ordering::SeqCst);
                             let _ = callback_shared.tx.try_send(TapHit {
@@ -11216,6 +11245,9 @@ mod macos {
         ))
     }
 }
+
+#[cfg(all(target_os = "macos", test))]
+pub(crate) use macos::TapChordTable;
 
 #[cfg(target_os = "macos")]
 pub(crate) use macos::ax_exact_focused_window_title;

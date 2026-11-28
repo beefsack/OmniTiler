@@ -6,6 +6,8 @@
 use std::collections::HashSet;
 
 use crate::config::ProbeModifier;
+#[cfg(target_os = "macos")]
+use crate::ffi::TapChordTable;
 use crate::desktop_shortcuts::{KEY_0, KEY_1};
 use crate::input::cg_flag_bits;
 use crate::input_match::{TapKeyKind, decide_tap_event};
@@ -1154,4 +1156,75 @@ fn multi_display_keyboard_shape_is_existing_space_navigation_only() {
             "{action:?} must not take the keyboard two-display route"
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_tap_admits_product_tables_and_tracks_row_64_pending() {
+    // The native tap previously stored key-up suppression in one u64 bitset
+    // and refused tables over 64 chords. The fresh-install Authentic/Ctrl
+    // product table is 65 rows, so it was refused at startup; Compatible
+    // under Ctrl is 51. Both must prepare through the exact native
+    // pre-install path, and Authentic row 64 must arm and suppress its own
+    // up independently of row 0.
+    let product = crate::tile::product_catalogue();
+    assert_eq!(product.len(), 65);
+    let authentic = effective_bindings(InputPreset::Authentic, ProbeModifier::Ctrl, &product);
+    let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &product);
+    assert_eq!(authentic.len(), 65);
+    assert_eq!(compatible.len(), 51);
+
+    let authentic_specs = tap_specs_for(ProbeModifier::Ctrl, &authentic);
+    let compatible_specs = tap_specs_for(ProbeModifier::Ctrl, &compatible);
+    let authentic_table =
+        TapChordTable::prepare(&authentic_specs).expect("Authentic 65-chord table is admitted");
+    let compatible_table =
+        TapChordTable::prepare(&compatible_specs).expect("Compatible 51-chord table is admitted");
+    assert_eq!(authentic_table.chord_count(), 65);
+    assert_eq!(compatible_table.chord_count(), 51);
+    assert!(
+        TapChordTable::prepare(&[]).is_err(),
+        "an empty table is still refused"
+    );
+
+    let last = authentic_specs[64];
+    let first = authentic_specs[0];
+    assert_eq!(
+        authentic_table.step(TapKeyKind::KeyDown, last.want_flags, last.want_code, true),
+        Some((last.key_code, true)),
+        "row 64 arms on its exact KeyDown"
+    );
+    assert!(authentic_table.pending_at(64));
+    assert_eq!(
+        authentic_table.step(TapKeyKind::KeyDown, first.want_flags, first.want_code, true),
+        Some((first.key_code, true))
+    );
+    assert!(authentic_table.pending_at(0));
+    assert!(
+        authentic_table.pending_at(64),
+        "row 0 down must not clear row 64"
+    );
+
+    // Row 0 matches first, so its KeyUp never reaches row 64: row 64 stays
+    // armed and then suppresses its own up, leaving no pending behind.
+    assert_eq!(
+        authentic_table.step(TapKeyKind::KeyUp, first.want_flags, first.want_code, true),
+        Some((first.key_code, true))
+    );
+    assert!(!authentic_table.pending_at(0));
+    assert!(
+        authentic_table.pending_at(64),
+        "row 0 up must not clear row 64"
+    );
+    assert_eq!(
+        authentic_table.step(TapKeyKind::KeyUp, last.want_flags, last.want_code, true),
+        Some((last.key_code, true)),
+        "row 64 suppresses its own up"
+    );
+    assert!(!authentic_table.pending_at(64));
+    assert_eq!(
+        authentic_table.step(TapKeyKind::KeyUp, last.want_flags, last.want_code, true),
+        Some((last.key_code, false)),
+        "row 64 pending is consumed exactly once"
+    );
 }
