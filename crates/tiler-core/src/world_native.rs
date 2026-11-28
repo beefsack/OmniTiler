@@ -372,7 +372,7 @@ impl WorldTransaction<'_> {
 
     /// Whether a view/migration flight owns one output's selection.
     /// Idle echo adoption skips these; `settle_views_pre` reconciles them.
-    fn view_flight_owns(&self, output: &str) -> bool {
+    pub(crate) fn view_flight_owns(&self, output: &str) -> bool {
         self.world.settlement.retained.iter().any(|retained| {
             retained.target.target_output.0 == output
                 && matches!(
@@ -411,18 +411,17 @@ impl WorldTransaction<'_> {
             .and_then(|ring| ring.first().cloned())
     }
 
-    /// Idle adoption (separate-view only): a complete known echo naming a
-    /// ringed logical is observed into the retained view when no flight owns
-    /// the output. Observation only: no transfer, no reassertion, no
-    /// deletion. Unknown/incomplete evidence adopts nothing. Existing holds
+    /// Idle adoption: an idle output's coherent physical current is observed
+    /// into the retained view when no flight owns the output. Separate view:
+    /// a native current naming a ringed logical, or a detached current whose
+    /// members name one unique retained home logical. Shared: only when
+    /// every live output coherently reads the same known logical (merge).
+    /// Observation only: no transfer, no reassertion, no deletion.
+    /// Unknown/incomplete/ambiguous evidence adopts nothing. Existing holds
     /// gate writes/deletion, not the observed idle view, so adoption stays
     /// ungated on the gesture barrier.
     fn adopt_idle_native_echoes(&mut self) {
         if !self.connection.host_owned_workspace_domains() {
-            return;
-        }
-        if self.connection.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
-        {
             return;
         }
         if !self.world.staged.observation.inventory_complete {
@@ -435,21 +434,38 @@ impl WorldTransaction<'_> {
             .iter()
             .map(|screen| screen.output.0.clone())
             .collect();
+        if self.connection.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
+        {
+            self.adopt_idle_shared_logical(&outputs);
+            return;
+        }
         for output in &outputs {
             if self.view_flight_owns(output) {
                 continue;
             }
             let out = OutputId(output.clone());
-            let Some(echo) = self.native_echo_for(&out) else {
+            let candidate = match self.physical_current_ref(&out) {
+                Some(crate::world_report::ViewRef::Native { workspace, .. }) => {
+                    self.native_logical(&out, workspace.as_str())
+                }
+                Some(crate::world_report::ViewRef::Detached(surface)) => {
+                    self.unique_detached_member_home(&surface)
+                }
+                None => None,
+            };
+            let Some(candidate) = candidate else {
                 continue;
             };
-            if self.world.workspace.views.get(output) == Some(&echo) {
+            if !self.known_workspace(&out, &candidate) {
+                continue;
+            }
+            if self.world.workspace.views.get(output) == Some(&candidate) {
                 continue;
             }
             self.world
                 .workspace
                 .views
-                .insert(output.clone(), echo.clone());
+                .insert(output.clone(), candidate.clone());
             let ring = self
                 .world
                 .workspace
@@ -457,7 +473,201 @@ impl WorldTransaction<'_> {
                 .get(output)
                 .cloned()
                 .unwrap_or_default();
-            self.world.workspace.history.observe(output, &echo, &ring);
+            self.world
+                .workspace
+                .history
+                .observe(output, &candidate, &ring);
+        }
+    }
+
+    /// Unique retained home logical among the live members grounded on one
+    /// detached surface at the same output. Zero, several homes, or a
+    /// member homed elsewhere yields `None` (never a guess).
+    fn unique_detached_member_home(&self, surface: &crate::world_report::DetachedRef) -> Option<String> {
+        let mut found: Option<String> = None;
+        for (window, fact) in &self.world.staged.facts {
+            if fact.detached_surface.as_ref() != Some(surface) {
+                continue;
+            }
+            if self.world.staged.observation.closed.contains(window) {
+                continue;
+            }
+            let Some(home) = self.core_homing(window) else {
+                continue;
+            };
+            if home.output != surface.output {
+                continue;
+            }
+            let workspace = home.workspace.0;
+            if found
+                .as_deref()
+                .is_some_and(|existing| existing != workspace.as_str())
+            {
+                return None;
+            }
+            found = Some(workspace);
+        }
+        found
+    }
+
+    /// Shared idle adoption for a complete coherent merge: every live output
+    /// reads the same logical workspace from the native arm, no flight owns
+    /// any live output, and that logical is ringed. Detached or divergent
+    /// readbacks adopt nothing (per-output detached ownership needs a
+    /// standalone selection).
+    fn adopt_idle_shared_logical(&mut self, outputs: &[String]) {
+        if outputs.is_empty() {
+            return;
+        }
+        let mut common: Option<String> = None;
+        for output in outputs {
+            if self.view_flight_owns(output) {
+                return;
+            }
+            if !self.native_list_complete(output) {
+                return;
+            }
+            let out = OutputId(output.clone());
+            let Some(crate::world_report::ViewRef::Native { workspace, .. }) =
+                self.physical_current_ref(&out)
+            else {
+                return;
+            };
+            let Some(logical) = self.native_logical(&out, workspace.as_str()) else {
+                return;
+            };
+            match &common {
+                None => common = Some(logical),
+                Some(expected) if *expected == logical => {}
+                Some(_) => return,
+            }
+        }
+        let Some(candidate) = common else {
+            return;
+        };
+        let ring = self
+            .world
+            .workspace
+            .mapping
+            .get(&outputs[0])
+            .cloned()
+            .unwrap_or_default();
+        if !ring.iter().any(|id| id == &candidate) {
+            return;
+        }
+        let mut changed = false;
+        for output in outputs {
+            if self.world.workspace.views.get(output) != Some(&candidate) {
+                self.world
+                    .workspace
+                    .views
+                    .insert(output.clone(), candidate.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.world
+                .workspace
+                .history
+                .observe_shared(&ring, &candidate);
+        }
+    }
+
+    /// Whether any staged held row (native or attempt) names this output, so
+    /// its physical view evidence is incomplete and never a fresh read.
+    fn output_view_held(&self, output: &OutputId) -> bool {
+        if self.world.staged.held_native.iter().any(|row| &row.output == output) {
+            return true;
+        }
+        self.world.staged.held_attempts.iter().any(|row| {
+            row.diagnostic.as_ref().is_some_and(|diagnostic| match &diagnostic.scope {
+                crate::world_report::AuthorityScope::Output(scope) => scope == output,
+                crate::world_report::AuthorityScope::Workspace { output: scope, .. } => {
+                    scope == output
+                }
+            })
+        })
+    }
+
+    /// Fresh coherent physical view reading for one output: host-owned
+    /// capability, complete native/screen inventory, no held native or
+    /// attempt row naming the output, and the staged native row's current
+    /// read known. `Some(Detached)` when the detached surface is current,
+    /// `Some(Native)` when a readable native workspace id is current, and
+    /// `None` for a read gap, unknown, or conflicting reading (never a
+    /// guess, never a Desktop fallback).
+    pub(crate) fn physical_current_ref(&self, output: &OutputId) -> Option<crate::world_report::ViewRef> {
+        if !self.native_list_complete(&output.0) {
+            return None;
+        }
+        if self.output_view_held(output) {
+            return None;
+        }
+        let row = self
+            .world
+            .staged
+            .observation
+            .native
+            .iter()
+            .find(|entry| entry.output == *output)?;
+        if !row.current_known {
+            return None;
+        }
+        let Some(current) = row.current_native.as_deref() else {
+            return row.detached_current.as_ref().and_then(|surface| {
+                (&surface.output == output).then(|| {
+                    crate::world_report::ViewRef::Detached(surface.clone())
+                })
+            });
+        };
+        if self.shared_view_intermediate(output, current) {
+            return None;
+        }
+        Some(crate::world_report::ViewRef::Native {
+            output: output.clone(),
+            workspace: crate::ids::NativeWorkspaceId::parse(current)?,
+        })
+    }
+
+    /// Whether `output` already shows exactly the frozen detached
+    /// destination: fresh coherent current reads that surface, no flight
+    /// owns the output, the staged grounded fact for the intended member
+    /// reports the same detached surface on this output, fullscreen, and
+    /// the same output affinity. Anything unknown or conflicting is not
+    /// proof.
+    pub(crate) fn detached_current_proves(
+        &self,
+        output: &OutputId,
+        destination: &crate::world_report::DetachedDestination,
+    ) -> bool {
+        if !self.native_list_complete(&output.0) {
+            return false;
+        }
+        if !matches!(
+            &self.physical_current_ref(output),
+            Some(crate::world_report::ViewRef::Detached(current))
+                if current == &destination.surface
+        ) {
+            return false;
+        }
+        let Some(fact) = self.world.staged.facts.get(&destination.member) else {
+            return false;
+        };
+        if fact.output.as_ref() != Some(output) || fact.fullscreen != Some(true) {
+            return false;
+        }
+        fact.detached_surface.as_ref() == Some(&destination.surface)
+    }
+
+    /// Logical workspace named by a retained last view: the native desktop
+    /// translated through the current map. A detached surface names no
+    /// logical workspace; an unmapped native read is unknown.
+    pub(crate) fn last_view_logical(&self, output: &OutputId) -> Option<String> {
+        match self.world.settlement.last_views.get(output) {
+            Some(crate::world_report::ViewRef::Native { workspace, .. }) => {
+                self.native_logical(output, workspace.as_str())
+            }
+            Some(crate::world_report::ViewRef::Detached(_)) | None => None,
         }
     }
 
@@ -475,12 +685,12 @@ impl WorldTransaction<'_> {
             .map(|screen| screen.output.clone())
             .collect();
         for output in &outputs {
-            match self.native_echo_for(output) {
-                Some(echo) => {
+            match self.physical_current_ref(output) {
+                Some(current) => {
                     self.world
                         .settlement
                         .last_views
-                        .insert(output.clone(), echo);
+                        .insert(output.clone(), current);
                 }
                 None => {
                     self.world.settlement.last_views.remove(output);

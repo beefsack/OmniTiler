@@ -479,6 +479,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     held: false,
                     command_seq: Some(1),
                     parent: None,
+                    detached_destination: None,
                 }];
             }),
         ),
@@ -494,6 +495,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     held: false,
                     command_seq: Some(1),
                     parent: None,
+                    detached_destination: None,
                 }];
             }),
         ),
@@ -509,6 +511,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     held: false,
                     command_seq: Some(1),
                     parent: None,
+                    detached_destination: None,
                 }];
             }),
         ),
@@ -524,6 +527,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     held: true,
                     command_seq: None,
                     parent: None,
+                    detached_destination: None,
                 }];
             }),
         ),

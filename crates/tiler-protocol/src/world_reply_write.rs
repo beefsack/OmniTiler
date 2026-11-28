@@ -18,11 +18,12 @@ use tiler_core::world_reply_validation::{
     ReplyValidationError, validate_projection_reply_v4, validate_reply_v4,
 };
 use tiler_core::world_report::{
-    AfterShown, AfterShownScope, AuthorityScope, BorderPresentationV4, DragPreviewV4, FloatOrigin,
-    FocusRequest, FocusRequestCause, FrameWitness, HoldReason, IntentDesire, MAX_FOCUS_DEPARTING,
-    MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, NativeCreationDesire, OperationEvent,
-    OutputDesire, RowDiagnostic, ScopeStatus, SwitchEvent, TransferKind, TransferTargetV4,
-    WarpRequest, WindowDesire, WorkspaceDesire, WorldPresentationV4, WorldReplyV4,
+    AfterShown, AfterShownScope, AuthorityScope, BorderPresentationV4, DetachedDestination,
+    DetachedRef, DragPreviewV4, FloatOrigin, FocusRequest, FocusRequestCause, FrameWitness,
+    HoldReason, IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
+    MAX_FOCUS_VIEWS, NativeCreationDesire, OperationEvent, OutputDesire, RowDiagnostic,
+    ScopeStatus, SwitchEvent, TransferKind, TransferTargetV4, WarpRequest, WindowDesire,
+    WorkspaceDesire, WorldPresentationV4, WorldReplyV4,
 };
 use tiler_core::world_roster::SharedRosterPlan;
 
@@ -246,6 +247,32 @@ fn write_window_desire_v4<S: ReplySink>(
     })
 }
 
+fn write_detached_ref<S: ReplySink>(sink: &mut S, reference: &DetachedRef) -> Result<()> {
+    sink.write_object(|obj| {
+        obj.field_str("kind", "detached")?;
+        obj.field_str("out", &reference.output.0)?;
+        obj.field_str("surface", reference.surface.as_str())
+    })
+}
+
+fn write_detached_destination<S: ReplySink>(
+    destination: &Option<DetachedDestination>,
+    sink: &mut S,
+) -> Result<()> {
+    match destination {
+        None => {
+            sink.push_str("null");
+            Ok(())
+        }
+        Some(destination) => sink.write_object(|obj| {
+            obj.field("surface", |s| {
+                write_detached_ref(s, &destination.surface)
+            })?;
+            obj.field_str("member", &destination.member.0)
+        }),
+    }
+}
+
 fn write_transfer_v4<S: ReplySink>(row: &TransferTargetV4, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("op", &row.operation_id)?;
@@ -278,6 +305,9 @@ fn write_transfer_v4<S: ReplySink>(row: &TransferTargetV4, sink: &mut S) -> Resu
                 s.push_json_str(parent);
                 Ok(())
             }
+        })?;
+        obj.field("detachedDestination", |s| {
+            write_detached_destination(&row.detached_destination, s)
         })
     })
 }

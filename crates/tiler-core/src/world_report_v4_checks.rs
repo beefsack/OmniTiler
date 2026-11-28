@@ -13,7 +13,7 @@ use crate::connection::FactName;
 use crate::directional::WindowSubject;
 use crate::geometry::Rect;
 use crate::world_report::{
-    ArrivalLocation, AuthorityScope, HeldAttemptRow, MAX_ARRIVAL_BRACKETS_TOTAL,
+    ArrivalLocation, AttemptLaneV4, AuthorityScope, HeldAttemptRow, MAX_ARRIVAL_BRACKETS_TOTAL,
     MAX_BATCH_COMMANDS, MAX_IDENTITY_TEXT_BYTES, MAX_INTENT_RECORDS, MAX_METADATA_TEXT_BYTES,
     MAX_NATIVE_OCCUPANTS_PER_DESKTOP, MAX_NATIVE_PER_OUTPUT, MAX_PRESENTATION_ORDER,
     MAX_WORLD_CLOSED, MAX_WORLD_CREATION_ATTEMPTS, MAX_WORLD_FACTS, MAX_WORLD_FOCUS_FEEDBACK,
@@ -186,7 +186,9 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
                 .as_ref()
                 .is_some_and(|win| !win.0.is_empty() && !is_opaque_id(&win.0)),
             crate::world_report::FocusChange::View { out, native } => {
-                !is_opaque_id(&out.0) || !is_opaque_id(native)
+                !is_opaque_id(&out.0)
+                    || !valid_attempt_view_ref(native)
+                    || native.output() != out
             }
         })
     {
@@ -348,6 +350,9 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             {
                 return Some("window-native-invalid");
             }
+            if window_detached_conflict(fact, true) {
+                return Some("window-detached-invalid");
+            }
             if let Some(process) = fact.process_id.as_deref()
                 && !crate::connection::valid_process_identity_text(process)
             {
@@ -400,12 +405,7 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
     {
         let mut seen_native_outputs = BTreeSet::new();
         for native in &report.native {
-            if !is_opaque_id(&native.output.0)
-                || native
-                    .current_native
-                    .as_deref()
-                    .is_some_and(|current| !is_opaque_id(current))
-                || native.native_order.len() > MAX_NATIVE_PER_OUTPUT
+            if !is_opaque_id(&native.output.0) || native.native_order.len() > MAX_NATIVE_PER_OUTPUT
             {
                 return Some("native-invalid");
             }
@@ -415,41 +415,11 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             if !seen_native_outputs.insert(native.output.0.clone()) {
                 return Some("duplicate-native");
             }
-            {
-                let mut seen_ids = BTreeSet::new();
-                for id in &native.native_order {
-                    if !is_opaque_id(id) {
-                        return Some("native-id-invalid");
-                    }
-                    if !seen_ids.insert(id.clone()) {
-                        return Some("duplicate-native");
-                    }
-                }
+            if let Some(reason) = native_structure_violation(native) {
+                return Some(reason);
             }
-            {
-                if native.occupancy.len() != native.native_order.len() {
-                    return Some("native-occupancy-incomplete");
-                }
-                let mut seen_occupancy = BTreeSet::new();
-                for row in &native.occupancy {
-                    if !is_opaque_id(&row.native) {
-                        return Some("native-occupancy-invalid");
-                    }
-                    if !seen_occupancy.insert(row.native.clone()) {
-                        return Some("duplicate-native-occupancy");
-                    }
-                    if row
-                        .count
-                        .is_some_and(|count| count > MAX_NATIVE_OCCUPANTS_PER_DESKTOP)
-                    {
-                        return Some("native-occupancy-invalid");
-                    }
-                }
-                for id in &native.native_order {
-                    if !seen_occupancy.contains(id) {
-                        return Some("native-occupancy-incomplete");
-                    }
-                }
+            if native_current_conflict(native, true) {
+                return Some("native-invalid");
             }
             total_native += native.native_order.len();
         }
@@ -544,15 +514,28 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             if !is_opaque_id(&attempt.target_output.0) || !is_opaque_id(&attempt.target_workspace) {
                 return Some("view-target-invalid");
             }
-            for reference in [&attempt.pre, &attempt.post, &attempt.baseline]
-                .into_iter()
-                .flatten()
-            {
-                if !valid_attempt_workspace_ref(reference) {
-                    return Some("view-proof-invalid");
-                }
+            if view_attempt_conflict(attempt, true) {
+                return Some("view-proof-invalid");
             }
-            if !seen_views.insert(attempt.operation_id.clone()) {
+            if !seen_views.insert((
+                attempt.operation_id.as_str(),
+                attempt.target_output.0.as_str(),
+            )) {
+                return Some("duplicate-view-attempt");
+            }
+        }
+        for held in report
+            .held_attempts
+            .iter()
+            .filter(|held| held.lane == AttemptLaneV4::View)
+        {
+            let [op, out] = held.identity.as_slice() else {
+                return Some("view-attempt-identity-invalid");
+            };
+            if !is_opaque_id(op) || !is_opaque_id(out) {
+                return Some("view-attempt-identity-invalid");
+            }
+            if !seen_views.insert((op.as_str(), out.as_str())) {
                 return Some("duplicate-view-attempt");
             }
         }
@@ -845,6 +828,204 @@ fn valid_attempt_workspace_ref(reference: &WorkspaceRef) -> bool {
     }
 }
 
+fn valid_attempt_view_ref(reference: &crate::world_report::ViewRef) -> bool {
+    match reference {
+        crate::world_report::ViewRef::Native { output, workspace } => {
+            is_opaque_id(&output.0) && is_opaque_id(workspace.as_str())
+        }
+        crate::world_report::ViewRef::Detached(detached) => {
+            is_opaque_id(&detached.output.0) && is_opaque_id(detached.surface.as_str())
+        }
+    }
+}
+
+fn window_detached_conflict(fact: &WindowFact, detached_allowed: bool) -> bool {
+    fact.detached_surface.as_ref().is_some_and(|detached| {
+        !detached_allowed
+            || fact.output.as_ref() != Some(&detached.output)
+            || fact.fullscreen != Some(true)
+            || fact.native_workspace != crate::world_report::NativeWorkspaceFact::Null
+    })
+}
+
+fn native_current_conflict(
+    native: &crate::world_report::NativeObservation,
+    detached_allowed: bool,
+) -> bool {
+    native.current_native.as_deref().is_some_and(|current| {
+        !native.current_known || !is_opaque_id(current)
+    }) || native.detached_current.as_ref().is_some_and(|detached| {
+        !detached_allowed
+            || detached.output != native.output
+            || !native.current_known
+            || native.current_native.is_some()
+    })
+}
+
+fn native_structure_violation(native: &crate::world_report::NativeObservation) -> Option<&'static str> {
+    let mut seen_ids = BTreeSet::new();
+    for id in &native.native_order {
+        if !is_opaque_id(id) {
+            return Some("native-id-invalid");
+        }
+        if !seen_ids.insert(id.as_str()) {
+            return Some("duplicate-native");
+        }
+    }
+    if native.occupancy.len() != native.native_order.len() {
+        return Some("native-occupancy-incomplete");
+    }
+    let mut seen_occupancy = BTreeSet::new();
+    for row in &native.occupancy {
+        if !is_opaque_id(&row.native) {
+            return Some("native-occupancy-invalid");
+        }
+        if !seen_occupancy.insert(row.native.as_str()) {
+            return Some("duplicate-native-occupancy");
+        }
+        if row.count.is_some_and(|count| count > MAX_NATIVE_OCCUPANTS_PER_DESKTOP) {
+            return Some("native-occupancy-invalid");
+        }
+    }
+    if seen_ids != seen_occupancy {
+        return Some("native-occupancy-incomplete");
+    }
+    None
+}
+
+fn view_attempt_conflict(
+    attempt: &crate::world_report::ViewAttempt,
+    detached_allowed: bool,
+) -> bool {
+    use crate::world_report::{FrameSetter, ViewRef};
+    [&attempt.pre, &attempt.post, &attempt.baseline]
+        .into_iter()
+        .flatten()
+        .any(|reference| {
+            !valid_attempt_view_ref(reference)
+                || (matches!(reference, ViewRef::Detached(_))
+                    && (!detached_allowed || reference.output() != &attempt.target_output))
+        }) || attempt.post_member.as_ref().is_some_and(|member| {
+        attempt.disposition != FrameSetter::Accepted
+            || !matches!(attempt.post.as_ref(), Some(ViewRef::Detached(_)))
+            || !is_opaque_id(&member.0)
+    })
+}
+
+fn grade_detached_rows_v4(report: &WorldReportV4, detached_allowed: bool) -> Option<WorldReportV4> {
+    use crate::world_report::{HeldNativeRow, RowDiagnostic, RowDiagnosticLane};
+
+    let window_conflict = |fact: &WindowFact| window_detached_conflict(fact, detached_allowed);
+    let native_conflict = |row: &crate::world_report::NativeObservation| {
+        native_current_conflict(row, detached_allowed)
+    };
+    let attempt_conflict = |row: &crate::world_report::ViewAttempt| {
+        view_attempt_conflict(row, detached_allowed)
+    };
+    let windows = report.windows.iter().any(window_conflict);
+    let native = report.native.iter().any(native_conflict);
+    let attempts = report.view_attempts.iter().any(attempt_conflict);
+    if !(windows || native || attempts) {
+        return None;
+    }
+    fn free_ordinals(
+        valid: usize,
+        held: impl Iterator<Item = usize>,
+    ) -> impl Iterator<Item = usize> {
+        let mut total = valid;
+        let used: BTreeSet<_> = held.inspect(|_| total = total.saturating_add(1)).collect();
+        (0..total).filter(move |slot| !used.contains(slot))
+    }
+    let mut graded = report.clone();
+    let kind = RowDiagnosticKind::InvalidFact;
+    if windows {
+        let mut slots = free_ordinals(
+            report.windows.len(),
+            report.held_windows.iter().map(|row| row.ordinal),
+        );
+        graded.windows.retain(|fact| {
+            let ordinal = slots.next().expect("one ordinal per typed window");
+            if !window_conflict(fact)
+                || check_window_structure(fact, &mut BTreeSet::new()).is_some()
+                || hidden_window_id_violation(fact)
+            {
+                return true;
+            }
+            if graded.cursor.is_some() && graded.cursor_hit.as_ref() == Some(&fact.window) {
+                graded.cursor_hit = None;
+            }
+            graded.held_windows.push(graded_held_window_row(fact, ordinal));
+            false
+        });
+        graded.held_windows.sort_by_key(|row| row.ordinal);
+    }
+    if native {
+        let mut slots = free_ordinals(
+            report.native.len(),
+            report.held_native.iter().map(|row| row.ordinal),
+        );
+        graded.native.retain(|row| {
+            let ordinal = slots.next().expect("one ordinal per typed native row");
+            if !native_conflict(row)
+                || row.native_order.len() > MAX_NATIVE_PER_OUTPUT
+                || native_structure_violation(row).is_some()
+            {
+                return true;
+            }
+            graded.held_native.push(HeldNativeRow {
+                output: row.output.clone(),
+                ordinal,
+                order_len: row.native_order.len(),
+                diagnostic: RowDiagnostic {
+                    scope: AuthorityScope::Output(row.output.clone()),
+                    row: RowDiagnosticLane::Native,
+                    id: Some(row.output.0.clone()),
+                    kind,
+                },
+            });
+            false
+        });
+        graded.held_native.sort_by_key(|row| row.ordinal);
+    }
+    if attempts {
+        let before = report.frames.len() + report.member_attempts.len();
+        let valid = before + report.view_attempts.len() + report.state_attempts.len()
+            + report.visibility_attempts.len();
+        let mut slots = free_ordinals(
+            valid,
+            report.held_attempts.iter().filter_map(|row| {
+                (row.lane != AttemptLaneV4::Creation).then_some(row.ordinal)
+            }),
+        )
+        .skip(before);
+        graded.view_attempts.retain(|row| {
+            let ordinal = slots.next().expect("one ordinal per typed view attempt");
+            if !attempt_conflict(row)
+                || !is_opaque_id(&row.operation_id)
+                || !is_opaque_id(&row.target_output.0)
+            {
+                return true;
+            }
+            graded.held_attempts.push(HeldAttemptRow {
+                lane: AttemptLaneV4::View,
+                ordinal,
+                identity: vec![row.operation_id.clone(), row.target_output.0.clone()],
+                has_native_ref: true,
+                diagnostic: Some(RowDiagnostic {
+                    scope: AuthorityScope::Output(row.target_output.clone()),
+                    row: RowDiagnosticLane::Attempt,
+                    id: Some(row.operation_id.clone()),
+                    kind,
+                }),
+                kind,
+            });
+            false
+        });
+        graded.held_attempts.sort_by_key(|row| (row.lane, row.ordinal));
+    }
+    Some(graded)
+}
+
 /// Staged v4 twin of [`grade_invalid_screens_v4`](crate::world_report_v4_checks::grade_invalid_screens_v4):
 /// identifiable invalid scale/identity rows become narrow `InvalidFact`
 /// holds with typed output, ordinal, and diagnostic only (no raw fields).
@@ -969,8 +1150,8 @@ pub fn grade_invalid_windows_v4(report: &WorldReportV4) -> Option<WorldReportV4>
     }
 }
 
-/// Compose the typed v4 invalid and capability graders in legacy order:
-/// invalid screens, then invalid windows, then conflicting facts. Each
+/// Compose typed v4 grading: detached value conflicts first, then the
+/// existing invalid-screen, invalid-window, and conflicting-fact passes. Each
 /// step sees the previous step's effective rows so mixed screen/window
 /// invalidity and capability conflicts compose instead of masking each
 /// other; structural defects still refuse at the final validation owned
@@ -982,8 +1163,9 @@ pub(crate) fn graded_effective_v4(
     unavailable: &[FactName],
     native_sticky_supported: bool,
     maximize_supported: bool,
+    detached_allowed: bool,
 ) -> Option<WorldReportV4> {
-    let mut current: Option<WorldReportV4> = None;
+    let mut current = grade_detached_rows_v4(report, detached_allowed);
     if let Some(graded) = grade_invalid_screens_v4(current.as_ref().unwrap_or(report)) {
         current = Some(graded);
     }
@@ -1221,6 +1403,22 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
             }
         }
     }
+    fn feed_view_ref(hash: &mut u64, reference: &crate::world_report::ViewRef) {
+        let (kind, output, id) = match reference {
+            crate::world_report::ViewRef::Native { output, workspace } => {
+                ("native", output, workspace.as_str())
+            }
+            crate::world_report::ViewRef::Detached(detached) => {
+                ("detached", &detached.output, detached.surface.as_str())
+            }
+        };
+        feed(hash, kind);
+        sep(hash);
+        feed(hash, &output.0);
+        sep(hash);
+        feed(hash, id);
+        sep(hash);
+    }
     let crate::world_report::WorldReportV4 {
         contract_version,
         adapter_incarnation,
@@ -1449,6 +1647,14 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
             native.current_native.as_deref().unwrap_or_default(),
         );
         flag(&mut hash, native.current_native.is_some());
+        flag(&mut hash, native.current_known);
+        flag(&mut hash, native.detached_current.is_some());
+        if let Some(detached) = &native.detached_current {
+            feed(&mut hash, &detached.output.0);
+            sep(&mut hash);
+            feed(&mut hash, detached.surface.as_str());
+            sep(&mut hash);
+        }
         for id in &native.native_order {
             feed(&mut hash, id);
             sep(&mut hash);
@@ -1595,35 +1801,24 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         feed(&mut hash, attempt.disposition.as_str());
         sep(&mut hash);
-        feed(
-            &mut hash,
-            &attempt
-                .pre
-                .as_ref()
-                .map(workspace_ref_fingerprint)
-                .unwrap_or_default(),
-        );
-        sep(&mut hash);
-        feed(
-            &mut hash,
-            &attempt
-                .post
-                .as_ref()
-                .map(workspace_ref_fingerprint)
-                .unwrap_or_default(),
-        );
-        sep(&mut hash);
-        feed(
-            &mut hash,
-            &attempt
-                .baseline
-                .as_ref()
-                .map(workspace_ref_fingerprint)
-                .unwrap_or_default(),
-        );
-        sep(&mut hash);
+        for reference in [&attempt.pre, &attempt.post, &attempt.baseline] {
+            flag(&mut hash, reference.is_some());
+            if let Some(reference) = reference {
+                feed_view_ref(&mut hash, reference);
+            }
+        }
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
+        feed(
+            &mut hash,
+            attempt
+                .post_member
+                .as_ref()
+                .map(|member| member.0.as_str())
+                .unwrap_or_default(),
+        );
+        sep(&mut hash);
+        flag(&mut hash, attempt.post_member.is_some());
     }
     for attempt in creation_attempts {
         feed(&mut hash, &attempt.operation_id);
@@ -1706,8 +1901,11 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
                         flag(&mut hash, true);
                         feed(&mut hash, &out.0);
                         sep(&mut hash);
-                        feed(&mut hash, native);
-                        sep(&mut hash);
+                        feed_view_ref(&mut hash, native);
+                        flag(
+                            &mut hash,
+                            matches!(native, crate::world_report::ViewRef::Detached(_)),
+                        );
                     }
                 }
             }
@@ -1969,6 +2167,13 @@ fn feed_window_facts(hash: &mut u64, facts: &[WindowFact]) {
                 crate::world_report::NativeWorkspaceFact::Value(_)
             ),
         );
+        flag(hash, fact.detached_surface.is_some());
+        if let Some(detached) = &fact.detached_surface {
+            feed(hash, &detached.output.0);
+            sep(hash);
+            feed(hash, detached.surface.as_str());
+            sep(hash);
+        }
         for value in [
             fact.host_hidden,
             fact.privileged,

@@ -118,12 +118,11 @@ impl WorldTransaction<'_> {
         if !host_owned {
             return None;
         }
-        match attempt.pre.as_ref()? {
-            WorkspaceRef::Native { output, workspace } if output == &attempt.target_output => {
-                self.native_logical(output, workspace.as_str())
-            }
-            _ => None,
+        let reference = attempt.pre.as_ref()?;
+        if reference.output() != &attempt.target_output {
+            return None;
         }
+        self.native_logical(reference.output(), reference.native_workspace()?.as_str())
     }
 
     /// Effective logical post view for one view attempt: same capability
@@ -136,12 +135,11 @@ impl WorldTransaction<'_> {
         if !host_owned {
             return None;
         }
-        match attempt.post.as_ref()? {
-            WorkspaceRef::Native { output, workspace } if output == &attempt.target_output => {
-                self.native_logical(output, workspace.as_str())
-            }
-            _ => None,
+        let reference = attempt.post.as_ref()?;
+        if reference.output() != &attempt.target_output {
+            return None;
         }
+        self.native_logical(reference.output(), reference.native_workspace()?.as_str())
     }
 
     /// Effective logical baseline view for one view attempt: same capability
@@ -154,12 +152,11 @@ impl WorldTransaction<'_> {
         if !host_owned {
             return None;
         }
-        match attempt.baseline.as_ref()? {
-            WorkspaceRef::Native { output, workspace } if output == &attempt.target_output => {
-                self.native_logical(output, workspace.as_str())
-            }
-            _ => None,
+        let reference = attempt.baseline.as_ref()?;
+        if reference.output() != &attempt.target_output {
+            return None;
         }
+        self.native_logical(reference.output(), reference.native_workspace()?.as_str())
     }
 
     /// Proven refusal from one membership attempt over effective homing: an
@@ -553,6 +550,14 @@ impl WorldTransaction<'_> {
                 keep.push(retained);
                 continue;
             }
+            if retained.detached_destination.is_some() {
+                // Detached view proof is the frozen selection binding's
+                // typed current-ref check (`settle_selection_switch`), never
+                // a logical Desktop echo: keep the flight until its
+                // terminal retires it.
+                keep.push(retained);
+                continue;
+            }
             let raw = retained.pending_view.clone();
             let raw_view = raw
                 .as_ref()
@@ -670,12 +675,8 @@ impl WorldTransaction<'_> {
                 // Newer external input proven by the raw post: settle to
                 // observed instead of fighting the user.
             } else {
-                let last = self
-                    .world
-                    .settlement
-                    .last_views
-                    .get(&retained.target.target_output)
-                    .map(String::as_str);
+                let last = self.last_view_logical(&retained.target.target_output);
+                let last = last.as_deref();
                 let Some(echo) = echo else {
                     // Missing/empty echo is a gap, never external
                     // supersession and never a ring-head revert: hold the
@@ -1978,12 +1979,8 @@ impl WorldTransaction<'_> {
                 hold(held);
                 return;
             }
-            let last = self
-                .world
-                .settlement
-                .last_views
-                .get(&retained.target.target_output)
-                .map(String::as_str);
+            let last = self.last_view_logical(&retained.target.target_output);
+            let last = last.as_deref();
             // A proven-then-abandoned target alone never settles here:
             // with the refill still shown that shape is lag (the target
             // switch simply has not landed yet), so the parent holds and

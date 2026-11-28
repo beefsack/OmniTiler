@@ -1,6 +1,6 @@
 //! Native occupancy regression (genuine v4 vocabulary).
 //!
-//! Wire shape under test: `native[]: {out, order, current, occupancy}` with
+//! Wire shape under test: `native[]: {out, order, current, occupancy, currentKnown, detachedCurrent}` with
 //! `occupancy: [{native, count: integer|null}]` covering exactly each `order`
 //! id. `count: null` is explicit unknown; exact zero only on readable empty.
 //!
@@ -28,7 +28,8 @@ fn base_request(native_rows: serde_json::Value) -> String {
 
 fn native_row(order: &str, current: &str, occupancy: &str) -> serde_json::Value {
     serde_json::from_str(&format!(
-        "{{\"out\":\"out-a\",\"order\":[{order}],\"current\":{current},\"occupancy\":[{occupancy}]}}"
+        "{{\"out\":\"out-a\",\"order\":[{order}],\"current\":{current},\"occupancy\":[{occupancy}],\"currentKnown\":{},\"detachedCurrent\":null}}",
+        current != "null"
     ))
     .expect("native row builds")
 }

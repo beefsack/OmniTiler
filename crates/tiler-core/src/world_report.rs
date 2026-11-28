@@ -22,7 +22,7 @@ use crate::bounds::{COORDINATE_BOUND, is_opaque_id, valid_carried_point, valid_c
 use crate::directional::{Direction, NodeId, OutputId, WindowId, WindowSubject, WorkspaceId};
 use crate::geometry::Rect;
 use crate::gesture::{GestureIngress, GestureSettled};
-use crate::ids::NativeWorkspaceId;
+use crate::ids::{DetachedSurfaceId, NativeWorkspaceId};
 use crate::session::{DomainKey, DragHoverPrior};
 
 /// World envelope version (single source for the wire `v`). Version 4 is
@@ -74,6 +74,56 @@ pub enum WorkspaceRef {
         output: OutputId,
         workspace: NativeWorkspaceId,
     },
+}
+
+/// Physical detached native surface reference: the output plus the opaque
+/// surface id. Never a logical identity and never comparable with
+/// [`NativeWorkspaceId`] by spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DetachedRef {
+    pub output: OutputId,
+    pub surface: DetachedSurfaceId,
+}
+
+/// Typed physical view reference used by view evidence and view focus
+/// events: exactly the existing native arm or a detached surface. No logical
+/// arm: logical view evidence is not a physical view.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ViewRef {
+    Native {
+        output: OutputId,
+        workspace: NativeWorkspaceId,
+    },
+    Detached(DetachedRef),
+}
+
+impl ViewRef {
+    /// Output affinity carried by the reference.
+    #[must_use]
+    pub fn output(&self) -> &OutputId {
+        match self {
+            Self::Native { output, .. } => output,
+            Self::Detached(detached) => &detached.output,
+        }
+    }
+
+    /// Native desktop arm, if any. Detached surfaces never translate
+    /// through desktop bindings.
+    #[must_use]
+    pub fn native_workspace(&self) -> Option<&NativeWorkspaceId> {
+        match self {
+            Self::Native { workspace, .. } => Some(workspace),
+            Self::Detached(_) => None,
+        }
+    }
+}
+
+/// Frozen detached destination of one standalone explicit selection grant:
+/// the physical target surface plus the intended member lifetime.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DetachedDestination {
+    pub surface: DetachedRef,
+    pub member: WindowId,
 }
 
 /// Hard input caps so the worst-case budget is bounded before any work.
@@ -912,10 +962,13 @@ pub struct ViewAttempt {
     pub target_output: OutputId,
     pub target_workspace: String,
     pub disposition: FrameSetter,
-    pub pre: Option<WorkspaceRef>,
-    pub post: Option<WorkspaceRef>,
-    pub baseline: Option<WorkspaceRef>,
+    pub pre: Option<ViewRef>,
+    pub post: Option<ViewRef>,
+    pub baseline: Option<ViewRef>,
     pub attempt_ms: u64,
+    /// Adapter-bracketed membership read for an accepted detached post;
+    /// `None` withholds proof. Never proof by itself.
+    pub post_member: Option<WindowId>,
 }
 
 /// One normalized raw native-state attempt: the mechanical facts behind a
@@ -1539,8 +1592,9 @@ pub struct FocusChanges {
 pub enum FocusChange {
     /// `None` is an unreadable or unbound activation; an empty ID is known no-client.
     Foreground { win: Option<WindowId> },
-    /// A native selector changed on this output.
-    View { out: OutputId, native: String },
+    /// A native selector changed on this output: the typed physical
+    /// reference whose `output()` equals `out`.
+    View { out: OutputId, native: ViewRef },
 }
 
 /// One screen observation: the stable output id, the FULL native output
@@ -2010,6 +2064,9 @@ pub struct WindowFact {
     pub fullscreen_exitable: Option<bool>,
     pub suppression_available: Option<bool>,
     pub visibility: VisibilityFact,
+    /// Physical detached native surface membership, exactly `None` for every
+    /// non-detached row (including capability-false hosts).
+    pub detached_surface: Option<DetachedRef>,
 }
 
 /// Observed applied logical view per screen: the stable logical workspace id
@@ -2069,6 +2126,12 @@ pub struct NativeObservation {
     pub native_order: Vec<String>,
     pub current_native: Option<String>,
     pub occupancy: Vec<NativeOccupancy>,
+    /// Whether the physical current read is readable: `false` is a read gap,
+    /// never a known absence.
+    pub current_known: bool,
+    /// Detached surface currently showing, if any. Exactly `Some` with
+    /// `current_known: true` and no [`Self::current_native`].
+    pub detached_current: Option<DetachedRef>,
 }
 
 /// Neutral host-owned native creation desire (capability-gated): one
@@ -2729,6 +2792,9 @@ pub struct TransferTargetV4 {
     pub held: bool,
     pub command_seq: Option<u64>,
     pub parent: Option<String>,
+    /// Frozen detached destination of a standalone explicit selection grant;
+    /// `None` on every other retained transfer.
+    pub detached_destination: Option<DetachedDestination>,
 }
 
 /// Staged v4 reply presentation: the tick-time foreground token, the issuing

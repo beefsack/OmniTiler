@@ -235,6 +235,7 @@ mod tests {
                 visible: Some(true),
                 suppression_owned: None,
             },
+            detached_surface: None,
         }
     }
 

@@ -275,6 +275,7 @@ fn retained_window(
         member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
+        detached_destination: None,
     }
 }
 
@@ -287,6 +288,8 @@ fn native_row(output: &str) -> NativeObservation {
             native: format!("native-{output}-0"),
             count: None,
         }],
+        current_known: true,
+        detached_current: None,
     }
 }
 
@@ -4099,6 +4102,8 @@ fn native_creation_seq_exhaustion_fails_closed_without_wrap() {
             native: "native-1".to_owned(),
             count: Some(0),
         }],
+        current_known: true,
+        detached_current: None,
     });
 
     engine.tx(|tx| tx.ensure_native_creations("out-a"));
@@ -4135,6 +4140,8 @@ fn projected_tiled_windows_preserve_nonlexical_workspace_ring_order_ws2_before_w
         native_order,
         current_native: Some("n-2".to_owned()),
         occupancy,
+        current_known: true,
+        detached_current: None,
     });
 
     let reply = accepted_v4(&mut engine, &report);
@@ -4403,4 +4410,69 @@ fn publish_v4_vetoed_focus_publishes_no_warp() {
     });
     assert_eq!(reply.focus_request, None, "vetoed focus publishes no row");
     assert_eq!(reply.warp_request, None, "vetoed focus mints no warp");
+}
+
+#[test]
+fn detached_membership_holds_only_the_detached_lifetime() {
+    use crate::world_report::{DetachedRef, NativeWorkspaceFact};
+
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            host_owned: true,
+            fullscreen: true,
+            detached_fullscreen_view: true,
+            ..HostCapabilities::default()
+        },
+        Vec::new(),
+    )
+    .expect("generation");
+    let native = native_row("out-a");
+    let desktop = |mut window: WindowFact| {
+        window.native_workspace = NativeWorkspaceFact::Value("native-out-a-0".into());
+        window
+    };
+    let member = desktop(fact("detaches", "out-a", 0));
+    let sibling = desktop(fact("sibling", "out-a", 100));
+    let capture = |seq, windows| {
+        let mut report = report_v4(
+            seq,
+            vec![screen("out-a", 0)],
+            windows,
+            "sibling",
+            ingress_v4("sibling"),
+        );
+        report.native = vec![native.clone()];
+        report
+    };
+    accepted_v4(&mut engine, &capture(1, vec![member.clone(), sibling.clone()]));
+    let before = accepted_v4(&mut engine, &capture(2, vec![member.clone(), sibling.clone()]));
+    let retained_home = engine.tx(|tx| tx.core_homing(&member.window)).expect("known Desktop home");
+    let initial_sibling = crate::world_v4_support_tests::desire(&before, "sibling");
+    assert_eq!(initial_sibling.frame_authority, ScopeAuthority::Controlled);
+
+    let detached = |mut window: WindowFact| {
+        window.native_workspace = NativeWorkspaceFact::Null;
+        window.fullscreen = Some(true);
+        window.detached_surface = Some(DetachedRef {
+            output: OutputId("out-a".into()),
+            surface: crate::ids::DetachedSurfaceId::parse("fullscreen-a").unwrap(),
+        });
+        window
+    };
+    let born = detached(fact("born-detached", "out-a", 200));
+    let member = detached(member);
+    let after = accepted_v4(&mut engine, &capture(3, vec![member.clone(), sibling, born.clone()]));
+    let sibling = crate::world_v4_support_tests::desire(&after, "sibling");
+    assert_eq!(sibling.frame_authority, ScopeAuthority::Controlled);
+    let parked = crate::world_v4_support_tests::desire(&after, "detaches");
+    assert!(matches!(parked.frame_authority, ScopeAuthority::Hold(_)));
+    assert!(matches!(parked.membership_authority, ScopeAuthority::Hold(_)));
+    assert!(matches!(parked.visibility_authority, ScopeAuthority::Hold(_)));
+    assert!(parked.effective_frame.is_none());
+    engine.tx(|tx| {
+        assert_eq!(tx.core_homing(&member.window), Some(retained_home));
+        assert!(tx.core_homing(&born.window).is_none());
+    });
 }

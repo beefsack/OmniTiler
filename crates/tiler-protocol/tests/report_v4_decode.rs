@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use tiler_core::connection::RawSettingValue;
+use tiler_core::connection::{HostCapabilities, RawSettingValue};
 use tiler_core::world_report::{
     AttemptLaneV4, PresentationRowV4, RowDiagnosticKind, RowDiagnosticLane,
 };
@@ -209,6 +209,7 @@ const WINDOW_SCHEMA: &[&str] = &[
     "fullscreenExitable",
     "suppressionAvailable",
     "visibility",
+    "detachedSurface",
 ];
 
 #[test]
@@ -599,7 +600,10 @@ fn assert_native_hold(
         fixture.id
     );
     assert_eq!(held.diagnostic.id.as_deref(), Some(out), "{}", fixture.id);
-    let expected = expected_fields(row, &["out", "order", "current", "occupancy"]);
+    let expected = expected_fields(
+        row,
+        &["out", "order", "current", "occupancy", "currentKnown", "detachedCurrent"],
+    );
     let fields = decoded
         .residual
         .as_deref()
@@ -654,6 +658,7 @@ fn attempt_schema(lane: AttemptLaneV4) -> &'static [&'static str] {
             "post",
             "base",
             "attemptMs",
+            "postMember",
         ],
         AttemptLaneV4::State => &[
             "kind",
@@ -1216,10 +1221,15 @@ fn v4_host_arm_context_gate() {
     let valid_text = fixture_text(&valid_output.file);
     let invalid_text = fixture_text(&invalid_output.file);
     assert_eq!(valid_text, invalid_text, "output arm same wire");
+    let tiler_host = HostCapabilities::default();
+    let native_host = HostCapabilities {
+        host_owned: true,
+        ..HostCapabilities::default()
+    };
     decode_report_v4(&valid_text).expect("shape-only accepts output arm");
-    decode_report_v4_for_host(&valid_text, false).expect("correct host accepts output arm");
-    let error =
-        decode_report_v4_for_host(&invalid_text, true).expect_err("wrong host rejects output arm");
+    decode_report_v4_for_host(&valid_text, &tiler_host).expect("correct host accepts output arm");
+    let error = decode_report_v4_for_host(&invalid_text, &native_host)
+        .expect_err("wrong host rejects output arm");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "arrival-host-mismatch");
     // Native arm: valid on native hosts, wrong on tiler hosts.
@@ -1237,9 +1247,9 @@ fn v4_host_arm_context_gate() {
     let invalid_text = fixture_text(&invalid_native.file);
     assert_eq!(valid_text, invalid_text, "native arm same wire");
     decode_report_v4(&valid_text).expect("shape-only accepts native arm");
-    decode_report_v4_for_host(&valid_text, true).expect("correct host accepts native arm");
-    let error =
-        decode_report_v4_for_host(&invalid_text, false).expect_err("wrong host rejects native arm");
+    decode_report_v4_for_host(&valid_text, &native_host).expect("correct host accepts native arm");
+    let error = decode_report_v4_for_host(&invalid_text, &tiler_host)
+        .expect_err("wrong host rejects native arm");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "arrival-host-mismatch");
 }
@@ -1392,6 +1402,7 @@ fn view_attempt_row(i: usize, held: bool) -> serde_json::Value {
         "post": {"kind": "native", "out": "out-a", "ws": "native-a"},
         "base": {"kind": "native", "out": "out-a", "ws": "native-a"},
         "attemptMs": "20",
+        "postMember": null,
     });
     if held {
         row.as_object_mut()
@@ -1655,6 +1666,8 @@ fn native_row(out: &str, order: Vec<String>, held: bool) -> serde_json::Value {
         "order": order,
         "current": order.first().cloned().unwrap_or_default(),
         "occupancy": occupancy,
+        "currentKnown": true,
+        "detachedCurrent": null,
     });
     if held {
         row.as_object_mut()

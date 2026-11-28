@@ -73,6 +73,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -755,6 +756,8 @@ fn adopted_view_change_supersedes_pending_request() {
                     count: None,
                 },
             ],
+            current_known: true,
+            detached_current: None,
         }];
         capture
     };

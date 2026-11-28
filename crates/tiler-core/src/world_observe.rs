@@ -211,18 +211,24 @@ impl WorldTransaction<'_> {
 }
 
 impl WorldEngine {
-    /// Capture the raw observation lanes of a v4 report verbatim, in
-    /// source order. Same boundary as [`WorldEngine::capture_observation_v4`]: the
-    /// caller passes the original typed rows, never capability-graded
-    /// effective rows, so the capture retains the true original facts.
-    /// Pure.
+    #[cfg(test)]
     pub(crate) fn capture_observation_v4(report: &WorldReportV4) -> StagedObservation {
+        Self::capture_effective_observation_v4(report, report)
+    }
+
+    /// Capture observation lanes without promoting held native currency or
+    /// view attempts into authority. Raw window facts remain verbatim; replay
+    /// equality and request sizing use the original report.
+    pub(crate) fn capture_effective_observation_v4(
+        report: &WorldReportV4,
+        effective: &WorldReportV4,
+    ) -> StagedObservation {
         StagedObservation {
             inventory_complete: report.inventory_complete,
             observation_seq: report.observation_seq,
             raw_windows: report.windows.clone(),
             closed: report.closed.clone(),
-            native: report.native.clone(),
+            native: effective.native.clone(),
             cursor: report.cursor,
             pointer_activity: report.pointer_activity,
             warp_spent: report.warp_spent.clone(),
@@ -246,7 +252,7 @@ impl WorldEngine {
                         .map(crate::world_attempts::PropertyAttempt::from_member_attempt),
                 )
                 .chain(
-                    report
+                    effective
                         .view_attempts
                         .iter()
                         .map(crate::world_attempts::PropertyAttempt::from_view_attempt),
@@ -626,6 +632,20 @@ impl WorldTransaction<'_> {
         self.core_homing(window)
     }
 
+    /// A detached fact does not assign a logical home. Only the retained
+    /// same-lifetime home on its exact output survives this observation.
+    pub(crate) fn retained_detached_home(&self, window: &WindowId) -> Option<&DomainKey> {
+        let fact = self.world.staged.facts.get(window)?;
+        let surface = fact.detached_surface.as_ref()?;
+        let home = &self.world.workspace.members.get(window)?.home;
+        (self.connection.detached_fullscreen_view()
+            && fact.fullscreen == Some(true)
+            && fact.output.as_ref() == Some(&surface.output)
+            && home.output == surface.output
+            && self.known_workspace(&home.output, &home.workspace.0))
+            .then_some(home)
+    }
+
     /// Logical homing for one observed window against the staged facts:
     /// minimized facts keep their retained session homing when known (else
     /// the screen's effective view); an in-flight window observed on its
@@ -637,6 +657,19 @@ impl WorldTransaction<'_> {
     /// a later report. `None` when the window carries no fact on a known
     /// screen.
     pub(crate) fn logical_homing(&mut self, window: &WindowId) -> Option<DomainKey> {
+        if self
+            .world
+            .staged
+            .facts
+            .get(window)
+            .is_some_and(|fact| fact.detached_surface.is_some())
+        {
+            let derived = self.derived_for(window);
+            if derived.own_excluded || derived.excluded {
+                return None;
+            }
+            return self.retained_detached_home(window).cloned();
+        }
         // Open gesture session: the mover homes at its START-validated
         // home until the release commits, exactly like an in-flight
         // transfer homes at its retained target. The native frame follows

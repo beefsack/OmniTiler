@@ -25,6 +25,13 @@ fn native_ref(output: &str, workspace: &str) -> WorkspaceRef {
         workspace: NativeWorkspaceId::parse(workspace).expect("valid native id"),
     }
 }
+fn native_view_ref(output: &str, workspace: &str) -> ViewRef {
+    ViewRef::Native {
+        output: OutputId(output.to_owned()),
+        workspace: NativeWorkspaceId::parse(workspace).expect("valid native id"),
+    }
+}
+
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -88,6 +95,7 @@ fn test_report() -> WorldReportV4 {
                 visible: Some(true),
                 suppression_owned: None,
             },
+            detached_surface: None,
         }],
         closed: Vec::new(),
         native: Vec::new(),
@@ -181,6 +189,8 @@ fn digest_covers_every_section() {
             native: "ws".to_owned(),
             count: None,
         }],
+        current_known: true,
+        detached_current: None,
     });
     assert_ne!(report_digest_v4(&changed), digest);
     assert_eq!(
@@ -274,6 +284,7 @@ fn digest_covers_every_section() {
         post: None,
         baseline: None,
         attempt_ms: 9,
+        post_member: None,
     });
     assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
@@ -282,10 +293,11 @@ fn digest_covers_every_section() {
         target_output: OutputId("out".to_owned()),
         target_workspace: "ws-1".to_owned(),
         disposition: FrameSetter::Accepted,
-        pre: Some(native_ref("out", "native-1")),
-        post: Some(native_ref("out", "native-2")),
-        baseline: Some(native_ref("out", "native-1")),
+        pre: Some(native_view_ref("out", "native-1")),
+        post: Some(native_view_ref("out", "native-2")),
+        baseline: Some(native_view_ref("out", "native-1")),
         attempt_ms: 9,
+        post_member: None,
     });
     assert_ne!(report_digest_v4(&changed), digest);
     let mut changed = base.clone();
@@ -344,6 +356,8 @@ fn validation_gates_shapes() {
         native_order: Vec::new(),
         current_native: None,
         occupancy: Vec::new(),
+        current_known: true,
+        detached_current: None,
     });
     assert!(validate_report_v4_reason(&bad).is_none());
     // Native member evidence is decoded as a fact; Engine ingress gates it.
@@ -380,6 +394,8 @@ fn validation_gates_shapes() {
                 count: None,
             },
         ],
+        current_known: true,
+        detached_current: None,
     });
     assert_eq!(validate_report_v4_reason(&bad), Some("duplicate-native"));
     // Contradictory native rows for the same output refuse.
@@ -392,6 +408,8 @@ fn validation_gates_shapes() {
             native: "d1".to_owned(),
             count: None,
         }],
+        current_known: true,
+        detached_current: None,
     });
     bad.native.push(NativeObservation {
         output: OutputId("out".to_owned()),
@@ -401,6 +419,8 @@ fn validation_gates_shapes() {
             native: "d2".to_owned(),
             count: None,
         }],
+        current_known: true,
+        detached_current: None,
     });
     assert_eq!(validate_report_v4_reason(&bad), Some("duplicate-native"));
     // Native on unknown screen refuses.
@@ -410,6 +430,8 @@ fn validation_gates_shapes() {
         native_order: Vec::new(),
         current_native: None,
         occupancy: Vec::new(),
+        current_known: true,
+        detached_current: None,
     });
     bad.native[0].output = OutputId("nope".to_owned());
     assert_eq!(
@@ -598,6 +620,7 @@ fn validation_gates_shapes() {
         post: None,
         baseline: None,
         attempt_ms: 1,
+        post_member: None,
     });
     assert_eq!(
         validate_report_v4_reason(&bad),
@@ -610,9 +633,10 @@ fn validation_gates_shapes() {
         target_workspace: "ws-1".to_owned(),
         disposition: FrameSetter::Accepted,
         pre: None,
-        post: Some(native_ref("out", "native-2")),
+        post: Some(native_view_ref("out", "native-2")),
         baseline: None,
         attempt_ms: 1,
+        post_member: None,
     });
     assert!(validate_report_v4_reason(&bad).is_none());
     let mut capable = base.clone();
@@ -623,8 +647,9 @@ fn validation_gates_shapes() {
         disposition: FrameSetter::Accepted,
         pre: None,
         post: None,
-        baseline: Some(logical_ref("out", "ws-0")),
+        baseline: Some(native_view_ref("out", "ws-0")),
         attempt_ms: 1,
+        post_member: None,
     });
     assert_eq!(validate_report_v4_reason(&capable), None);
     let mut bad = base.clone();
@@ -638,6 +663,7 @@ fn validation_gates_shapes() {
             post: None,
             baseline: None,
             attempt_ms: 1,
+            post_member: None,
         });
     }
     assert_eq!(

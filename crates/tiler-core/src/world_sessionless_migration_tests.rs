@@ -71,6 +71,7 @@ fn fact_at(window: &str, output: &str, rect: Rect) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 

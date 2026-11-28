@@ -226,6 +226,7 @@ fn decode_handshake_request_value(v: &Value) -> Result<HandshakeRequest, CodecEr
         "warp",
         "tiledFloatTransfer",
         "unavailableFacts",
+        "detachedFullscreenView",
     ];
     exact(c, &ck)?;
     let cm = object(c)?;
@@ -269,8 +270,12 @@ fn decode_handshake_request_value(v: &Value) -> Result<HandshakeRequest, CodecEr
         above: boolean(&cm["above"])?,
         warp: boolean(&cm["warp"])?,
         tiled_float_transfer: boolean(&cm["tiledFloatTransfer"])?,
+        detached_fullscreen_view: boolean(&cm["detachedFullscreenView"])?,
         unavailable_facts: unavailable,
     };
+    if !capabilities.detached_fullscreen_view_valid() {
+        return Err(CodecError("capability"));
+    }
     Ok(HandshakeRequest {
         adapter,
         request: req,
@@ -617,7 +622,7 @@ pub fn encode_handshake_request(v: &HandshakeRequest) -> Result<String, CodecErr
         .collect::<Vec<_>>()
         .join(",");
     let out = format!(
-        "{{\"type\":\"handshake\",\"v\":4,\"adapter\":{},\"req\":{},\"applicationIdentity\":{{\"appId\":{},\"executable\":{},\"processId\":{}}},\"capabilities\":{{\"hostOwned\":{},\"equalCount\":{},\"sharedNativeRoster\":{},\"birthClear\":{},\"nativeSelectorScope\":{},\"windowSuppression\":{},\"maximize\":{},\"fullscreen\":{},\"nativeSticky\":{},\"above\":{},\"warp\":{},\"tiledFloatTransfer\":{},\"unavailableFacts\":[{}]}}}}",
+        "{{\"type\":\"handshake\",\"v\":4,\"adapter\":{},\"req\":{},\"applicationIdentity\":{{\"appId\":{},\"executable\":{},\"processId\":{}}},\"capabilities\":{{\"hostOwned\":{},\"equalCount\":{},\"sharedNativeRoster\":{},\"birthClear\":{},\"nativeSelectorScope\":{},\"windowSuppression\":{},\"maximize\":{},\"fullscreen\":{},\"nativeSticky\":{},\"above\":{},\"warp\":{},\"tiledFloatTransfer\":{},\"unavailableFacts\":[{}],\"detachedFullscreenView\":{}}}}}",
         encode_json_string(&v.adapter),
         encode_json_string(&v.request),
         id(&v.application_identity.app_id),
@@ -635,7 +640,8 @@ pub fn encode_handshake_request(v: &HandshakeRequest) -> Result<String, CodecErr
         c.above,
         c.warp,
         c.tiled_float_transfer,
-        facts
+        facts,
+        c.detached_fullscreen_view
     );
     if out.len() > MAX_MESSAGE {
         return Err(CodecError("oversized"));

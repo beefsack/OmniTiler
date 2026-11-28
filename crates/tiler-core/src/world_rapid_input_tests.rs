@@ -905,6 +905,8 @@ fn rapid_input_host_native_batch_joins_evidence_once() {
                 native: "n-0".to_owned(),
                 count: None,
             }],
+            current_known: true,
+            detached_current: None,
         }
     }
     fn host_fact(window: &str, x: i32) -> WindowFact {

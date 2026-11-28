@@ -78,6 +78,11 @@ pub(crate) struct RetainedTransfer {
     pub(crate) pending_members: BTreeMap<WindowId, PropertyAttempt>,
     /// Latest exact-correlated canonical view evidence for the owning phase.
     pub(crate) pending_view: Option<PropertyAttempt>,
+    /// Frozen detached destination of one eligible standalone explicit
+    /// selection view flight: the exact target surface plus the intended
+    /// member the adapter was granted. `None` on every other flight
+    /// (policy, swap, refill, follow, migration, capability-false host).
+    pub(crate) detached_destination: Option<crate::world_report::DetachedDestination>,
 }
 
 /// Retained explicit float-placement target: one outstanding authorized
@@ -130,7 +135,11 @@ pub(crate) struct SettlementState {
     pub(crate) native_creation_seq: u64,
     pub(crate) retained_creations: Vec<RetainedNativeCreation>,
     pub(crate) pending_source_releases: Vec<(String, String)>,
-    pub(crate) last_views: BTreeMap<OutputId, String>,
+    /// Typed coherent physical view last retained per output, for selector
+    /// echo comparison and detached return proof. Detached entries name the
+    /// physical surface; native entries name the native desktop (translated
+    /// to a logical workspace by consumers when needed).
+    pub(crate) last_views: BTreeMap<OutputId, crate::world_report::ViewRef>,
     pub(crate) native_map: BTreeMap<(String, String), String>,
     pub(crate) retired_natives: BTreeMap<(String, String), String>,
     pub(crate) shared_roster: crate::world_roster::RosterState,

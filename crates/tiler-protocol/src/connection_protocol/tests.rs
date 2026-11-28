@@ -153,6 +153,7 @@ fn fixture_caps() -> HostCapabilities {
         warp: true,
         tiled_float_transfer: true,
         unavailable_facts: Vec::new(),
+        detached_fullscreen_view: false,
     }
 }
 
@@ -565,6 +566,7 @@ fn setting_name_utf8_bounds_and_unknown_name_diagnostics_round_trip() {
         warp: false,
         tiled_float_transfer: false,
         unavailable_facts: Vec::new(),
+        detached_fullscreen_view: false,
     };
     let reply = SettingsState::default().process(&request, &capabilities);
     assert_eq!(reply.diagnostics.len(), 21);

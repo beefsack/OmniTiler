@@ -367,6 +367,8 @@ fn float_rehome_same_output_workspace_crossing_adopts_placement() {
                     count: None,
                 },
             ],
+            current_known: true,
+            detached_current: None,
         }
     }
 

@@ -161,11 +161,21 @@ fn seed_ring_views(engine: &mut WorldEngine) {
         .workspace
         .views
         .insert("out-a".to_owned(), "ws-1".to_owned());
+    // Typed physical last view: a native desktop id, translated through the
+    // engine's own binding to the logical workspace used above.
+    let output = OutputId("out-a".to_owned());
     engine
         .world
         .settlement
-        .last_views
-        .insert(OutputId("out-a".to_owned()), "ws-1".to_owned());
+        .native_map
+        .insert(("out-a".to_owned(), "n1".to_owned()), "ws-1".to_owned());
+    engine.world.settlement.last_views.insert(
+        output.clone(),
+        crate::world_report::ViewRef::Native {
+            output,
+            workspace: crate::ids::NativeWorkspaceId::parse("n1").expect("native id"),
+        },
+    );
 }
 
 /// Retained command-planning domain join (intake-independent): the staged

@@ -124,6 +124,7 @@ fn fact(window: &str, output: &str, x: i32, y: i32, native: Option<&str>) -> Win
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -142,6 +143,8 @@ fn native_obs(output: &str, order: &[String], counts: &[usize]) -> NativeObserva
                 count: Some(*count as u32),
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 

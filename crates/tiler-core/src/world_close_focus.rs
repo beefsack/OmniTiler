@@ -16,9 +16,10 @@ use crate::world_transaction::WorldTransaction;
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::session::DomainKey;
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
+use crate::world_focus_state::DetachedCursorGuard;
 use crate::world_report::{
     AfterShown, FocusChange, FocusDisposition, FocusFeedback, FocusNoCallReason, FocusRequest,
-    FocusRequestCause, FrameSetter, VisibilityReason, WorldReportV4,
+    FocusRequestCause, FrameSetter, ViewRef, VisibilityReason, WorldReportV4,
 };
 
 /// One retained focus request: the frozen target of the winning focus
@@ -148,6 +149,147 @@ enum FocusEvidenceVerdict {
 }
 
 impl WorldTransaction<'_> {
+    /// Replace guards only on the outputs a selection actually supersedes.
+    /// Detach never spends an unrelated output's cursor, focus, or warp.
+    pub(crate) fn replace_detached_cursor_guards(
+        &mut self,
+        affected: &[OutputId],
+        detached_return: bool,
+    ) {
+        if detached_return {
+            if self.world.focus.logical_focus_cursor.as_ref().is_some_and(|cursor| {
+                self.focus_subject_on_outputs(cursor, affected)
+            }) {
+                self.world.focus.logical_focus_cursor = None;
+            }
+            if self.world.focus.pending_focus.as_ref().is_some_and(|pending| {
+                affected.contains(&pending.output)
+            }) {
+                self.world.focus.pending_focus = None;
+            }
+            if self.world.focus.pending_warp.as_ref().is_some_and(|pending| {
+                affected.contains(&pending.output)
+            }) {
+                self.world.focus.pending_warp = None;
+            }
+        }
+        for output in affected {
+            if detached_return {
+                self.world.focus.detached_cursor_guards.insert(
+                    output.clone(),
+                    DetachedCursorGuard {
+                        issued_observation: self.world.staged.observation.observation_seq,
+                        refused_preimage: None,
+                    },
+                );
+            } else {
+                self.world.focus.detached_cursor_guards.remove(output);
+            }
+        }
+    }
+
+    pub(crate) fn note_detached_cursor_refusal(&mut self, output: &OutputId, preimage: &ViewRef) {
+        if let Some(guard) = self.world.focus.detached_cursor_guards.get_mut(output) {
+            guard.refused_preimage = Some(preimage.clone());
+        }
+    }
+
+    fn focus_subject_on_outputs(&self, window: &WindowId, outputs: &[OutputId]) -> bool {
+        self.focus_subject_output(window)
+            .is_some_and(|output| outputs.contains(output))
+    }
+
+    fn focus_subject_output(&self, window: &WindowId) -> Option<&OutputId> {
+        self.world
+            .staged
+            .facts
+            .get(window)
+            .and_then(|fact| fact.output.as_ref())
+            .or_else(|| self.world.staged.homing.get(window).map(|home| &home.output))
+            .or_else(|| {
+                self.world.workspace.members.get(window).map(|member| &member.home.output)
+            })
+    }
+
+    pub(crate) fn guarded_focus_subject(&self, window: &WindowId) -> bool {
+        self.focus_subject_output(window)
+            .is_some_and(|output| self.world.focus.detached_cursor_guards.contains_key(output))
+    }
+
+    /// A grant/attempt is not evidence of foreground. Only a newer usable
+    /// capture can associate an actual lifetime with the physical current.
+    pub(crate) fn refresh_detached_cursor_guards(&mut self, foreground_known: bool) {
+        if self.world.focus.detached_cursor_guards.is_empty() {
+            return;
+        }
+        let staged = &self.world.staged;
+        let observation = &staged.observation;
+        let foreground = foreground_known.then(|| WindowId(observation.focused_global.clone()));
+        let grounded = foreground.as_ref().and_then(|window| {
+            if !self.available_focus_subject(window) {
+                return None;
+            }
+            let fact = staged.facts.get(window)?;
+            let home = staged.homing.get(window)?;
+            let derived = self.derived_for(window);
+            (!derived.hold
+                && !derived.hidden
+                && fact.minimized == Some(false)
+                && fact.host_hidden != Some(true)
+                && fact.output.as_ref() == Some(&home.output))
+                .then_some((fact, &home.output))
+        });
+        self.world.focus.detached_cursor_guards.retain(|output, guard| {
+            let screen = staged.screens.iter().find(|screen| &screen.output == output);
+            if observation.inventory_complete
+                && screen.is_none()
+                && !staged.held_screens.iter().any(|row| &row.output == output)
+            {
+                return false;
+            }
+            if observation.observation_seq <= guard.issued_observation
+                || !observation.inventory_complete
+                || !screen.is_some_and(|screen| screen.complete)
+                || !foreground_known
+            {
+                return true;
+            }
+            let Some(current) = observation.native.iter().find(|row| {
+                &row.output == output && row.current_known
+            }) else {
+                return true;
+            };
+            if let Some((fact, _)) = grounded.filter(|(_, home_output)| *home_output == output) {
+                let exact = match (&current.current_native, &current.detached_current) {
+                    (Some(native), None) => {
+                        fact.detached_surface.is_none()
+                            && fact.native_workspace.as_deref() == Some(native.as_str())
+                    }
+                    (None, Some(surface)) => {
+                        fact.fullscreen == Some(true) && fact.detached_surface.as_ref() == Some(surface)
+                    }
+                    _ => false,
+                };
+                if exact {
+                    return false;
+                }
+            }
+            if observation.focused_global.is_empty() {
+                return !guard.refused_preimage.as_ref().is_some_and(|reference| match reference {
+                    ViewRef::Native { workspace, .. } => {
+                        current.detached_current.is_none()
+                            && current.current_native.as_deref() == Some(workspace.as_str())
+                    }
+                    ViewRef::Detached(surface) => {
+                        current.current_native.is_none()
+                            && current.detached_current.as_ref() == Some(surface)
+                    }
+                });
+            }
+            true
+        });
+    }
+
     /// Execution-time subject for the next implicit command: the single
     /// logical cursor when a logical focus decision owns it. When the
     /// cursor is empty and no focus decision from this report or live
@@ -196,7 +338,8 @@ impl WorldTransaction<'_> {
             return None;
         }
         let window = WindowId(observed.clone());
-        self.available_focus_subject(&window).then_some(window)
+        (self.available_focus_subject(&window) && !self.guarded_focus_subject(&window))
+            .then_some(window)
     }
 
     fn available_focus_subject(&self, window: &WindowId) -> bool {
@@ -438,17 +581,31 @@ impl WorldTransaction<'_> {
             .is_none_or(|(native, selected)| native == selected)
     }
 
-    fn selector_hides_target(&self, pending: &PendingFocus, out: &OutputId, native: &str) -> bool {
+    fn selector_hides_target(&self, pending: &PendingFocus, out: &OutputId, native: &ViewRef) -> bool {
         if out != &pending.output || self.derived_for(&pending.target).sticky {
             return false;
         }
-        let desired = pending
-            .after_shown
-            .as_ref()
+        let binding = pending.after_shown.as_ref();
+        if let Some(detached) = binding.and_then(|shown| {
+            self.world.settlement.retained_selection.values()
+                .find(|selection| selection.parent_op == shown.op)?
+                .view_targets.get(out)?
+                .detached_destination.as_ref()
+        }) {
+            return !matches!(native, ViewRef::Detached(surface) if surface == &detached.surface);
+        }
+        let desired = binding
             .and_then(|shown| shown.views.iter().find(|scope| &scope.out == out))
             .map_or(pending.workspace.as_str(), |scope| scope.ws.as_str());
-        self.native_binding_for(&out.0, desired)
-            .is_some_and(|expected| expected != native)
+        if let Some(expected) = self.native_binding_for(&out.0, desired) {
+            return !native.native_workspace().is_some_and(|actual| actual.as_str() == expected);
+        }
+        self.world.staged.facts.get(&pending.target)
+            .and_then(|fact| fact.detached_surface.as_ref())
+            .is_some_and(|expected| {
+                &expected.output == out
+                    && !matches!(native, ViewRef::Detached(surface) if surface == expected)
+            })
     }
 
     /// First decisive event wins: target arrival settles without giving a
@@ -509,18 +666,19 @@ impl WorldTransaction<'_> {
         if !self.native_list_complete(&pending.output.0) {
             return None;
         }
-        let prior = self.world.settlement.last_views.get(&pending.output)?;
-        let prior = self.native_binding_for(&pending.output.0, prior)?;
-        let current = self
+        // Typed selector change: the retained last view is a coherent
+        // physical ref (Desktop or detached), so a detached prior and a
+        // detached current compare by exact surface instead of dropping the
+        // observability. A gap reads `None` and is never a change.
+        let prior = self
             .world
-            .staged
-            .observation
-            .native
-            .iter()
-            .find(|row| row.output == pending.output)?
-            .current_native
-            .as_deref()?;
-        (prior != current && self.selector_hides_target(pending, &pending.output, current))
+            .settlement
+            .last_views
+            .get(&pending.output)
+            .cloned()?;
+        let current = self.physical_current_ref(&pending.output)?;
+        (prior != current
+            && self.selector_hides_target(pending, &pending.output, &current))
             .then_some(FocusEvidenceVerdict::Superseded("selector-intent"))
     }
 
@@ -651,6 +809,7 @@ impl WorldTransaction<'_> {
         let Some(home) = home else {
             return;
         };
+        self.world.focus.detached_cursor_guards.remove(&home.output);
         self.world.focus.pending_focus = Some(PendingFocus {
             id: format!("focus-{issuing_revision}"),
             target: target.clone(),
@@ -930,7 +1089,9 @@ impl WorldTransaction<'_> {
         let sibling_protected = self.world.staged.domains.iter().any(|domain| {
             domain.key == source
                 && domain.windows.iter().any(|window| {
-                    window.window != pending.target && (window.fullscreen || window.maximized)
+                    window.window != pending.target
+                        && (window.fullscreen || window.maximized)
+                        && self.retained_detached_home(&window.window).is_none()
                 })
         });
         if sibling_protected {

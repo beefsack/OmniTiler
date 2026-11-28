@@ -2567,6 +2567,7 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
         member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
+        detached_destination: None,
     });
     let mut gapped = report(
         2,

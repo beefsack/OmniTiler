@@ -67,7 +67,7 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     FrameSetter, MemberAttempt, NativeCreationAttempt, NativeObservation, NativeOccupancy,
-    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION_V4, WorkspaceRef, WorldCommand,
+    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION_V4, ViewRef, WorkspaceRef, WorldCommand,
     WorldReportV4,
 };
 
@@ -108,6 +108,8 @@ fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation 
                 count: None,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 
@@ -156,6 +158,7 @@ fn fact(window: &str, output: &str, x: i32, native: &str) -> tiler_core::world_r
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -454,38 +457,40 @@ fn known_surviving_source_switch_settles_with_switch_winning() {
                     target_output: OutputId("out-b".to_owned()),
                     target_workspace: migrated.clone(),
                     disposition: FrameSetter::Accepted,
-                    pre: Some(WorkspaceRef::Native {
+                    pre: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB1),
                     }),
-                    post: Some(WorkspaceRef::Native {
+                    post: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB_NEW),
                     }),
-                    baseline: Some(WorkspaceRef::Native {
+                    baseline: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB1),
                     }),
                     attempt_ms: 4,
+                    post_member: None,
                 },
                 ViewAttempt {
                     operation_id: refill_op.clone(),
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: refill_ws.clone(),
                     disposition: FrameSetter::Accepted,
-                    pre: Some(WorkspaceRef::Native {
+                    pre: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(UA1),
                     }),
-                    post: Some(WorkspaceRef::Native {
+                    post: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(&refill_native),
                     }),
-                    baseline: Some(WorkspaceRef::Native {
+                    baseline: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(UA1),
                     }),
                     attempt_ms: 4,
+                    post_member: None,
                 },
             ],
             vec![],
@@ -1211,38 +1216,40 @@ fn exact_old_source_listed_rewind_settles_with_fresh_adoption() {
                     target_output: OutputId("out-b".to_owned()),
                     target_workspace: migrated.clone(),
                     disposition: FrameSetter::Accepted,
-                    pre: Some(WorkspaceRef::Native {
+                    pre: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB1),
                     }),
-                    post: Some(WorkspaceRef::Native {
+                    post: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB_NEW),
                     }),
-                    baseline: Some(WorkspaceRef::Native {
+                    baseline: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB1),
                     }),
                     attempt_ms: 4,
+                    post_member: None,
                 },
                 ViewAttempt {
                     operation_id: refill_op.clone(),
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: refill_ws.clone(),
                     disposition: FrameSetter::Accepted,
-                    pre: Some(WorkspaceRef::Native {
+                    pre: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(UA1),
                     }),
-                    post: Some(WorkspaceRef::Native {
+                    post: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(&refill_native),
                     }),
-                    baseline: Some(WorkspaceRef::Native {
+                    baseline: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(UA1),
                     }),
                     attempt_ms: 4,
+                    post_member: None,
                 },
             ],
             vec![],
@@ -1341,38 +1348,40 @@ fn exact_old_source_pruned_rewind_holds_then_settles_with_fresh_adoption() {
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: migrated.clone(),
                 disposition: FrameSetter::Accepted,
-                pre: Some(WorkspaceRef::Native {
+                pre: Some(ViewRef::Native {
                     output: OutputId("out-b".to_owned()),
                     workspace: native_id(SB1),
                 }),
-                post: Some(WorkspaceRef::Native {
+                post: Some(ViewRef::Native {
                     output: OutputId("out-b".to_owned()),
                     workspace: native_id(SB_NEW),
                 }),
-                baseline: Some(WorkspaceRef::Native {
+                baseline: Some(ViewRef::Native {
                     output: OutputId("out-b".to_owned()),
                     workspace: native_id(SB1),
                 }),
                 attempt_ms: 3,
+                post_member: None,
             },
             ViewAttempt {
                 operation_id: refill_op.clone(),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: refill_ws.clone(),
                 disposition: FrameSetter::Accepted,
-                pre: Some(WorkspaceRef::Native {
+                pre: Some(ViewRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),
                 }),
-                post: Some(WorkspaceRef::Native {
+                post: Some(ViewRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(&refill_native),
                 }),
-                baseline: Some(WorkspaceRef::Native {
+                baseline: Some(ViewRef::Native {
                     output: OutputId("out-a".to_owned()),
                     workspace: native_id(UA1),
                 }),
                 attempt_ms: 3,
+                post_member: None,
             },
         ]
     };
@@ -1631,38 +1640,40 @@ fn fresh_row_persists_noncurrent_and_live_selection_never_adopts() {
                     target_output: OutputId("out-b".to_owned()),
                     target_workspace: migrated.clone(),
                     disposition: FrameSetter::Accepted,
-                    pre: Some(WorkspaceRef::Native {
+                    pre: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB1),
                     }),
-                    post: Some(WorkspaceRef::Native {
+                    post: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB_NEW),
                     }),
-                    baseline: Some(WorkspaceRef::Native {
+                    baseline: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB1),
                     }),
                     attempt_ms: 4,
+                    post_member: None,
                 },
                 ViewAttempt {
                     operation_id: refill_op.clone(),
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: refill_ws.clone(),
                     disposition: FrameSetter::Accepted,
-                    pre: Some(WorkspaceRef::Native {
+                    pre: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(UA1),
                     }),
-                    post: Some(WorkspaceRef::Native {
+                    post: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(&refill_native),
                     }),
-                    baseline: Some(WorkspaceRef::Native {
+                    baseline: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(UA1),
                     }),
                     attempt_ms: 4,
+                    post_member: None,
                 },
             ],
             vec![],
@@ -1734,38 +1745,40 @@ fn redelivered_attempts_after_settle_are_ignored() {
                         target_output: OutputId("out-b".to_owned()),
                         target_workspace: migrated.clone(),
                         disposition: FrameSetter::Accepted,
-                        pre: Some(WorkspaceRef::Native {
+                        pre: Some(ViewRef::Native {
                             output: OutputId("out-b".to_owned()),
                             workspace: native_id(SB1),
                         }),
-                        post: Some(WorkspaceRef::Native {
+                        post: Some(ViewRef::Native {
                             output: OutputId("out-b".to_owned()),
                             workspace: native_id(SB_NEW),
                         }),
-                        baseline: Some(WorkspaceRef::Native {
+                        baseline: Some(ViewRef::Native {
                             output: OutputId("out-b".to_owned()),
                             workspace: native_id(SB1),
                         }),
                         attempt_ms: 4,
+                        post_member: None,
                     },
                     ViewAttempt {
                         operation_id: refill_op.clone(),
                         target_output: OutputId("out-a".to_owned()),
                         target_workspace: refill_ws.clone(),
                         disposition: FrameSetter::Accepted,
-                        pre: Some(WorkspaceRef::Native {
+                        pre: Some(ViewRef::Native {
                             output: OutputId("out-a".to_owned()),
                             workspace: native_id(UA1),
                         }),
-                        post: Some(WorkspaceRef::Native {
+                        post: Some(ViewRef::Native {
                             output: OutputId("out-a".to_owned()),
                             workspace: native_id(&refill_native),
                         }),
-                        baseline: Some(WorkspaceRef::Native {
+                        baseline: Some(ViewRef::Native {
                             output: OutputId("out-a".to_owned()),
                             workspace: native_id(UA1),
                         }),
                         attempt_ms: 4,
+                        post_member: None,
                     },
                 ],
                 vec![],
@@ -1814,38 +1827,40 @@ fn redelivered_attempts_after_settle_are_ignored() {
                     target_output: OutputId("out-b".to_owned()),
                     target_workspace: migrated.clone(),
                     disposition: FrameSetter::Accepted,
-                    pre: Some(WorkspaceRef::Native {
+                    pre: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB1),
                     }),
-                    post: Some(WorkspaceRef::Native {
+                    post: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB_NEW),
                     }),
-                    baseline: Some(WorkspaceRef::Native {
+                    baseline: Some(ViewRef::Native {
                         output: OutputId("out-b".to_owned()),
                         workspace: native_id(SB1),
                     }),
                     attempt_ms: 6,
+                    post_member: None,
                 },
                 ViewAttempt {
                     operation_id: refill_op.clone(),
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: "ws-stale".to_owned(),
                     disposition: FrameSetter::Accepted,
-                    pre: Some(WorkspaceRef::Native {
+                    pre: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(UA1),
                     }),
-                    post: Some(WorkspaceRef::Native {
+                    post: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(&refill_native),
                     }),
-                    baseline: Some(WorkspaceRef::Native {
+                    baseline: Some(ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: native_id(UA1),
                     }),
                     attempt_ms: 6,
+                    post_member: None,
                 },
             ],
             vec![],

@@ -75,7 +75,8 @@ use tiler_core::directional::{
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureSettled;
 use tiler_core::ids::{
-    MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN, NativeWorkspaceId,
+    DetachedSurfaceId, MAX_CORRELATION_LEN, MAX_GENERATION_LEN, MAX_NATIVE_WORKSPACE_ID_LEN,
+    NativeWorkspaceId,
 };
 use tiler_core::intent_data::MAX_INTENT_DATA_BYTES;
 use tiler_core::policy::PriorGroupEdge;
@@ -86,7 +87,8 @@ use tiler_core::world_presentation::{
 use tiler_core::world_report::{
     ActivationPolicy, AfterShown, AfterShownMember, AfterShownScope, ArrivalBracket,
     ArrivalLocation, AttemptLaneV4, AuthorityScope, BorderHideReasonV4, BorderPresentationV4,
-    CommandRejectKind, DragPreviewV4, FloatOrigin, FocusChange, FocusChanges,
+    CommandRejectKind, DetachedDestination, DetachedRef, DragPreviewV4, FloatOrigin, FocusChange,
+    FocusChanges,
     FocusDirectionalSubject, FocusFeedback, FocusRequest, FocusRequestCause, FrameWitness,
     FullscreenOwner, HeldAttemptRow, HeldNativeRow, HeldPresentationRow, HeldScreenRow,
     HeldWindowRow, HoldReason, IntentDesire, IntentRecord, MAX_FOCUS_CHANGES, MAX_FOCUS_DEPARTING,
@@ -101,7 +103,7 @@ use tiler_core::world_report::{
     SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4, VisibilityFact,
     VisibilityReason, VisibilitySample, VisibilityTarget, WarpRequest, WindowDesire, WindowFact,
     WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReplyV4,
-    WorldReportV4, check_screen_structure, check_window_structure,
+    WorldReportV4, check_screen_structure, check_window_structure, ViewRef,
 };
 use tiler_core::world_roster::SharedRosterPlan;
 
@@ -345,11 +347,18 @@ pub(crate) fn req_id(
     map: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Result<String> {
+    req_id_ref(map, key).map(str::to_owned)
+}
+
+fn req_id_ref<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<&'a str> {
     let text = req_str(map, key)?;
     if !is_opaque_id(text) {
         return Err(unknown_value());
     }
-    Ok(text.to_owned())
+    Ok(text)
 }
 
 fn req_bounded(
@@ -746,6 +755,7 @@ fn held_window_row(
         "fullscreenExitable",
         "suppressionAvailable",
         "visibility",
+        "detachedSurface",
     ];
     const HINTS_ORDER: &[&str] = &["minW", "minH", "maxW", "maxH"];
     const VISIBILITY_ORDER: &[&str] = &["visible", "suppressionOwned"];
@@ -1158,6 +1168,64 @@ pub(crate) fn opt_workspace_ref_or_null(
                 _ => Err(unknown_value()),
             }
         }
+    }
+}
+
+/// Decode one exact `DetachedRef` object:
+/// `{"kind":"detached","out":OutputId,"surface":NativeId}` with no extra
+/// keys. `surface` is a bounded opaque detached-surface id, never parsed or
+/// compared as a native workspace id.
+pub(crate) fn decode_detached_ref(value: &serde_json::Value) -> Result<DetachedRef> {
+    let map = as_object(value)?;
+    check_keys(map, &["kind", "out", "surface"])?;
+    if req_str(map, "kind")? != "detached" {
+        return Err(unknown_value());
+    }
+    let output = req_str(map, "out")?;
+    if !is_opaque_id(output) {
+        return Err(unknown_value());
+    }
+    let surface = req_str(map, "surface")?;
+    let surface = DetachedSurfaceId::parse(surface).ok_or_else(unknown_value)?;
+    Ok(DetachedRef {
+        output: OutputId(output.to_owned()),
+        surface,
+    })
+}
+
+/// Decode one `ViewRef`: the existing native shape or a `DetachedRef`. No
+/// logical arm.
+pub(crate) fn decode_view_ref(value: &serde_json::Value) -> Result<ViewRef> {
+    let map = as_object(value)?;
+    let kind = req_str(map, "kind")?;
+    match kind {
+        "native" => {
+            check_keys(map, &["kind", "out", "ws"])?;
+            let output = req_str(map, "out")?;
+            let workspace = req_str(map, "ws")?;
+            if !is_opaque_id(output) {
+                return Err(unknown_value());
+            }
+            let workspace = NativeWorkspaceId::parse(workspace).ok_or_else(unknown_value)?;
+            Ok(ViewRef::Native {
+                output: OutputId(output.to_owned()),
+                workspace,
+            })
+        }
+        "detached" => Ok(ViewRef::Detached(decode_detached_ref(value)?)),
+        _ => Err(unknown_value()),
+    }
+}
+
+/// Decode one nullable `ViewRef` (missing key refuses; explicit `null` is
+/// none).
+pub(crate) fn opt_view_ref_or_null(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<ViewRef>> {
+    match map.get(key).ok_or_else(malformed)? {
+        serde_json::Value::Null => Ok(None),
+        value => Ok(Some(decode_view_ref(value)?)),
     }
 }
 
@@ -1618,7 +1686,10 @@ fn req_empty_or_id(map: &serde_json::Map<String, serde_json::Value>, key: &str) 
     Ok(text.to_owned())
 }
 
-fn decode_focus_changes(value: &serde_json::Value) -> Result<Option<FocusChanges>> {
+fn decode_focus_changes(
+    value: &serde_json::Value,
+    detached_allowed: bool,
+) -> Result<Option<FocusChanges>> {
     if value.is_null() {
         return Ok(None);
     }
@@ -1646,10 +1717,19 @@ fn decode_focus_changes(value: &serde_json::Value) -> Result<Option<FocusChanges
                     }
                     "view" => {
                         check_keys(row, &["kind", "out", "native"])?;
-                        FocusChange::View {
-                            out: OutputId(req_id(row, "out")?),
-                            native: req_id(row, "native")?,
+                        let out = OutputId(req_id(row, "out")?);
+                        let native = decode_view_ref(row.get("native").ok_or_else(malformed)?)?;
+                        // Ordered focus evidence has no held-row lane: a
+                        // wrong-output reference is malformed, and a detached
+                        // reference on a capability-false host is a contextual
+                        // rejection (never a hold).
+                        if native.output() != &out {
+                            return Err(malformed());
                         }
+                        if !detached_allowed && matches!(native, ViewRef::Detached(_)) {
+                            return Err(snapshot_invalid("detached-capability-false"));
+                        }
+                        FocusChange::View { out, native }
                     }
                     _ => return Err(unknown_value()),
                 };
@@ -2509,7 +2589,14 @@ fn held_native_row(
     ordinal: usize,
     map: &serde_json::Map<String, serde_json::Value>,
 ) -> (HeldNativeRow, crate::world_report_residual::HeldFields) {
-    const SCHEMA_ORDER: &[&str] = &["out", "order", "current", "occupancy"];
+    const SCHEMA_ORDER: &[&str] = &[
+        "out",
+        "order",
+        "current",
+        "occupancy",
+        "currentKnown",
+        "detachedCurrent",
+    ];
     let mut fields = Vec::with_capacity(map.len());
     for key in SCHEMA_ORDER {
         if let Some(value) = map.get(*key) {
@@ -2637,6 +2724,7 @@ fn decode_fact_v4(
     value: &serde_json::Value,
     ordinal: usize,
     seen_windows: &mut std::collections::BTreeSet<String>,
+    detached_allowed: bool,
 ) -> Result<WindowRowOutcome> {
     const REQUIRED: &[&str] = &[
         "win",
@@ -2674,6 +2762,7 @@ fn decode_fact_v4(
         "fullscreenExitable",
         "suppressionAvailable",
         "visibility",
+        "detachedSurface",
     ];
     let map = as_object(value)?;
     // v4 tolerant envelope: unknown non-retired keys refuse, but missing
@@ -2757,6 +2846,25 @@ fn decode_fact_v4(
         Some(_) => (NativeWorkspaceFact::Omitted, true),
     };
     held |= native_ws_held;
+    // Lenient detached membership: a missing key holds (required-nullable),
+    // a bad shape holds, capability-false holds, and the row only accepts an
+    // exact detached arm joined to its own output, `fullscreen: true`, and
+    // the explicit-null native arm.
+    let (detached_surface, mut detached_held) = match map.get("detachedSurface") {
+        None => (None, true),
+        Some(serde_json::Value::Null) => (None, false),
+        Some(value) => match decode_detached_ref(value) {
+            Ok(reference) => (Some(reference), false),
+            Err(_) => (None, true),
+        },
+    };
+    if let Some(reference) = detached_surface.as_ref() {
+        let output_joined = output.as_ref() == Some(&reference.output);
+        let fullscreen_true = matches!(map.get("fullscreen"), Some(serde_json::Value::Bool(true)));
+        let native_null = matches!(map.get("nativeWs"), Some(serde_json::Value::Null));
+        detached_held |= !detached_allowed || !output_joined || !fullscreen_true || !native_null;
+    }
+    held |= detached_held;
     // Retired membership verdicts hold the identifiable row (fail closed).
     held |= RETIRED_WINDOW_KEYS.iter().any(|key| map.contains_key(*key));
     // Wrong-typed value fields hold the identifiable row (same pre-scan
@@ -2920,6 +3028,7 @@ fn decode_fact_v4(
             visible: None,
             suppression_owned: None,
         },
+        detached_surface: None,
     };
     if held {
         // Bad `owner`/`parent` grammar refuses even with a hold cause
@@ -2977,6 +3086,7 @@ fn decode_fact_v4(
         fullscreen_exitable: opt_bool_or_null(map, "fullscreenExitable")?,
         suppression_available: opt_bool_or_null(map, "suppressionAvailable")?,
         visibility: decode_visibility(map.get("visibility").ok_or_else(malformed)?)?,
+        detached_surface,
     };
     if let Some(reason) = check_window_structure(&fact, seen_windows) {
         return Err(WorldProtocolError {
@@ -2997,13 +3107,23 @@ fn decode_native_v4(
     value: &serde_json::Value,
     ordinal: usize,
     seen_native_outputs: &mut std::collections::BTreeSet<String>,
+    detached_allowed: bool,
 ) -> Result<NativeRowOutcome> {
-    const REQUIRED: &[&str] = &["out", "order", "current", "occupancy"];
+    const REQUIRED: &[&str] = &[
+        "out",
+        "order",
+        "current",
+        "occupancy",
+        "currentKnown",
+        "detachedCurrent",
+    ];
     let map = as_object(value)?;
     for key in REQUIRED {
-        if !map.contains_key(*key) && *key != "current" {
-            // Only `current` may be absent (held); every other missing key
-            // is malformed.
+        if !map.contains_key(*key)
+            && !matches!(*key, "current" | "currentKnown" | "detachedCurrent")
+        {
+            // `current`, `currentKnown`, and `detachedCurrent` may be absent
+            // (held); every other missing key is malformed.
             return Err(malformed());
         }
     }
@@ -3035,8 +3155,33 @@ fn decode_native_v4(
         }
         Some(_) => (None, true),
     };
+    let (current_known, current_known_held) = match map.get("currentKnown") {
+        Some(serde_json::Value::Bool(value)) => (*value, false),
+        None | Some(_) => (false, true),
+    };
+    let (detached_current, detached_held) = match map.get("detachedCurrent") {
+        None => (None, true),
+        Some(serde_json::Value::Null) => (None, false),
+        Some(value) => match decode_detached_ref(value) {
+            Ok(reference) => (Some(reference), false),
+            Err(_) => (None, true),
+        },
+    };
+    // Observation tri-state: a gap never carries a physical arm, both arms
+    // never coexist, a detached arm is joined to its own output, and a
+    // capability-false host holds the row rather than binding it.
+    let mut tri_held = current_known_held || detached_held;
+    if current_native.is_some() && !current_known {
+        tri_held = true;
+    }
+    if let Some(reference) = detached_current.as_ref() {
+        tri_held |= !detached_allowed
+            || !current_known
+            || current_native.is_some()
+            || reference.output != output;
+    }
     let extra_held = map.keys().any(|key| !REQUIRED.contains(&key.as_str()));
-    let held = current_held || extra_held;
+    let held = current_held || extra_held || tri_held;
     // Strict occupancy shape (structural binding evidence): wrong shapes
     // refuse even on the hold path.
     let occupancy_value = map.get("occupancy").ok_or_else(malformed)?;
@@ -3132,6 +3277,8 @@ fn decode_native_v4(
         native_order: order,
         current_native,
         occupancy,
+        current_known,
+        detached_current,
     }))
 }
 
@@ -3759,6 +3906,16 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
 pub fn decode_report_v4_map(
     map: &serde_json::Map<String, serde_json::Value>,
 ) -> std::result::Result<DecodedReportV4, WorldProtocolError> {
+    decode_report_v4_map_with_context(map, true)
+}
+
+/// Capability-bound variant of [`decode_report_v4_map`], with the same
+/// caller requirements. A false `detached_allowed` holds identifiable report
+/// rows carrying detached evidence and rejects ordered detached focus events.
+pub fn decode_report_v4_map_with_context(
+    map: &serde_json::Map<String, serde_json::Value>,
+    detached_allowed: bool,
+) -> std::result::Result<DecodedReportV4, WorldProtocolError> {
     check_keys_with_optional(
         map,
         &[
@@ -3885,7 +4042,7 @@ pub fn decode_report_v4_map(
         .iter()
         .enumerate()
     {
-        match decode_fact_v4(item, ordinal, &mut seen_windows)? {
+        match decode_fact_v4(item, ordinal, &mut seen_windows, detached_allowed)? {
             WindowRowOutcome::Valid(fact) => windows.push(*fact),
             WindowRowOutcome::Held { row, fields } => {
                 held_window_fields.push((row.ordinal, fields));
@@ -3938,7 +4095,7 @@ pub fn decode_report_v4_map(
         .iter()
         .enumerate()
     {
-        match decode_native_v4(item, ordinal, &mut seen_native_outputs)? {
+        match decode_native_v4(item, ordinal, &mut seen_native_outputs, detached_allowed)? {
             NativeRowOutcome::Valid(row) => native.push(row),
             NativeRowOutcome::Held { row, fields } => {
                 held_native_fields.push((row.ordinal, fields));
@@ -4007,7 +4164,7 @@ pub fn decode_report_v4_map(
     let property_attempts_value = map.get("propertyAttempts").ok_or_else(malformed)?;
     let property_items = property_attempts_value.as_array().ok_or_else(malformed)?;
     let decoded_properties =
-        crate::world_property_attempts::decode_property_attempts(property_items)?;
+        crate::world_property_attempts::decode_property_attempts(property_items, detached_allowed)?;
     let frames = decoded_properties.frames;
     let member_attempts = decoded_properties.member_attempts;
     let view_attempts = decoded_properties.view_attempts;
@@ -4234,7 +4391,7 @@ pub fn decode_report_v4_map(
             text.to_owned()
         },
         foreground_known: req_bool(map, "foregroundKnown")?,
-        focus_changes: decode_focus_changes(&map["focusChanges"])?,
+        focus_changes: decode_focus_changes(&map["focusChanges"], detached_allowed)?,
         inventory_complete: req_bool(map, "complete")?,
         gesture_barrier: req_bool(map, "gesture")?,
         gesture,
@@ -4345,9 +4502,11 @@ pub fn decode_report_v4_map(
     })
 }
 
-/// Staged v4 connection-context gate for decoder composition: calls the
-/// context-free [`decode_report_v4`] shape decoder, then applies the same
-/// arrival-arm rule the runtime owns (native arm only on host-owned hosts,
+/// Staged v4 connection-context gate for decoder composition: decodes the
+/// shape with the bound handshake capability, holding identifiable rows that
+/// carry detached evidence when `detachedFullscreenView` is false. An
+/// ordered focus event has no hold lane and rejects instead. This also applies
+/// the arrival-arm rule the runtime owns (native arm only on host-owned hosts,
 /// observed-output arm only elsewhere). The caller passes the bound
 /// handshake capability; the context is never inferred from the report.
 /// Both arms stay shape-valid in [`decode_report_v4`]; a wrong-host arm
@@ -4355,16 +4514,34 @@ pub fn decode_report_v4_map(
 /// error catalog or API metadata.
 pub fn decode_report_v4_for_host(
     json: &str,
-    host_owned: bool,
+    host: &HostCapabilities,
 ) -> std::result::Result<DecodedReportV4, WorldProtocolError> {
-    let decoded = decode_report_v4(json)?;
-    if !host_owned && decoded.roster_feedback().is_some() {
+    if json.len() > WORLD_MAX_REQUEST_BYTES {
+        return Err(WorldProtocolError {
+            kind: KIND_OVERSIZED,
+            message: MSG_OVERSIZED,
+        });
+    }
+    let value: serde_json::Value =
+        crate::connection_protocol::parse_strict_json(json).map_err(|e| {
+            if e.0 == "oversized" {
+                WorldProtocolError {
+                    kind: KIND_OVERSIZED,
+                    message: MSG_OVERSIZED,
+                }
+            } else {
+                malformed()
+            }
+        })?;
+    let map = as_object(&value)?;
+    let decoded = decode_report_v4_map_with_context(map, host.detached_fullscreen_view)?;
+    if !host.host_owned && decoded.roster_feedback().is_some() {
         return Err(snapshot_invalid("roster-host-mismatch"));
     }
     let mismatch = decoded.report.focus_feedback.iter().any(|row| {
         row.arrival
             .iter()
-            .any(|bracket| bracket.location.is_native() != host_owned)
+            .any(|bracket| bracket.location.is_native() != host.host_owned)
     });
     if mismatch {
         return Err(WorldProtocolError {
@@ -4649,12 +4826,24 @@ fn decode_window_desire(value: &serde_json::Value) -> Result<WindowDesire> {
     })
 }
 
-fn decode_transfer_v4(value: &serde_json::Value) -> Result<TransferTargetV4> {
+fn decode_transfer_v4<'a>(
+    value: &'a serde_json::Value,
+    seen: &mut tiler_core::world_reply_validation::TransferIdentities<'a>,
+) -> Result<TransferTargetV4> {
     let map = as_object(value)?;
     check_keys(
         map,
         &[
-            "op", "kind", "win", "out", "ws", "follow", "held", "cmdSeq", "parent",
+            "op",
+            "kind",
+            "win",
+            "out",
+            "ws",
+            "follow",
+            "held",
+            "cmdSeq",
+            "parent",
+            "detachedDestination",
         ],
     )?;
     let kind = match req_str(map, "kind")? {
@@ -4679,15 +4868,51 @@ fn decode_transfer_v4(value: &serde_json::Value) -> Result<TransferTargetV4> {
         }
         _ => return Err(unknown_value()),
     };
+    let out = req_id_ref(map, "out")?;
+    let follow = req_bool(map, "follow")?;
+    let command_seq = opt_u64_or_null(map, "cmdSeq")?;
+    let parent = opt_id_or_null(map, "parent")?;
+    let detached_destination = match map.get("detachedDestination") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let row = as_object(value)?;
+            check_keys(row, &["surface", "member"])?;
+            let surface = decode_detached_ref(row.get("surface").ok_or_else(malformed)?)?;
+            let member = WindowId(req_id(row, "member")?);
+            Some(DetachedDestination { surface, member })
+        }
+    };
+    // Grant provenance is part of the wire shape the adapter validates: only
+    // a standalone explicit selection view flight may carry a detached
+    // destination, and its surface is joined to the grant output. Anything
+    // else is a malformed grant with no actuation.
+    if let Some(destination) = detached_destination.as_ref()
+        && !(kind == TransferKind::View
+            && !follow
+            && parent.is_none()
+            && command_seq.is_some()
+            && destination.surface.output.0 == out)
+    {
+        return Err(reply_snapshot("detached-destination-invalid"));
+    }
+    let operation_id = req_id_ref(map, "op")?;
+    let target_workspace = req_id(map, "ws")?;
+    let held = req_bool(map, "held")?;
+    let view_output = (kind == TransferKind::View).then_some(out);
+    if !seen.insert(operation_id, view_output) {
+        return Err(reply_snapshot("duplicate-transfer"));
+    }
     Ok(TransferTargetV4 {
-        operation_id: req_id(map, "op")?,
+        operation_id: operation_id.to_owned(),
         kind,
-        target_output: OutputId(req_id(map, "out")?),
-        target_workspace: req_id(map, "ws")?,
-        follow: req_bool(map, "follow")?,
-        held: req_bool(map, "held")?,
-        command_seq: opt_u64_or_null(map, "cmdSeq")?,
-        parent: opt_id_or_null(map, "parent")?,
+        target_output: OutputId(out.to_owned()),
+        target_workspace,
+        follow,
+        held,
+        command_seq,
+        parent,
+        detached_destination,
     })
 }
 
@@ -5492,13 +5717,9 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
         return Err(reply_snapshot("section-over-cap"));
     }
     let mut transfers = Vec::with_capacity(transfer_items.len());
-    let mut seen_transfers = std::collections::BTreeSet::new();
+    let mut seen_transfers = tiler_core::world_reply_validation::TransferIdentities::default();
     for item in transfer_items {
-        let transfer = decode_transfer_v4(item)?;
-        if !seen_transfers.insert(transfer.operation_id.clone()) {
-            return Err(reply_snapshot("duplicate-transfer"));
-        }
-        transfers.push(transfer);
+        transfers.push(decode_transfer_v4(item, &mut seen_transfers)?);
     }
     let drag_preview = decode_drag_preview(map.get("dragPreview").ok_or_else(malformed)?)?;
     let gesture_settled = decode_gesture_settled(map.get("gestureSettled").ok_or_else(malformed)?)?;
@@ -5655,10 +5876,17 @@ pub fn decode_reply_v4_for_host(
     {
         return Err(reply_snapshot("sticky-capability-false"));
     }
+    if !host.detached_fullscreen_view
+        && decoded
+            .reply
+            .transfers
+            .iter()
+            .any(|row| row.detached_destination.is_some())
+    {
+        return Err(reply_snapshot("detached-capability-false"));
+    }
     Ok(decoded)
 }
-
-// -- Staged canonical v4 reply writer --
 // Checked canonical encode of one decoded v4 reply: compact JSON in
 // contract table key order with the codec row key order, quoted counters
 // via to_string, JSON integers for order/ordinal/floats, C0 escapes as
@@ -5794,7 +6022,7 @@ fn encode_native_observation_v4(row: &NativeObservation) -> Result<String> {
         None => out.push_str("null"),
         Some(id) => push_json_string(&mut out, id),
     }
-    out.push_str(",\"occupancy\":[");
+    out.push_str("],\"occupancy\":[");
     for (i, item) in row.occupancy.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -5808,7 +6036,26 @@ fn encode_native_observation_v4(row: &NativeObservation) -> Result<String> {
         }
         out.push('}');
     }
-    out.push_str("]}");
+    out.push_str("],\"currentKnown\":");
+    out.push_str(if row.current_known { "true" } else { "false" });
+    out.push_str(",\"detachedCurrent\":");
+    push_opt_detached_ref(&mut out, &row.detached_current);
+    out.push('}');
+    // Checked writer: a typed row whose tri-state contradicts itself never
+    // emits (a gap carries no arm, both arms never coexist, and a detached
+    // arm is joined to its own output).
+    if (row.current_native.is_some() && !row.current_known)
+        || row
+            .detached_current
+            .as_ref()
+            .is_some_and(|reference| {
+                !row.current_known
+                    || row.current_native.is_some()
+                    || reference.output != row.output
+            })
+    {
+        return Err(snapshot_invalid("native-observation-inconsistent"));
+    }
     Ok(out)
 }
 
@@ -5847,6 +6094,47 @@ pub(crate) fn push_opt_workspace_ref(out: &mut String, value: &Option<WorkspaceR
     match value {
         None => out.push_str("null"),
         Some(reference) => push_workspace_ref(out, reference),
+    }
+}
+
+/// Canonical encode of one detached surface reference
+/// (`{"kind":"detached","out":S,"surface":S}`).
+pub(crate) fn push_detached_ref(out: &mut String, reference: &DetachedRef) {
+    out.push_str("{\"kind\":\"detached\",\"out\":");
+    push_json_string(out, &reference.output.0);
+    out.push_str(",\"surface\":");
+    push_json_string(out, reference.surface.as_str());
+    out.push('}');
+}
+
+/// Canonical encode of one nullable detached surface reference.
+pub(crate) fn push_opt_detached_ref(out: &mut String, value: &Option<DetachedRef>) {
+    match value {
+        None => out.push_str("null"),
+        Some(reference) => push_detached_ref(out, reference),
+    }
+}
+
+/// Canonical encode of one physical view reference (native desktop arm or
+/// detached family).
+pub(crate) fn push_view_ref(out: &mut String, reference: &ViewRef) {
+    match reference {
+        ViewRef::Native { output, workspace } => {
+            out.push_str("{\"kind\":\"native\",\"out\":");
+            push_json_string(out, &output.0);
+            out.push_str(",\"ws\":");
+            push_json_string(out, workspace.as_str());
+            out.push('}');
+        }
+        ViewRef::Detached(detached) => push_detached_ref(out, detached),
+    }
+}
+
+/// Canonical encode of one nullable physical view reference.
+pub(crate) fn push_opt_view_ref(out: &mut String, value: &Option<ViewRef>) {
+    match value {
+        None => out.push_str("null"),
+        Some(reference) => push_view_ref(out, reference),
     }
 }
 
@@ -6043,7 +6331,7 @@ fn push_focus_changes(out: &mut String, changes: Option<&FocusChanges>) {
                         out.push_str("{\"kind\":\"view\",\"out\":");
                         push_json_string(out, &output.0);
                         out.push_str(",\"native\":");
-                        push_json_string(out, native);
+                        push_view_ref(out, native);
                     }
                 }
                 out.push('}');

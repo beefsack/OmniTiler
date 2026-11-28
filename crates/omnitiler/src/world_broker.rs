@@ -213,10 +213,10 @@ use std::time::Instant;
 use serde_json::Map;
 
 #[cfg(test)]
-use tiler_protocol::world_protocol::decode_request;
+use tiler_protocol::world_protocol::{decode_report_v4_map, decode_request};
 use tiler_protocol::world_protocol::{
     WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldOutcome,
-    decode_command_value_v4, decode_report_v4_map, encode_error, is_valid_adapter_id,
+    decode_command_value_v4, decode_report_v4_map_with_context, encode_error, is_valid_adapter_id,
     is_valid_request_id,
 };
 #[cfg(test)]
@@ -969,7 +969,12 @@ impl WorldBroker {
         if compact_json_exceeds_limit(&parsed.inner, WORLD_MAX_REQUEST_BYTES) {
             return Err(BrokerError::Oversized);
         }
-        let mut plain_decoded = match decode_report_v4_map(&parsed.inner) {
+        let detached_allowed = self
+            .engine
+            .capabilities()
+            .is_some_and(|host| host.detached_fullscreen_view);
+        let decoded = decode_report_v4_map_with_context(&parsed.inner, detached_allowed);
+        let mut plain_decoded = match decoded {
             Ok(decoded) => decoded,
             Err(error) => {
                 return self.remember_rejection(
@@ -2812,7 +2817,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":false,\"fullscreen\":false,\"nativeSticky\":false,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         )
     }
 
@@ -3779,7 +3784,7 @@ mod tests {
             {\"kind\":\"member\",\"op\":\"op-m\",\"win\":\"win-a\",\"out\":\"DP-1\",\"ws\":\"ws-1\",\
             \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"pre\":null,\"post\":null,\"attemptMs\":\"9\"},\
             {\"kind\":\"view\",\"op\":\"op-v\",\"out\":\"DP-1\",\"ws\":\"ws-1\",\
-            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"pre\":null,\"post\":null,\"base\":null,\"attemptMs\":\"9\"},\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"pre\":null,\"post\":null,\"base\":null,\"attemptMs\":\"9\",\"postMember\":null},\
             {\"kind\":\"state\",\"win\":\"win-a\",\"property\":\"fullscreen\",\"target\":true,\"rev\":\"1\",\
             \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"pre\":false,\"post\":true,\"attemptMs\":\"9\"},\
             {\"kind\":\"visibility\",\"win\":\"win-a\",\"target\":true,\"revision\":\"1\",\"path\":\"staged\",\
@@ -3855,7 +3860,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         let _ = broker.discover_connection(&hs).expect("handshake");
         let generation = broker.generation().to_owned();
@@ -3877,7 +3882,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
+            \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\"detachedSurface\":null}}"
         )
     }
 
@@ -4184,7 +4189,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         let _ = broker.discover_connection(&hs).expect("handshake");
         let generation = broker.generation().to_owned();
@@ -4202,7 +4207,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
         // Seed one observation-only capture so win-a is admitted and ready
         // before opening the gesture.
         let seed_inner = format!(
@@ -4408,7 +4413,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         let _ = broker.discover_connection(&hs).expect("handshake");
         let generation = broker.generation().to_owned();
@@ -4428,7 +4433,7 @@ mod tests {
                 \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
                 \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
                 \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-                \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
+                \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\"detachedSurface\":null}}"
             )
         };
         let wins = format!("[{},{}]", mk_win("win-a", 0), mk_win("win-b", 400));
@@ -4641,7 +4646,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         broker.discover_connection(&hs).expect("handshake");
         let generation = broker.generation().to_owned();
@@ -4662,7 +4667,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
         let inner = format!(
             "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -4731,7 +4736,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         broker.discover_connection(&hs).expect("handshake");
         let generation = broker.generation().to_owned();
@@ -4752,7 +4757,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
         let inner = format!(
             "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -4854,7 +4859,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         broker.discover_connection(&hs).expect("handshake");
         let generation = broker.generation().to_owned();
@@ -4875,7 +4880,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
         let inner = format!(
             "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -5001,7 +5006,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         broker.discover_connection(&hs).expect("handshake");
         let generation = broker.generation().to_owned();
@@ -5022,7 +5027,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
         let inner = format!(
             "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -5231,7 +5236,7 @@ mod tests {
               \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\"processId\":\"pid-own-1\"}},\
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\"maximize\":true,\"fullscreen\":true,\
-              \"nativeSticky\":true,\"above\":false,\"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"nativeSticky\":true,\"above\":false,\"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         let hs_reply: serde_json::Value =
             serde_json::from_str(&broker.discover_connection(&hs).expect("handshake succeeds"))
@@ -5279,7 +5284,7 @@ mod tests {
                 \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
                 \"owner\":null,\"parent\":null,\"role\":\"normal\",\"appId\":\"org.example.fw\",\"executable\":\"/usr/bin/fw\",\"processId\":\"pid-foreign-1\",\
                 \"class\":\"Synthetic\",\"title\":\"FW\",\"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\"fullscreenOwner\":null,\
-                \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}}}}],\
+                \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}},\"detachedSurface\":null}}],\
                 \"closed\":[],\"native\":[],\"focused\":\"{win}\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":[100,100],\
                 \"pointerActivity\":null,\"warpSpent\":null,\"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"{win}\",\"minimized\":false,\
                 \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":[0,0,400,400],\"chordHeld\":false,\"moveWindow\":\"\",\
@@ -5450,7 +5455,7 @@ mod tests {
                     \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\"modal\":false,\"resizable\":true,\"above\":null,\"below\":null,\
                     \"owner\":null,\"parent\":null,\"role\":\"normal\",\"appId\":\"org.example.cap\",\"executable\":\"/usr/bin/cap\",\"processId\":\"pid-cap-1\",\
                     \"class\":\"Synthetic\",\"title\":\"{title_tag}-{i:04}-{title_pad}\",\"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\"fullscreenOwner\":null,\
-                    \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}}}}"
+                    \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}},\"detachedSurface\":null}}"
                 ));
             }
             format!(

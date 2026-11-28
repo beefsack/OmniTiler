@@ -9,18 +9,18 @@ use tiler_core::world_report::{
     AttemptLaneV4, FrameAttempt, FramePurpose, FrameSetter, HeldAttemptRow, LastWritePath,
     MAX_WORLD_FRAMES, MAX_WORLD_MEMBER_ATTEMPTS, MAX_WORLD_PROPERTY_ATTEMPTS,
     MAX_WORLD_STATE_ATTEMPTS, MAX_WORLD_VIEW_ATTEMPTS, MAX_WORLD_VISIBILITY_ATTEMPTS,
-    MemberAttempt, MemberDisposition, StateAttempt, StateProperty, ViewAttempt, VisibilityAttempt,
-    VisibilityDisposition, VisibilityReason,
+    MemberAttempt, MemberDisposition, StateAttempt, StateProperty, ViewAttempt, ViewRef,
+    VisibilityAttempt, VisibilityDisposition, VisibilityReason,
 };
 
 use crate::world_protocol::{
     KIND_SNAPSHOT, Result, WorldProtocolError, as_object, attempt_hold_scope, attempt_identity,
     check_keys, check_keys_with_optional, decode_visibility_sample, encode_held_fields,
-    held_attempt_row, malformed, opt_bool_or_null, opt_rect_or_null, opt_u32_or_null,
-    opt_workspace_ref_or_null, parse_frame_setter, push_json_string, push_opt_bool, push_opt_rect,
-    push_opt_u32, push_opt_workspace_ref, push_rect, push_visibility_sample,
-    reorder_visibility_sample, req_bool, req_id, req_rect_value, req_str, req_u64_str,
-    snapshot_invalid, unknown_value,
+    held_attempt_row, malformed, opt_bool_or_null, opt_view_ref_or_null, opt_rect_or_null,
+    opt_u32_or_null, opt_workspace_ref_or_null, parse_frame_setter, push_json_string,
+    push_opt_bool, push_opt_rect, push_opt_u32, push_opt_view_ref, push_opt_workspace_ref,
+    push_rect, push_visibility_sample, reorder_visibility_sample, req_bool, req_id, req_rect_value,
+    req_str, req_u64_str, snapshot_invalid, unknown_value,
 };
 use crate::world_report_residual::HeldFields;
 
@@ -59,6 +59,7 @@ fn section_over_cap() -> WorldProtocolError {
 /// (producer order within each kind; first hard error wins).
 pub(crate) fn decode_property_attempts(
     items: &[serde_json::Value],
+    detached_allowed: bool,
 ) -> Result<DecodedPropertyAttempts> {
     if items.len() > MAX_WORLD_PROPERTY_ATTEMPTS {
         return Err(section_over_cap());
@@ -141,7 +142,7 @@ pub(crate) fn decode_property_attempts(
     let mut view_attempts = Vec::new();
     let mut seen_views = BTreeSet::new();
     for (ordinal, item) in view_bucket {
-        match decode_view_attempt_v4(item, ordinal, &mut seen_views)? {
+        match decode_view_attempt_v4(item, ordinal, &mut seen_views, detached_allowed)? {
             AttemptRowOutcome::Valid(attempt) => view_attempts.push(attempt),
             AttemptRowOutcome::Held { row, fields } => {
                 held_attempt_fields.push((AttemptLaneV4::View, row.ordinal, fields));
@@ -475,26 +476,59 @@ pub fn decode_view_attempt(value: &serde_json::Value) -> Result<ViewAttempt> {
             "post",
             "base",
             "attemptMs",
+            "postMember",
         ],
         &[],
     )?;
     check_kind(map, "view")?;
+    let target_output = OutputId(req_id(map, "out")?);
+    let disposition = decode_called_disposition(map.get("disposition").ok_or_else(malformed)?)?;
+    let pre = opt_view_ref_or_null(map, "pre")?;
+    let post = opt_view_ref_or_null(map, "post")?;
+    let baseline = opt_view_ref_or_null(map, "base")?;
+    if [&pre, &post, &baseline].into_iter().flatten().any(|reference| {
+        matches!(reference, ViewRef::Detached(_)) && reference.output() != &target_output
+    }) {
+        return Err(unknown_value());
+    }
+    let post_member = match map.get("postMember") {
+        None => return Err(malformed()),
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) if is_opaque_id(text) => {
+            Some(WindowId(text.clone()))
+        }
+        Some(_) => return Err(unknown_value()),
+    };
+    // `postMember` is a membership observation for one accepted detached
+    // post only. Any other carried shape is an identifiable bad value, held
+    // by the v4 wrapper (never reinterpreted as proof).
+    if post_member.is_some()
+        && !(disposition == FrameSetter::Accepted
+            && post.as_ref().is_some_and(|reference| {
+                matches!(reference, ViewRef::Detached(_))
+                    && reference.output() == &target_output
+            }))
+    {
+        return Err(unknown_value());
+    }
     Ok(ViewAttempt {
         operation_id: req_id(map, "op")?,
-        target_output: OutputId(req_id(map, "out")?),
+        target_output,
         target_workspace: req_id(map, "ws")?,
-        disposition: decode_called_disposition(map.get("disposition").ok_or_else(malformed)?)?,
-        pre: opt_workspace_ref_or_null(map, "pre", true)?,
-        post: opt_workspace_ref_or_null(map, "post", true)?,
-        baseline: opt_workspace_ref_or_null(map, "base", true)?,
+        disposition,
+        pre,
+        post,
+        baseline,
         attempt_ms: req_u64_str(map, "attemptMs")?,
+        post_member,
     })
 }
 
-fn decode_view_attempt_v4(
-    value: &serde_json::Value,
+fn decode_view_attempt_v4<'a>(
+    value: &'a serde_json::Value,
     ordinal: usize,
-    seen_views: &mut BTreeSet<String>,
+    seen_views: &mut BTreeSet<(&'a str, &'a str)>,
+    detached_allowed: bool,
 ) -> Result<AttemptRowOutcome<ViewAttempt>> {
     const SCHEMA: &[&str] = &[
         "kind",
@@ -506,54 +540,63 @@ fn decode_view_attempt_v4(
         "post",
         "base",
         "attemptMs",
+        "postMember",
     ];
     let map = as_object(value)?;
     let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
+    fn view_key(map: &serde_json::Map<String, serde_json::Value>) -> Option<(&str, &str)> {
+        let op = map.get("op")?.as_str().filter(|op| is_opaque_id(op))?;
+        let out = map.get("out")?.as_str().filter(|out| is_opaque_id(out))?;
+        Some((op, out))
+    }
     match decode_view_attempt(value) {
         Ok(attempt) => {
-            if !seen_views.insert(attempt.operation_id.clone()) {
+            let key = view_key(map).expect("decoded view has a stable identity");
+            if !seen_views.insert(key) {
                 return Err(WorldProtocolError {
                     kind: KIND_SNAPSHOT,
                     message: "duplicate-view-attempt",
                 });
             }
-            if extra {
+            let detached_present = !detached_allowed
+                && [&attempt.pre, &attempt.post, &attempt.baseline]
+                    .into_iter()
+                    .flatten()
+                    .any(|reference| matches!(reference, ViewRef::Detached(_)));
+            if extra || detached_present {
                 let diagnostic = attempt_hold_scope(map);
                 let (row, fields) = held_attempt_row(
                     AttemptLaneV4::View,
                     ordinal,
                     map,
                     SCHEMA,
-                    vec![attempt.operation_id],
+                    vec![key.0.to_owned(), key.1.to_owned()],
                     diagnostic,
                 );
                 return Ok(AttemptRowOutcome::Held { row, fields });
             }
             Ok(AttemptRowOutcome::Valid(attempt))
         }
-        Err(reason) => {
-            let (op, _) = attempt_identity(map, true, false);
-            match op {
-                Some(op) => {
-                    if !seen_views.insert(op.clone()) {
-                        return Err(WorldProtocolError {
-                            kind: KIND_SNAPSHOT,
-                            message: "duplicate-view-attempt",
-                        });
-                    }
-                    let (row, fields) = held_attempt_row(
-                        AttemptLaneV4::View,
-                        ordinal,
-                        map,
-                        SCHEMA,
-                        vec![op],
-                        attempt_hold_scope(map),
-                    );
-                    Ok(AttemptRowOutcome::Held { row, fields })
+        Err(reason) => match view_key(map) {
+            Some((op, out)) => {
+                if !seen_views.insert((op, out)) {
+                    return Err(WorldProtocolError {
+                        kind: KIND_SNAPSHOT,
+                        message: "duplicate-view-attempt",
+                    });
                 }
-                None => Err(reason),
+                let (row, fields) = held_attempt_row(
+                    AttemptLaneV4::View,
+                    ordinal,
+                    map,
+                    SCHEMA,
+                    vec![op.to_owned(), out.to_owned()],
+                    attempt_hold_scope(map),
+                );
+                Ok(AttemptRowOutcome::Held { row, fields })
             }
-        }
+            None => Err(reason),
+        },
     }
 }
 
@@ -789,14 +832,19 @@ fn encode_view_attempt_v4(row: &ViewAttempt) -> Result<String> {
     out.push_str(",\"disposition\":");
     push_called_disposition(&mut out, row.disposition);
     out.push_str(",\"pre\":");
-    push_opt_workspace_ref(&mut out, &row.pre);
+    push_opt_view_ref(&mut out, &row.pre);
     out.push_str(",\"post\":");
-    push_opt_workspace_ref(&mut out, &row.post);
+    push_opt_view_ref(&mut out, &row.post);
     out.push_str(",\"base\":");
-    push_opt_workspace_ref(&mut out, &row.baseline);
+    push_opt_view_ref(&mut out, &row.baseline);
     out.push_str(",\"attemptMs\":\"");
     out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\"}");
+    out.push_str("\",\"postMember\":");
+    match &row.post_member {
+        None => out.push_str("null"),
+        Some(member) => push_json_string(&mut out, &member.0),
+    }
+    out.push('}');
     Ok(out)
 }
 

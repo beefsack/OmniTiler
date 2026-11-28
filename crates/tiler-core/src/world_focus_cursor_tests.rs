@@ -458,11 +458,17 @@ fn focus_interval_is_structurally_bounded_and_part_of_exact_replay() {
         },
         FocusChange::View {
             out: OutputId(String::new()),
-            native: "n1".to_owned(),
+            native: crate::world_report::ViewRef::Native {
+                output: OutputId(String::new()),
+                workspace: crate::ids::NativeWorkspaceId::parse("n1").expect("native id"),
+            },
         },
         FocusChange::View {
             out: OutputId("out-a".to_owned()),
-            native: String::new(),
+            native: crate::world_report::ViewRef::Native {
+                output: OutputId(String::new()),
+                workspace: crate::ids::NativeWorkspaceId::parse("n1").expect("native id"),
+            },
         },
     ] {
         changed.focus_changes.as_mut().unwrap().events = Some(vec![event]);
@@ -3436,4 +3442,89 @@ fn perpendicular_descent_leaves_move_and_send_unchanged() {
         run_send(["win-b", "win-a", "win-c"]),
         "SendRelative anchoring must be completely unaffected by perpendicular focus history"
     );
+}
+
+#[test]
+fn detached_cursor_guard_is_output_scoped_and_uses_fresh_foreground() {
+    use crate::world_report::{NativeObservation, NativeOccupancy, NativeWorkspaceFact, ViewRef};
+
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            host_owned: true,
+            detached_fullscreen_view: true,
+            ..HostCapabilities::default()
+        },
+        Vec::new(),
+    )
+    .expect("valid host capability");
+    let a = OutputId("out-a".into());
+    let b = OutputId("out-b".into());
+    let native = |output: &OutputId, id: &str| NativeObservation {
+        output: output.clone(),
+        native_order: vec![id.into()],
+        current_native: Some(id.into()),
+        occupancy: vec![NativeOccupancy { native: id.into(), count: None }],
+        current_known: true,
+        detached_current: None,
+    };
+    let a_fact = WindowFact {
+        native_workspace: NativeWorkspaceFact::Value("desktop-a".into()),
+        ..fact("win-a", "out-a", 0)
+    };
+    let b_fact = WindowFact {
+        native_workspace: NativeWorkspaceFact::Value("desktop-b".into()),
+        ..fact("win-b", "out-b", 800)
+    };
+    let capture = |seq, focused: &str| {
+        let mut report = observe(seq, vec![a_fact.clone(), b_fact.clone()], focused);
+        report.screens.push(screen("out-b", 800));
+        report.native = vec![native(&a, "desktop-a"), native(&b, "desktop-b")];
+        report
+    };
+    let accepted = crate::world_v4_support_tests::accepted;
+    accepted(&mut engine, &capture(1, "win-a"));
+    accepted(&mut engine, &capture(2, "win-a"));
+    engine.tx(|tx| {
+        assert_eq!(tx.execution_subject(), Some(a_fact.window.clone()));
+        tx.replace_detached_cursor_guards(std::slice::from_ref(&a), true);
+        tx.refresh_detached_cursor_guards(true);
+        assert_eq!(tx.execution_subject(), None, "grant capture cannot seed the cursor");
+    });
+
+    accepted(&mut engine, &capture(3, "win-b"));
+    engine.tx(|tx| {
+        assert_eq!(tx.execution_subject(), Some(b_fact.window.clone()));
+        assert!(tx.world.focus.detached_cursor_guards.contains_key(&a));
+        tx.replace_detached_cursor_guards(std::slice::from_ref(&b), true);
+        tx.note_detached_cursor_refusal(&b, &ViewRef::Native {
+            output: b.clone(),
+            workspace: crate::ids::NativeWorkspaceId::parse("desktop-b").unwrap(),
+        });
+    });
+    let mut gap = capture(4, "");
+    gap.foreground_known = true;
+    gap.native[1].current_known = false;
+    gap.native[1].current_native = None;
+    accepted(&mut engine, &gap);
+    engine.tx(|tx| {
+        assert!(tx.world.focus.detached_cursor_guards.contains_key(&a));
+        assert!(tx.world.focus.detached_cursor_guards.contains_key(&b));
+        assert_eq!(tx.execution_subject(), None);
+    });
+
+    let mut empty = capture(5, "");
+    empty.foreground_known = true;
+    accepted(&mut engine, &empty);
+    engine.tx(|tx| {
+        assert!(tx.world.focus.detached_cursor_guards.contains_key(&a));
+        assert!(!tx.world.focus.detached_cursor_guards.contains_key(&b));
+        assert_eq!(tx.execution_subject(), None);
+    });
+    accepted(&mut engine, &capture(6, "win-a"));
+    engine.tx(|tx| {
+        assert!(!tx.world.focus.detached_cursor_guards.contains_key(&a));
+        assert_eq!(tx.execution_subject(), Some(a_fact.window));
+    });
 }

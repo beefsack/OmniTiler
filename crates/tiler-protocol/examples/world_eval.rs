@@ -10,7 +10,7 @@
 //!   mints the next generation from the deterministic evaluator seed.
 //!   Settings never reset the engine.
 //! - `DescribeWorld`: `B` is a v4 report, decoded with
-//!   [`decode_request_with_wire`] and admitted through
+//!   the bound host's v4 decoder and admitted through
 //!   [`ProtocolAdmissionGate::dispatch_with_prepare`] against the retained
 //!   engine. The reply line is the canonical v4 reply from
 //!   [`write_reply_v4_with_plan`]. A duplicate replays the stored reply,
@@ -35,7 +35,8 @@ use tiler_protocol::connection_protocol::route_connection_request;
 use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_command_result::encode_command_result;
 use tiler_protocol::world_protocol::{
-    WorldEngine, WorldOutcome, WorldProtocolError, decode_request_with_wire, encode_error,
+    WorldEngine, WorldOutcome, WorldProtocolError, decode_report_v4_for_host,
+    decode_request_with_wire, encode_error,
 };
 use tiler_protocol::world_reply_write::write_reply_v4_with_plan;
 
@@ -46,7 +47,10 @@ fn submit_report_with_settlements(
     body: &str,
     generation: &str,
 ) -> (String, Vec<BatchDisposition>) {
-    let decoded = match decode_request_with_wire(body) {
+    let decoded = match engine.capabilities().map_or_else(
+        || decode_request_with_wire(body),
+        |host| decode_report_v4_for_host(body, host),
+    ) {
         Ok(decoded) => decoded,
         Err(error) => {
             return (

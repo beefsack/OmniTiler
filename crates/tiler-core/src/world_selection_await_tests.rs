@@ -26,7 +26,7 @@ use crate::world_report::{
     HeldWindowRow, LastWritePath, MemberAttempt, OneShotEffect, PresentationRowV4, RowDiagnostic,
     RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, SwitchFocus, SwitchOutcome,
     VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
-    WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, ViewRef, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 use crate::world_v4_support_tests::empty_ingress;
 
@@ -90,6 +90,7 @@ fn sfact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: Some(false),
         },
+        detached_surface: None,
     }
 }
 
@@ -2411,10 +2412,11 @@ fn follow_to_different_workspace_prunes_stale_select_view_flight() {
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
         disposition: FrameSetter::Accepted,
-        pre: Some(native_ref("n0")),
-        post: Some(native_ref("n1")),
-        baseline: Some(native_ref("n1")),
+        pre: Some(native_view_ref("n0")),
+        post: Some(native_view_ref("n1")),
+        baseline: Some(native_view_ref("n1")),
         attempt_ms: 7,
+        post_member: None,
     }];
     let settled = accepted(&mut engine, &late);
     assert!(
@@ -3263,12 +3265,16 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
         !binding.view_targets.is_empty(),
         "native selector obligation: {binding:?}"
     );
+    let target = binding
+        .view_targets
+        .get(&OutputId("out-a".to_owned()))
+        .expect("obligation names the destination");
     assert_eq!(
-        binding.view_targets.get(&OutputId("out-a".to_owned())),
-        Some(&crate::session::DomainKey {
+        target.home,
+        crate::session::DomainKey {
             output: OutputId("out-a".to_owned()),
             workspace: crate::directional::WorkspaceId(away.clone()),
-        }),
+        },
         "obligation names the destination: {binding:?}"
     );
     assert!(
@@ -3424,10 +3430,11 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
         disposition: FrameSetter::Accepted,
-        pre: Some(native_ref("n0")),
-        post: Some(native_ref("n1")),
-        baseline: Some(native_ref("n1")),
+        pre: Some(native_view_ref("n0")),
+        post: Some(native_view_ref("n1")),
+        baseline: Some(native_view_ref("n1")),
         attempt_ms: 7,
+        post_member: None,
     }];
     let done = accepted(&mut engine, &proof);
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
@@ -3634,8 +3641,8 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
             .settlement
             .last_views
             .get(&OutputId("out-a".to_owned())),
-        Some(&first),
-        "boot retains the staged echo"
+        Some(&native_view_ref("n0")),
+        "boot retains the typed staged native echo"
     );
     let _ = accepted(
         &mut engine,
@@ -3649,7 +3656,7 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
             .settlement
             .last_views
             .get(&OutputId("out-a".to_owned())),
-        Some(&second),
+        Some(&native_view_ref("n1")),
         "a later source report retires through staged state"
     );
     assert_eq!(away, second, "n1-backed workspace is the away id");
@@ -3671,6 +3678,8 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
                 count: None,
             },
         ],
+        current_known: true,
+        detached_current: None,
     }];
     let _ = accepted(&mut engine, &unknown);
     assert!(
@@ -6762,6 +6771,8 @@ fn host_native_report(
                 count: None,
             },
         ],
+        current_known: true,
+        detached_current: None,
     }];
     out
 }
@@ -6808,6 +6819,13 @@ fn native_ref(workspace: &str) -> WorkspaceRef {
         workspace: crate::ids::NativeWorkspaceId::parse(workspace).expect("native id"),
     }
 }
+fn native_view_ref(workspace: &str) -> ViewRef {
+    ViewRef::Native {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::ids::NativeWorkspaceId::parse(workspace).expect("native id"),
+    }
+}
+
 
 /// Managed host-owned member fact: ordinary top-level window with a native
 /// desktop receipt. Off-desktop members carry unreadable pre-arrival
@@ -6936,7 +6954,7 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
         binding
             .view_targets
             .get(&OutputId("out-a".to_owned()))
-            .map(|home| home.workspace.0.clone()),
+            .map(|target| target.home.workspace.0.clone()),
         Some(away.clone()),
         "native selector obligation: {binding:?}"
     );
@@ -7107,7 +7125,10 @@ fn only_target_hiding_selector_retires_with_unchanged_sticky_foreground() {
             after: Some(prior),
             events: Some(vec![FocusChange::View {
                 out: OutputId(out.to_owned()),
-                native: selector.to_owned(),
+                native: crate::world_report::ViewRef::Native {
+                    output: OutputId(out.to_owned()),
+                    workspace: crate::ids::NativeWorkspaceId::parse(selector).expect("native id"),
+                },
             }]),
         });
         let reply = accepted(&mut engine, &capture);
@@ -7733,6 +7754,8 @@ fn host_owned_focus_bearing_shared_needs_every_output_proof() {
                             count: None,
                         })
                         .collect(),
+                    current_known: true,
+                    detached_current: None,
                 }
             })
             .collect();
@@ -7975,6 +7998,8 @@ fn host_owned_focus_bearing_shared_nonfocus_external_move_drops_binding() {
                             count: None,
                         })
                         .collect(),
+                    current_known: true,
+                    detached_current: None,
                 }
             })
             .collect();
@@ -8156,6 +8181,8 @@ fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
                             count: None,
                         })
                         .collect(),
+                    current_known: true,
+                    detached_current: None,
                 }
             })
             .collect();
@@ -8843,6 +8870,8 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
                             count: None,
                         })
                         .collect(),
+                    current_known: true,
+                    detached_current: None,
                 }
             })
             .collect();
@@ -8915,21 +8944,22 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
     refused.view_attempts = vec![crate::world_report::ViewAttempt {
         operation_id: "op-3".to_owned(),
         target_output: OutputId("out-b".to_owned()),
-        target_workspace: out_b_home.workspace.0.clone(),
+        target_workspace: out_b_home.home.workspace.0.clone(),
         disposition: FrameSetter::Refused,
-        pre: Some(WorkspaceRef::Native {
+        pre: Some(ViewRef::Native {
             output: OutputId("out-b".to_owned()),
             workspace: native_n0.clone(),
         }),
-        post: Some(WorkspaceRef::Native {
+        post: Some(ViewRef::Native {
             output: OutputId("out-b".to_owned()),
             workspace: native_n0.clone(),
         }),
-        baseline: Some(WorkspaceRef::Native {
+        baseline: Some(ViewRef::Native {
             output: OutputId("out-b".to_owned()),
             workspace: native_n0,
         }),
         attempt_ms: 7,
+        post_member: None,
     }];
     let held = accepted(&mut engine, &refused);
     assert!(
@@ -9094,6 +9124,8 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
                         count: None,
                     },
                 ],
+                current_known: true,
+                detached_current: None,
             }],
             held_native: Vec::new(),
             cursor: None,
@@ -9149,10 +9181,11 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             target_output: OutputId("out-a".to_owned()),
             target_workspace: target.to_owned(),
             disposition: FrameSetter::Accepted,
-            pre: Some(native_ref(pre)),
-            post: Some(native_ref(post)),
-            baseline: Some(native_ref(pre)),
+            pre: Some(native_view_ref(pre)),
+            post: Some(native_view_ref(post)),
+            baseline: Some(native_view_ref(pre)),
             attempt_ms: 7,
+            post_member: None,
         };
     let staged = || host_proof_windows(true);
     let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
@@ -9441,10 +9474,11 @@ fn view_attempt(op: &str, target: &str, setter: FrameSetter) -> crate::world_rep
         target_output: OutputId("out-a".to_owned()),
         target_workspace: target.to_owned(),
         disposition: setter,
-        pre: Some(native_ref("n0")),
-        post: Some(native_ref("n0")),
-        baseline: Some(native_ref("n0")),
+        pre: Some(native_view_ref("n0")),
+        post: Some(native_view_ref("n0")),
+        baseline: Some(native_view_ref("n0")),
         attempt_ms: 7,
+        post_member: None,
     }
 }
 
@@ -9541,7 +9575,7 @@ fn host_owned_focusless_minimized_native_member_takes_no_window_target() {
         binding
             .view_targets
             .get(&OutputId("out-a".to_owned()))
-            .map(|home| home.workspace.0.clone()),
+            .map(|target| target.home.workspace.0.clone()),
         Some(away.clone()),
         "native obligation freezes the selected home: {binding:?}"
     );
@@ -9736,6 +9770,8 @@ fn host_owned_focusless_shared_needs_every_output_proof() {
                             count: None,
                         })
                         .collect(),
+                    current_known: true,
+                    detached_current: None,
                 }
             })
             .collect();
@@ -9808,10 +9844,11 @@ fn host_owned_focusless_first_latched_raw_wins_over_later_row() {
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
         disposition: FrameSetter::Accepted,
-        pre: Some(native_ref("n0")),
-        post: Some(native_ref("n0")),
-        baseline: Some(native_ref("n0")),
+        pre: Some(native_view_ref("n0")),
+        post: Some(native_view_ref("n0")),
+        baseline: Some(native_view_ref("n0")),
         attempt_ms: 7,
+        post_member: None,
     }];
     let stalled = accepted(&mut engine, &unlanded);
     assert!(
@@ -9830,10 +9867,11 @@ fn host_owned_focusless_first_latched_raw_wins_over_later_row() {
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
         disposition: FrameSetter::Accepted,
-        pre: Some(native_ref("n0")),
-        post: Some(native_ref("n1")),
-        baseline: Some(native_ref("n0")),
+        pre: Some(native_view_ref("n0")),
+        post: Some(native_view_ref("n1")),
+        baseline: Some(native_view_ref("n0")),
         attempt_ms: 9,
+        post_member: None,
     }];
     let still = accepted(&mut engine, &upgraded);
     assert!(
@@ -9920,6 +9958,8 @@ fn host_owned_focusless_shared_same_ids_complete_unproven() {
                             count: None,
                         })
                         .collect(),
+                    current_known: true,
+                    detached_current: None,
                 }
             })
             .collect();
@@ -10045,6 +10085,8 @@ fn host_owned_focusless_external_move_supersedes_without_event() {
                     count: None,
                 })
                 .collect(),
+            current_known: true,
+            detached_current: None,
         }];
         r
     };
@@ -13213,6 +13255,8 @@ fn d23_two_screen_report(
                     count: None,
                 },
             ],
+            current_known: true,
+            detached_current: None,
         },
         crate::world_report::NativeObservation {
             output: OutputId("out-b".to_owned()),
@@ -13222,6 +13266,8 @@ fn d23_two_screen_report(
                 native: "m0".to_owned(),
                 count: None,
             }],
+            current_known: true,
+            detached_current: None,
         },
     ];
     out
@@ -13402,6 +13448,8 @@ fn d23_three_native_report(
                 count: None,
             },
         ],
+        current_known: true,
+        detached_current: None,
     }];
     out
 }
@@ -13982,6 +14030,8 @@ fn disconnect_rehomed_members_mint_no_admission_focus() {
                     count: None,
                 })
                 .collect(),
+            current_known: true,
+            detached_current: None,
         }
     }
     let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
@@ -14089,6 +14139,8 @@ fn disconnect_control_genuine_newcomer_still_mints_admission_focus() {
                     count: None,
                 })
                 .collect(),
+            current_known: true,
+            detached_current: None,
         }
     }
     let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");

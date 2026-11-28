@@ -828,7 +828,7 @@ fn v4_reply_structural_regression() {
         ),
         (
             "transfers",
-            serde_json::json!({"op":"transfer-a","kind":"window","win":"win-a","out":"out-a","ws":"ws-a","follow":true,"held":false,"cmdSeq":"1","parent":null}),
+            serde_json::json!({"op":"transfer-a","kind":"window","win":"win-a","out":"out-a","ws":"ws-a","follow":true,"held":false,"cmdSeq":"1","parent":null,"detachedDestination":null}),
             "duplicate-transfer",
         ),
         (

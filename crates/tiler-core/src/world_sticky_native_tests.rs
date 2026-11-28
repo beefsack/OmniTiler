@@ -4144,6 +4144,7 @@ fn pending_window_transfer_holds_sticky_publication() {
             member_predecessors: Vec::new(),
             pending_members: std::collections::BTreeMap::new(),
             pending_view: None,
+            detached_destination: None,
         });
     let sent = accepted(
         &mut engine,

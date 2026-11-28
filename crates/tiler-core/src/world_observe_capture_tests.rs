@@ -26,7 +26,7 @@ use crate::world_report::{
     RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport,
     StateAttempt, StateProperty, SwitchOutcome, TransferKind, TransferTarget, ViewAttempt,
     VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
-    WORLD_CONTRACT_VERSION_V4, WarpRequest, WindowDesire, WindowFact, WorkspaceRef, WorldCommand,
+    WORLD_CONTRACT_VERSION_V4, WarpRequest, WindowDesire, WindowFact, ViewRef, WorkspaceRef, WorldCommand,
     WorldReplyV4, WorldReportV4,
 };
 use crate::world_selection::{
@@ -108,6 +108,8 @@ fn native_row(output: &str) -> NativeObservation {
             native: format!("native-{output}-0"),
             count: None,
         }],
+        current_known: true,
+        detached_current: None,
     }
 }
 
@@ -165,6 +167,7 @@ fn view_row(operation: &str) -> ViewAttempt {
         post: None,
         baseline: None,
         attempt_ms: 13,
+        post_member: None,
     }
 }
 
@@ -2803,7 +2806,10 @@ fn seed_selection_binding(
     let id = WindowId("win-a".to_owned());
     let mut view_targets = BTreeMap::new();
     for output in outputs {
-        view_targets.insert(OutputId((*output).to_owned()), home_key(output));
+        view_targets.insert(
+            OutputId((*output).to_owned()),
+            crate::world_selection::SelectionViewTarget::pending(home_key(output), None),
+        );
     }
     engine.world.settlement.retained_selection.insert(
         OutputId("out-a".to_owned()),
@@ -4297,11 +4303,18 @@ fn seed_join_4b2d(engine: &mut WorldEngine, window: &str, workspace: &str) {
         .workspace
         .views
         .insert("out-a".to_owned(), "ws-1".to_owned());
+    // Typed physical last view (native id), with the binding that maps it
+    // back to the logical workspace this helper seeds.
+    engine
+        .world
+        .settlement
+        .native_map
+        .insert(("out-a".to_owned(), "n1".to_owned()), "ws-1".to_owned());
     engine
         .world
         .settlement
         .last_views
-        .insert(OutputId("out-a".to_owned()), "ws-1".to_owned());
+        .insert(OutputId("out-a".to_owned()), native_ref_4b2d("n1"));
     let key = DomainKey {
         output: OutputId("out-a".to_owned()),
         workspace: WorkspaceId(workspace.to_owned()),
@@ -4401,6 +4414,8 @@ fn stage_views_pre_4b2d(
                 count: None,
             },
         ],
+        current_known: true,
+        detached_current: None,
     }];
     let mut v4report = report_v4_simple(
         seq,
@@ -4482,6 +4497,7 @@ fn view_4b2d(operation: &str, target_workspace: &str) -> ViewAttempt {
         post: None,
         baseline: None,
         attempt_ms: 7,
+        post_member: None,
     }
 }
 
@@ -4600,6 +4616,7 @@ fn seed_window_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
             member_predecessors: Vec::new(),
             pending_members: BTreeMap::new(),
             pending_view: None,
+            detached_destination: None,
         });
 }
 
@@ -4634,6 +4651,7 @@ fn seed_view_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
             member_predecessors: Vec::new(),
             pending_members: BTreeMap::new(),
             pending_view: None,
+            detached_destination: None,
         });
 }
 
@@ -4681,6 +4699,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
             member_predecessors: Vec::new(),
             pending_members: BTreeMap::new(),
             pending_view: None,
+            detached_destination: None,
         });
     engine
         .world
@@ -4712,6 +4731,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
             member_predecessors: Vec::new(),
             pending_members: BTreeMap::new(),
             pending_view: None,
+            detached_destination: None,
         });
 }
 
@@ -4756,6 +4776,7 @@ fn view_out_4b2d(operation: &str, output: &str, target_workspace: &str) -> ViewA
         post: None,
         baseline: None,
         attempt_ms: 7,
+        post_member: None,
     }
 }
 
@@ -4778,8 +4799,8 @@ fn settle_engine_4b2d_host() -> WorldEngine {
     .expect("generation")
 }
 
-fn native_ref_4b2d(native: &str) -> WorkspaceRef {
-    WorkspaceRef::Native {
+fn native_ref_4b2d(native: &str) -> ViewRef {
+    ViewRef::Native {
         output: OutputId("out-a".to_owned()),
         workspace: crate::ids::NativeWorkspaceId::parse(native).expect("native id"),
     }
@@ -4799,6 +4820,7 @@ fn view_native_refused_4b2d(
         post: Some(native_ref_4b2d(pre_native)),
         baseline: None,
         attempt_ms: 7,
+        post_member: None,
     }
 }
 
@@ -4816,7 +4838,7 @@ fn seed_native_views_4b2d(engine: &mut WorldEngine) {
         .world
         .settlement
         .last_views
-        .insert(OutputId("out-a".to_owned()), "ws-9".to_owned());
+        .insert(OutputId("out-a".to_owned()), native_ref_4b2d("n9"));
     engine
         .world
         .settlement
@@ -5563,7 +5585,7 @@ fn settle_view_stages_pending_across_stale_echo() {
         .world
         .settlement
         .last_views
-        .insert(OutputId("out-a".to_owned()), "ws-9".to_owned());
+        .insert(OutputId("out-a".to_owned()), native_ref_4b2d("n9"));
     stage_attempts_4b2d(
         &mut engine,
         1,
@@ -5614,7 +5636,7 @@ fn settle_view_stages_pending_across_stale_echo() {
             .world
             .settlement
             .last_views
-            .insert(OutputId("out-a".to_owned()), "ws-9".to_owned());
+            .insert(OutputId("out-a".to_owned()), native_ref_4b2d("n9"));
         stage_attempts_4b2d(
             &mut forged_engine,
             1,
@@ -5660,7 +5682,7 @@ fn settle_view_stages_pending_across_stale_echo() {
         .world
         .settlement
         .last_views
-        .insert(OutputId("out-a".to_owned()), "ws-9".to_owned());
+        .insert(OutputId("out-a".to_owned()), native_ref_4b2d("n9"));
     stage_attempts_4b2d(
         &mut engine,
         1,
@@ -7565,6 +7587,7 @@ fn touching_migration() -> RetainedTransfer {
         member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
+        detached_destination: None,
     }
 }
 
@@ -11115,6 +11138,8 @@ fn native_lane_5a(output: &str, order: Vec<&str>, current: &str) -> NativeObserv
                 count: None,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 
@@ -11530,16 +11555,17 @@ fn staged_selection_native_proof_success_refusal_and_latched_hold() {
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-1".to_owned(),
         disposition: FrameSetter::Refused,
-        pre: Some(WorkspaceRef::Native {
+        pre: Some(ViewRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
         }),
-        post: Some(WorkspaceRef::Native {
+        post: Some(ViewRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
         }),
         baseline: None,
         attempt_ms: 7,
+        post_member: None,
     };
     stage_native_5a(
         &mut engine,
@@ -11632,16 +11658,17 @@ fn selection_native_proof_fresh_fallback_scans_past_unrelated_first_view() {
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-1".to_owned(),
         disposition: FrameSetter::Refused,
-        pre: Some(WorkspaceRef::Native {
+        pre: Some(ViewRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
         }),
-        post: Some(WorkspaceRef::Native {
+        post: Some(ViewRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
         }),
         baseline: None,
         attempt_ms: 7,
+        post_member: None,
     };
     let unrelated = ViewAttempt {
         operation_id: "op-unrelated".to_owned(),
@@ -11705,6 +11732,8 @@ fn native_occ_5a(
                 count: *count,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 
@@ -12340,16 +12369,17 @@ fn staged_selection_feedback_first_latch_across_restage() {
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-1".to_owned(),
         disposition: FrameSetter::Refused,
-        pre: Some(WorkspaceRef::Native {
+        pre: Some(ViewRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
         }),
-        post: Some(WorkspaceRef::Native {
+        post: Some(ViewRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
         }),
         baseline: None,
         attempt_ms: 7,
+        post_member: None,
     };
     stage_native_5a(
         &mut engine,
@@ -12433,7 +12463,7 @@ fn staged_selection_feedback_first_latch_across_restage() {
     );
     let mut contradict = view_row("op-4");
     contradict.attempt_ms = 8;
-    contradict.post = Some(WorkspaceRef::Native {
+    contradict.post = Some(ViewRef::Native {
         output: OutputId("out-a".to_owned()),
         workspace: crate::ids::NativeWorkspaceId::parse("n1").expect("native id"),
     });
@@ -12483,7 +12513,7 @@ fn staged_selection_feedback_first_latch_across_restage() {
         .insert(("out-a".to_owned(), "n1".to_owned()), "ws-1".to_owned());
     let mut proof = view_row("op-4");
     proof.attempt_ms = 8;
-    proof.post = Some(WorkspaceRef::Native {
+    proof.post = Some(ViewRef::Native {
         output: OutputId("out-a".to_owned()),
         workspace: crate::ids::NativeWorkspaceId::parse("n1").expect("native id"),
     });
@@ -12575,8 +12605,8 @@ fn staged_native_last_views_follow_only_staged_echo() {
             .settlement
             .last_views
             .get(&OutputId("out-a".to_owned())),
-        Some(&"ws-1".to_owned()),
-        "staged n0 echo retains"
+        Some(&native_ref_4b2d("n0")),
+        "staged n0 echo retains as the typed native ref"
     );
     // Same staged native move through the same intake: the staged n1
     // echo supersedes the staged n0 echo.
@@ -12592,7 +12622,7 @@ fn staged_native_last_views_follow_only_staged_echo() {
             .settlement
             .last_views
             .get(&OutputId("out-a".to_owned())),
-        Some(&"ws-9".to_owned()),
+        Some(&native_ref_4b2d("n1")),
         "staged n1 echo supersedes staged n0 echo"
     );
 }
@@ -12636,6 +12666,8 @@ fn host_native(output: &str, order: &[&str], current: &str) -> NativeObservation
                 count: None,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 
@@ -13676,6 +13708,7 @@ fn settle_policy_hold_ignores_value_without_capability() {
         member_predecessors: Vec::new(),
         pending_members: BTreeMap::new(),
         pending_view: None,
+        detached_destination: None,
     });
     let issue = EventIssue {
         owner: OwnerId::parse("adapter-1").expect("owner"),
@@ -14249,6 +14282,7 @@ fn publish_v4_projects_explicit_refill_parent_for_unrelated_opaque_ids() {
             member_predecessors: Vec::new(),
             pending_members: BTreeMap::new(),
             pending_view: None,
+            detached_destination: None,
         });
 
     let reply = engine.tx(|tx| {

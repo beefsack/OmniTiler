@@ -994,6 +994,7 @@ pub(crate) fn fact(window: &str, frame: Option<Rect>) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 

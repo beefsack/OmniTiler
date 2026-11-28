@@ -115,6 +115,7 @@ fn fact_native(window: &str, output: &str, native: Option<&str>) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -247,6 +248,8 @@ fn native_obs_occ(
                 count: *count,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 
@@ -2180,8 +2183,8 @@ fn view_transfer_pending(
     })
 }
 
-fn native_ref(native: &str) -> tiler_core::world_report::WorkspaceRef {
-    tiler_core::world_report::WorkspaceRef::Native {
+fn native_ref(native: &str) -> tiler_core::world_report::ViewRef {
+    tiler_core::world_report::ViewRef::Native {
         output: OutputId("out-a".to_owned()),
         workspace: tiler_core::ids::NativeWorkspaceId::parse(native).expect("valid native"),
     }
@@ -2765,6 +2768,7 @@ fn idle_prune_fallback_prefers_known_echo_over_ring_head() {
         post: Some(native_ref("d4")),
         baseline: Some(native_ref("d1")),
         attempt_ms: 0,
+        post_member: None,
     }];
     let reply = accepted(&mut engine, &external);
     assert!(

@@ -70,6 +70,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -3054,6 +3055,8 @@ fn inactive_workspace_birth_anchors_remembered_without_focus_or_switch_and_never
                     count: None,
                 })
                 .collect(),
+            current_known: true,
+            detached_current: None,
         }
     }
 
@@ -3250,6 +3253,8 @@ fn same_report_inactive_and_active_new_births_keep_active_focus_eligible() {
                     count: None,
                 })
                 .collect(),
+            current_known: true,
+            detached_current: None,
         }
     }
 

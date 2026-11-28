@@ -2358,7 +2358,7 @@ fn held_view_row() -> HeldAttemptRow {
     HeldAttemptRow {
         lane: AttemptLaneV4::View,
         ordinal: 0,
-        identity: vec!["op-v".to_owned()],
+        identity: vec!["op-v".to_owned(), "out-a".to_owned()],
         has_native_ref: false,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
@@ -2472,7 +2472,7 @@ fn slice_7_1_invalid_screen_not_routing_authority() {
     // screen while the effective routing does not, so the frozen send
     // sources differ.
     let raw_routing = RawRouting::from_v4(&invalid);
-    let graded = graded_effective_v4(&invalid, &[], true, true).expect("grades invalid screen");
+    let graded = graded_effective_v4(&invalid, &[], true, true, false).expect("grades invalid screen");
     let effective_routing = RawRouting::from_v4(&graded);
     assert_ne!(
         engine.tx_ro(|tx| tx.freeze_command_sources(Some(&command), &raw_routing)),

@@ -84,6 +84,7 @@ fn fact(window: &str, output: &str, r: Rect) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -3742,6 +3743,8 @@ fn host_native_obs(
                 count: None,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 

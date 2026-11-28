@@ -90,6 +90,7 @@ fn host_fact(
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -134,6 +135,7 @@ fn native_free_fact(window: &str, output: &str, frame: Rect, fullscreen: bool) -
             visible: Some(true),
             suppression_owned: Some(false),
         },
+        detached_surface: None,
     }
 }
 
@@ -149,6 +151,8 @@ fn native_obs(output: &str, order: &[&str], current: Option<&str>) -> NativeObse
                 count: None,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 

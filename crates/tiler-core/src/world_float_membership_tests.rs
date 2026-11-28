@@ -69,6 +69,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -401,6 +402,7 @@ fn fact_at(window: &str, output: &str, rect: Rect) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -498,6 +500,8 @@ fn migrated_session(
                     native: format!("native-{}-0", output.trim_start_matches("out-")),
                     count: None,
                 }],
+                current_known: true,
+                detached_current: None,
             })
             .collect();
         report

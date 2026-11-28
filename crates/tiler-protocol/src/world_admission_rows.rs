@@ -8,7 +8,7 @@ use tiler_core::gesture::GestureIngress;
 use tiler_core::session::{DomainKey, DragHoverPrior};
 use tiler_core::world_report::{
     ArrivalBracket, ArrivalLocation, FocusFeedback, FrameWitness, IntentRecord,
-    PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput, SendSource,
+    PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput, SendSource, ViewRef,
     VisibilitySample, WorkspaceRef, WorldCommand,
 };
 
@@ -83,6 +83,25 @@ fn workspace_ref_len(reference: &WorkspaceRef) -> usize {
 
 pub(crate) fn workspace_ref_option_len(reference: &Option<WorkspaceRef>) -> usize {
     reference.as_ref().map_or(4, workspace_ref_len)
+}
+
+pub(crate) fn view_ref_len(reference: &ViewRef) -> usize {
+    match reference {
+        ViewRef::Native { output, workspace } => {
+            "{\"kind\":\"native\",\"out\":,\"ws\":}".len()
+                + json_string_len(&output.0)
+                + json_string_len(workspace.as_str())
+        }
+        ViewRef::Detached(detached) => {
+            "{\"kind\":\"detached\",\"out\":,\"surface\":}".len()
+                + json_string_len(&detached.output.0)
+                + json_string_len(detached.surface.as_str())
+        }
+    }
+}
+
+pub(crate) fn view_ref_option_len(reference: &Option<ViewRef>) -> usize {
+    reference.as_ref().map_or(4, view_ref_len)
 }
 
 fn visibility_sample_value_estimate(sample: &VisibilitySample) -> usize {

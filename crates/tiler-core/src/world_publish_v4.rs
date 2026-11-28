@@ -188,6 +188,37 @@ impl WorldTransaction<'_> {
                 row.visibility_authority = hold;
             }
         }
+        if self.connection.detached_fullscreen_view() {
+            for row in &mut windows {
+                if !self.world.staged.facts.get(&row.lifetime).is_some_and(|fact| {
+                    fact.detached_surface.is_some()
+                }) {
+                    continue;
+                }
+                use crate::world_report::{ScopeAuthority, StateProperty};
+                let fence = |authority: &mut ScopeAuthority| {
+                    if !matches!(authority, ScopeAuthority::Hold(_)) {
+                        *authority = ScopeAuthority::Hold(HoldReason::Unreadable);
+                    }
+                };
+                row.effective_frame = None;
+                row.frame_operation = None;
+                fence(&mut row.frame_authority);
+                fence(&mut row.membership_authority);
+                row.visibility = None;
+                fence(&mut row.visibility_authority);
+                for target in &mut row.state {
+                    // Restore an explicit R14 preimage through its ordinary
+                    // gates; never publish an automatic setter here.
+                    if target.command_seq.is_none()
+                        || target.automatic_clear
+                        || target.property == StateProperty::Above
+                    {
+                        fence(&mut target.authority);
+                    }
+                }
+            }
+        }
         self.prune_settled_outcomes();
         self.prune_drag_preview(&local_held);
         let drag_preview = self.world.gesture.drag_preview.clone();
@@ -240,6 +271,7 @@ impl WorldTransaction<'_> {
                     }),
                 command_seq: retained.command_seq,
                 parent: retained.migration_parent_op.clone(),
+                detached_destination: retained.detached_destination.clone(),
             })
             .collect();
         // Retained focus lane: post-convergence eligibility gates run

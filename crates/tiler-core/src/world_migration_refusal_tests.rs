@@ -10,7 +10,7 @@ use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     CommandRejectKind, CommandResult, FrameSetter, MemberAttempt, PresentationIngressV4,
     PresentationRowV4, ScopeAuthority, ScreenReport, TransferKind, ViewAttempt,
-    WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, ViewRef, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -24,8 +24,8 @@ fn logical_ref(output: &str, workspace: &str) -> WorkspaceRef {
     }
 }
 
-fn native_ref(output: &str, workspace: &str) -> WorkspaceRef {
-    WorkspaceRef::Native {
+fn native_ref(output: &str, workspace: &str) -> ViewRef {
+    ViewRef::Native {
         output: OutputId(output.to_owned()),
         workspace: crate::ids::NativeWorkspaceId::parse(workspace).expect("native workspace id"),
     }
@@ -34,9 +34,9 @@ fn native_ref(output: &str, workspace: &str) -> WorkspaceRef {
 fn logical_view_attempt(
     output: &str,
     target: &str,
-    pre: Option<WorkspaceRef>,
-    post: Option<WorkspaceRef>,
-    baseline: Option<WorkspaceRef>,
+    pre: Option<ViewRef>,
+    post: Option<ViewRef>,
+    baseline: Option<ViewRef>,
 ) -> ViewAttempt {
     ViewAttempt {
         operation_id: "op-11".to_owned(),
@@ -47,6 +47,7 @@ fn logical_view_attempt(
         post,
         baseline,
         attempt_ms: 5,
+        post_member: None,
     }
 }
 
@@ -102,6 +103,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -2298,6 +2300,7 @@ fn offset_two_output_migration_applies() {
                 visible: Some(true),
                 suppression_owned: None,
             },
+            detached_surface: None,
         }
     }
     let screens = vec![
@@ -2820,6 +2823,7 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
         post: Some(native_ref("out-a", &view_a)),
         baseline: Some(native_ref("out-a", &refill_ws)),
         attempt_ms: 7,
+        post_member: None,
     });
     match engine.handle_report(&invalid, &[]).0 {
         WorldOutcome::Rejected { message, .. } => {

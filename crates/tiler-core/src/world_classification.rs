@@ -277,7 +277,7 @@ pub(crate) fn classify_stage(
             || ctx.pending_intent.get(&fact.window).is_some_and(|data| {
                 data.sticky_prior.is_some() && !ctx.intent_conflicts.contains(&fact.window)
             });
-        let classified = classify_window(ClassifyInput {
+        let mut classified = classify_window(ClassifyInput {
             fact,
             unavailable,
             fixed_predicate: ctx.fixed_predicate,
@@ -290,6 +290,16 @@ pub(crate) fn classify_stage(
             semantic_sticky,
             own_process_id: ctx.own_process_id,
         });
+        // A grounded detached lifetime with no retained same-output home
+        // has only a window-local hold. It is not an ordinary newcomer and
+        // its physical surface cannot fence an unrelated Desktop domain.
+        if fact.detached_surface.as_ref().is_some_and(|surface| {
+            ctx.members
+                .get(&fact.window)
+                .is_none_or(|member| member.home.output != surface.output)
+        }) {
+            classified.hold = true;
+        }
         if classified.own_excluded {
             excluded.insert(fact.window.clone());
             continue;

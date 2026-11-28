@@ -561,6 +561,19 @@ impl WorldEngine {
                 Some(ProtocolKind::Malformed),
             );
         };
+        // Direct typed capability invariant (same rule as the wire gate):
+        // detached fullscreen view evidence requires host-owned per-output
+        // selectors. No unsupported declaration bypass; refusal mints no
+        // generation.
+        if !request.capabilities.detached_fullscreen_view_valid() {
+            return reply(
+                request.adapter.clone(),
+                request.request.clone(),
+                None,
+                false,
+                Some(ProtocolKind::Malformed),
+            );
+        }
         let next_number = if self.connection.adapter.is_none() {
             self.connection.connection_number
         } else {

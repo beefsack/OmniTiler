@@ -166,6 +166,39 @@ impl std::fmt::Debug for NativeWorkspaceId {
     }
 }
 
+/// Opaque detached native surface identity. Kept distinct from
+/// [`NativeWorkspaceId`] even though both use the same bounded opaque wire
+/// alphabet: the two namespaces never compare, even on equal spelling.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DetachedSurfaceId(String);
+
+impl DetachedSurfaceId {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        if !value.is_empty()
+            && value.len() <= MAX_NATIVE_WORKSPACE_ID_LEN
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        {
+            Some(Self(value.to_owned()))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for DetachedSurfaceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DetachedSurfaceId(redacted)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

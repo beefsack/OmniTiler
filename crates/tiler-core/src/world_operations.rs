@@ -594,6 +594,7 @@ impl WorldTransaction<'_> {
                         member_predecessors: Vec::new(),
                         pending_members: BTreeMap::new(),
                         pending_view: None,
+                        detached_destination: None,
                     });
                 }
                 self.note_command(command_seq);
@@ -634,6 +635,7 @@ impl WorldTransaction<'_> {
                     member_predecessors: Vec::new(),
                     pending_members: BTreeMap::new(),
                     pending_view: None,
+                    detached_destination: None,
                 });
                 self.note_command(command_seq);
                 CommandApplied::NoEffect
@@ -1776,6 +1778,7 @@ impl WorldTransaction<'_> {
                         member_predecessors: Vec::new(),
                         pending_members: BTreeMap::new(),
                         pending_view: None,
+                        detached_destination: None,
                     });
                     CommandApplied::NoEffect
                 }

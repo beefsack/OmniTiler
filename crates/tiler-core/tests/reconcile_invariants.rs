@@ -163,6 +163,7 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
                 visible: Some(true),
                 suppression_owned: None,
             },
+            detached_surface: None,
         }
     }
 

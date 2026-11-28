@@ -114,6 +114,7 @@ fn v4_reply_twins_cover_extreme_transfers_and_border() {
             held: true,
             command_seq: Some(u64::MAX),
             parent: None,
+            detached_destination: None,
         },
         TransferTargetV4 {
             operation_id: "op-extreme-b".to_owned(),
@@ -124,6 +125,7 @@ fn v4_reply_twins_cover_extreme_transfers_and_border() {
             held: false,
             command_seq: None,
             parent: Some(wide_id.clone()),
+            detached_destination: None,
         },
         TransferTargetV4 {
             operation_id: "op-extreme-c".to_owned(),
@@ -134,6 +136,7 @@ fn v4_reply_twins_cover_extreme_transfers_and_border() {
             held: false,
             command_seq: Some(1),
             parent: None,
+            detached_destination: None,
         },
     ];
     decoded.reply.presentation.border = BorderPresentationV4 {

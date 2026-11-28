@@ -19,7 +19,7 @@ use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     AttemptLaneV4, FrameAttempt, MemberAttempt, NativeCreationAttempt, NativeWorkspaceFact,
-    ViewAttempt, WorkspaceRef, WorldReportV4,
+    ViewAttempt, ViewRef, WorkspaceRef, WorldReportV4,
 };
 use tiler_core::world_report_v4_checks::report_digest_v4 as report_digest;
 use tiler_protocol::world_protocol::{
@@ -532,6 +532,28 @@ fn opt_workspace_ref_text(reference: &Option<WorkspaceRef>) -> String {
         .unwrap_or_else(|| "null".to_owned())
 }
 
+fn view_ref_text(reference: &ViewRef) -> String {
+    match reference {
+        ViewRef::Native { output, workspace } => format!(
+            "{{\"kind\":\"native\",\"out\":{},\"ws\":{}}}",
+            wire_str(&output.0),
+            wire_str(workspace.as_str())
+        ),
+        ViewRef::Detached(detached) => format!(
+            "{{\"kind\":\"detached\",\"out\":{},\"surface\":{}}}",
+            wire_str(&detached.output.0),
+            wire_str(detached.surface.as_str())
+        ),
+    }
+}
+
+fn opt_view_ref_text(reference: &Option<ViewRef>) -> String {
+    reference
+        .as_ref()
+        .map(view_ref_text)
+        .unwrap_or_else(|| "null".to_owned())
+}
+
 fn render_frame_attempt(attempt: &FrameAttempt) -> String {
     let dpi_before = attempt
         .dpi_before
@@ -596,15 +618,19 @@ fn render_member_attempt(attempt: &MemberAttempt) -> String {
 fn render_view_attempt(attempt: &ViewAttempt) -> String {
     format!(
         "{{\"kind\":\"view\",\"op\":{},\"out\":{},\"ws\":{},\"disposition\":{{\"kind\":\"called\",\"setter\":\"{}\"}},\
-         \"pre\":{},\"post\":{},\"base\":{},\"attemptMs\":\"{}\"}}",
+         \"pre\":{},\"post\":{},\"base\":{},\"attemptMs\":\"{}\",\"postMember\":{}}}",
         wire_str(&attempt.operation_id),
         wire_str(&attempt.target_output.0),
         wire_str(&attempt.target_workspace),
         attempt.disposition.as_str(),
-        opt_workspace_ref_text(&attempt.pre),
-        opt_workspace_ref_text(&attempt.post),
-        opt_workspace_ref_text(&attempt.baseline),
+        opt_view_ref_text(&attempt.pre),
+        opt_view_ref_text(&attempt.post),
+        opt_view_ref_text(&attempt.baseline),
         attempt.attempt_ms,
+        attempt
+            .post_member
+            .as_ref()
+            .map_or_else(|| "null".to_owned(), |member| wire_str(&member.0)),
     )
 }
 
@@ -1065,9 +1091,10 @@ fn malformed_optionals_reject_identically_on_both_apis() {
         "op": "op-9", "out": "out", "ws": "ws-1",
         "disposition": {"kind": "called", "setter": "threw"},
         "pre": "", "post": "", "base": "", "attemptMs": "1",
+        "postMember": null,
     }]);
     let view_wire = bad_view.to_string();
-    assert_same_hold(&view_wire, AttemptLaneV4::View, &["op-9"]);
+    assert_same_hold(&view_wire, AttemptLaneV4::View, &["op-9", "out"]);
     let held = decode_request(&view_wire).expect("held decodes");
     assert!(
         held.view_attempts.is_empty(),
@@ -1183,7 +1210,7 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
         ),
     ] {
         let mut value = base_value();
-        value["native"] = serde_json::json!([{"out": "out-a", "order": ["d1"], "current": "d1", "occupancy": [{"native": "d1", "count": null}]}]);
+        value["native"] = serde_json::json!([{"out": "out-a", "order": ["d1"], "current": "d1", "occupancy": [{"native": "d1", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
         let windows = value["windows"].as_array_mut().expect("windows");
         // Minimal held-free v4-shaped row carrying the spelling under test.
         let mut row: serde_json::Value = serde_json::from_str(
@@ -1199,7 +1226,7 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
               \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
               \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
               \"suppressionAvailable\":null,\
-              \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}",
+              \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}",
         )
         .expect("row");
         row["nativeWs"] = native;
@@ -1426,4 +1453,201 @@ fn pointer_activity_and_warp_spent_are_required_nullable() {
     let decoded = decode_request(&nulled.to_string()).expect("required nullable accepts null");
     assert_eq!(decoded.pointer_activity, None);
     assert_eq!(decoded.warp_spent, None);
+}
+
+fn detached_ref() -> serde_json::Value {
+    serde_json::json!({"kind": "detached", "out": "out-a", "surface": "native-a"})
+}
+
+fn detached_host(enabled: bool) -> HostCapabilities {
+    let mut host = tiler_protocol::connection_protocol::decode_handshake_request(
+        &fixture_text("handshake-native"),
+    )
+    .unwrap()
+    .capabilities;
+    host.detached_fullscreen_view = enabled;
+    host
+}
+
+#[test]
+fn detached_capability_required_and_only_per_output_host_owned() {
+    use tiler_protocol::connection_protocol::decode_handshake_request;
+
+    let mut value = fixture_value("handshake-native");
+    value["capabilities"]["detachedFullscreenView"] = true.into();
+    assert!(decode_handshake_request(&value.to_string()).is_ok());
+    let mut non_host = value.clone();
+    non_host["capabilities"]["hostOwned"] = false.into();
+    assert!(decode_handshake_request(&non_host.to_string()).is_err());
+    value["capabilities"]["nativeSelectorScope"] = "all-outputs".into();
+    assert!(decode_handshake_request(&value.to_string()).is_err());
+    value["capabilities"]
+        .as_object_mut()
+        .unwrap()
+        .remove("detachedFullscreenView");
+    assert!(decode_handshake_request(&value.to_string()).is_err());
+}
+
+#[test]
+fn detached_current_and_member_round_trip_without_reinterpreting_bare_ids() {
+    use serde_json::{Value, json};
+    use tiler_protocol::world_protocol::decode_report_v4_for_host;
+
+    let host = detached_host(true);
+    let base = fixture_value("report-native");
+    for (known, current, detached) in [
+        (false, Value::Null, Value::Null),
+        (true, Value::Null, Value::Null),
+        (true, json!("native-a"), Value::Null),
+        (true, Value::Null, detached_ref()),
+    ] {
+        let mut value = base.clone();
+        let has_detached = !detached.is_null();
+        value["native"][0]["currentKnown"] = known.into();
+        value["native"][0]["current"] = current.clone();
+        value["native"][0]["detachedCurrent"] = detached.clone();
+        value["windows"][0]["fullscreen"] = has_detached.into();
+        value["windows"][0]["nativeWs"] = if has_detached { Value::Null } else { json!("native-a") };
+        value["windows"][0]["detachedSurface"] = detached;
+        let decoded = decode_report_v4_for_host(&value.to_string(), &host).unwrap();
+        assert!(decoded.report.held_windows.is_empty());
+        assert!(decoded.report.held_native.is_empty());
+        let native = &decoded.report.native[0];
+        assert_eq!(native.current_known, known);
+        assert_eq!(native.current_native.as_deref(), current.as_str());
+        assert_eq!(native.detached_current.is_some(), has_detached);
+        assert_eq!(native.native_order, ["native-a"]);
+        assert_eq!(decoded.report.windows[0].detached_surface.is_some(), has_detached);
+        let encoded = encode_report_v4(&decoded).unwrap();
+        assert_eq!(
+            decode_report_v4_for_host(&encoded, &host).unwrap().report,
+            decoded.report
+        );
+    }
+}
+
+#[test]
+fn identifiable_detached_conflicts_hold_but_structural_positions_reject() {
+    use serde_json::{Value, json};
+    use tiler_protocol::world_protocol::decode_report_v4_for_host;
+
+    let host = detached_host(true);
+    let mut conflicted = fixture_value("report-native");
+    conflicted["native"][0]["detachedCurrent"] = detached_ref();
+    conflicted["windows"][0]["fullscreen"] = true.into();
+    conflicted["windows"][0]["detachedSurface"] = detached_ref();
+    let decode = |value: &Value| decode_report_v4_for_host(&value.to_string(), &host);
+    let held = decode(&conflicted).unwrap().report;
+    assert_eq!(held.held_native.len(), 1);
+    assert_eq!(held.held_windows.len(), 1);
+    assert!(held.native.is_empty());
+    assert!(held.windows.is_empty());
+    for bad in [
+        json!({"kind": "detached", "out": "out-b", "surface": "native-a"}),
+        json!("native-a"),
+        detached_ref(),
+    ] {
+        let mut value = conflicted.clone();
+        value["windows"][0]["nativeWs"] = Value::Null;
+        value["windows"][0]["fullscreen"] = false.into();
+        value["windows"][0]["detachedSurface"] = bad;
+        assert_eq!(decode(&value).unwrap().report.held_windows.len(), 1);
+    }
+    let mut cap_false = conflicted.clone();
+    cap_false["native"][0]["current"] = Value::Null;
+    cap_false["windows"][0]["nativeWs"] = Value::Null;
+    let held = decode_report_v4_for_host(&cap_false.to_string(), &detached_host(false))
+        .unwrap()
+        .report;
+    assert_eq!(held.held_native.len(), 1);
+    assert_eq!(held.held_windows.len(), 1);
+    for pointer in ["/native/0/order/0", "/native/0/occupancy/0/native"] {
+        let mut value = conflicted.clone();
+        *value.pointer_mut(pointer).unwrap() = detached_ref();
+        assert!(decode(&value).is_err(), "{pointer} is structural");
+    }
+    let mut missing = fixture_value("report-native");
+    missing["windows"][0].as_object_mut().unwrap().remove("detachedSurface");
+    assert_eq!(decode(&missing).unwrap().report.held_windows.len(), 1);
+    let mut value = fixture_value("report-native");
+    value["native"][0]["current"] = detached_ref();
+    value["windows"][0]["nativeWs"] = detached_ref();
+    let held = decode(&value).unwrap().report;
+    assert_eq!(held.held_native.len(), 1);
+    assert_eq!(held.held_windows.len(), 1);
+}
+
+#[test]
+fn detached_attempts_and_view_transfers_are_output_keyed() {
+    use serde_json::{Value, json};
+    use tiler_protocol::world_protocol::{decode_reply_v4_for_host, decode_report_v4_for_host};
+
+    let host = detached_host(true);
+    let mut report = fixture_value("report-native");
+    let attempt = json!({
+        "kind": "view", "op": "test-op", "out": "out-a", "ws": "ws-a",
+        "disposition": {"kind": "called", "setter": "accepted"},
+        "pre": null, "post": detached_ref(), "base": null, "attemptMs": "0",
+        "postMember": "win-a"
+    });
+    let mut sibling = attempt.clone();
+    sibling["out"] = "out-b".into();
+    sibling["post"]["out"] = "out-b".into();
+    report["propertyAttempts"] = json!([attempt.clone(), sibling]);
+    let decode = |value: &Value| decode_report_v4_for_host(&value.to_string(), &host);
+    assert_eq!(decode(&report).unwrap().report.view_attempts.len(), 2);
+    report["propertyAttempts"][1]["out"] = "out-a".into();
+    assert_eq!(decode(&report).unwrap_err().message, "duplicate-view-attempt");
+    report["propertyAttempts"][1].as_object_mut().unwrap().remove("out");
+    assert!(decode(&report).is_err(), "a view row without the output has no stable identity");
+
+    let member = json!({
+        "kind": "member", "op": "member-op", "win": "win-a", "out": "out-a",
+        "ws": "ws-a", "disposition": {"kind": "called", "setter": "accepted"},
+        "pre": null, "post": detached_ref(), "attemptMs": "0"
+    });
+    report["propertyAttempts"] = json!([member]);
+    let held = decode(&report).unwrap().report;
+    assert!(held.member_attempts.is_empty());
+    assert_eq!(held.held_attempts[0].lane, AttemptLaneV4::Member);
+    report["propertyAttempts"] = json!([attempt]);
+    report["propertyAttempts"][0]["post"] =
+        json!({"kind": "native", "out": "out-a", "ws": "native-a"});
+    assert_eq!(decode(&report).unwrap().report.held_attempts.len(), 1);
+    report["focusChanges"] = json!({
+        "after": null, "events": [{"kind": "view", "out": "out-a", "native": detached_ref()}]
+    });
+    assert!(decode(&report).is_ok());
+    assert_eq!(
+        decode_report_v4_for_host(&report.to_string(), &detached_host(false))
+            .unwrap_err()
+            .message,
+        "detached-capability-false"
+    );
+
+    let mut reply = fixture_value("reply-transfer-view");
+    reply["transfers"][0]["follow"] = false.into();
+    reply["transfers"][0]["detachedDestination"] =
+        json!({"surface": detached_ref(), "member": "win-a"});
+    let mut sibling = reply["transfers"][0].clone();
+    sibling["out"] = "out-b".into();
+    sibling["detachedDestination"] = Value::Null;
+    reply["transfers"].as_array_mut().unwrap().push(sibling);
+    assert!(decode_reply_v4_for_host(&reply.to_string(), &host).is_ok());
+    assert_eq!(
+        decode_reply_v4_for_host(&reply.to_string(), &detached_host(false))
+            .unwrap_err()
+            .message,
+        "detached-capability-false"
+    );
+    reply["transfers"][1]["out"] = "out-a".into();
+    assert_eq!(decode_reply_v4(&reply.to_string()).unwrap_err().message, "duplicate-transfer");
+    reply["transfers"].as_array_mut().unwrap().pop();
+    reply["transfers"][0]["follow"] = true.into();
+    assert_eq!(
+        decode_reply_v4(&reply.to_string()).unwrap_err().message,
+        "detached-destination-invalid"
+    );
+    reply["transfers"][0].as_object_mut().unwrap().remove("detachedDestination");
+    assert!(decode_reply_v4(&reply.to_string()).is_err());
 }

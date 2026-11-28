@@ -2834,7 +2834,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":false,\"fullscreen\":false,\"nativeSticky\":false,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         )
     }
 
@@ -3294,7 +3294,7 @@ mod tests {
                 \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
                 \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\"processId\":\"pid-foreign-1\",\
                 \"class\":\"Synthetic\",\"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\"fullscreenOwner\":null,\
-                \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}}}}"
+                \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}},\"detachedSurface\":null}}"
             )
         };
         format!(

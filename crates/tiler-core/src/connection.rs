@@ -101,6 +101,9 @@ pub struct HostCapabilities {
     pub above: bool,
     pub warp: bool,
     pub tiled_float_transfer: bool,
+    /// Detached fullscreen view grants/evidence are meaningful only on a
+    /// host-owned per-output selector (`true` requires both).
+    pub detached_fullscreen_view: bool,
     pub unavailable_facts: Vec<FactName>,
 }
 
@@ -119,12 +122,22 @@ impl Default for HostCapabilities {
             above: false,
             warp: false,
             tiled_float_transfer: false,
+            detached_fullscreen_view: false,
             unavailable_facts: Vec::new(),
         }
     }
 }
 
 impl HostCapabilities {
+    /// Closed detached-view capability invariant: an enabled detached
+    /// fullscreen view requires a host-owned per-output selector. Shared by
+    /// the typed engine handshake and the wire handshake codec.
+    #[must_use]
+    pub fn detached_fullscreen_view_valid(&self) -> bool {
+        !self.detached_fullscreen_view
+            || (self.host_owned && self.native_selector_scope == NativeSelectorScope::PerOutput)
+    }
+
     /// Test/support helper: default capabilities for a connection with no
     /// native identity producers. Declares `executable` and `processId`
     /// unavailable so a null [`ApplicationIdentity`] stays support-consistent

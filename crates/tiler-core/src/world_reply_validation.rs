@@ -206,12 +206,47 @@ fn validate_window_desire(
     Ok(())
 }
 
-fn validate_transfer(row: &TransferTargetV4) -> Result<()> {
+/// Incremental reply transfer identities. View rows share an operation only
+/// across distinct outputs; every other kind reserves the entire operation.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct TransferIdentities<'a>(BTreeSet<(&'a str, Option<&'a str>)>);
+
+impl<'a> TransferIdentities<'a> {
+    /// Returns false when the identity conflicts with a prior row.
+    pub fn insert(&mut self, op: &'a str, view_output: Option<&'a str>) -> bool {
+        let conflicts = if view_output.is_some() {
+            self.0.contains(&(op, None))
+        } else {
+            self.0
+                .range((op, None)..)
+                .next()
+                .is_some_and(|key| key.0 == op)
+        };
+        !conflicts && self.0.insert((op, view_output))
+    }
+}
+
+fn validate_transfer(row: &TransferTargetV4, host: Option<&HostCapabilities>) -> Result<()> {
     check_id(&row.operation_id)?;
     check_id(&row.target_output.0)?;
     check_id(&row.target_workspace)?;
     if let Some(parent) = row.parent.as_deref() {
         check_id(parent)?;
+    }
+    if let Some(destination) = &row.detached_destination {
+        if row.kind != TransferKind::View
+            || row.follow
+            || row.parent.is_some()
+            || row.command_seq.is_none()
+            || destination.surface.output != row.target_output
+        {
+            return Err(ReplyValidationError::snapshot("detached-destination-invalid"));
+        }
+        check_id(&destination.member.0)?;
+        if host.is_some_and(|host| !host.detached_fullscreen_view) {
+            return Err(ReplyValidationError::snapshot("detached-capability-false"));
+        }
     }
     match &row.kind {
         TransferKind::Window(window) => check_id(&window.0),
@@ -517,12 +552,14 @@ pub fn validate_reply_v4(reply: &WorldReplyV4, host: Option<&HostCapabilities>) 
         }
         validate_window_desire(window, host, true)?;
     }
-    let mut seen_transfers = BTreeSet::new();
+    let mut seen_transfers = TransferIdentities::default();
     for transfer in &reply.transfers {
-        if !seen_transfers.insert(transfer.operation_id.as_str()) {
+        let view_output =
+            (transfer.kind == TransferKind::View).then_some(transfer.target_output.0.as_str());
+        if !seen_transfers.insert(&transfer.operation_id, view_output) {
             return Err(ReplyValidationError::snapshot("duplicate-transfer"));
         }
-        validate_transfer(transfer)?;
+        validate_transfer(transfer, host)?;
     }
     let mut seen_operations = BTreeSet::new();
     for event in &reply.operation_settled {

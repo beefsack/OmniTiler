@@ -1533,6 +1533,7 @@ impl WorldTransaction<'_> {
                     member_predecessors: Vec::new(),
                     pending_members: BTreeMap::new(),
                     pending_view: None,
+                    detached_destination: None,
                 };
                 if let TransferKind::Window(window) = &transfer.target.kind {
                     let target = DomainKey {

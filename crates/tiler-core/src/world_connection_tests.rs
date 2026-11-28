@@ -101,6 +101,7 @@ fn handshake(adapter: &str) -> HandshakeRequest {
             warp: false,
             tiled_float_transfer: true,
             unavailable_facts: Vec::new(),
+            detached_fullscreen_view: false,
         },
     }
 }
@@ -768,6 +769,7 @@ fn identity_fact(
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 

@@ -910,7 +910,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":false,\"fullscreen\":false,\"nativeSticky\":false,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         )
     }
 
@@ -1757,7 +1757,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         let hs_reply: serde_json::Value =
             serde_json::from_str(&service.discover(&hs).expect("handshake")).expect("json");
@@ -1785,7 +1785,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
         let win_2 = "{\"win\":\"win-2\",\"out\":\"DP-1\",\"rect\":[480,0,480,1040],\
             \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\"minimized\":false,\
             \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
@@ -1796,7 +1796,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
 
         let make_inner = |gesture: bool, native_gesture: &str, cursor: &str, witness: &str| {
             format!(
@@ -2140,7 +2140,7 @@ mod tests {
               \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
               \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
               \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}}}"
         );
         let hs_reply = parse(&service.discover(&hs).expect("handshake"));
         let generation = hs_reply["gen"].as_str().expect("gen").to_owned();
@@ -2168,7 +2168,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
         let plain_inner = format!(
             "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -2318,7 +2318,7 @@ mod tests {
                       \"capabilities\":{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\
                       \"birthClear\":false,\"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
                       \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}",
+                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}",
                 )
                 .expect("handshake"),
         );
@@ -2392,7 +2392,7 @@ mod tests {
                       \"capabilities\":{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\
                       \"birthClear\":false,\"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
                       \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}",
+                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}",
                 )
                 .expect("handshake"),
         );
@@ -2466,7 +2466,7 @@ mod tests {
                       \"capabilities\":{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\
                       \"birthClear\":false,\"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
                       \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}",
+                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\"detachedFullscreenView\":false}}",
                 )
                 .expect("handshake"),
         );

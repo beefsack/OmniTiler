@@ -438,6 +438,7 @@ impl WorldEngine {
             unavailable,
             native_sticky_supported,
             maximize_supported,
+            self.connection.detached_fullscreen_view(),
         );
         // The graded copy supplies validation and initial readiness. Digest,
         // equality, size, caching, and the accepted run keep the original
@@ -509,6 +510,25 @@ impl WorldEngine {
         }
         if let Some(reason) = validate_report_v4_reason(effective) {
             return Ok(not_admitted_transition(KIND_SNAPSHOT, reason));
+        }
+        if !self.connection.detached_fullscreen_view()
+            && report
+                .focus_changes
+                .as_ref()
+                .and_then(|changes| changes.events.as_ref())
+                .is_some_and(|events| {
+                    events.iter().any(|event| {
+                        matches!(
+                            event,
+                            crate::world_report::FocusChange::View {
+                                native: crate::world_report::ViewRef::Detached(_),
+                                ..
+                            }
+                        )
+                    })
+                })
+        {
+            return Ok(not_admitted_transition(KIND_SNAPSHOT, "detached-capability-false"));
         }
         let digest = report_digest_v4(report);
         if let Some(replay) = &self.replay {

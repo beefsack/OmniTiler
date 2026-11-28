@@ -104,7 +104,7 @@ fn focus_changes_required_and_canonical_with_exact_size_delta() {
             concat!(
                 r#"{"after":"18446744073709551615","events":["#,
                 r#"{"kind":"foreground","win":"win-1"},"#,
-                r#"{"kind":"view","out":"out-1","native":"desktop_1.2"},"#,
+                r#"{"kind":"view","out":"out-1","native":{"kind":"native","out":"out-1","ws":"desktop_1.2"}},"#,
                 r#"{"kind":"foreground","win":""},"#,
                 r#"{"kind":"foreground","win":null},"#,
                 r#"{"kind":"foreground","win":"win-1"}]}"#,
@@ -116,10 +116,10 @@ fn focus_changes_required_and_canonical_with_exact_size_delta() {
                     foreground.clone(),
                     FocusChange::View {
                         out: OutputId("out-1".into()),
-                        native: "desktop_1.2".into(),
-                    },
-                    FocusChange::Foreground {
-                        win: Some(WindowId(String::new())),
+                        native: tiler_core::world_report::ViewRef::Native {
+                            output: OutputId("out-1".into()),
+                            workspace: tiler_core::ids::NativeWorkspaceId::parse("desktop_1.2").unwrap(),
+                        },
                     },
                     FocusChange::Foreground { win: None },
                     foreground,
@@ -189,12 +189,12 @@ fn focus_changes_rejects_noncanonical_counters_ids_and_open_objects() {
         json!({"kind": "foreground", "win": 1}),
         json!({"kind": "foreground", "win": "bad id"}),
         json!({"kind": "foreground", "win": "w".repeat(129)}),
-        json!({"kind": "view", "native": "desk"}),
+        json!({"kind": "view", "native": {"kind": "native", "out": "out-1", "ws": "desk"}}),
         json!({"kind": "view", "out": "out-1"}),
-        json!({"kind": "view", "out": "out-1", "native": "desk", "win": null}),
-        json!({"kind": "view", "out": "", "native": "desk"}),
-        json!({"kind": "view", "out": "out-1", "native": ""}),
-        json!({"kind": "view", "out": "out-1", "native": "desk/1"}),
+        json!({"kind": "view", "out": "out-1", "native": {"kind": "native", "out": "out-1", "ws": "desk"}, "win": null}),
+        json!({"kind": "view", "out": "", "native": {"kind": "native", "out": "out-1", "ws": "desk"}}),
+        json!({"kind": "view", "out": "out-1", "native": {"kind": "native", "out": "out-1", "ws": ""}}),
+        json!({"kind": "view", "out": "out-1", "native": {"kind": "native", "out": "out-1", "ws": "desk/1"}}),
         json!({"kind": "view", "out": "out-1", "native": null}),
         json!({"kind": "other"}),
     ] {
@@ -218,7 +218,7 @@ fn fact_json(id: &str, x: i32) -> String {
          \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
          \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
          \"suppressionAvailable\":null,\
-         \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
+         \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\"detachedSurface\":null}}"
     )
 }
 
@@ -242,6 +242,7 @@ fn v4_window(win: &str, out: &str, rect: [i32; 4]) -> serde_json::Value {
         "layer": 0, "fullscreenOwner": null, "fullscreenExitable": null,
         "suppressionAvailable": null,
         "visibility": {"visible": true, "suppressionOwned": null},
+        "detachedSurface": null,
     })
 }
 
@@ -410,7 +411,7 @@ fn unknown_fields_and_values_refuse() {
 #[test]
 fn native_observations_decode_without_report_owned_capability() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
     let report = decode_request(&value.to_string())
         .expect("fact shape decodes independently of capabilities");
     assert_eq!(report.native.len(), 1);
@@ -1242,19 +1243,20 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
             target_output: OutputId("out-a".into()),
             target_workspace: "ws-a".into(),
             disposition: FrameSetter::Accepted,
-            pre: Some(WorkspaceRef::Native {
+            pre: Some(tiler_core::world_report::ViewRef::Native {
                 output: OutputId("out-a".into()),
                 workspace: NativeWorkspaceId::parse("native-a").unwrap(),
             }),
-            post: Some(WorkspaceRef::Native {
+            post: Some(tiler_core::world_report::ViewRef::Native {
                 output: OutputId("out-a".into()),
                 workspace: NativeWorkspaceId::parse("native-a").unwrap(),
             }),
-            baseline: Some(WorkspaceRef::Native {
+            baseline: Some(tiler_core::world_report::ViewRef::Native {
                 output: OutputId("out-a".into()),
                 workspace: NativeWorkspaceId::parse("native-a").unwrap(),
             }),
             attempt_ms: 20,
+            post_member: None,
         }
     );
 
@@ -1313,7 +1315,7 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
         "op":"view-a", "out":"out-a", "ws":"ws-a",
         "disposition":{"kind":"called","setter":"accepted"},
         "pre":{"kind":"logical","out":"out-a","ws":"ws-a"},
-        "post":null, "base":null, "attemptMs":"20"
+        "post":null, "base":null, "attemptMs":"20", "postMember":null
     });
     assert_eq!(
         decode_view_attempt(&logical_view).unwrap_err().kind,
@@ -1323,7 +1325,7 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
         "kind":"view",
         "op":"view-a", "out":"out-a", "ws":"ws-a",
         "disposition":{"kind":"called","setter":"accepted"},
-        "pre":null, "post":null, "base":null, "nativePost":"native-a", "attemptMs":"20"
+        "pre":null, "post":null, "base":null, "nativePost":"native-a", "attemptMs":"20", "postMember":null
     });
     assert_eq!(
         decode_view_attempt(&parallel).unwrap_err().kind,
@@ -1412,7 +1414,7 @@ fn member_already_at_target_keeps_strict_shape_and_member_only_disposition() {
     }
     let view = serde_json::json!({
         "op":"view-a","out":"out","ws":"target","disposition":{"kind":"already-at-target"},
-        "pre":null,"post":null,"base":null,"attemptMs":"23"
+        "pre":null,"post":null,"base":null,"attemptMs":"23","postMember":null
     });
     assert!(decode_view_attempt(&view).is_err());
 
@@ -1452,7 +1454,7 @@ fn retired_clear_attempts_refuse_and_directional_clear_uses_maximized_false_stat
           \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+          \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"detachedSurface\":null}";
     let mut value: serde_json::Value = serde_json::from_str(&request_json(
         "adapter-1",
         "gen-1",
@@ -1567,6 +1569,7 @@ fn empty_view_attempt_refs_hold_identifiable_row() {
         "op": "op-9", "out": "out-a", "ws": "ws-2",
         "disposition": {"kind": "called", "setter": "threw"},
         "pre": "", "post": "", "base": "", "attemptMs": "1",
+        "postMember": null,
     }]);
     let decoded = decode_report_v4(&value.to_string()).expect("empty refs hold");
     let report = &decoded.report;
@@ -1575,7 +1578,7 @@ fn empty_view_attempt_refs_hold_identifiable_row() {
     let held = &report.held_attempts[0];
     assert_eq!(held.lane, tiler_core::world_report::AttemptLaneV4::View);
     assert_eq!(held.ordinal, 0);
-    assert_eq!(held.identity, vec!["op-9".to_owned()]);
+    assert_eq!(held.identity, vec!["op-9".to_owned(), "out-a".to_owned()]);
     let fields = decoded
         .residual
         .as_deref()
@@ -1707,11 +1710,11 @@ fn native_current_null_strict_and_creation_attempts_decode() {
     // hold, 767 native row diagnostic): the valid lane stays empty with
     // the carried distinction retained in the held fields.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": null, "occupancy": [{"native": "ws", "count": null}]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": null, "occupancy": [{"native": "ws", "count": null}], "currentKnown": false, "detachedCurrent": null}]);
     let report = decode_request(&value.to_string()).expect("null current decodes");
     assert_eq!(report.native[0].current_native, None);
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "", "occupancy": [{"native": "ws", "count": null}]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "", "occupancy": [{"native": "ws", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
     let decoded = decode_report_v4(&value.to_string()).expect("empty current holds");
     let report = &decoded.report;
     assert!(report.native.is_empty(), "no valid native row");
@@ -1727,7 +1730,7 @@ fn native_current_null_strict_and_creation_attempts_decode() {
         "empty spelling retained"
     );
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "occupancy": [{"native": "ws", "count": null}]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "occupancy": [{"native": "ws", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
     let decoded = decode_report_v4(&value.to_string()).expect("missing current holds");
     let report = &decoded.report;
     assert!(report.native.is_empty(), "no valid native row");
@@ -1746,7 +1749,7 @@ fn native_current_null_strict_and_creation_attempts_decode() {
     let report = decode_request(&one_window_request()).expect("decodes");
     assert!(report.creation_attempts.is_empty());
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
     value["creationAttempts"] = serde_json::json!([{
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws", "ws-new"], "attemptMs": "5",
@@ -2039,7 +2042,7 @@ fn native_ws_field_decodes_and_gates() {
     let with_native = |native: serde_json::Value| {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
-        value["native"] = serde_json::json!([{"out": "out", "order": ["d1"], "current": "d1", "occupancy": [{"native": "d1", "count": null}]}]);
+        value["native"] = serde_json::json!([{"out": "out", "order": ["d1"], "current": "d1", "occupancy": [{"native": "d1", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
         let mut window = v4_window("win-a", "out", [0, 0, 200, 200]);
         window["nativeWs"] = native;
         value["windows"] = serde_json::json!([window]);
@@ -2124,7 +2127,7 @@ fn native_ws_estimate_bounds_actual_wire() {
     // The structural estimate accounts for the nativeWs field: it bounds
     // a wire message carrying a realistic Space-style id.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["9f1c-0005-space"], "current": "9f1c-0005-space", "occupancy": [{"native": "9f1c-0005-space", "count": null}]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["9f1c-0005-space"], "current": "9f1c-0005-space", "occupancy": [{"native": "9f1c-0005-space", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
     let mut window = v4_window("win-a", "out", [0, 0, 200, 200]);
     window["nativeWs"] = serde_json::Value::String("9f1c-0005-space".to_owned());
     value["windows"] = serde_json::json!([window]);
@@ -2152,7 +2155,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
     let with_created = |created: serde_json::Value| {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
-        value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
+        value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
         let mut attempt = serde_json::json!({
             "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
             "before": ["ws"], "after": ["ws"], "attemptMs": "5",
@@ -2185,7 +2188,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
     }
     // A missing key also backfills: predates-the-field adapters stay valid.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
     value["creationAttempts"] = serde_json::json!([{
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws"], "attemptMs": "5",
@@ -2215,7 +2218,7 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
     // Unknown receipt fields hold the identifiable row with the carried
     // key retained instead of refusing the envelope.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}]}]);
+    value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "ws", "occupancy": [{"native": "ws", "count": null}], "currentKnown": true, "detachedCurrent": null}]);
     value["creationAttempts"] = serde_json::json!([{
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws"], "createdId": "ws-new", "attemptMs": "5",
@@ -4784,7 +4787,9 @@ fn v4_held_rows_project_typed_facts_with_wire_parity() {
         "occupancy": [
             {"native": "ws-native-1", "count": 1},
             {"native": "ws-native-2", "count": 0}
-        ]
+        ],
+        "currentKnown": true,
+        "detachedCurrent": null,
     }]);
     raw["propertyAttempts"] = serde_json::json!([{
         "kind": "member",
@@ -4825,7 +4830,9 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
         "out": "out",
         "order": order,
         "current": "",
-        "occupancy": occupancy
+        "occupancy": occupancy,
+        "currentKnown": true,
+        "detachedCurrent": null,
     }]);
     let over_decoded = decode_report_v4(&over_cap.to_string()).expect("held native decodes");
     assert_eq!(
@@ -4867,6 +4874,8 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
         "order": ["ws-1"],
         "current": "",
         "occupancy": [{"native": "ws-1", "count": 1}],
+        "currentKnown": true,
+        "detachedCurrent": null,
         "extra": "v1"
     }]);
     first_val["propertyAttempts"] = serde_json::json!([{

@@ -69,6 +69,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -457,6 +458,8 @@ fn host_owned_unknown_holds_exact_settles() {
                         count: None,
                     },
                 ],
+                current_known: true,
+                detached_current: None,
             },
             NativeObservation {
                 output: OutputId("out-b".to_owned()),
@@ -466,6 +469,8 @@ fn host_owned_unknown_holds_exact_settles() {
                     native: NB1.to_owned(),
                     count: None,
                 }],
+                current_known: true,
+                detached_current: None,
             },
         ]
     }

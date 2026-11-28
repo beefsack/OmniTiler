@@ -175,6 +175,24 @@ pub(crate) fn retained_window_fields(fact: &WindowFact) -> Vec<(String, RawSetti
             ),
         ])
     }
+    fn detached_value(reference: &Option<tiler_core::world_report::DetachedRef>) -> RawSettingValue {
+        reference.as_ref().map_or(RawSettingValue::Null, |reference| {
+            RawSettingValue::Object(vec![
+                (
+                    "kind".to_owned(),
+                    RawSettingValue::String("detached".to_owned()),
+                ),
+                (
+                    "out".to_owned(),
+                    RawSettingValue::String(reference.output.0.clone()),
+                ),
+                (
+                    "surface".to_owned(),
+                    RawSettingValue::String(reference.surface.as_str().to_owned()),
+                ),
+            ])
+        })
+    }
     fn native_value(native: &NativeWorkspaceFact) -> Option<RawSettingValue> {
         match native {
             NativeWorkspaceFact::Omitted => None,
@@ -292,6 +310,10 @@ pub(crate) fn retained_window_fields(fact: &WindowFact) -> Vec<(String, RawSetti
             opt_bool(fact.suppression_available),
         ),
         ("visibility".to_owned(), visibility_value(fact.visibility)),
+        (
+            "detachedSurface".to_owned(),
+            detached_value(&fact.detached_surface),
+        ),
     ]);
     fields
 }

@@ -1857,6 +1857,8 @@ fn native_row(output: &str, order: &[&str], current: Option<&str>) -> NativeObse
                 count: None,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 

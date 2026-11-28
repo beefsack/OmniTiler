@@ -363,6 +363,7 @@ mod tests {
             warp,
             tiled_float_transfer: true,
             unavailable_facts: Vec::new(),
+            detached_fullscreen_view: false,
         }
     }
     fn req(revision: u64, values: Vec<(&str, RawSettingValue)>) -> SettingsRequest {

@@ -327,6 +327,7 @@ fn build_report_v4(
             suppression_available: None,
             visibility,
             // Correlated visibility verdicts ride the next observation
+            detached_surface: None,
         });
     }
     let visibility_attempts = if step.command.is_none() {

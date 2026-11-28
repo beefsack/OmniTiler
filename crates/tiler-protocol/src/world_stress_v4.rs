@@ -142,6 +142,7 @@ fn build_report_v4(
             suppression_available: None,
             visibility,
             // Correlated visibility verdicts ride the next observation
+            detached_surface: None,
         });
     }
     // Truthful blocked-lane visibility attempts at the observation

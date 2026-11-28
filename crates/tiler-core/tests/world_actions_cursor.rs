@@ -98,6 +98,7 @@ fn fact(window: &str, output: &str, frame: Rect) -> tiler_core::world_report::Wi
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 

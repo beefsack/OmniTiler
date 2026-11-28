@@ -58,9 +58,9 @@ use crate::world_attempts::{
 use crate::world_engine::WorldState;
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
-    AfterShown, AfterShownMember, AfterShownScope, EffectKind, FocusFeedback, HeldScreenRow,
-    HoldReason, OneShotEffect, ScopeAuthority, ScreenReport, SwitchEvent, SwitchFocus,
-    SwitchOutcome, TransferKind, VisibilityTarget, WindowDesire, WorldCommand,
+    AfterShown, AfterShownMember, AfterShownScope, DetachedDestination, EffectKind, FocusFeedback,
+    HeldScreenRow, HoldReason, OneShotEffect, ScopeAuthority, ScreenReport, SwitchEvent,
+    SwitchFocus, SwitchOutcome, TransferKind, ViewRef, VisibilityTarget, WindowDesire, WorldCommand,
 };
 use crate::world_transaction::WorldTransaction;
 
@@ -92,6 +92,25 @@ pub(crate) struct PendingSelection {
     /// target's actual staged home at grant (ordinary sticky selections
     /// keep the actual home).
     pub follow_mover: bool,
+    /// Per-output frozen native view obligations computed atomically before
+    /// the command: each output that admitted an eligible view flight, its
+    /// logical home, and the exact detached destination the adapter was
+    /// granted (ordinary Desktop obligations stay `None`). Empty for
+    /// capability-false and native-free carriers, which keep their existing
+    /// per-selected-home obligations.
+    pub view_plan: BTreeMap<OutputId, PendingViewTarget>,
+}
+
+/// One output's frozen view obligation before grant: the selected logical
+/// home plus the exact detached destination, when the plan named one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingViewTarget {
+    pub home: DomainKey,
+    pub detached_destination: Option<DetachedDestination>,
+    /// Grant-time typed physical preimage for this output (`None` for legacy
+    /// carriers). A detached refusal proves only when the attempt's
+    /// `pre == post` equals this exact frozen ref.
+    pub preimage: Option<ViewRef>,
 }
 
 impl PendingSelection {
@@ -183,6 +202,60 @@ pub(crate) struct LatchedSwitchEvidence {
     pub confirmed: bool,
 }
 
+/// One frozen native view obligation per output: the selected logical home,
+/// the exact detached destination the adapter was granted (if any), and the
+/// latched per-output verdict. Ordinary Desktop obligations carry no
+/// detached destination and keep the existing native selector readback
+/// proof; a detached obligation proves only through the exact fresh current
+/// or the accepted correlated post.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SelectionViewTarget {
+    pub home: DomainKey,
+    pub detached_destination: Option<DetachedDestination>,
+    /// Grant-time typed physical preimage, carried from the pending plan.
+    pub preimage: Option<ViewRef>,
+    pub verdict: ViewTargetVerdict,
+}
+
+impl SelectionViewTarget {
+    #[must_use]
+    pub(crate) fn pending(
+        home: DomainKey,
+        detached_destination: Option<DetachedDestination>,
+    ) -> Self {
+        Self::pending_with_preimage(home, detached_destination, None)
+    }
+
+    #[must_use]
+    pub(crate) fn pending_with_preimage(
+        home: DomainKey,
+        detached_destination: Option<DetachedDestination>,
+        preimage: Option<ViewRef>,
+    ) -> Self {
+        Self {
+            home,
+            detached_destination,
+            preimage,
+            verdict: ViewTargetVerdict::Pending,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn is_pending(&self) -> bool {
+        self.verdict == ViewTargetVerdict::Pending
+    }
+}
+
+/// Latched per-output view verdict. `Pending` holds the whole binding;
+/// `Settled` retires this output's obligation; `Refused` carries the exact
+/// readable typed preimage that proved the refusal and never retries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ViewTargetVerdict {
+    Pending,
+    Settled,
+    Refused(ViewRef),
+}
+
 /// Retained selection binding: the focus carrier (`None`
 /// for focusless selections, which mint no focus effect), sharing the
 /// winning global request's frozen tuple where feedback correlates; the parent view
@@ -212,7 +285,7 @@ pub(crate) struct RetainedSelection {
     pub feedback: Option<FocusFeedback>,
     pub foreground_proven: bool,
     pub arrival_ready: bool,
-    pub view_targets: BTreeMap<OutputId, DomainKey>,
+    pub view_targets: BTreeMap<OutputId, SelectionViewTarget>,
     pub view_raw: BTreeMap<OutputId, PropertyAttempt>,
     /// Frozen selected homes plus affected outputs from the granting
     /// [`PendingSelection`]. Ordinary selections carry one home per
@@ -239,7 +312,7 @@ impl RetainedSelection {
             || self
                 .view_targets
                 .values()
-                .any(|k| k.workspace.0 == workspace)
+                .any(|target| target.home.workspace.0 == workspace)
             || self.selected.iter().any(|k| k.workspace.0 == workspace)
     }
 }
@@ -271,9 +344,9 @@ impl RetainedSelection {
         let views: Vec<AfterShownScope> = self
             .view_targets
             .values()
-            .map(|home| AfterShownScope {
-                out: home.output.clone(),
-                ws: home.workspace.0.clone(),
+            .map(|target| AfterShownScope {
+                out: target.home.output.clone(),
+                ws: target.home.workspace.0.clone(),
             })
             .collect();
         let selected: Vec<AfterShownScope> = self
@@ -561,6 +634,27 @@ impl WorldTransaction<'_> {
             if own_flight {
                 continue;
             }
+            // A detached planned binding keeps every sibling obligation
+            // alive past a settled/refused key: a logical echo on any
+            // covered output never retires the binding while another
+            // planned output is still pending. This guard runs before the
+            // legacy effect-gated departing-echo and key-only removal
+            // branches below.
+            let planned_pending = self
+                .world
+                .settlement
+                .retained_selection
+                .values()
+                .any(|binding| {
+                    binding.view_targets.contains_key(output)
+                        && binding
+                            .view_targets
+                            .values()
+                            .any(|target| target.is_pending())
+                });
+            if planned_pending {
+                continue;
+            }
             // An own refusal that retired the flight above still echoes
             // its preimage: not external supersession, so the binding
             // pends for its feedback instead of dropping silently.
@@ -658,9 +752,9 @@ impl WorldTransaction<'_> {
                             {
                                 return false;
                             }
-                            if let Some(home) = binding.view_targets.get(key) {
+                            if let Some(target) = binding.view_targets.get(key) {
                                 return self.effective_view(key).as_ref()
-                                    == Some(&home.workspace.0);
+                                    == Some(&target.home.workspace.0);
                             }
                             // Native-free cover: the key output already shows its
                             // frozen selected home.
@@ -694,6 +788,16 @@ impl WorldTransaction<'_> {
             .retained_selection
             .iter()
             .filter(|(key, binding)| {
+                // Never erase a planned binding while any output's typed
+                // verdict is still pending, even if a covering scope went
+                // stale: the terminal owns that final removal.
+                if binding
+                    .view_targets
+                    .values()
+                    .any(|target| target.is_pending())
+                {
+                    return false;
+                }
                 if stale.contains(*key) {
                     return true;
                 }
@@ -748,22 +852,17 @@ impl WorldTransaction<'_> {
                 None => return false,
             },
         };
-        let Some(home) = binding.view_targets.get(output) else {
+        let Some(target) = binding.view_targets.get(output) else {
             return false;
         };
-        let Some(attempt) = binding
-            .view_raw
-            .get(output)
-            .and_then(PropertyAttempt::as_view)
-        else {
+        // Only a latched exact preimage refusal keeps the scope pending.
+        let ViewTargetVerdict::Refused(preimage) = &target.verdict else {
             return false;
         };
-        let host_owned = self.connection.host_owned_workspace_domains();
-        // Production view_targets freeze host-owned only: native proof
-        // only, never logical echoes.
-        let echo = self.native_echo_for(output);
-        self.view_refused(attempt, home.workspace.0.as_str(), host_owned)
-            && self.effective_view_pre(attempt, host_owned).as_deref() == echo.as_deref()
+        // The refused preimage still being the coherent physical current is
+        // the unchanged readable typed preimage; a gap, a newer known
+        // current, or another surface drops through the normal paths.
+        self.physical_current_ref(output).as_ref() == Some(preimage)
     }
 
     /// Carry the pending selection into the retained per-window target map
@@ -1440,19 +1539,36 @@ impl WorldTransaction<'_> {
             };
         switch_members.sort_by(|a, b| a.window.cmp(&b.window));
         // Host-owned bindings (focusless and focus-bearing alike): per
-        // affected output the selected home proving via the native
-        // selector readback. Native-free bindings leave this empty
-        // (visibility obligations alone decide).
-        let mut view_targets: BTreeMap<OutputId, DomainKey> = BTreeMap::new();
+        // admitted output the selected home proving via the native selector
+        // readback, plus the exact detached destination when the frozen plan
+        // named one. A capability-enabled plan freezes exactly its admitted
+        // view flights; capability-false and native-free carriers keep the
+        // existing per-selected-home derivation. Native-free bindings leave
+        // this empty (visibility obligations alone decide).
+        let mut view_targets: BTreeMap<OutputId, SelectionViewTarget> = BTreeMap::new();
         if self.connection.host_owned_workspace_domains() {
-            for output in &pending.affected_outputs {
-                if let Some(home) = pending
-                    .selected
-                    .iter()
-                    .find(|home| home.output == *output)
-                    .cloned()
-                {
-                    view_targets.insert(output.clone(), home);
+            if !pending.view_plan.is_empty() {
+                for (output, planned) in &pending.view_plan {
+                    view_targets.insert(
+                        output.clone(),
+                        SelectionViewTarget::pending_with_preimage(
+                            planned.home.clone(),
+                            planned.detached_destination.clone(),
+                            planned.preimage.clone(),
+                        ),
+                    );
+                }
+            } else {
+                for output in &pending.affected_outputs {
+                    if let Some(home) = pending
+                        .selected
+                        .iter()
+                        .find(|home| home.output == *output)
+                        .cloned()
+                    {
+                        view_targets
+                            .insert(output.clone(), SelectionViewTarget::pending(home, None));
+                    }
                 }
             }
         }
@@ -1553,8 +1669,7 @@ impl WorldTransaction<'_> {
             .retained_selection
             .get(&focus_output)
             .cloned()
-            && let Some(event) =
-                selection_terminal(&focus_output, &binding, NativeSelectionProof::Pending)
+            && let Some(event) = selection_terminal(&focus_output, &binding)
         {
             self.stage_selection_terminal(&focus_output, event);
         }
@@ -1599,12 +1714,12 @@ impl WorldTransaction<'_> {
             // receipts, and a held Refused receipt consumed on one report
             // must still prove on a later recovery that omits it.
             // Wrong-tuple rows never correlate and never latch.
-            for (output, home) in binding.view_targets.clone() {
+            for (output, target) in binding.view_targets.clone() {
                 if binding.view_raw.contains_key(&output) {
                     continue;
                 }
                 let operation_id = binding.parent_op.clone();
-                let target_workspace = home.workspace.0.clone();
+                let target_workspace = target.home.workspace.0.clone();
                 let mut slot: Option<PropertyAttempt> = None;
                 retain_matching_attempt(
                     attempts,
@@ -1795,13 +1910,10 @@ impl WorldTransaction<'_> {
             // (malformed held raw skipped), so FirstMatch preserves the exact
             // graded/held precedence and latches once at this receipt.
             let pending = pending_by_output.remove(&output).unwrap_or_default();
-            let native_proof = {
-                let binding = match self.world.settlement.retained_selection.get(&output) {
-                    Some(binding) => binding.clone(),
-                    None => continue,
-                };
-                self.selection_native_proof(&binding)
-            };
+            // Latch every still-pending per-output view verdict before any
+            // flight removal or terminal staging: the latched verdict is the
+            // only record that survives sibling/refusal reconciliation.
+            self.latch_selection_view_verdicts(&output);
             let Some(binding) = self.world.settlement.retained_selection.get_mut(&output) else {
                 continue;
             };
@@ -1845,12 +1957,12 @@ impl WorldTransaction<'_> {
             // One common terminal for both optional-focus states: the
             // shared predicate gates feedback only when an effect was
             // minted, reports Unproven without one, and folds visibility,
-            // focus, and native proof into one event construction. Missing
-            // verdicts hold (never a failure); every verdict present
-            // terminates, confirmed or failed, without retry.
-            let proof = native_proof;
+            // focus, and every latched per-output native verdict into one
+            // event construction. Missing verdicts hold (never a failure);
+            // every verdict present terminates, confirmed or failed,
+            // without retry.
             let event = match self.world.settlement.retained_selection.get(&output) {
-                Some(current) => selection_terminal(&output, current, proof),
+                Some(current) => selection_terminal(&output, current),
                 None => continue,
             };
             let Some(event) = event else {
@@ -1861,83 +1973,205 @@ impl WorldTransaction<'_> {
         }
     }
 
-    /// Native selector proof for one binding: vacuous when the binding
-    /// carries no native obligation, else exact fresh native echo per
-    /// obligated output proves. The first exact-tuple correlated raw (the
-    /// latched pre-rollback raw when present, else fresh from this report)
-    /// reuses the existing selector machinery: an accepted post proving the
-    /// target proves the write landed, and a proven refusal (unchanged
-    /// readable preimage plus a readable echo naming the preimage, on a
-    /// complete inventory with a complete screen and no gesture barrier)
-    /// fails. Anything else holds, including wrong-tuple rows (never
-    /// latched, read as absent) and logical `ScreenView` echoes (host-owned
-    /// reads native only via [`WorldEngine::native_echo_for`]). A stronger
-    /// fresh row never upgrades the latched original: only the independent
-    /// current-target echo above proves on fresh facts. Genuine external
-    /// moves hold here; the existing scope reconcile at publish supersedes
-    /// the affected binding without an event.
-    fn selection_native_proof(&self, binding: &RetainedSelection) -> NativeSelectionProof {
-        if binding.view_targets.is_empty() {
-            return NativeSelectionProof::Proven;
+    /// Latch every still-pending per-output view verdict on one binding from
+    /// this report's coherent facts and correlated evidence. Runs before any
+    /// flight removal or terminal staging, and for both effect-bearing and
+    /// focusless bindings (the no-effect path reconciles exactly the same
+    /// way). A malformed, missing, or wrong-tuple row never proves, never
+    /// retries, and never replaces a latched verdict.
+    fn latch_selection_view_verdicts(&mut self, output: &OutputId) {
+        let Some(binding) = self.world.settlement.retained_selection.get(output) else {
+            return;
+        };
+        let parent_op = binding.parent_op.clone();
+        let targets: Vec<(OutputId, SelectionViewTarget)> = binding
+            .view_targets
+            .iter()
+            .filter(|(_, target)| target.is_pending())
+            .map(|(out, target)| (out.clone(), target.clone()))
+            .collect();
+        if targets.is_empty() {
+            return;
         }
+        let latched: BTreeMap<OutputId, PropertyAttempt> = binding.view_raw.clone();
+        let verdicts: BTreeMap<OutputId, ViewTargetVerdict> = targets
+            .into_iter()
+            .filter_map(|(out, target)| {
+                let attempt = latched
+                    .get(&out)
+                    .and_then(PropertyAttempt::as_view)
+                    .or_else(|| self.fresh_view_attempt(&parent_op, &out, &target.home.workspace.0));
+                let verdict = self.selection_view_verdict(&out, &target, attempt);
+                (verdict != ViewTargetVerdict::Pending).then_some((out, verdict))
+            })
+            .collect();
+        if verdicts.is_empty() {
+            return;
+        }
+        let mut refusals: Vec<(OutputId, crate::world_report::ViewRef)> = Vec::new();
+        if let Some(binding) = self.world.settlement.retained_selection.get_mut(output) {
+            for (out, verdict) in verdicts {
+                if let Some(target) = binding.view_targets.get_mut(&out)
+                    && target.is_pending()
+                {
+                    if let ViewTargetVerdict::Refused(pre) = &verdict {
+                        refusals.push((out.clone(), pre.clone()));
+                    }
+                    target.verdict = verdict;
+                }
+            }
+        }
+        for (out, pre) in refusals {
+            self.note_detached_cursor_refusal(&out, &pre);
+        }
+    }
+
+    /// First exact-tuple fresh correlated view evidence for one frozen
+    /// obligation (never a substitute for the latched first-match row when
+    /// that exists; the caller prefers the latched row).
+    fn fresh_view_attempt(
+        &self,
+        parent_op: &str,
+        output: &OutputId,
+        target_workspace: &str,
+    ) -> Option<&crate::world_attempts::ViewAttemptEvidence> {
+        self.world
+            .staged
+            .observation
+            .property_attempts
+            .iter()
+            .filter_map(PropertyAttempt::as_view)
+            .find(|evidence| {
+                evidence.operation_id == parent_op
+                    && evidence.target_output == *output
+                    && evidence.target_workspace == target_workspace
+            })
+    }
+
+    /// Verdict for one frozen obligation: detached destinations prove only
+    /// through Branch A (exact fresh physical current plus grounded member)
+    /// or Branch B (accepted exact detached post with the frozen intended
+    /// member), while ordinary Desktop obligations keep the native selector
+    /// readback. A refusal latches only the exact unchanged readable typed
+    /// preimage; everything else holds.
+    fn selection_view_verdict(
+        &self,
+        output: &OutputId,
+        target: &SelectionViewTarget,
+        attempt: Option<&crate::world_attempts::ViewAttemptEvidence>,
+    ) -> ViewTargetVerdict {
+        match target.detached_destination.as_ref() {
+            Some(destination) => {
+                self.detached_view_verdict(output, destination, target.preimage.as_ref(), attempt)
+            }
+            None => self.native_view_verdict(output, target, attempt),
+        }
+    }
+
+    /// Detached Branch A/B proof. Branch B is historical: once the exact
+    /// accepted post and frozen member latch, no current membership recheck
+    /// ever runs, so a later non-target read never unproves it.
+    fn detached_view_verdict(
+        &self,
+        output: &OutputId,
+        destination: &DetachedDestination,
+        preimage: Option<&ViewRef>,
+        attempt: Option<&crate::world_attempts::ViewAttemptEvidence>,
+    ) -> ViewTargetVerdict {
+        let frozen = ViewRef::Detached(destination.surface.clone());
+        if self.detached_current_proves(output, destination) {
+            return ViewTargetVerdict::Settled;
+        }
+        let Some(evidence) = attempt else {
+            return ViewTargetVerdict::Pending;
+        };
+        if evidence.disposition == crate::world_attempts::AttemptDisposition::Accepted
+            && evidence.post.as_ref() == Some(&frozen)
+            && evidence.post_member.as_ref() == Some(&destination.member)
+        {
+            return ViewTargetVerdict::Settled;
+        }
+        if evidence.disposition == crate::world_attempts::AttemptDisposition::Refused
+            && let Some(pre) = evidence.pre.clone()
+            && pre.output() == output
+            && evidence.post.as_ref() == Some(&pre)
+            && pre != frozen
+            && preimage == Some(&pre)
+            && self.physical_current_ref(output).as_ref() == Some(&pre)
+        {
+            return ViewTargetVerdict::Refused(pre);
+        }
+        ViewTargetVerdict::Pending
+    }
+
+    /// Ordinary Desktop obligation: the exact fresh native echo proves, an
+    /// accepted translated post proves, and a proven refusal (unchanged
+    /// readable preimage that still echoes on a complete readable report)
+    /// latches `Refused`. Anything else holds.
+    fn native_view_verdict(
+        &self,
+        output: &OutputId,
+        target: &SelectionViewTarget,
+        attempt: Option<&crate::world_attempts::ViewAttemptEvidence>,
+    ) -> ViewTargetVerdict {
         let host_owned = self.connection.host_owned_workspace_domains();
-        let mut refused = false;
-        for (output, home) in &binding.view_targets {
-            let target = home.workspace.0.as_str();
-            // Production view_targets freeze host-owned only: native proof
-            // only, never logical echoes.
-            let echo = self.native_echo_for(output);
-            if echo.as_deref() == Some(target) {
-                continue;
-            }
-            let fresh = self
-                .world
-                .staged
-                .observation
-                .property_attempts
-                .iter()
-                .filter_map(PropertyAttempt::as_view)
-                .find(|evidence| {
-                    evidence.operation_id == binding.parent_op
-                        && evidence.target_output == *output
-                        && evidence.target_workspace == target
-                });
-            let latched = binding
-                .view_raw
-                .get(output)
-                .and_then(PropertyAttempt::as_view);
-            let Some(attempt) = latched.or(fresh) else {
-                return NativeSelectionProof::Pending;
-            };
-            if self.view_post_proves_target(attempt, host_owned) {
-                continue;
-            }
-            if !self.view_refused(attempt, target, host_owned) {
-                return NativeSelectionProof::Pending;
-            }
-            let pre = self.effective_view_pre(attempt, host_owned);
-            let complete_screen = self
-                .world
-                .staged
-                .screens
-                .iter()
-                .find(|screen| screen.output == *output)
-                .map(|screen| screen.complete);
-            if pre.is_some()
-                && echo.as_deref() == pre.as_deref()
-                && self.world.staged.observation.inventory_complete
-                && complete_screen == Some(true)
-                && !self.world.staged.gesture_barrier
-            {
-                refused = true;
-                continue;
-            }
-            return NativeSelectionProof::Pending;
+        let workspace = target.home.workspace.0.as_str();
+        // Production view_targets freeze host-owned only: native proof
+        // only, never logical echoes.
+        let echo = self.native_echo_for(output);
+        if echo.as_deref() == Some(workspace) {
+            return ViewTargetVerdict::Settled;
         }
-        if refused {
-            NativeSelectionProof::Refused
+        let Some(evidence) = attempt else {
+            return ViewTargetVerdict::Pending;
+        };
+        if self.view_post_proves_target(evidence, host_owned) {
+            return ViewTargetVerdict::Settled;
+        }
+        if let Some(frozen_preimage) = target.preimage.as_ref() {
+            if evidence.pre.as_ref() != Some(frozen_preimage)
+                || evidence.post.as_ref() != Some(frozen_preimage)
+            {
+                return ViewTargetVerdict::Pending;
+            }
+            // A refused Desktop selection can leave a detached source
+            // current. It has no Desktop receipt to translate below.
+            if matches!(frozen_preimage, ViewRef::Detached(_)) {
+                return if evidence.disposition == crate::world_attempts::AttemptDisposition::Refused
+                    && self.physical_current_ref(output).as_ref() == Some(frozen_preimage)
+                {
+                    ViewTargetVerdict::Refused(frozen_preimage.clone())
+                } else {
+                    ViewTargetVerdict::Pending
+                };
+            }
+        }
+        if !self.view_refused(evidence, workspace, host_owned) {
+            return ViewTargetVerdict::Pending;
+        }
+        let Some(pre) = evidence.pre.clone() else {
+            return ViewTargetVerdict::Pending;
+        };
+        if pre.output() != output || evidence.post.as_ref() != Some(&pre) {
+            return ViewTargetVerdict::Pending;
+        }
+        let pre_logical = self.effective_view_pre(evidence, host_owned);
+        let complete_screen = self
+            .world
+            .staged
+            .screens
+            .iter()
+            .find(|screen| screen.output == *output)
+            .map(|screen| screen.complete);
+        if pre_logical.is_some()
+            && echo.as_deref() == pre_logical.as_deref()
+            && self.world.staged.observation.inventory_complete
+            && complete_screen == Some(true)
+            && !self.world.staged.gesture_barrier
+        {
+            ViewTargetVerdict::Refused(pre)
         } else {
-            NativeSelectionProof::Proven
+            ViewTargetVerdict::Pending
         }
     }
 
@@ -2091,12 +2325,41 @@ impl WorldTransaction<'_> {
                 &self.world.staged.screens,
                 &self.world.staged.held_screens,
             );
-            self.world
-                .settlement
-                .retained_selection
-                .retain(|output, _| {
-                    live.contains(output) || self.world.workspace.displaced.contains_key(&output.0)
-                });
+            let displaced = &self.world.workspace.displaced;
+            let is_live = |output: &OutputId| {
+                live.contains(output) || displaced.contains_key(&output.0)
+            };
+            // True output loss retires only that output's frozen view
+            // obligation: live siblings keep theirs and the shared terminal
+            // never waits on a lost sibling. An effectless binding whose
+            // issuing/focus output is lost rekeys to a live planned output so
+            // its surviving siblings still terminate together; an
+            // effect-bearing carrier cannot migrate its arrival proof and is
+            // dropped exactly as before.
+            let retained = std::mem::take(&mut self.world.settlement.retained_selection);
+            let mut kept: BTreeMap<OutputId, RetainedSelection> = BTreeMap::new();
+            for (key, mut binding) in retained {
+                binding.view_targets.retain(|output, _| is_live(output));
+                binding.view_raw.retain(|output, _| is_live(output));
+                binding.affected.retain(|output| is_live(output));
+                if is_live(&key) {
+                    kept.insert(key, binding);
+                    continue;
+                }
+                if binding.effect.is_some() {
+                    continue;
+                }
+                let rekey = binding
+                    .view_targets
+                    .iter()
+                    .find(|(_, target)| target.is_pending())
+                    .map(|(output, _)| output.clone())
+                    .or_else(|| binding.view_targets.keys().next().cloned());
+                if let Some(rekey) = rekey {
+                    kept.insert(rekey, binding);
+                }
+            }
+            self.world.settlement.retained_selection = kept;
         }
         if !observation.inventory_complete {
             return;
@@ -2267,19 +2530,16 @@ impl WorldTransaction<'_> {
 
 /// Shared switch terminal predicate for both optional-focus states (the
 /// one event construction): returns the terminal [`SwitchEvent`] once
-/// every frozen switch member has a latched verdict, `None` while any
-/// member is still pending. Zero members are vacuously terminal. The
-/// feedback gate applies only when an effect was minted; without one the
-/// focus reports [`SwitchFocus::Unproven`]. A pending native obligation
-/// holds; a proven native refusal terminates with a failure outcome
-/// through this same construction. Outcome is [`SwitchOutcome::Complete`]
-/// iff nothing failed, no focus proof was required-or-missing, and no
-/// native refusal latched.
-fn selection_terminal(
-    output: &OutputId,
-    binding: &RetainedSelection,
-    native: NativeSelectionProof,
-) -> Option<SwitchEvent> {
+/// every frozen switch member and every frozen per-output view obligation
+/// has a latched verdict, `None` while any of them is still pending. Zero
+/// obligations are vacuously terminal. The feedback gate applies only when
+/// an effect was minted; without one the focus reports
+/// [`SwitchFocus::Unproven`]. One output's refusal or settled verdict never
+/// retires a sibling's pending obligation: the terminal waits for every
+/// planned output. Outcome is [`SwitchOutcome::Complete`] iff nothing
+/// failed, no focus proof was required-or-missing, and no native refusal
+/// latched.
+fn selection_terminal(output: &OutputId, binding: &RetainedSelection) -> Option<SwitchEvent> {
     if binding
         .switch_members
         .iter()
@@ -2306,12 +2566,17 @@ fn selection_terminal(
             }
         }
     };
-    if !binding.view_targets.is_empty() && native == NativeSelectionProof::Pending {
-        return None;
+    let mut view_refused = false;
+    for target in binding.view_targets.values() {
+        match target.verdict {
+            ViewTargetVerdict::Pending => return None,
+            ViewTargetVerdict::Settled => {}
+            ViewTargetVerdict::Refused(_) => view_refused = true,
+        }
     }
     let complete = failed.is_empty()
         && (binding.effect.is_none() || focus == SwitchFocus::Proven)
-        && native != NativeSelectionProof::Refused;
+        && !view_refused;
     let outcome = if complete {
         SwitchOutcome::Complete
     } else {
@@ -2325,14 +2590,6 @@ fn selection_terminal(
         focus,
         fallback: false,
     })
-}
-
-/// Native selector proof state for one host-owned focusless binding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeSelectionProof {
-    Proven,
-    Refused,
-    Pending,
 }
 
 /// Target postcondition proof for one frozen switch member against its

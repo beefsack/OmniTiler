@@ -82,6 +82,7 @@ fn fact_native(window: &str, output: &str, frame: Rect, native: Option<&str>) ->
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -317,6 +318,8 @@ fn native_obs(output: &str, order: &[&str], current: &str) -> NativeObservation 
                 count: None,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 

@@ -60,6 +60,13 @@ impl WorldConnectionState {
     }
 
     #[must_use]
+    pub(crate) fn detached_fullscreen_view(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.detached_fullscreen_view)
+    }
+
+    #[must_use]
     pub(crate) fn equal_workspace_count(&self) -> bool {
         self.capabilities
             .as_ref()

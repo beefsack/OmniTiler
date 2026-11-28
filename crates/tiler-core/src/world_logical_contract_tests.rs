@@ -80,6 +80,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -285,6 +286,8 @@ fn with_native_context(
                 count: None,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     })
     .collect();
     report
@@ -3528,15 +3531,16 @@ fn migration_refused_or_superseded_settles_without_fighting() {
                 target_workspace: view_a.clone(),
                 disposition: FrameSetter::Threw,
                 pre: None,
-                post: Some(crate::world_report::WorkspaceRef::Logical {
+                post: Some(crate::world_report::ViewRef::Native {
                     output: OutputId("out-b".to_owned()),
-                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                    workspace: crate::ids::NativeWorkspaceId::parse(&view_a).expect("native id"),
                 }),
-                baseline: Some(crate::world_report::WorkspaceRef::Logical {
+                baseline: Some(crate::world_report::ViewRef::Native {
                     output: OutputId("out-b".to_owned()),
-                    workspace: crate::directional::WorkspaceId(view_a.clone()),
+                    workspace: crate::ids::NativeWorkspaceId::parse(&view_a).expect("native id"),
                 }),
                 attempt_ms: 3,
+                post_member: None,
             };
             match engine
                 .handle_report(&make_report(vec![logical_attempt]), &[])
@@ -4619,6 +4623,8 @@ fn host_owned_capability_gates_native_observations() {
             native: "ws".to_owned(),
             count: None,
         }],
+        current_known: true,
+        detached_current: None,
     });
     match engine.handle_report(&bad, &[]).0 {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
@@ -4650,6 +4656,8 @@ fn host_owned_capability_gates_native_observations() {
             native: "ws".to_owned(),
             count: None,
         }],
+        current_known: true,
+        detached_current: None,
     });
     let reply = accepted(&mut capable_engine, &good);
     assert!(reply.ready);
@@ -5241,19 +5249,20 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: target.clone(),
                     disposition: crate::world_report::FrameSetter::Refused,
-                    pre: Some(crate::world_report::WorkspaceRef::Native {
+                    pre: Some(crate::world_report::ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: crate::ids::NativeWorkspaceId::parse("native-a-0").unwrap(),
                     }),
-                    post: Some(crate::world_report::WorkspaceRef::Native {
+                    post: Some(crate::world_report::ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: crate::ids::NativeWorkspaceId::parse("native-a-0").unwrap(),
                     }),
-                    baseline: Some(crate::world_report::WorkspaceRef::Native {
+                    baseline: Some(crate::world_report::ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
                         workspace: crate::ids::NativeWorkspaceId::parse("native-a-1").unwrap(),
                     }),
                     attempt_ms: 3,
+                    post_member: None,
                 }],
             ),
             "native-a-0",
@@ -5904,19 +5913,20 @@ fn floating_select_refusal_settles_to_observed_preserving_logical() {
                     target_output: OutputId("out-a".to_owned()),
                     target_workspace: target.clone(),
                     disposition: crate::world_report::FrameSetter::Refused,
-                    pre: Some(crate::world_report::WorkspaceRef::Logical {
+                    pre: Some(crate::world_report::ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
-                        workspace: crate::directional::WorkspaceId(current.clone()),
+                        workspace: crate::ids::NativeWorkspaceId::parse(&current).expect("native id"),
                     }),
-                    post: Some(crate::world_report::WorkspaceRef::Logical {
+                    post: Some(crate::world_report::ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
-                        workspace: crate::directional::WorkspaceId(current.clone()),
+                        workspace: crate::ids::NativeWorkspaceId::parse(&current).expect("native id"),
                     }),
-                    baseline: Some(crate::world_report::WorkspaceRef::Logical {
+                    baseline: Some(crate::world_report::ViewRef::Native {
                         output: OutputId("out-a".to_owned()),
-                        workspace: crate::directional::WorkspaceId(target.clone()),
+                        workspace: crate::ids::NativeWorkspaceId::parse(&target).expect("native id"),
                     }),
                     attempt_ms: 4,
+                    post_member: None,
                 }],
             ),
             &[],

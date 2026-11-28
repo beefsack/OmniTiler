@@ -13,7 +13,7 @@ use crate::geometry::Rect;
 use crate::world_engine::EventIssue;
 use crate::world_report::{
     FrameAttempt, FramePurpose, FrameSetter, LastWritePath, MemberAttempt, MemberDisposition,
-    StateAttempt, StateProperty, TransferKind, ViewAttempt, VisibilityAttempt,
+    StateAttempt, StateProperty, TransferKind, ViewAttempt, ViewRef, VisibilityAttempt,
     VisibilityDisposition, VisibilityReason, VisibilitySample, WorkspaceRef, WorldCommand,
 };
 
@@ -122,10 +122,11 @@ pub(crate) struct ViewAttemptEvidence {
     pub(crate) target_output: OutputId,
     pub(crate) target_workspace: String,
     pub(crate) disposition: AttemptDisposition,
-    pub(crate) pre: Option<WorkspaceRef>,
-    pub(crate) post: Option<WorkspaceRef>,
-    pub(crate) baseline: Option<WorkspaceRef>,
+    pub(crate) pre: Option<ViewRef>,
+    pub(crate) post: Option<ViewRef>,
+    pub(crate) baseline: Option<ViewRef>,
     pub(crate) attempt_ms: u64,
+    pub(crate) post_member: Option<WindowId>,
 }
 
 /// Closed canonical evidence for one native visibility write or no-call. The
@@ -329,6 +330,7 @@ impl PropertyAttempt {
             post: raw.post.clone(),
             baseline: raw.baseline.clone(),
             attempt_ms: raw.attempt_ms,
+            post_member: raw.post_member.clone(),
         })
     }
 
@@ -926,6 +928,12 @@ mod tests {
             workspace: crate::directional::WorkspaceId(name.to_owned()),
         }
     }
+    fn view_ref(output: &str, name: &str) -> ViewRef {
+        ViewRef::Native {
+            output: OutputId(output.to_owned()),
+            workspace: crate::ids::NativeWorkspaceId::parse(name).expect("native id"),
+        }
+    }
 
     fn member(op: &str, disposition: MemberDisposition) -> PropertyAttempt {
         PropertyAttempt::from_member_attempt(&MemberAttempt {
@@ -946,10 +954,11 @@ mod tests {
             target_output: OutputId("out-a".to_owned()),
             target_workspace: "ws-1".to_owned(),
             disposition,
-            pre: Some(workspace("out-b", "ws-9")),
-            post: Some(workspace("out-a", "ws-1")),
-            baseline: Some(workspace("out-b", "ws-9")),
+            pre: Some(view_ref("out-b", "ws-9")),
+            post: Some(view_ref("out-a", "ws-1")),
+            baseline: Some(view_ref("out-b", "ws-9")),
             attempt_ms: 13,
+            post_member: None,
         })
     }
 
@@ -976,7 +985,7 @@ mod tests {
         assert_eq!(evidence.target_output, OutputId("out-a".to_owned()));
         assert_eq!(evidence.target_workspace, "ws-1");
         assert_eq!(evidence.disposition, AttemptDisposition::Refused);
-        assert_eq!(evidence.baseline, Some(workspace("out-b", "ws-9")));
+        assert_eq!(evidence.baseline, Some(view_ref("out-b", "ws-9")));
         assert_eq!(evidence.attempt_ms, 13);
         assert!(view.as_member().is_none());
     }

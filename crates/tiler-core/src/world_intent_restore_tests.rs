@@ -1627,6 +1627,7 @@ fn rehandshake_resets_intent_ledgers() {
             warp: false,
             tiled_float_transfer: true,
             unavailable_facts: Vec::new(),
+            detached_fullscreen_view: false,
         },
     });
     assert!(reply.kind.is_none());

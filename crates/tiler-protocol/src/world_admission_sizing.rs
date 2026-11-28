@@ -12,8 +12,8 @@ use tiler_core::world_report::{
 use crate::world_admission_rows::{
     bool_len, command_estimate_owned, focus_feedback_estimate, gesture_ingress_v4_estimate,
     int_len, intent_records_estimate, json_string_len, presentation_row_v4_estimate, rect_len,
-    renderer_input_estimate, u64_len, usize_len, visibility_sample_estimate,
-    workspace_ref_option_len,
+    renderer_input_estimate, u64_len, usize_len, view_ref_len, view_ref_option_len,
+    visibility_sample_estimate, workspace_ref_option_len,
 };
 
 pub const MAX_CANONICAL_F64_LEN: usize = 350;
@@ -262,15 +262,16 @@ pub fn report_estimate_v4_with_residual(
             + u64_len(attempt.attempt_ms);
     }
     for attempt in &report.view_attempts {
-        bytes += "{\"kind\":\"view\",\"op\":,\"out\":,\"ws\":,\"disposition\":{\"kind\":\"called\",\"setter\":},\"pre\":,\"post\":,\"base\":,\"attemptMs\":\"\"}".len()
+        bytes += "{\"kind\":\"view\",\"op\":,\"out\":,\"ws\":,\"disposition\":{\"kind\":\"called\",\"setter\":},\"pre\":,\"post\":,\"base\":,\"attemptMs\":\"\",\"postMember\":}".len()
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.target_output.0)
             + json_string_len(&attempt.target_workspace)
             + json_string_len(attempt.disposition.as_str())
-            + workspace_ref_option_len(&attempt.pre)
-            + workspace_ref_option_len(&attempt.post)
-            + workspace_ref_option_len(&attempt.baseline)
-            + u64_len(attempt.attempt_ms);
+            + view_ref_option_len(&attempt.pre)
+            + view_ref_option_len(&attempt.post)
+            + view_ref_option_len(&attempt.baseline)
+            + u64_len(attempt.attempt_ms)
+            + attempt.post_member.as_ref().map_or(4, |member| json_string_len(&member.0));
     }
     for attempt in &report.state_attempts {
         bytes += "{\"kind\":\"state\",\"win\":,\"property\":,\"target\":,\"rev\":\"\",\"disposition\":{\"kind\":\"called\",\"setter\":},\"pre\":,\"post\":,\"attemptMs\":\"\"}".len()
@@ -353,7 +354,7 @@ fn focus_changes_len(changes: Option<&FocusChanges>) -> usize {
                         FocusChange::View { out, native } => {
                             "{\"kind\":\"view\",\"out\":,\"native\":}".len()
                                 + json_string_len(&out.0)
-                                + json_string_len(native)
+                                + view_ref_len(native)
                         }
                     })
                     .sum::<usize>()

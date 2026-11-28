@@ -68,7 +68,8 @@ fn pw_ev_04_lane_disallowed_disposition_arms_never_enter_typed_evidence() {
         "pre": null,
         "post": null,
         "base": null,
-        "attemptMs": "100"
+        "attemptMs": "100",
+        "postMember": null
     }]);
     let decoded = decode_report_v4(&msg.to_string()).expect("identifiable view row holds");
     assert!(decoded.report.view_attempts.is_empty());

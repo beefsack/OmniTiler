@@ -78,6 +78,7 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -432,6 +433,8 @@ fn dynamic_trailing_spare_requests_native_backing() {
                 native: "native-out-a-0".to_owned(),
                 count: Some(0),
             }],
+            current_known: true,
+            detached_current: None,
         }];
     engine.tx(|tx| tx.ensure_native_creations("out-a"));
     let desires = engine.tx(|tx| tx.native_creation_desires());
@@ -483,6 +486,8 @@ fn dynamic_shared_trailing_spare_requests_native_backing() {
                 native: "n-0".to_owned(),
                 count: Some(0),
             }],
+            current_known: true,
+            detached_current: None,
         },
         NativeObservation {
             output: OutputId("out-b".to_owned()),
@@ -492,6 +497,8 @@ fn dynamic_shared_trailing_spare_requests_native_backing() {
                 native: "n-0".to_owned(),
                 count: Some(0),
             }],
+            current_known: true,
+            detached_current: None,
         },
     ];
     engine.tx(|tx| tx.ensure_native_creations_shared(&["out-a".to_owned(), "out-b".to_owned()]));
@@ -581,6 +588,8 @@ fn obs(
                 count,
             })
             .collect(),
+        current_known: true,
+        detached_current: None,
     }
 }
 
@@ -1514,6 +1523,8 @@ fn split_round(
                     ),
                 })
                 .collect(),
+            current_known: true,
+            detached_current: None,
         })
         .collect();
     let mut screens: Vec<ScreenReport> = Vec::new();

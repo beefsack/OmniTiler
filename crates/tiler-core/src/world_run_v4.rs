@@ -189,6 +189,7 @@ impl WorldTransaction<'_> {
             unavailable,
             native_sticky_supported,
             maximize_supported,
+            self.connection.detached_fullscreen_view(),
         );
         let effective = graded.as_ref().unwrap_or(report);
         // A commandless native report carrying a focus interval is the cut
@@ -309,7 +310,7 @@ impl WorldTransaction<'_> {
         // classifier sees pending first-admission wins this same report
         // with no second ingestion. Later command restages reuse the
         // classification-only `restage_classification` and never reingest.
-        let observation = WorldEngine::capture_observation_v4(report);
+        let observation = WorldEngine::capture_effective_observation_v4(report, effective);
         self.ingest_staged_intent(&observation);
         self.stage_captured_v4(effective, observation);
         self.world.staged.revision = issuing_revision;
@@ -402,7 +403,8 @@ impl WorldTransaction<'_> {
                     let all_desktop = fact.sticky == Some(true)
                         && fact.native_workspace.as_deref().is_none()
                         && self.core_homing(window).is_some();
-                    if !all_desktop {
+                    let retained_detached = self.retained_detached_home(window) == Some(key);
+                    if !all_desktop && !retained_detached {
                         fence.push(key.clone());
                     }
                 }
@@ -508,6 +510,7 @@ impl WorldTransaction<'_> {
             // Canonical history follows native input independently of the
             // execution subject. It cannot cancel an adjudicated request or
             // leave an abandoned logical target in the FIFO cursor.
+            self.refresh_detached_cursor_guards(report.foreground_known);
             self.seed_focus_cursor();
         }
         // Deferred first-command subject re-resolution: the pre-observation
@@ -936,8 +939,22 @@ impl WorldTransaction<'_> {
         self.upsert_ordinary_toggle_float_save(bookkeeping, &result);
         self.restage_classification();
         self.build_staged_domains();
+        // A later detached selection supersedes earlier unissued focus on
+        // those outputs; it must not reappear in the batch winner pass.
+        let before = effects.len();
+        effects.retain(|existing| {
+            existing.kind != EffectKind::Focus || !self.guarded_focus_subject(&existing.target)
+        });
+        if effects.len() != before {
+            self.world.staged.batch_focus_issued = effects
+                .iter()
+                .any(|existing| existing.kind == EffectKind::Focus);
+        }
         if let Some(effect) = effect {
             if effect.kind == EffectKind::Focus {
+                if let Some(home) = self.world.staged.homing.get(&effect.target) {
+                    self.world.focus.detached_cursor_guards.remove(&home.output);
+                }
                 // Latest explicit focus wins: drop every unissued
                 // prior Focus (admission or earlier batch). Canonical
                 // command-focus failures clear `logical_focus_cursor`

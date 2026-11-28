@@ -1339,6 +1339,7 @@ impl WorldTransaction<'_> {
                 member_predecessors: Vec::new(),
                 pending_members: BTreeMap::new(),
                 pending_view: None,
+                detached_destination: None,
             });
         }
         // Tiling seeds for new logical ids; prune keys outside all rings
@@ -1471,7 +1472,16 @@ impl WorldTransaction<'_> {
                 .iter()
                 .any(|(_, ws)| ws == candidate)
             || self.is_shared_slot_bound(candidate)
-            || s.last_views.values().any(|ws| ws == candidate)
+            || s.last_views.iter().any(|(output, view)| {
+                matches!(
+                    view,
+                    crate::world_report::ViewRef::Native { workspace, .. }
+                        if self
+                            .native_logical(output, workspace.as_str())
+                            .as_deref()
+                            == Some(candidate)
+                )
+            })
             || s.native_map.values().any(|ws| ws == candidate)
             || s.retired_natives.values().any(|ws| ws == candidate)
             || s.pending_forget

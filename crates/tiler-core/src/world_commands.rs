@@ -295,6 +295,10 @@ impl WorldTransaction<'_> {
                                 }
                             }
                             self.note_command(command_seq);
+                            // The swap replaced both outputs' views: their
+                            // guards are stale (exact return only, never a
+                            // detached plan).
+                            self.replace_detached_cursor_guards(&[out_a, out_b], false);
                             return self.retain_view(
                                 command_seq,
                                 output,
@@ -484,6 +488,7 @@ impl WorldTransaction<'_> {
                                 member_predecessors: Vec::new(),
                                 pending_members: BTreeMap::new(),
                                 pending_view: None,
+                                detached_destination: None,
                             });
                         }
                         if !members_b.is_empty() {
@@ -513,9 +518,14 @@ impl WorldTransaction<'_> {
                                 member_predecessors: Vec::new(),
                                 pending_members: BTreeMap::new(),
                                 pending_view: None,
+                                detached_destination: None,
                             });
                         }
                         self.note_command(command_seq);
+                        // The swap replaced both outputs' views: their
+                        // guards are stale (exact return only, never a
+                        // detached plan).
+                        self.replace_detached_cursor_guards(&[out_a, out_b], false);
                         let applied =
                             self.retain_view(command_seq, output, &workspace.0, held_scopes, by_id);
                         // retain_view pushed the view flight for the active
@@ -540,7 +550,7 @@ impl WorldTransaction<'_> {
                         };
                     }
                 }
-                self.retain_view(command_seq, output, &workspace.0, held_scopes, by_id)
+                self.retain_selection_view(command_seq, output, &workspace.0, held_scopes, by_id)
             }
             WorldCommand::SelectNumbered { output, index } => {
                 let Some(resolved) = self.resolve_selection_output(
@@ -564,7 +574,7 @@ impl WorldTransaction<'_> {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
+                self.retain_selection_view(command_seq, &resolved, &target, held_scopes, by_id)
             }
             WorldCommand::SelectRelative { output, delta } => {
                 let Some(resolved) = self.resolve_selection_output(
@@ -594,7 +604,7 @@ impl WorldTransaction<'_> {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
+                self.retain_selection_view(command_seq, &resolved, &target, held_scopes, by_id)
             }
             WorldCommand::SelectPrevious { output } => {
                 let Some(resolved) = self.resolve_selection_output(
@@ -623,7 +633,13 @@ impl WorldTransaction<'_> {
                         .resolve_shared_for(&live, &current)
                     {
                         PreviousTarget::Select(target) => {
-                            self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
+                            self.retain_selection_view(
+                                command_seq,
+                                &resolved,
+                                &target,
+                                held_scopes,
+                                by_id,
+                            )
                         }
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             self.note_command(command_seq);
@@ -641,9 +657,13 @@ impl WorldTransaction<'_> {
                         &live,
                         &current,
                     ) {
-                        PreviousTarget::Select(target) => {
-                            self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
-                        }
+                        PreviousTarget::Select(target) => self.retain_selection_view(
+                            command_seq,
+                            &resolved,
+                            &target,
+                            held_scopes,
+                            by_id,
+                        ),
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             // No-op until the next recorded change: reconcile
                             // only, never retain or emit.
@@ -671,7 +691,7 @@ impl WorldTransaction<'_> {
                 let selection = resolve_trailing(&ring, &occupied);
                 match selection {
                     TrailingSelection::Reuse(target) => {
-                        self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
+                        self.retain_selection_view(command_seq, &resolved, &target, held_scopes, by_id)
                     }
                     TrailingSelection::Create => {
                         // Trailing workspaces exist immediately in the
@@ -684,7 +704,7 @@ impl WorldTransaction<'_> {
                                 message: MSG_CREATION_EXHAUSTED,
                             };
                         };
-                        self.retain_view(command_seq, &resolved, &logical, held_scopes, by_id)
+                        self.retain_selection_view(command_seq, &resolved, &logical, held_scopes, by_id)
                     }
                 }
             }
@@ -1591,6 +1611,7 @@ impl WorldTransaction<'_> {
                 rev,
                 obs: self.world.staged.observation.observation_seq,
                 follow_mover: false,
+                view_plan: BTreeMap::new(),
             })
         } else {
             None
@@ -1647,6 +1668,7 @@ impl WorldTransaction<'_> {
                 member_predecessors: Vec::new(),
                 pending_members: BTreeMap::new(),
                 pending_view: None,
+                detached_destination: None,
             });
         }
         let initial_empty = members.is_empty();
@@ -1685,6 +1707,7 @@ impl WorldTransaction<'_> {
                 member_predecessors: Vec::new(),
                 pending_members: BTreeMap::new(),
                 pending_view: None,
+                detached_destination: None,
             });
         }
         // Single-owner membership follows the logical id: every

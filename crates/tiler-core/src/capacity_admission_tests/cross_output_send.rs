@@ -70,6 +70,7 @@ fn send_refused_when_target_unrepresentable_source_preserved() {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     };
     let make_report = |seq: u64,
                        screens: Vec<ScreenReport>,

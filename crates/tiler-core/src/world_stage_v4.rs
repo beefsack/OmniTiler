@@ -68,7 +68,6 @@ impl WorldTransaction<'_> {
         // invalid and capability grading may move rows into held rows
         // while the observation keeps the original facts. Like the legacy
         // restage, this never ingests intent.
-        let observation = WorldEngine::capture_observation_v4(report);
         let unavailable: &[crate::connection::FactName] = self
             .connection
             .capabilities()
@@ -83,16 +82,17 @@ impl WorldTransaction<'_> {
             unavailable,
             native_sticky_supported,
             maximize_supported,
+            self.connection.detached_fullscreen_view(),
         );
         let effective = graded.as_ref().unwrap_or(report);
+        let observation = WorldEngine::capture_effective_observation_v4(report, effective);
         self.stage_captured_v4(effective, observation);
     }
 
-    /// Stage v4 classification from an already-captured raw observation
-    /// and the capability-graded effective rows: held scope resolution
-    /// against prior staged homing, lane-ordered diagnostics, verbatim
-    /// v4-only rows, and the shared per-window classification loop. The
-    /// raw capture moves into the new staged view unchanged. Takes no
+    /// Stage v4 classification from an already-captured observation and the
+    /// capability-graded effective rows. Held native currency and view
+    /// attempts were already excluded from the capture's authority lanes;
+    /// raw window facts remain available for truthful observation. Takes no
     /// ledger action; callers own exactly-once ingestion.
     pub(crate) fn stage_captured_v4(
         &mut self,
@@ -166,6 +166,7 @@ impl WorldEngine {
             unavailable,
             native_sticky_supported,
             maximize_supported,
+            self.connection.detached_fullscreen_view(),
         );
         let effective = graded.as_ref().unwrap_or(report);
         let ctx = StageClassificationContext::new(&self.connection, &self.world);

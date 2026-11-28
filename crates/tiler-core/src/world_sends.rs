@@ -418,6 +418,11 @@ impl WorldTransaction<'_> {
                         );
                     }
                     self.prune_selection_for_outputs(&affected);
+                    // A follow transfer supersedes each affected output's
+                    // detached guard: the cursor moved with the window and
+                    // the follow view is an exact return, never a detached
+                    // plan.
+                    self.replace_detached_cursor_guards(&affected, false);
                     let floating = self.world.floating_scopes.contains(&source_key)
                         || self.world.floating_scopes.contains(&target_key);
                     let eligible = !floating
@@ -450,6 +455,7 @@ impl WorldTransaction<'_> {
                                 rev,
                                 obs: self.world.staged.observation.observation_seq,
                                 follow_mover: true,
+                                view_plan: BTreeMap::new(),
                             });
                         self.note_command(command_seq);
                         self.world.settlement.retained.push(retained);
@@ -721,6 +727,7 @@ impl WorldTransaction<'_> {
                     member_predecessors: Vec::new(),
                     pending_members: BTreeMap::new(),
                     pending_view: None,
+                    detached_destination: None,
                 },
                 // Membership-only floating boundary: follow names the mover.
                 // Stay keeps the native boundary focus (no layout MRU to
@@ -829,6 +836,7 @@ impl WorldTransaction<'_> {
                         member_predecessors: Vec::new(),
                         pending_members: BTreeMap::new(),
                         pending_view: None,
+                        detached_destination: None,
                     },
                     focus,
                 ))

@@ -606,10 +606,19 @@ impl WorldTransaction<'_> {
             }
             let ring = self.logical_ring(&output);
             let marked = self.trailing_marked_id(&output);
-            let view = self.logical_view(&output);
-            let current_id = view
-                .filter(|view| ring.iter().any(|id| id == view))
-                .or_else(|| ring.first().cloned());
+            // A detached surface covers the Desktop without replacing its logical
+            // ring entry. The logical fallback must not mark that entry current.
+            let detached = self.connection.detached_fullscreen_view()
+                && self.world.staged.observation.native.iter().any(|row| {
+                    row.output.0 == output && row.detached_current.is_some()
+                });
+            let current_id = if detached {
+                None
+            } else {
+                self.logical_view(&output)
+                    .filter(|view| ring.iter().any(|id| id == view))
+                    .or_else(|| ring.first().cloned())
+            };
             let order: BTreeSet<&WindowId> = self.world.presentation.order_v4.iter().collect();
             let mut workspaces = Vec::with_capacity(ring.len());
             for (index, id) in ring.iter().enumerate() {
