@@ -32,6 +32,12 @@
 - Status: active for supported routes; KDE native rebuild and later port adoption remain open.
 - Evidence: [supported routes and host applicability](../porting/world-contract.md#per-host-applicability), [migration approval](../changes/v4-migration.md#phase-0c-approval-outcome-2026-11-02), [R14 baseline](../changes/windows-fullscreen-exit-baseline.md), [R21](engine.md#kde-effect-rust-migration-sequence-r21).
 
+### Detached fullscreen return
+- Decision: a standalone explicit selection may switch to the exact detached physical surface of a grounded fullscreen lifetime with a retained home on that output. The home stays logical; born fullscreen windows acquire no invented home. A redundant exact selection has no native or focus work. A swap-plan view never gets this override.
+- Detached selection is focusless. Correlate each output independently by `(op,out)`; settle only with fresh exact physical current and membership, or an accepted exact post and an adapter-bracketed read of the frozen member. No retries or automatic member writes. Historical proof does not seed implicit focus; fresh coherent physical and trustworthy foreground reads can release that guard. Explicit R14 remains separate.
+- Adopt the [closed v4 shape](../porting/world-contract.md#native-observation) in place across core, broker, codecs, adapters and active fixtures; no old-shape defaults. Historical bytes stay frozen. KDE and Windows declare false; macOS production remains capability-false until the redundant, away and return legs have exact native evidence. Split View is a separate live gate.
+- Evidence: [reviewed fullscreen-return proposal](../changes/macos-fullscreen-return-core-proposal.md).
+
 ### v4 world contract phase-0c approval
 - Decision: approve the v4 world-contract shape, including G1-G3, K1-K5, W2-W4 and M1-M9 with the W1, M3 and M4 amendments recorded below. G2 adds no removal capability: core is sole removal authority with fresh native vetoes; see [removal authorization by route](#native-only-retirement-intent). G3 leaves transient/explicit-tile precedence TBD outside the wire. Current authority follows the [supported-route rule](#contract-authority-and-v4-migration), not an all-port cutover.
 - Why: the sequential platform-fit reviews and exact fixtures establish the target shape without claiming native acceptance.

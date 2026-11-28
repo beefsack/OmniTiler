@@ -40,7 +40,8 @@
             "above": true,
             "warp": true,
             "tiledFloatTransfer": true,
-            "unavailableFacts": []
+            "unavailableFacts": [],
+            "detachedFullscreenView": false
           }
         }
       },
@@ -188,7 +189,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -209,7 +211,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -378,7 +382,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -394,7 +399,9 @@
                   "native": "native-a",
                   "count": null
                 }
-              ]
+              ],
+              "currentKnown": false,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -565,7 +572,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -586,7 +594,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -754,7 +764,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -775,7 +786,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -858,6 +871,7 @@
                 "ws": "native-a"
               },
               "attemptMs": "310",
+              "postMember": null,
               "disposition": {
                 "kind": "called",
                 "setter": "accepted"
@@ -976,7 +990,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -997,7 +1012,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -1165,7 +1182,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1186,7 +1204,9 @@
                   "native": "native-b",
                   "count": 1
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -1381,7 +1401,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1402,7 +1423,9 @@
                   "native": "native-b",
                   "count": 1
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -1570,7 +1593,8 @@
               "visibility": {
                 "visible": false,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1601,7 +1625,9 @@
                   "native": "native-c",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "",

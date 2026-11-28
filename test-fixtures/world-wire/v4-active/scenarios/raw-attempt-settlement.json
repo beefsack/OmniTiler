@@ -40,7 +40,8 @@
             "above": true,
             "warp": true,
             "tiledFloatTransfer": true,
-            "unavailableFacts": []
+            "unavailableFacts": [],
+            "detachedFullscreenView": false
           }
         }
       },
@@ -187,7 +188,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -237,7 +239,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -287,7 +290,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -464,7 +468,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -514,7 +519,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -564,7 +570,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -733,7 +740,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -783,7 +791,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -833,7 +842,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1045,7 +1055,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -1095,7 +1106,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -1145,7 +1157,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1313,7 +1326,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -1363,7 +1377,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -1413,7 +1428,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1625,7 +1641,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -1675,7 +1692,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -1725,7 +1743,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1893,7 +1912,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -1943,7 +1963,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -1993,7 +2014,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -2196,7 +2218,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -2246,7 +2269,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -2296,7 +2320,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -2499,7 +2524,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -2549,7 +2575,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -2599,7 +2626,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-d",
@@ -2649,7 +2677,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -2817,7 +2846,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-b",
@@ -2867,7 +2897,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-c",
@@ -2917,7 +2948,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             },
             {
               "win": "win-d",
@@ -2967,7 +2999,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],

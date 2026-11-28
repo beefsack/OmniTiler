@@ -109,6 +109,7 @@
             "sharedNativeRoster": false,
             "tiledFloatTransfer": true,
             "unavailableFacts": [],
+            "detachedFullscreenView": false,
             "warp": true,
             "windowSuppression": true
           },
@@ -458,7 +459,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "1",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             },
             {
               "op": "op-2",
@@ -469,7 +471,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "2",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             }
           ],
           "focusRequest": {
@@ -920,7 +923,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "1",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             },
             {
               "op": "op-4",
@@ -931,7 +935,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "4",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             }
           ],
           "focusRequest": {
@@ -1409,7 +1414,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "1",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             },
             {
               "op": "op-7",
@@ -1420,7 +1426,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "7",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             }
           ],
           "focusRequest": null,
@@ -1831,7 +1838,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "1",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             },
             {
               "op": "op-7",
@@ -1842,7 +1850,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "7",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             }
           ],
           "focusRequest": null,
@@ -2253,7 +2262,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "1",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             },
             {
               "op": "op-8",
@@ -2264,7 +2274,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "8",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             }
           ],
           "focusRequest": {
@@ -2736,7 +2747,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "1",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             },
             {
               "op": "op-9",
@@ -2747,7 +2759,8 @@
               "follow": false,
               "held": false,
               "cmdSeq": "9",
-              "parent": null
+              "parent": null,
+              "detachedDestination": null
             }
           ],
           "focusRequest": {

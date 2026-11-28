@@ -40,7 +40,8 @@
             "above": true,
             "warp": false,
             "tiledFloatTransfer": true,
-            "unavailableFacts": []
+            "unavailableFacts": [],
+            "detachedFullscreenView": false
           }
         }
       },
@@ -212,7 +213,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -233,7 +235,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             },
             {
               "out": "out-b",
@@ -251,7 +255,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -445,7 +451,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -466,7 +473,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             },
             {
               "out": "out-b",
@@ -484,7 +493,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -680,7 +691,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -701,7 +713,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             },
             {
               "out": "out-b",
@@ -719,7 +733,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -844,7 +860,8 @@
             "above": true,
             "warp": true,
             "tiledFloatTransfer": true,
-            "unavailableFacts": []
+            "unavailableFacts": [],
+            "detachedFullscreenView": false
           }
         }
       },
@@ -1016,7 +1033,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1037,7 +1055,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             },
             {
               "out": "out-b",
@@ -1055,7 +1075,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",
@@ -1249,7 +1271,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1270,7 +1293,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             },
             {
               "out": "out-b",
@@ -1288,7 +1313,9 @@
                   "native": "native-b",
                   "count": 0
                 }
-              ]
+              ],
+              "currentKnown": true,
+              "detachedCurrent": null
             }
           ],
           "focused": "win-a",

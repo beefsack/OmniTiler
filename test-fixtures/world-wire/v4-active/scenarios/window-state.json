@@ -41,7 +41,8 @@
             "above": true,
             "warp": true,
             "tiledFloatTransfer": true,
-            "unavailableFacts": []
+            "unavailableFacts": [],
+            "detachedFullscreenView": false
           }
         }
       },
@@ -188,7 +189,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -360,7 +362,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -532,7 +535,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -706,7 +710,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -879,7 +884,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1052,7 +1058,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1226,7 +1233,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1402,7 +1410,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1577,7 +1586,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1750,7 +1760,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -1926,7 +1937,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -2099,7 +2111,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -2275,7 +2288,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -2449,7 +2463,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -2624,7 +2639,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -2773,7 +2789,8 @@
             "above": false,
             "warp": false,
             "tiledFloatTransfer": false,
-            "unavailableFacts": []
+            "unavailableFacts": [],
+            "detachedFullscreenView": false
           }
         }
       },
@@ -2923,7 +2940,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -3050,7 +3068,8 @@
             "above": true,
             "warp": true,
             "tiledFloatTransfer": true,
-            "unavailableFacts": []
+            "unavailableFacts": [],
+            "detachedFullscreenView": false
           }
         }
       },
@@ -3197,7 +3216,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -3369,7 +3389,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],
@@ -3538,7 +3559,8 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              }
+              },
+              "detachedSurface": null
             }
           ],
           "closed": [],

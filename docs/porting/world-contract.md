@@ -185,6 +185,12 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | `WorkspaceRef` | `kind` | `logical` or `native` | no | Namespace, not inferred from string. |
 | | `out` | OutputId | no | Output at sampling time. |
 | | `ws` | WorkspaceId or NativeWorkspaceId | no | Id in the tagged namespace. |
+| `DetachedRef` | `kind,out,surface` | `"detached"`, OutputId, DetachedSurfaceId | no | Exact object; bounded opaque `surface` uses native workspace ID grammar but lives in a separate namespace. |
+| `ViewRef` | native or detached | `{kind:"native",out,ws:NativeWorkspaceId}` or `DetachedRef` | no | Exact tagged physical view. No logical arm. |
+
+`DetachedRef` is valid only where explicitly typed. It is never accepted as an
+ID in Desktop order, occupancy, current, workspace binding or membership. An
+identical bare ID in a Desktop position remains a Desktop ID.
 
 - `ScopeAuthority` keeps `controlled/untouched/hold`; a hold reason is one of
   `unreadable,incomplete-inventory,gesture-barrier,refused-target,ambiguous-creation,occupied-removal,constraint-clamp,minimized`.
@@ -225,6 +231,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | | `maximize,fullscreen,nativeSticky,above,warp` | bool | no | Native state/stacking/cursor actuation support, not semantic command support or permission. |
 | | `tiledFloatTransfer` | bool | no | Tiled source can become a float while crossing outputs without unsupported remap. |
 | | `unavailableFacts` | FactName[] | no | Fixed unsupported classification inputs, unique and in FactName catalog order, <=21 entries. |
+| | `detachedFullscreenView` | bool | no | True requires `hostOwned:true` and `nativeSelectorScope:"per-output"`. No missing-key default. KDE and Windows declare false; macOS leaves production away/return disabled pending native acceptance. |
 
 - `maximize` selects native actuation, not command availability: true uses the
   existing native overlay; false permits core-composed maximize through available
@@ -474,6 +481,9 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   with genuine AX NoValue on both focused and main legs proves windowless;
   main-window fallback is not no-client evidence. Do not fabricate foreground
   from desired focus, setter success or retained membership absence.
+- A `FocusChange::View` event has exactly `kind:"view"`, `out` and non-null
+  `native:ViewRef` with matching `native.out`. Malformed ordered events reject;
+  detached ordered events also reject when the capability is false.
 
 - `focusChanges:null` is snapshot-only, for hosts without continuous
   capture. Otherwise use the closed object `{after,events}`. `after` is
@@ -541,7 +551,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | `rect` | Rect | yes | Actual normalized native frame. |
 | `fullscreen,maximized,sticky,minimized` | bool | yes | Native state, unknown preserved. |
 | `hints` | WindowSizeHints | yes | Existing sanitized min/max frame constraints. |
-| `nativeWs` | NativeWorkspaceId | omit/null/empty | Actual native membership under hostOwned only. |
+| `nativeWs` | NativeWorkspaceId | omit/null/empty | User Desktop membership under hostOwned; see the detached membership rules below. |
 | `hostHidden,privileged,managed,acceptsInput,activationInhibited,toolWindow,owned,transient,modal,resizable,above,below` | bool | yes | Raw native facts; applicability is specified below, never adapter membership verdicts. |
 | `owner,parent` | WindowId | yes | Known live relationship, null if unavailable/unmanaged binding unknown. |
 | `role,appId` | bounded text | yes | Native role/application values without policy verdicts. |
@@ -555,6 +565,17 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | `fullscreenExitable` | bool | yes | Whether neutral core-authorized exit can be performed. |
 | `suppressionAvailable` | bool | yes | Per-window recoverable hide support/readability. |
 | `visibility` | VisibilityFact | no | Current native visibility and recovery ownership. |
+| `detachedSurface` | DetachedRef | required nullable | Exact detached fullscreen membership, null on capability-false hosts. |
+
+- With `detachedSurface:null`, an omitted or empty `nativeWs` is a read gap,
+  explicit null is known neither, and a bounded nonempty ID is Desktop
+  membership. Known neither does not prove a Desktop receipt; non-sticky
+  membership fences its scope, with the existing all-Desktop sticky exemption.
+- A non-null detached ref requires `nativeWs:null`, `fullscreen:true`, a
+  matching `out` and the enabled capability. A missing detached key or a
+  contradiction holds the identifiable row without membership or fallback
+  authority. Several windows may share a surface; this proves neither logical
+  home nor foreground.
 
 - Remove `floating,fitExcluded,fixedAuto,fixedSuppress,observedWs,shell,tool,ownedDialog,dialog,noActivate,cannotControl`; core derives these and
   owns explicit overrides, born latches and last-known frames. Native role/type,
@@ -735,16 +756,26 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 
 ### Native observation
 
-- `NativeObservation {out,order,current,occupancy}` and `NativeOccupancy
-  {native,count}` keep their existing wire shapes with typed native ids.
-  `current:null` preserves a non-ordered surface; empty/missing current is not
-  that state. Count null is unknown; occupancy includes all native occupants,
-  not just managed members. There are no `orderKnown/currentKnown` flags.
+- `NativeObservation` has `out,order,current,occupancy,currentKnown,detachedCurrent`.
+  `current` is a required nullable Desktop ID; `detachedCurrent` is a required
+  nullable `DetachedRef`. `order` and `NativeOccupancy {native,count}` remain
+  Desktop-only. Null count is unknown; count all native occupants.
+
+  | `currentKnown` | `current` | `detachedCurrent` | Meaning |
+  | --- | --- | --- | --- |
+  | false | null | null | Read gap: retain logical view; no physical proof. |
+  | true | null | null | Known neither. |
+  | true | Desktop ID | null | Readable Desktop in `order`. |
+  | true | null | DetachedRef | Readable detached current, with matching `out` and enabled capability. |
+
+  Both arms non-null, a non-null arm with `currentKnown:false`, an invalid or
+  missing required current field, or a detached ref with mismatched output or
+  false capability holds the identifiable row without physical authority.
+  Structural duplicate/output/order/occupancy violations still reject; a
+  detached ref in `order` or `occupancy` is a structural violation.
   Native facts without hostOwned refuse. Complete order needs both screen and
   inventory completeness; partial/missing rows never delete backing. Core
   translates bindings; adapters retain native lookups, not a logical map.
-  [Native baseline](world-contract-v3.md#host-owned-adoption-amendment-tentative-2026-10-25),
-  [superseded flags](../decisions/windows.md#accepted-protocol-and-phase-one-fences).
 - Fresh core adopts observed native order/membership without launch workspace
   moves; outside changes remain facts. Linked views share compatible order;
   contradictory order holds, not adapter merging. Stable logical ids survive
@@ -1247,6 +1278,14 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | `TransferTarget` | `op,kind,win,out,ws,follow,held` | Id, TransferKind, WindowId, OutputId, WorkspaceId, bool, bool | win empty except window kind | Existing window/view/migration target shape. |
 | | `cmdSeq` | Counter | yes | Original command sequence, null for commandless work. |
 | | `parent` | Id | yes | Explicit parent operation id for a paired migration source-refill view; null everywhere else. Both `op` and `parent` are bounded opaque ids with no spelling guarantee; never parse or infer the relation from `op`. |
+| | `detachedDestination` | `{surface:DetachedRef,member:WindowId}` | required nullable | Permitted only for an explicit standalone `view` with `follow:false`, `parent:null`, non-null `cmdSeq` and matching `surface.out`. Any malformed grant rejects without actuation. |
+
+- Retained View identity is `(op,out)`; repeating its operation on distinct
+  outputs is not a duplicate. Other transfer kinds keep operation identity.
+  Detached destinations may be minted by ordinary `SelectWorkspace`,
+  `SelectNumbered`, `SelectRelative`, `SelectPrevious` and `SelectTrailing`.
+  No GlobalUnique swap-plan view (even an empty swap plan) is eligible.
+  Adapters validate the grant shape, not infer command provenance.
 
 - V4 `WorkspaceDesire` row uniqueness is keyed by `(out,id)` in both
   reply codecs. Shared mode may repeat one logical id on different outputs;
@@ -1817,8 +1856,9 @@ v2 presentation relay are unchanged.
 | | `pre,post` | WorkspaceRef | yes | Single logical-or-native reference set, live before/after. |
 | | `attemptMs` | Counter | no | Original monotonic call or no-call consumption stamp. |
 | `ViewAttempt` | `kind,op,out,ws,disposition` | `"view"`, Id, OutputId, WorkspaceId, called disposition | no | Output-scoped native selector evidence for existing parent/phase. |
-| | `pre,post,base` | WorkspaceRef with kind native | yes | Native before/after/observation baseline only. |
+| | `pre,post,base` | ViewRef | required nullable | Typed physical view before/after and observation baseline. Only refs for `out` contribute proof; detached refs for a different output hold the row. |
 | | `attemptMs` | Counter | no | Original stamp. |
+| | `postMember` | WindowId | required nullable | Non-null only after an accepted call with detached `post` and a grounded membership read bracketed by samples of that exact detached surface. Null withholds proof. |
 | `StateAttempt` | `kind,win,property,target,rev` | `"state"`, WindowId, state property, bool, Counter | no | Exact core native-state target. |
 | | `disposition` | called disposition | no | Actual native call outcome. |
 | | `pre,post` | bool | yes | Observed property immediately around call. |
@@ -1878,9 +1918,23 @@ v2 presentation relay are unchanged.
   [correlation discriminator](../spec/reference-outcomes.md#native-state-attempt-correlation).
 - Member evidence uses the namespace allowed by hard capability; core alone
   translates native bindings. Remove parallel `nativePre/nativePost/nativeBase`.
-  ViewAttempt permits no logical arm; native-free visibility/focus completes
-  selection. This is the [G1 technical reconciliation](../changes/v4-migration.md#b-reconciliations-and-open-points),
-  approved 2026-11-02, not a new product decision.
+  View attempt identity is `(op,out)`; a duplicate pair rejects. Malformed
+  values on identifiable attempts hold and never retry, including non-null
+  detached values on capability-false hosts or a detached ref in a member
+  attempt. Native-free selection still completes via visibility/focus, not a
+  logical arm in `ViewAttempt`.
+- Detached destinations freeze the exact output, surface and intended live
+  member. The selection is focusless: fresh coherent current plus exact
+  membership proves it, or an accepted exact detached post with
+  `postMember` equal to the frozen member proves it once, without consulting
+  later membership. A gap, Desktop echo or wrong surface/member is not proof.
+  Refusal requires an unchanged readable preimage. One output's verdict
+  neither settles nor cancels a sibling's obligation.
+- A detached view never makes the covered Desktop visible, moves a member,
+  grants a focus setter, or seeds an implicit focus subject from historical
+  post evidence. After proof, only newer coherent current and trustworthy
+  actual foreground can ground a host-derived subject on that output.
+  See the [detached fullscreen return decision](../decisions/contract.md#detached-fullscreen-return).
 - Membership disposition carries `called` for native calls and
   `already-at-target` for consumption of a transfer operation without a call
   (User 2026-11-17). The latter reports the exact operation, window and desired

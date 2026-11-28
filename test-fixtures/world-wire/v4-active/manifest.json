@@ -1879,7 +1879,7 @@
     },
     {
       "id": "invalid-unsupported-version",
-      "file": "../v4/messages/invalid-unsupported-version.json",
+      "file": "messages/invalid-unsupported-version.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -1894,7 +1894,7 @@
     },
     {
       "id": "invalid-capability-unknown",
-      "file": "../v4/messages/invalid-capability-unknown.json",
+      "file": "messages/invalid-capability-unknown.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -1909,7 +1909,7 @@
     },
     {
       "id": "invalid-capability-type",
-      "file": "../v4/messages/invalid-capability-type.json",
+      "file": "messages/invalid-capability-type.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -1939,7 +1939,7 @@
     },
     {
       "id": "invalid-handshake-gen",
-      "file": "../v4/messages/invalid-handshake-gen.json",
+      "file": "messages/invalid-handshake-gen.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4264,7 +4264,7 @@
     },
     {
       "id": "invalid-duplicate-root",
-      "file": "../v4/messages/invalid-duplicate-root.json",
+      "file": "messages/invalid-duplicate-root.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4318,7 +4318,7 @@
     },
     {
       "id": "invalid-handshake-missing-nativeSelectorScope",
-      "file": "../v4/messages/invalid-handshake-missing-nativeSelectorScope.json",
+      "file": "messages/invalid-handshake-missing-nativeSelectorScope.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4333,7 +4333,7 @@
     },
     {
       "id": "invalid-handshake-missing-above",
-      "file": "../v4/messages/invalid-handshake-missing-above.json",
+      "file": "messages/invalid-handshake-missing-above.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4348,7 +4348,7 @@
     },
     {
       "id": "invalid-handshake-missing-warp",
-      "file": "../v4/messages/invalid-handshake-missing-warp.json",
+      "file": "messages/invalid-handshake-missing-warp.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4363,7 +4363,7 @@
     },
     {
       "id": "invalid-handshake-missing-unavailableFacts",
-      "file": "../v4/messages/invalid-handshake-missing-unavailableFacts.json",
+      "file": "messages/invalid-handshake-missing-unavailableFacts.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4378,7 +4378,7 @@
     },
     {
       "id": "invalid-handshake-selector-unknown",
-      "file": "../v4/messages/invalid-handshake-selector-unknown.json",
+      "file": "messages/invalid-handshake-selector-unknown.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4393,7 +4393,7 @@
     },
     {
       "id": "invalid-handshake-above-null",
-      "file": "../v4/messages/invalid-handshake-above-null.json",
+      "file": "messages/invalid-handshake-above-null.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4408,7 +4408,7 @@
     },
     {
       "id": "invalid-handshake-above-string",
-      "file": "../v4/messages/invalid-handshake-above-string.json",
+      "file": "messages/invalid-handshake-above-string.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4423,7 +4423,7 @@
     },
     {
       "id": "invalid-handshake-warp-null",
-      "file": "../v4/messages/invalid-handshake-warp-null.json",
+      "file": "messages/invalid-handshake-warp-null.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4438,7 +4438,7 @@
     },
     {
       "id": "invalid-handshake-warp-string",
-      "file": "../v4/messages/invalid-handshake-warp-string.json",
+      "file": "messages/invalid-handshake-warp-string.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4453,7 +4453,7 @@
     },
     {
       "id": "invalid-unavailable-facts-unknown",
-      "file": "../v4/messages/invalid-unavailable-facts-unknown.json",
+      "file": "messages/invalid-unavailable-facts-unknown.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4468,7 +4468,7 @@
     },
     {
       "id": "invalid-unavailable-facts-duplicate",
-      "file": "../v4/messages/invalid-unavailable-facts-duplicate.json",
+      "file": "messages/invalid-unavailable-facts-duplicate.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4483,7 +4483,7 @@
     },
     {
       "id": "invalid-unavailable-facts-order",
-      "file": "../v4/messages/invalid-unavailable-facts-order.json",
+      "file": "messages/invalid-unavailable-facts-order.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4498,7 +4498,7 @@
     },
     {
       "id": "invalid-unavailable-facts-wrong-type",
-      "file": "../v4/messages/invalid-unavailable-facts-wrong-type.json",
+      "file": "messages/invalid-unavailable-facts-wrong-type.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4513,7 +4513,7 @@
     },
     {
       "id": "invalid-unavailable-facts-non-string",
-      "file": "../v4/messages/invalid-unavailable-facts-non-string.json",
+      "file": "messages/invalid-unavailable-facts-non-string.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -4528,7 +4528,7 @@
     },
     {
       "id": "invalid-unavailable-facts-null",
-      "file": "../v4/messages/invalid-unavailable-facts-null.json",
+      "file": "messages/invalid-unavailable-facts-null.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5401,7 +5401,7 @@
     },
     {
       "id": "invalid-handshake-selector-wrong-type",
-      "file": "../v4/messages/invalid-handshake-selector-wrong-type.json",
+      "file": "messages/invalid-handshake-selector-wrong-type.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5415,7 +5415,7 @@
     },
     {
       "id": "invalid-handshake-unavailable-facts-over-bound",
-      "file": "../v4/messages/invalid-handshake-unavailable-facts-over-bound.json",
+      "file": "messages/invalid-handshake-unavailable-facts-over-bound.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5848,7 +5848,7 @@
     },
     {
       "id": "invalid-nativeSticky-missing",
-      "file": "../v4/messages/invalid-nativeSticky-missing.json",
+      "file": "messages/invalid-nativeSticky-missing.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5863,7 +5863,7 @@
     },
     {
       "id": "invalid-nativeSticky-null",
-      "file": "../v4/messages/invalid-nativeSticky-null.json",
+      "file": "messages/invalid-nativeSticky-null.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5878,7 +5878,7 @@
     },
     {
       "id": "invalid-legacy-sticky-capability",
-      "file": "../v4/messages/invalid-legacy-sticky-capability.json",
+      "file": "messages/invalid-legacy-sticky-capability.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5972,7 +5972,7 @@
     },
     {
       "id": "invalid-application-identity-empty",
-      "file": "../v4/messages/invalid-application-identity-empty.json",
+      "file": "messages/invalid-application-identity-empty.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5987,7 +5987,7 @@
     },
     {
       "id": "invalid-application-identity-type",
-      "file": "../v4/messages/invalid-application-identity-type.json",
+      "file": "messages/invalid-application-identity-type.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6002,7 +6002,7 @@
     },
     {
       "id": "invalid-application-identity-overbound",
-      "file": "../v4/messages/invalid-application-identity-overbound.json",
+      "file": "messages/invalid-application-identity-overbound.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6017,7 +6017,7 @@
     },
     {
       "id": "invalid-application-identity-nul",
-      "file": "../v4/messages/invalid-application-identity-nul.json",
+      "file": "messages/invalid-application-identity-nul.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6032,7 +6032,7 @@
     },
     {
       "id": "invalid-application-identity-supported-null",
-      "file": "../v4/messages/invalid-application-identity-supported-null.json",
+      "file": "messages/invalid-application-identity-supported-null.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6047,7 +6047,7 @@
     },
     {
       "id": "invalid-application-identity-unavailable-value",
-      "file": "../v4/messages/invalid-application-identity-unavailable-value.json",
+      "file": "messages/invalid-application-identity-unavailable-value.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6077,7 +6077,7 @@
     },
     {
       "id": "invalid-application-identity-missing",
-      "file": "../v4/messages/invalid-application-identity-missing.json",
+      "file": "messages/invalid-application-identity-missing.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6157,7 +6157,7 @@
     },
     {
       "id": "invalid-application-identity-object-null",
-      "file": "../v4/messages/invalid-application-identity-object-null.json",
+      "file": "messages/invalid-application-identity-object-null.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6172,7 +6172,7 @@
     },
     {
       "id": "invalid-application-identity-legacy-scalar",
-      "file": "../v4/messages/invalid-application-identity-legacy-scalar.json",
+      "file": "messages/invalid-application-identity-legacy-scalar.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6187,7 +6187,7 @@
     },
     {
       "id": "invalid-application-identity-appid-missing",
-      "file": "../v4/messages/invalid-application-identity-appid-missing.json",
+      "file": "messages/invalid-application-identity-appid-missing.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6202,7 +6202,7 @@
     },
     {
       "id": "invalid-application-identity-appid-type",
-      "file": "../v4/messages/invalid-application-identity-appid-type.json",
+      "file": "messages/invalid-application-identity-appid-type.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6217,7 +6217,7 @@
     },
     {
       "id": "invalid-application-identity-appid-empty",
-      "file": "../v4/messages/invalid-application-identity-appid-empty.json",
+      "file": "messages/invalid-application-identity-appid-empty.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6232,7 +6232,7 @@
     },
     {
       "id": "invalid-application-identity-appid-nul",
-      "file": "../v4/messages/invalid-application-identity-appid-nul.json",
+      "file": "messages/invalid-application-identity-appid-nul.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6247,7 +6247,7 @@
     },
     {
       "id": "invalid-application-identity-appid-overbound",
-      "file": "../v4/messages/invalid-application-identity-appid-overbound.json",
+      "file": "messages/invalid-application-identity-appid-overbound.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6262,7 +6262,7 @@
     },
     {
       "id": "invalid-application-identity-executable-missing",
-      "file": "../v4/messages/invalid-application-identity-executable-missing.json",
+      "file": "messages/invalid-application-identity-executable-missing.json",
       "family": "HandshakeRequest",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
