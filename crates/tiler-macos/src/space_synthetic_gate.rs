@@ -184,6 +184,66 @@ pub(crate) fn require_window_target(
     require_synthetic_target(Some((pid, wid)), display_index, pinned_uuid)
 }
 
+/// Exact fixture-owned surface proof. The fullscreen anchor must still be
+/// live and report only this Space. Auxiliary rows may share the surface,
+/// but a layer-0 on-screen row owned by another process may not.
+pub(crate) fn detached_surface_exact(detached: u64, pid: u32, wid: u32) -> Result<bool, String> {
+    if detached == 0 || pid <= 1 || wid == 0 {
+        return Ok(false);
+    }
+    let kind = crate::ffi::sls_space_type(detached).map_err(|e| e.to_string())?;
+    if kind != SlsSpaceType::Fullscreen {
+        return Ok(false);
+    }
+    let rows = crate::ffi::cg_window_list_basic()?;
+    detached_rows_exact(detached, pid, wid, &rows, &|wid| {
+        crate::ffi::sls_spaces_for_window(wid).map_err(|e| e.to_string())
+    })
+}
+
+fn detached_rows_exact(
+    detached: u64,
+    pid: u32,
+    wid: u32,
+    rows: &[crate::ffi::CgWindowBasic],
+    spaces_of: &dyn Fn(u32) -> Result<Vec<u64>, String>,
+) -> Result<bool, String> {
+    if rows.len() >= crate::config::MAX_WINDOWS {
+        return Err("CG snapshot reached the window bound; completeness unknown".to_owned());
+    }
+    let mut anchors = rows.iter().filter(|row| row.wid == wid);
+    if !matches!(anchors.next(), Some(row) if row.pid == pid && row.layer == 0)
+        || anchors.next().is_some()
+        || spaces_of(wid)? != [detached]
+    {
+        return Ok(false);
+    }
+    let mut foreign = false;
+    for row in rows {
+        if row.wid == wid || row.layer < 0 {
+            continue;
+        }
+        let foreign_candidate = row.layer == 0 && row.onscreen && row.pid != pid;
+        match spaces_of(row.wid) {
+            Ok(spaces) if spaces.contains(&detached) => {
+                eprintln!(
+                    "tiler-macos detached surface {detached}: extra wid={} pid={} layer={} onscreen={} foreign_candidate={foreign_candidate}",
+                    row.wid, row.pid, row.layer, row.onscreen
+                );
+                foreign |= foreign_candidate;
+            }
+            Err(error) if foreign_candidate => {
+                return Err(format!(
+                    "window {} Space membership unreadable ({error})",
+                    row.wid
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(!foreign)
+}
+
 fn require_synthetic_target(
     expected: Option<(i32, u32)>,
     display_index: usize,
@@ -354,6 +414,33 @@ pub(crate) fn require_mc_detached_selection(
     .map_err(|reason| format!("Mission Control detached selection refused: {reason}"))
 }
 
+/// Press-fence recheck for the exact registered fixture detached member.
+/// The typed pinned-row fence above still passes when the surface SID stays
+/// in place, so it cannot see the registered window leaving that surface
+/// during the asynchronous Mission Control open. This repeats the same
+/// exact owner/member proof from fresh reads immediately before the AX
+/// press. `None` is an unregistered route and adds no read or refusal.
+pub(crate) fn require_registered_detached_member(
+    registration: Option<(u64, u32, u32)>,
+    exact: impl FnOnce(u64, u32, u32) -> Result<bool, String>,
+) -> Result<(), String> {
+    let Some((surface, pid, wid)) = registration else {
+        return Ok(());
+    };
+    let still_exact = exact(surface, pid, wid).map_err(|e| {
+        format!(
+            "registered detached member {pid}_{wid} on surface {surface} unreadable at the press fence ({e}); refusing"
+        )
+    })?;
+    if still_exact {
+        Ok(())
+    } else {
+        Err(format!(
+            "registered detached member {pid}_{wid} left the exact surface {surface} during Mission Control open; refusing the press"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +467,67 @@ mod tests {
     }
 
     #[test]
+    fn detached_surface_entry_and_return_accept_only_same_owner_onscreen_members() {
+        use crate::ffi::{CgBounds, CgWindowBasic};
+
+        let owner = 12_168;
+        let surface = 320;
+        let anchor = 10_747;
+        let row = |wid, pid, layer, onscreen, h| CgWindowBasic {
+            wid,
+            pid,
+            layer,
+            onscreen,
+            bounds: CgBounds {
+                x: 0.0,
+                y: 0.0,
+                w: 2240.0,
+                h,
+            },
+        };
+        let spaces = |wid| match wid {
+            20..=22 => panic!("negative-layer row {wid} must be ignored"),
+            10_808 => Ok(vec![319]),
+            _ => Ok(vec![surface]),
+        };
+        for (onscreen, extra, height) in [(false, 10_815, 1260.0), (true, 10_816, 32.0)] {
+            let mut rows = [
+                row(anchor, owner, 0, onscreen, 1260.0),
+                row(extra, owner, 0, true, height),
+                row(10_808, owner, 0, false, 632.0),
+                row(20, 81, -1, onscreen, 1260.0),
+                row(21, 81, -2, onscreen, 1260.0),
+                row(22, 88, -4, false, 1260.0),
+                row(23, 88, 24, false, 1260.0),
+            ];
+            assert_eq!(
+                detached_rows_exact(surface, owner, anchor, &rows, &spaces),
+                Ok(true)
+            );
+            rows[1].pid = owner + 1;
+            assert_eq!(
+                detached_rows_exact(surface, owner, anchor, &rows, &spaces),
+                Ok(false)
+            );
+            rows[1].onscreen = false;
+            assert_eq!(
+                detached_rows_exact(surface, owner, anchor, &rows, &spaces),
+                Ok(true)
+            );
+            assert_eq!(
+                detached_rows_exact(surface, owner, anchor, &rows, &|wid| {
+                    if wid == anchor {
+                        Ok(vec![317, surface])
+                    } else {
+                        spaces(wid)
+                    }
+                }),
+                Ok(false)
+            );
+        }
+    }
+
+    #[test]
     fn pinned_detached_route_admits_only_exact_typed_pinned_source_and_target() {
         let displays = [
             row("A", &[10, 11, 900], Some(900)),
@@ -399,6 +547,43 @@ mod tests {
             mc_detached_selection_allowed(&desktop_source, "A", Desktop(10), Detached(900), &kinds)
                 .is_ok(),
             "the exact Desktop source and detached target are admitted"
+        );
+    }
+
+    #[test]
+    fn registered_member_drift_during_mc_open_blocks_press_with_unchanged_typed_row() {
+        let displays = [
+            row("A", &[10, 11, 900], Some(900)),
+            row("B", &[20], Some(20)),
+        ];
+        let kinds = types(&[(10, User), (11, User), (900, Fullscreen), (20, User)]);
+        // The press-fence typed proof still passes: the exact SIDs, their
+        // classes, and the pinned index/current are unchanged by the open.
+        mc_detached_selection_allowed(&displays, "A", Detached(900), Desktop(11), &kinds)
+            .expect("the typed SID and pinned index are unchanged during open");
+        // The registered member left the still-present fullscreen surface
+        // while Mission Control was opening: only the exact member recheck
+        // can block the press.
+        let error =
+            require_registered_detached_member(Some((900, 12_168, 10_747)), |surface, pid, wid| {
+                assert_eq!((surface, pid, wid), (900, 12_168, 10_747));
+                Ok(false)
+            })
+            .expect_err("member drift with an unchanged typed row blocks the press");
+        assert!(error.contains("during Mission Control open"));
+        assert!(error.contains("refusing the press"));
+        require_registered_detached_member(Some((900, 12_168, 10_747)), |_, _, _| Ok(true))
+            .expect("a still-exact member permits the press");
+        require_registered_detached_member(None, |_, _, _| {
+            panic!("an unregistered route must not add a member read")
+        })
+        .expect("unregistered routes are unchanged");
+        assert!(
+            require_registered_detached_member(Some((900, 12_168, 10_747)), |_, _, _| {
+                Err("CG unreadable".to_owned())
+            })
+            .expect_err("an unreadable member proof refuses")
+            .contains("unreadable at the press fence")
         );
     }
 

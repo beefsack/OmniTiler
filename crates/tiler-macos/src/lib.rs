@@ -56,6 +56,8 @@ pub mod engine;
 pub mod ffi;
 mod fixture_corrupt_store;
 #[cfg(target_os = "macos")]
+mod fixture_detached_away;
+#[cfg(target_os = "macos")]
 mod fixture_float;
 pub mod fixture_frame;
 pub mod fixture_gate;

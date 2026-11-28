@@ -105,6 +105,9 @@ pub(crate) const FLOAT_SEQUENCES_HOLD_OCCURRENCE: u32 = 3;
 /// Diagnostic-only alias for a pager rebuild across an owned-Space round trip.
 pub(crate) const PAGER_SWITCH_CHORD: &str = "pager-switch";
 
+/// Signed fixture arm for the redundant, Away, and Return acceptance legs.
+pub(crate) const DETACHED_AWAY_CHORD: &str = "detached-away";
+
 /// Diagnostic-only arm for explicit-Apply verification: one Compatible
 /// send-follow against a controller-owned source and a distinct
 /// controller-owned target, expected to refuse at native Desktop-N holder
@@ -791,10 +794,35 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
         ));
     }
     for chord in &opts.chords {
-        if crate::live_leg::required_scope(chord).is_none() {
+        if chord != DETACHED_AWAY_CHORD
+            && crate::live_leg::required_scope(chord).is_none()
+        {
             return Err((
                 2,
                 format!("fixture-leg: unknown --chord '{chord}' (see help)"),
+            ));
+        }
+    }
+    if opts
+        .chords
+        .iter()
+        .any(|chord| chord == DETACHED_AWAY_CHORD)
+    {
+        if opts.chords.as_slice() != [DETACHED_AWAY_CHORD] {
+            return Err((
+                2,
+                "detached-away must be the only --chord (one controller lifetime)".to_owned(),
+            ));
+        }
+        if opts.preset != InputPreset::Authentic
+            || opts.hover_probe
+            || opts.corrupt_intent_store
+            || opts.focus_follows_cursor
+        {
+            return Err((
+                2,
+                "detached-away needs --preset authentic and refuses --hover-probe, --corrupt-intent-store and --focus-follows-cursor"
+                    .to_owned(),
             ));
         }
     }
@@ -945,7 +973,23 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
             }
         }
         Err(error) => {
-            if let Err(teardown) = leg.finish() {
+            let teardown = leg.finish();
+            if opts.chords.as_slice() == [DETACHED_AWAY_CHORD] {
+                // Keep the primary stop and the final restoration proof
+                // together even when the measured sequence failed.
+                let failure = serde_json::from_str::<serde_json::Value>(&error.1)
+                    .unwrap_or(serde_json::Value::String(error.1));
+                let teardown = match teardown {
+                    Ok(report) => serde_json::json!(report),
+                    Err((_, body)) => serde_json::from_str(&body)
+                        .unwrap_or(serde_json::Value::String(body)),
+                };
+                return Err((
+                    error.0,
+                    serde_json::json!({"failure": failure, "teardown": teardown}).to_string(),
+                ));
+            }
+            if let Err(teardown) = teardown {
                 eprintln!("fixture-leg teardown after failure: {}", teardown.1);
             }
             Err(error)
@@ -1242,6 +1286,82 @@ fn run_one_send_arm(
 }
 
 /// macOS-only leg body (see [`run_leg_body`]).
+/// One detached-away controller lifetime: prepare both owned Desktops and
+/// both fixture windows before launch, publish the product with stage timing,
+/// bind one space-mutating admission, and let the arm measure all three posts.
+#[cfg(target_os = "macos")]
+fn run_detached_away(
+    leg: &mut LiveLeg<LiveLegTransport>,
+    opts: &FixtureLegOpts,
+    product_dir: &std::path::Path,
+    announcement: &str,
+    parsed: &crate::fixture_post::FixtureAnnouncement,
+    nonce: &str,
+) -> Result<LegReports, (i32, String)> {
+    use crate::live_leg::PendingLaunch;
+    let prepared = crate::fixture_detached_away::prepare(
+        leg,
+        parsed.pid,
+        &parsed.socket,
+        nonce,
+        announcement,
+        &opts.signer,
+    )?;
+    let owned_sids = prepared.owned_sids();
+    let starting = prepared.starting_sid();
+    let run_id = format!("fixture-leg-detached-{}-{starting}", std::process::id());
+    std::fs::write(product_dir.join("run-id"), format!("{run_id}\n"))
+        .map_err(|e| (1, format!("fixture-leg: product run-id refused ({e})")))?;
+    leg.note_pending_launch(PendingLaunch {
+        run_dir: product_dir.to_path_buf(),
+        expected_bundle: crate::BUNDLE_ID.to_owned(),
+        what: "product",
+    });
+    let bundle = product_bundle_path().map_err(|e| (2, e))?;
+    let argv = product_argv(
+        opts.seconds,
+        opts.preset,
+        opts.modifier,
+        opts.focus_follows_cursor,
+        product_dir,
+        &owned_sids,
+        Some(starting),
+    );
+    let store_dir = product_dir.join(ISOLATED_STORE_LEAF);
+    let product = match launch_product_ls(&bundle, product_dir, &store_dir, &argv, &run_id, true, None) {
+        Ok(product) => product,
+        Err(e) => {
+            let _ = leg.resolve_pending_absence("product");
+            return Err((1, e));
+        }
+    };
+    leg.register_product_ls(product)?;
+    let chord = prepared.select_chord();
+    let admission = leg.admit(parsed.pid, Some(&chord))?;
+    let driver = crate::fixture_post::FixtureDriver::bind(
+        &crate::fixture_post::LiveTransport,
+        announcement,
+        nonce,
+        &opts.signer,
+        admission,
+    )?;
+    let report = crate::fixture_detached_away::run(
+        leg,
+        &driver,
+        parsed.pid,
+        &prepared,
+        product_dir,
+        opts.modifier,
+        opts.preset,
+    )?;
+    Ok(LegReports {
+        chords: vec![report],
+        hover_probe: None,
+        owned_space: None,
+        corrupt_store: None,
+    })
+}
+
 #[cfg(target_os = "macos")]
 #[allow(clippy::too_many_lines)]
 fn run_leg_body_macos(
@@ -1249,12 +1369,32 @@ fn run_leg_body_macos(
     opts: &FixtureLegOpts,
 ) -> Result<LegReports, (i32, String)> {
     use crate::live_leg::PendingLaunch;
+    let detached_away = opts.chords.as_slice() == [DETACHED_AWAY_CHORD];
+    if detached_away {
+        // Capture the pre-arm pointer before any setup effect (run directory,
+        // fixture launch, prepare, product launch) so every failure path can
+        // restore and read it back at teardown.
+        let pointer = crate::synth::cursor_position()
+            .ok_or_else(|| (1, "detached acceptance: starting pointer unreadable; refusing".to_owned()))?;
+        leg.note_pointer_origin(Some(pointer));
+        // Install the teardown guard before any setup effect; it retains the
+        // bounded product log unless every owned removal is proved.
+        leg.note_detached_acceptance();
+    }
     // Owned private run directory first (before ANY fixture/product/Space
     // effect): a refusal aborts with zero effects.
     let run_dir = create_owned_run_dir("run").map_err(|e| (2, e))?;
     let product_dir = run_dir.join("product");
-    std::fs::create_dir(&product_dir)
-        .map_err(|e| (1, format!("fixture-leg: product dir refused ({e})")))?;
+    if detached_away {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&product_dir)
+            .map_err(|e| (1, format!("fixture-leg: product dir refused ({e})")))?;
+    } else {
+        std::fs::create_dir(&product_dir)
+            .map_err(|e| (1, format!("fixture-leg: product dir refused ({e})")))?;
+    }
     if opts.corrupt_intent_store {
         crate::fixture_corrupt_store::pre_seed(&product_dir)?;
     }
@@ -1317,6 +1457,9 @@ fn run_leg_body_macos(
     })?;
     leg.transport_mut()
         .set_fixture_control(parsed.socket.clone(), run_dir.clone());
+    if detached_away {
+        return run_detached_away(leg, opts, &product_dir, &announcement, &parsed, &nonce);
+    }
     if let [chord] = opts.chords.as_slice()
         && matches!(chord.as_str(), SWIPE_27_CHORD | SWIPE_27_E1_CHORD | SWIPE_27_FULLSCREEN_CHORD)
     {

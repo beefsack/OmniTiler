@@ -2903,7 +2903,7 @@ mod stale_anchor_fence {
             let mut plain = observed(W0, 0, 0, 400, 300);
             plain.fullscreen = false;
             let mut current = scoped_snapshot(
-                vec![plain.clone()],
+                vec![plain],
                 vec![vec![HOME_SID]],
                 0,
                 ctx.revision,
@@ -2928,7 +2928,7 @@ mod stale_anchor_fence {
                         output: output.clone(),
                         workspace: home.clone(),
                     },
-                    vec![plain.clone()],
+                    vec![plain],
                 )]),
             );
             retained
@@ -3461,33 +3461,30 @@ mod stale_anchor_fence {
             surface: crate::runtime_types::detached_ref(home.output.clone(), 320),
             member: proof.window.clone(),
         };
-        let reply = |transfers: Vec<TransferTargetV4>| {
-            let reply = WorldReplyV4 {
-                contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
-                adapter_incarnation: "adapter-1".to_owned(),
-                core_generation: "gen-1".to_owned(),
-                request_id: "req-0".to_owned(),
-                based_on_observation_seq: 0,
-                state_revision: 0,
-                ready: false,
-                command_consumed: false,
-                scopes: Vec::new(),
-                workspaces: Vec::new(),
-                outputs: Vec::new(),
-                windows: Vec::new(),
-                transfers,
-                focus_request: None,
-                drag_preview: None,
-                gesture_settled: None,
-                operation_settled: Vec::new(),
-                native_creations: Vec::new(),
-                warp_request: None,
-                presentation: crate::runtime::empty_world_presentation_v4(),
-                intent_desired: Vec::new(),
-                switch_settled: Vec::new(),
-                diagnostics: Vec::new(),
-            };
-            reply
+        let reply = |transfers: Vec<TransferTargetV4>| WorldReplyV4 {
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            request_id: "req-0".to_owned(),
+            based_on_observation_seq: 0,
+            state_revision: 0,
+            ready: false,
+            command_consumed: false,
+            scopes: Vec::new(),
+            workspaces: Vec::new(),
+            outputs: Vec::new(),
+            windows: Vec::new(),
+            transfers,
+            focus_request: None,
+            drag_preview: None,
+            gesture_settled: None,
+            operation_settled: Vec::new(),
+            native_creations: Vec::new(),
+            warp_request: None,
+            presentation: crate::runtime::empty_world_presentation_v4(),
+            intent_desired: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
         };
 
         assert_eq!(

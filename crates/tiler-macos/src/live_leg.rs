@@ -330,6 +330,10 @@ pub struct TeardownReport {
     /// registered.
     pub product_reaped: bool,
     pub current_restored: bool,
+    /// Exact pre-arm pointer restoration proof captured after every teardown
+    /// effect: `None` when no position was available to capture, otherwise
+    /// the observed equality of the restored position with the captured one.
+    pub pointer_restored: Option<bool>,
     pub restored: Vec<(usize, u64)>,
     pub mismatches: Vec<BaselineMismatch>,
     pub residue: Vec<String>,
@@ -376,6 +380,16 @@ pub struct TeardownReport {
 /// - `awake_start`/`awake_stop` own the bounded exact awake child.
 pub trait LegTransport: BaselineReads + NativeSpaces {
     fn return_readiness(&mut self, starting: &LiveBaseline) -> Result<(), String>;
+    /// Close a late fullscreen Mission Control presentation only if observed;
+    /// return success only after a fresh absence proof.
+    fn settle_fullscreen_mc(&mut self) -> Result<(), String>;
+    /// Exact current pointer position, when readable. Used by detached
+    /// acceptance to restore and read back the pre-arm position after every
+    /// teardown path; an unreadable position proves nothing.
+    fn pointer_position(&mut self) -> Option<(f64, f64)>;
+    /// Warp exactly to the captured pointer position. No other input is
+    /// synthesized on this route.
+    fn warp_pointer(&mut self, x: f64, y: f64) -> Result<(), String>;
     /// Close exactly one registered run-owned fixture window by its caller
     /// id over the leg-owned control socket. PID/WID ride along for the
     /// residue evidence only.
@@ -514,7 +528,45 @@ fn poll_process_gone(pid: u32) -> Result<bool, String> {
     }
 }
 
+fn close_observed_mc(
+    present: impl FnOnce() -> Result<bool, String>,
+    close: impl FnOnce() -> Result<(), String>,
+    verified_closed: impl FnOnce() -> Result<bool, String>,
+) -> Result<(), String> {
+    if present()? {
+        close()?;
+    }
+    if !verified_closed()? {
+        return Err("Mission Control absence did not verify".to_owned());
+    }
+    Ok(())
+}
+
 impl LegTransport for LiveLegTransport {
+    fn settle_fullscreen_mc(&mut self) -> Result<(), String> {
+        use crate::mc_lifecycle::live;
+        close_observed_mc(
+            || live::mc_group_present().map_err(|e| e.to_string()),
+            || live::mc_close().map(|_| ()).map_err(|e| e.to_string()),
+            || {
+                if !live::mc_closed_verified().map_err(|e| e.to_string())? {
+                    return Ok(false);
+                }
+                live::mc_windowmanager_presentation_present()
+                    .map(|present| !present)
+                    .map_err(|e| e.to_string())
+            },
+        )
+    }
+
+    fn pointer_position(&mut self) -> Option<(f64, f64)> {
+        crate::synth::cursor_position()
+    }
+
+    fn warp_pointer(&mut self, x: f64, y: f64) -> Result<(), String> {
+        crate::ffi::warp_cursor_position(x, y)
+    }
+
     fn return_readiness(&mut self, starting: &LiveBaseline) -> Result<(), String> {
         // Read-only availability proof for the return route: session gates,
         // a fresh SLS snapshot, the exact-single Dock identity, and currents
@@ -713,13 +765,14 @@ fn read_product_tilestarted_pid(stdout_log: &Path, run_id: &str) -> Result<u32, 
 /// request, terminal outcome plus its atomic-write temp, foreground logs,
 /// and the per-run ID. Shared by the single-launch product directory and
 /// each two-launch `launch-N` subdirectory.
-const PRODUCT_RUN_LEAVES: [&str; 6] = [
+const PRODUCT_RUN_LEAVES: [&str; 7] = [
     "stop-requested",
     "outcome.json",
     ".outcome.json.tmp",
     "stdout.log",
     "stderr.log",
     "run-id",
+    crate::fixture_gate::DETACHED_REGISTRATION_FILE,
 ];
 
 /// Fixture-owned top-level leaves of one run directory. The nested
@@ -1128,6 +1181,11 @@ pub struct LiveLeg<'a, T: LegTransport> {
     owned_spaces: Vec<(usize, u64)>,
     fixture_fullscreen_sid: Option<u64>,
     fixture_fullscreen_exit: Option<FixtureFullscreenExit>,
+    /// Detached acceptance pre-arm pointer position, captured before any
+    /// setup effect (including prepare failures). Restored and read back
+    /// after every teardown effect; `None` when the position was unreadable.
+    pointer_origin: Option<(f64, f64)>,
+    detached_acceptance_cleanup: bool,
     owned_pids: Vec<u32>,
     /// Retained product exit-time `outcome.json` body: read while the
     /// product stops, before the owned run directory removal, and reported
@@ -1194,6 +1252,8 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             owned_spaces: Vec::new(),
             fixture_fullscreen_sid: None,
             fixture_fullscreen_exit: None,
+            pointer_origin: None,
+            detached_acceptance_cleanup: false,
             owned_pids: Vec::new(),
             product_outcome: None,
             retain_product_evidence: false,
@@ -1457,6 +1517,13 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         self.retain_product_evidence = true;
     }
 
+    /// Install the detached acceptance teardown guard before any setup effects
+    /// and preserve the bounded run's product log and terminal evidence.
+    pub(crate) fn note_detached_acceptance(&mut self) {
+        self.detached_acceptance_cleanup = true;
+        self.retain_product_evidence = true;
+    }
+
     /// Stop the registered product for an orderly relaunch, using the
     /// existing exact-owner stop path, and clear it only after all of:
     /// the stop reports reaped, no residue was collected, the product's own
@@ -1528,6 +1595,57 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         })
     }
 
+    /// Stop the exact registered product before any controller recovery
+    /// Mission-Control step and prove absence. The product's own evidence
+    /// (terminal body plus retained launch logs) stays available before the
+    /// stop: the body is retained while the owned run directory still
+    /// exists, and the detached acceptance keeps the logs as evidence.
+    /// Returns `Ok` only when no product is owned and no product launch is
+    /// pending, or the exact stop reaped it, published terminal evidence,
+    /// produced no residue, and one independent exact-PID liveness check
+    /// proved it gone. On any refusal the record stays registered so
+    /// `finish` retries the same exact stop; callers must then skip every
+    /// recovery Mission-Control mutation.
+    pub(crate) fn quiesce_detached_product(&mut self) -> Result<(), String> {
+        if self
+            .pending_launches
+            .iter()
+            .any(|entry| entry.what == "product")
+        {
+            return Err(
+                "detached recovery: a product launch is still pending; absence unproved".to_owned(),
+            );
+        }
+        let Some(record) = self.owned_product.clone() else {
+            return Ok(());
+        };
+        let mut residue = Vec::new();
+        let stopped = self.stop_product(&mut residue);
+        let gone = match self.transport.process_gone(record.pid) {
+            Ok(gone) => gone,
+            Err(e) => {
+                return Err(format!(
+                    "detached recovery: owned product pid {} liveness unreadable ({e}); absence unproved",
+                    record.pid
+                ));
+            }
+        };
+        if !stopped || !gone || !residue.is_empty() {
+            return Err(format!(
+                "detached recovery: owned product pid {} absence unproved; residue: {}",
+                record.pid,
+                if residue.is_empty() {
+                    "stop did not prove terminal evidence plus reap".to_owned()
+                } else {
+                    residue.join("; ")
+                }
+            ));
+        }
+        self.owned_product = None;
+        self.product_child = None;
+        Ok(())
+    }
+
     /// Register one leg-created native Space for owned-only removal at
     /// `finish` (pinned to its creation display).
     pub fn note_owned_space(&mut self, display: usize, sid: u64) {
@@ -1538,6 +1656,23 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
 
     pub(crate) fn note_fixture_fullscreen(&mut self, sid: u64) {
         self.fixture_fullscreen_sid = Some(sid);
+    }
+
+    /// Record that the detached entry request is about to be emitted. From
+    /// this point only a positive windowed-exit proof may replace the
+    /// conservative `Unsafe` handoff, so a request error or entry timeout
+    /// can never license teardown removal of owned Desktops.
+    pub(crate) fn note_fullscreen_entry_requested(&mut self) {
+        self.fixture_fullscreen_exit = Some(FixtureFullscreenExit::Unsafe(
+            "fullscreen entry requested; no windowed exit proof".to_owned(),
+        ));
+    }
+
+    /// Capture the detached acceptance pre-arm pointer before any setup
+    /// effect. `finish` restores it and reads back the exact position after
+    /// every teardown effect on success and failure paths alike.
+    pub(crate) fn note_pointer_origin(&mut self, position: Option<(f64, f64)>) {
+        self.pointer_origin = position;
     }
 
     /// Record the probe's teardown handoff; `finish` gates on it.
@@ -1900,6 +2035,8 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             .iter()
             .any(|entry| entry.what == "product");
         let product_absent = product_reaped && !pending_product;
+        let fullscreen_cleanup =
+            self.detached_acceptance_cleanup || self.fixture_fullscreen_sid.is_some();
         // 2. The probe's teardown handoff: only a proved retirement or a
         // proved pinned switch away licenses close/shutdown/removal; an
         // unresolved handoff leaves every destructive fixture step untouched.
@@ -1907,6 +2044,11 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         let mut fixture_teardown = true;
         let mut retire_after_shutdown = None;
         match (self.fixture_fullscreen_sid, self.fixture_fullscreen_exit.clone()) {
+            // Restoring a current itself opens Mission Control. A pending
+            // or unreaped product must fence that earlier mutation too.
+            _ if fullscreen_cleanup && (!product_absent || !self.pending_launches.is_empty()) => {
+                fixture_teardown = false;
+            }
             (None, None) | (_, Some(FixtureFullscreenExit::Retired)) => {
                 restore = Some(self.restore_leg_currents(&mut residue));
             }
@@ -1960,16 +2102,16 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         // removal is told whether product absence is proven: with a
         // product still present or pending, product-owned logs and the
         // private store stay as residue.
-        if fixture_teardown
+        let fixture_shutdown = if fixture_teardown
             && let Some(record) = self.owned_fixture.clone()
-            && let Err(e) = self.transport.shutdown_fixture(
-                &record,
-                product_absent,
-                self.retain_product_evidence,
-            )
         {
-            residue.push(format!("owned fixture pid {} shutdown: {e}", record.pid));
-        }
+            self.transport
+                .shutdown_fixture(&record, product_absent, self.retain_product_evidence)
+                .map_err(|e| residue.push(format!("owned fixture pid {} shutdown: {e}", record.pid)))
+                .is_ok()
+        } else {
+            fixture_teardown
+        };
         // A fallback moved away but its detached SID may linger until the
         // fixture stops: retire that exact SID only after shutdown, then
         // allow only the empty owned-Space removal and the after-read.
@@ -1987,7 +2129,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         } else {
             false
         };
-        let current_restored = retire_after_shutdown.is_some()
+        let current_restored = (retire_after_shutdown.is_some() && spaces_ready)
             || restore.as_ref().is_some_and(crate::space_probe::RestoreReport::clean);
         let restored = restore.map_or_else(Vec::new, |report| report.restored);
         // 4b. The private store is product-owned state, not fixture state:
@@ -2003,14 +2145,99 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         // 5. Remove only leg-created Spaces, each pinned and re-proven through
         // the owned-space authority (the in-memory creation registration is
         // the ownership claim; the live seam re-reads typed membership).
-        for (display, sid) in self.owned_spaces.clone().into_iter().filter(|_| spaces_ready) {
-            match remove_owned_space_typed(&mut *self.transport, display, sid) {
-                Ok(mc) => {
-                    if let Some(note) = mc.shortfall_text("owned-Space removal") {
+        // Mission Control is mutated only after all three independent
+        // proofs hold: exact owner absence, the exact starting current, and
+        // a safe fullscreen handoff (no request, positive retirement, or a
+        // fallback whose starting-current restore was proved).
+        let handoff_proved = matches!(
+            (self.fixture_fullscreen_sid, &self.fixture_fullscreen_exit),
+            (None, None)
+                | (_, Some(FixtureFullscreenExit::Retired))
+                | (Some(_), Some(FixtureFullscreenExit::Fallback))
+        );
+        // Check the whole owned set before removing any Space. Existing typed
+        // recovery refuses foreign on-screen layer-zero rows and repeats its
+        // membership proof immediately before each individual removal.
+        let owners_absent = product_absent && fixture_shutdown && self.pending_launches.is_empty();
+        let current_restored = current_restored
+            && (!fullscreen_cleanup
+                || self.transport.space_snapshot().is_ok_and(|topo| {
+                    topo.displays.len() == self.baseline.native.displays.len()
+                        && self.baseline.native.displays.iter().all(|row| {
+                            topo.displays
+                                .get(row.index)
+                                .is_some_and(|live| live.current == row.current)
+                        })
+                }));
+        let mut mc_ready = true;
+        if fullscreen_cleanup {
+            if owners_absent && current_restored && handoff_proved {
+                mc_ready = self
+                    .transport
+                    .settle_fullscreen_mc()
+                    .map_err(|e| residue.push(format!("fullscreen teardown: {e}")))
+                    .is_ok();
+            } else {
+                residue.push(
+                    "fullscreen teardown: owner, starting-current or exit proof unproved; no Mission Control mutation"
+                        .to_owned(),
+                );
+                mc_ready = false;
+            }
+        }
+        if self.detached_acceptance_cleanup
+            && !self.owned_spaces.is_empty()
+            && (!owners_absent || !current_restored || !handoff_proved)
+        {
+            residue.push(
+                "detached acceptance: owner absence, starting current or exit proof unproved; no owned Spaces removed"
+                    .to_owned(),
+            );
+        }
+        let spaces_ready = spaces_ready
+            && (!self.detached_acceptance_cleanup
+                || owners_absent
+                    && current_restored
+                    && mc_ready
+                    && self.owned_spaces.iter().all(|&(_, sid)| {
+                        self.transport
+                            .space_require_owned_empty(sid)
+                            .map_err(|e| {
+                                residue.push(format!(
+                                    "owned Space {sid}: pre-removal occupancy proof refused ({e}); no owned Spaces removed"
+                                ));
+                            })
+                            .is_ok()
+                    }));
+        for &(display, sid) in &self.owned_spaces {
+            if !mc_ready {
+                residue.push(format!(
+                    "owned Space {sid}: Mission Control closure unverified; never removed"
+                ));
+                continue;
+            }
+            if !spaces_ready {
+                continue;
+            }
+            let removal_proved = match remove_owned_space_typed(&mut *self.transport, display, sid) {
+                Ok(mc) => match mc.shortfall_text("owned-Space removal") {
+                    Some(note) => {
                         residue.push(format!("owned Space {sid}: {note}"));
+                        false
                     }
+                    None => true,
+                },
+                Err(e) => {
+                    residue.push(format!("owned Space {sid}: {e}"));
+                    false
                 }
-                Err(e) => residue.push(format!("owned Space {sid}: {e}")),
+            };
+            if fullscreen_cleanup && let Err(error) = self.transport.settle_fullscreen_mc() {
+                residue.push(format!("fullscreen teardown after Space {sid}: {error}"));
+                mc_ready = false;
+            }
+            if self.detached_acceptance_cleanup && !removal_proved {
+                break;
             }
         }
         // 6. Stop the awake companion (exact child, reaped).
@@ -2032,6 +2259,24 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                 )),
                 Err(e) => residue.push(format!("owned pid {pid} reap unreadable: {e}")),
             }
+        }
+        // 7b. Restore and read back the exact pre-arm pointer after every
+        // teardown effect. A captured position that cannot be re-proved
+        // exact is residue: success is never reported over a failed pointer
+        // proof, and the primary failure is never replaced by it.
+        let pointer_restored = self.pointer_origin.map(|start| {
+            if self.transport.pointer_position() == Some(start) {
+                return true;
+            }
+            match self.transport.warp_pointer(start.0, start.1) {
+                Ok(()) => self.transport.pointer_position() == Some(start),
+                Err(_) => false,
+            }
+        });
+        if pointer_restored == Some(false) {
+            residue.push(
+                "pointer was not restored at the exact pre-arm position; proof failed".to_owned(),
+            );
         }
         // 8. Final capture plus comparison, after our own effects are
         // removed. An unreadable teardown refuses (restoration unprovable);
@@ -2062,6 +2307,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         // independent legs stay unblocked.
         let restored_clean = product_absent
             && current_restored
+            && pointer_restored != Some(false)
             && !mismatches.iter().any(BaselineMismatch::is_blocking)
             && residue.is_empty();
         let mut receipt_retained = true;
@@ -2085,6 +2331,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                     generation: self.generation,
                     product_reaped: product_absent,
                     current_restored,
+                    pointer_restored,
                     restored: restored.clone(),
                     mismatches: mismatches.clone(),
                     residue: residue.clone(),
@@ -2100,6 +2347,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             generation: self.generation,
             product_reaped: product_absent,
             current_restored,
+            pointer_restored,
             restored,
             mismatches,
             residue,
@@ -2120,6 +2368,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         self.finished = true;
         let clean = report.product_reaped
             && report.current_restored
+            && report.pointer_restored != Some(false)
             && !report.mismatches.iter().any(BaselineMismatch::is_blocking)
             && report.residue.is_empty()
             && !report.receipt_retained;
@@ -2131,6 +2380,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                     "generation": report.generation,
                     "product_reaped": report.product_reaped,
                     "current_restored": report.current_restored,
+                    "pointer_restored": report.pointer_restored,
                     "restored": report.restored,
                     "mismatches": report.mismatches,
                     "residue": report.residue,
@@ -2171,6 +2421,7 @@ impl<T: LegTransport> Drop for LiveLeg<'_, T> {
             let report = self.finish_inner();
             let clean = report.product_reaped
                 && report.current_restored
+                && report.pointer_restored != Some(false)
                 && !report.mismatches.iter().any(BaselineMismatch::is_blocking)
                 && report.residue.is_empty()
                 && !report.receipt_retained;
@@ -2244,6 +2495,7 @@ mod tests {
         current: Vec<u64>,
         next_sid: u64,
         fail_space_at: Option<&'static str>,
+        occupied_sid: Option<u64>,
         close_fails: Vec<(u32, u32)>,
         shutdown: Result<(), String>,
         /// Detached fullscreen SID the modeled fixture retires on stop.
@@ -2251,6 +2503,8 @@ mod tests {
         shutdown_product_absent: RefCell<Option<bool>>,
         shutdown_retain_evidence: RefCell<Option<bool>>,
         gone: HashMap<u32, Result<bool, String>>,
+        pointer: (f64, f64),
+        warp_refused: bool,
         awake_stop_reaped: bool,
         receipt_ok: bool,
         order: RefCell<Vec<&'static str>>,
@@ -2269,12 +2523,15 @@ mod tests {
                 current: vec![11],
                 next_sid: 1000,
                 fail_space_at: None,
+                occupied_sid: None,
                 close_fails: Vec::new(),
                 shutdown: Ok(()),
                 retire_sid_on_shutdown: None,
                 shutdown_product_absent: RefCell::new(None),
                 shutdown_retain_evidence: RefCell::new(None),
                 gone: HashMap::new(),
+                pointer: (10.0, 10.0),
+                warp_refused: false,
                 awake_stop_reaped: true,
                 receipt_ok: true,
                 order: RefCell::new(Vec::new()),
@@ -2407,9 +2664,9 @@ mod tests {
             }
             Err(format!("model Space {sid} unknown"))
         }
-        fn space_require_empty(&mut self, _sid: u64) -> Result<(), String> {
+        fn space_require_empty(&mut self, sid: u64) -> Result<(), String> {
             self.order.borrow_mut().push("empty");
-            if self.fail_space_at == Some("empty") {
+            if self.fail_space_at == Some("empty") || self.occupied_sid == Some(sid) {
                 return Err("model Space occupied".to_owned());
             }
             Ok(())
@@ -2421,6 +2678,28 @@ mod tests {
     }
 
     impl LegTransport for ScriptLeg {
+        fn settle_fullscreen_mc(&mut self) -> Result<(), String> {
+            self.order.borrow_mut().push("fullscreen-mc");
+            if self.fail_space_at == Some("fullscreen-mc") {
+                return Err("injected Mission Control closure failure".to_owned());
+            }
+            Ok(())
+        }
+
+        fn pointer_position(&mut self) -> Option<(f64, f64)> {
+            self.order.borrow_mut().push("pointer");
+            Some(self.pointer)
+        }
+
+        fn warp_pointer(&mut self, x: f64, y: f64) -> Result<(), String> {
+            self.order.borrow_mut().push("pointer-warp");
+            if self.warp_refused {
+                return Err("injected pointer warp refusal".to_owned());
+            }
+            self.pointer = (x, y);
+            Ok(())
+        }
+
         fn return_readiness(&mut self, _starting: &LiveBaseline) -> Result<(), String> {
             self.order.borrow_mut().push("readiness");
             self.readiness.clone()
@@ -2855,10 +3134,10 @@ mod tests {
                 let err = outcome.unwrap_err();
                 assert!(err.1.contains("fullscreen teardown"), "{name}: {}", err.1);
                 assert!(
-                    ["close", "shutdown", "empty", "remove", "goto"]
+                    ["close", "shutdown", "empty", "remove", "goto", "fullscreen-mc"]
                         .iter()
                         .all(|marker| !order.contains(marker)),
-                    "{name}: destructive step ran while detached: {order:?}"
+                    "{name}: destructive step or MC mutation ran while detached: {order:?}"
                 );
                 assert!(order.contains(&"awake-stop") && receipt.exists(), "{name}: {order:?}");
             } else {
@@ -2866,6 +3145,7 @@ mod tests {
                 assert!(report.current_restored && report.residue.is_empty() && !receipt.exists(), "{name}: {:?}", report.residue);
                 let (close, shutdown, remove) = (at("close", 0), at("shutdown", 0), at("remove", 0));
                 assert!(close < shutdown && shutdown < remove && remove < at("awake-stop", 0), "{name}: {order:?}");
+                assert!(at("fullscreen-mc", 0) < at("empty", 0), "{name}: {order:?}");
                 assert!(order[..close].contains(&"snapshot"), "{name}: restore readback: {order:?}");
                 if name == "retired" {
                     assert_eq!(report.restored, vec![(0, 11)]);
@@ -2877,6 +3157,206 @@ mod tests {
                 }
             }
             let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn fullscreen_teardown_does_not_remove_without_mc_absence() {
+        let dir = test_dir("fullscreen-mc-unverified");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        transport.spaces[0].push(555);
+        transport.fail_space_at = Some("fullscreen-mc");
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.note_owned_space(0, 555);
+        leg.note_detached_acceptance();
+        let error = leg.finish().expect_err("absence proof required");
+        assert!(error.1.contains("owned Space 555: Mission Control closure unverified"));
+        let order = transport.order.borrow();
+        assert!(order.contains(&"fullscreen-mc"));
+        assert!(!order.contains(&"empty") && !order.contains(&"remove"));
+        assert!(dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fullscreen_entry_request_without_exit_proof_holds_owned_spaces() {
+        // B1: the request marker precedes the emit, so a request error or an
+        // entry timeout leaves Unsafe here and no owned Desktop may be
+        // removed even though no detached SID was ever recorded.
+        let dir = test_dir("fullscreen-entry-unproved");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_fixture(test_fixture()).expect("registers");
+        leg.note_owned_space(0, 555);
+        leg.note_detached_acceptance();
+        leg.note_fullscreen_entry_requested();
+        let error = leg.finish().expect_err("entry without exit proof holds");
+        assert!(
+            error.1.contains("no windowed exit proof"),
+            "{}",
+            error.1
+        );
+        let order = transport.order.borrow().clone();
+        assert!(
+            ["close", "shutdown", "empty", "remove", "goto", "fullscreen-mc"]
+                .iter()
+                .all(|marker| !order.contains(marker)),
+            "no destructive or MC step after an unproved entry: {order:?}"
+        );
+        assert!(dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detached_mc_mutation_requires_proven_owner_absence() {
+        // B3: a safe exit proof and a restored starting current are not
+        // enough; the exact owner absence proof gates the MC mutation.
+        let dir = test_dir("fullscreen-mc-owner-unproved");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_fixture(test_fixture()).expect("registers");
+        leg.note_owned_space(0, 555);
+        leg.note_detached_acceptance();
+        leg.note_fixture_fullscreen(555);
+        leg.note_fixture_fullscreen_exit(FixtureFullscreenExit::Retired);
+        leg.transport_mut().spaces[0].push(555);
+        leg.transport_mut().current[0] = 555;
+        leg.note_pending_launch(pending_product(&dir.join("product")));
+        let error = leg.finish().expect_err("owner absence unproved");
+        assert!(
+            error
+                .1
+                .contains("owner, starting-current or exit proof unproved"),
+            "{}",
+            error.1
+        );
+        let order = transport.order.borrow().clone();
+        assert!(
+            !order.contains(&"goto") && !order.contains(&"fullscreen-mc"),
+            "MC mutated without owner proof: {order:?}"
+        );
+        assert!(
+            !order.contains(&"remove") && !order.contains(&"empty"),
+            "owned Space removed without owner proof: {order:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detached_recovery_refuses_product_absence_it_cannot_prove() {
+        // B4: recovery MC must wait for the exact product's absence; an
+        // unresolved product launch is never treated as absent.
+        let dir = test_dir("detached-recovery-absence");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        assert!(
+            leg.quiesce_detached_product().is_ok(),
+            "no owned or pending product is already absent"
+        );
+        leg.note_pending_launch(pending_product(&dir.join("product")));
+        let error = leg
+            .quiesce_detached_product()
+            .expect_err("pending product blocks recovery");
+        assert!(error.contains("pending"), "{error}");
+        assert!(!leg.has_owned_product());
+        let _ = leg.finish();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detached_pointer_is_restored_and_read_back_after_teardown() {
+        // B5: the pre-arm pointer is restored after every teardown effect,
+        // not on the success tail only, and the readback proves exactness.
+        let dir = test_dir("detached-pointer");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.note_detached_acceptance();
+        leg.note_pointer_origin(Some((10.0, 10.0)));
+        leg.transport_mut().pointer = (900.0, 900.0);
+        let report = leg.finish().expect("clean finish");
+        assert_eq!(report.pointer_restored, Some(true));
+        assert_eq!(transport.pointer, (10.0, 10.0));
+        let order = transport.order.borrow().clone();
+        let warp = order.iter().position(|step| *step == "pointer-warp").expect("warp");
+        let stop = order.iter().position(|step| *step == "awake-stop").expect("stop");
+        assert!(warp > stop, "pointer proof follows teardown effects: {order:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detached_pointer_failure_is_residue_not_success() {
+        // B5: an unproved pointer restoration can never be a clean result,
+        // and the report exposes the failed proof.
+        let dir = test_dir("detached-pointer-refused");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        transport.warp_refused = true;
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.note_detached_acceptance();
+        leg.note_pointer_origin(Some((10.0, 10.0)));
+        leg.transport_mut().pointer = (900.0, 900.0);
+        let error = leg.finish().expect_err("pointer proof failed");
+        assert!(error.1.contains("pointer was not restored"), "{}", error.1);
+        assert!(error.1.contains("\"pointer_restored\":false"), "{}", error.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detached_acceptance_preflights_all_owned_spaces_before_removing_any() {
+        let dir = test_dir("detached-owned-space-occupied");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        transport.spaces[0].extend([555, 556]);
+        transport.occupied_sid = Some(556);
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.note_detached_acceptance();
+        leg.note_owned_space(0, 555);
+        leg.note_owned_space(0, 556);
+        let error = leg.finish().expect_err("occupied Space blocks the whole set");
+        assert!(error.1.contains("owned Space 556: pre-removal occupancy proof refused"));
+        let order = transport.order.borrow();
+        assert_eq!(order.iter().filter(|&&event| event == "empty").count(), 2);
+        assert!(!order.contains(&"remove"));
+        assert!(dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detached_acceptance_stops_removing_spaces_on_the_first_refusal() {
+        let dir = test_dir("detached-owned-space-remove-refused");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        transport.spaces[0].extend([555, 556]);
+        transport.fail_space_at = Some("remove");
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.note_detached_acceptance();
+        leg.note_owned_space(0, 555);
+        leg.note_owned_space(0, 556);
+        let error = leg.finish().expect_err("first removal refused");
+        assert!(error.1.contains("Space 555 removal refused"));
+        let order = transport.order.borrow();
+        assert_eq!(order.iter().filter(|&&event| event == "remove").count(), 1);
+        assert!(dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fullscreen_teardown_closes_only_when_presence_is_proved() {
+        let close_calls = Cell::new(0);
+        for (present, closed, expected_calls) in [
+            (Ok(false), Ok(true), 0),
+            (Ok(true), Ok(true), 1),
+            (Ok(false), Ok(false), 1),
+            (Err("presence unreadable".to_owned()), Ok(true), 1),
+        ] {
+            let expected_ok = present.is_ok() && closed == Ok(true);
+            let outcome = close_observed_mc(
+                || present,
+                || {
+                    close_calls.set(close_calls.get() + 1);
+                    Ok(())
+                },
+                || closed,
+            );
+            assert_eq!(outcome.is_ok(), expected_ok);
+            assert_eq!(close_calls.get(), expected_calls);
         }
     }
 
@@ -2914,6 +3394,7 @@ mod tests {
             generation: 7,
             product_reaped: true,
             current_restored: false,
+            pointer_restored: Some(false),
             restored: vec![(0, 11)],
             mismatches: vec![BaselineMismatch {
                 category: "native-topology".to_owned(),

@@ -95,6 +95,90 @@ fn decide_close(
     }
 }
 
+/// Sampling cadence for the native detached dual-source Mission Control open.
+#[cfg(any(target_os = "macos", test))]
+const MC_OPEN_SAMPLE_MS: u64 = 250;
+
+/// Bounded dual-source open wait: AX presence is the only readiness signal,
+/// the exact WindowManager `layer >= 0` presentation is observed alongside,
+/// and a CG-only positive never authorizes the press. The deadline cases
+/// stay distinct (both absent, CG only, unreadable). Clock, sleep, and the
+/// probe are injected so the contract is tested without real waiting; the
+/// existing action bound is the only timeout.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn await_open_until_ax(
+    timeout_ms: u64,
+    sample_ms: u64,
+    mut elapsed_ms: impl FnMut() -> u64,
+    mut sleep_ms: impl FnMut(u64),
+    mut probe: impl FnMut() -> (Result<bool, McError>, Result<bool, McError>),
+) -> Result<(), McError> {
+    let mut cg_seen = false;
+    let mut last_ax: Result<bool, String> = Ok(false);
+    let mut last_cg: Result<bool, String> = Ok(false);
+    loop {
+        let started = elapsed_ms();
+        if started > timeout_ms {
+            break;
+        }
+        let (ax, cg) = probe();
+        last_ax = ax.map_err(|e| e.to_string());
+        last_cg = cg.map_err(|e| e.to_string());
+        if matches!(last_ax, Ok(true)) {
+            return Ok(());
+        }
+        if matches!(last_cg, Ok(true)) {
+            cg_seen = true;
+        }
+        let at = elapsed_ms();
+        if at >= timeout_ms {
+            break;
+        }
+        let next = started.saturating_add(sample_ms).min(timeout_ms);
+        sleep_ms(next.saturating_sub(at));
+    }
+    match last_ax {
+        Err(ax_error) => Err(McError::Blocked(format!(
+            "Mission Control open signals were unreadable at the {timeout_ms}ms deadline (last AX error: {ax_error}; last WindowManager CG error: {}); refusing without a presence proof",
+            last_cg.err().unwrap_or_else(|| "none".to_owned())
+        ))),
+        Ok(true) => Ok(()),
+        Ok(false) if cg_seen => Err(McError::Blocked(format!(
+            "Mission Control AX group never appeared within {timeout_ms}ms while the exact WindowManager CG presentation (layer>=0) did; CG presence alone cannot authorize the press"
+        ))),
+        Ok(false) => match last_cg {
+            Err(cg_error) => Err(McError::Blocked(format!(
+                "Mission Control WindowManager CG presentation (layer>=0) was unreadable at the {timeout_ms}ms deadline (last error: {cg_error}); refusing without a presence proof"
+            ))),
+            Ok(_) => Err(McError::Blocked(format!(
+                "Mission Control AX group and WindowManager CG presentation (layer>=0) both read absent through {timeout_ms}ms"
+            ))),
+        },
+    }
+}
+
+/// Readiness wait selected for one pinned goto leg. The ordinary pinned
+/// route keeps the AX-only 2 s poll, while the native detached select and
+/// the signed detached fixture goto sample the WindowManager presentation
+/// alongside AX and then wait up to the existing 8 s action bound for AX
+/// alone to authorize. Keeping the choice a value makes the route itself
+/// reviewable and regression-testable instead of a bare function pointer.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PinnedOpenRoute {
+    AxOnlyPoll,
+    DualSourceSample,
+}
+
+/// The signed detached fixture goto route: dual-source sampling to the
+/// 8 s action bound. The capture3 replay saw WindowManager presentation at
+/// 60 ms and AX at 307 ms, so this route observes the early CG signal and
+/// still requires the later AX presence.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const fn fixture_goto_open_route() -> PinnedOpenRoute {
+    PinnedOpenRoute::DualSourceSample
+}
+
 /// Budget spend for one dispatch: main-phase legs spend inside the work
 /// window; cleanup legs spend inside the reserve up to the deadline.
 /// macOS-only live helper (called only from the macOS `live` module).
@@ -517,24 +601,41 @@ pub(crate) mod live {
         let Some(owner) = mc_presentation_cg_owner(mc_owner()) else {
             return Ok(false);
         };
-        let Some(pid) = exact_surface_pid(owner)? else {
-            // The owning surface is gone, so it owns no lingering windows.
+        surface_presentation_present(owner)
+    }
+
+    /// Independent, owner-cache-free WindowManager presentation read: the
+    /// exact `com.apple.WindowManager` identity's own `layer >= 0` windows,
+    /// PID-reuse fenced. Fixture teardown uses it to refuse removal when the
+    /// AX group read absent but the CG presentation still shows.
+    pub fn mc_windowmanager_presentation_present() -> Result<bool, McError> {
+        surface_presentation_present(McSurface::WindowManager)
+    }
+
+    /// Exact-identity presentation read for one surface: at least one CG
+    /// window of that surface's exact current PID at `layer >= 0`, fenced so
+    /// an identity change during the read voids the proof. A not-running
+    /// surface owns no window.
+    fn surface_presentation_present(surface: McSurface) -> Result<bool, McError> {
+        let Some(pid) = exact_surface_pid(surface)? else {
+            // The surface is gone, so it owns no lingering windows.
             return Ok(false);
         };
         let pid_u32 = u32::try_from(pid).map_err(|_| {
             McError::System(format!(
-                "Mission Control surface pid {pid} out of range for the window list"
+                "{} pid {pid} out of range for the window list",
+                surface.bundle_id()
             ))
         })?;
         let windows = crate::ffi::cg_window_list_basic()
             .map_err(|e| McError::Unsupported(format!("CG window list unreadable: {e}")))?;
         // PID-reuse fence: the identity that authorized this read must still
         // hold after it; any drift voids the verification.
-        if exact_surface_pid(owner)? != Some(pid) {
-            return Err(McError::Blocked(
-                "Mission Control surface identity changed during the close verification; refusing"
-                    .to_owned(),
-            ));
+        if exact_surface_pid(surface)? != Some(pid) {
+            return Err(McError::Blocked(format!(
+                "{} identity changed during the presentation read; refusing",
+                surface.bundle_id()
+            )));
         }
         Ok(windows.iter().any(|w| w.pid == pid_u32 && w.layer >= 0))
     }
@@ -575,6 +676,53 @@ pub(crate) mod live {
         }
         poll_group(true)?;
         Ok(true)
+    }
+
+    /// Dual-source open used only by the native detached select path: the
+    /// same presence-gated, one-toggle open as [`mc_open`], but the
+    /// readiness wait samples AX presence and the exact WindowManager
+    /// `layer >= 0` presentation together to the existing action bound.
+    /// Only AX presence authorizes readiness; a CG-only positive is held to
+    /// the deadline and refused, and terminal unreadability is distinguished
+    /// from proven absence. The pre-open read still decides whether any
+    /// toggle is sent.
+    fn mc_open_dual() -> Result<bool, McError> {
+        let pre_ax = mc_group_present();
+        if let Err(error) = pre_ax {
+            return Err(McError::Blocked(format!(
+                "Mission Control open refused: AX presence unreadable before the toggle ({error}); not toggling a surface that cannot be proven absent"
+            )));
+        }
+        if pre_ax == Ok(true) {
+            return Ok(false);
+        }
+        action_gates()?;
+        let launched = std::time::Instant::now();
+        if !crate::ffi::mc_launch_toggle() {
+            return Err(McError::System(
+                "Mission Control launch not sent (NSWorkspace refused)".to_owned(),
+            ));
+        }
+        super::await_open_until_ax(
+            MC_ACTION_TIMEOUT_MS,
+            super::MC_OPEN_SAMPLE_MS,
+            || u64::try_from(launched.elapsed().as_millis()).unwrap_or(u64::MAX),
+            |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
+            || (mc_group_present(), mc_windowmanager_presentation_present()),
+        )?;
+        Ok(true)
+    }
+
+    impl PinnedOpenRoute {
+        /// The one open step this route dispatches. Ordinary pinned routes
+        /// keep [`mc_open`]; the native detached select and the signed
+        /// detached fixture goto use [`mc_open_dual`].
+        fn open(self) -> fn() -> Result<bool, McError> {
+            match self {
+                Self::AxOnlyPoll => mc_open,
+                Self::DualSourceSample => mc_open_dual,
+            }
+        }
     }
 
     /// Close iff displayed, verified against both MC signals before
@@ -831,8 +979,22 @@ pub(crate) mod live {
         cleanup: bool,
         press: impl FnOnce(&mut ActionBudget) -> Result<super::PressOutcome, McError>,
     ) -> Result<super::PressOutcome, McError> {
+        run_mc_leg_opened(open_spend, dismissal, budget, cleanup, mc_open, press)
+    }
+
+    /// [`run_mc_leg`] with the open step supplied: the native detached route
+    /// swaps only its readiness wait (dual-source sampling), while every
+    /// ordinary route keeps [`mc_open`].
+    fn run_mc_leg_opened(
+        open_spend: &str,
+        dismissal: super::McDismissal,
+        budget: &mut ActionBudget,
+        cleanup: bool,
+        open: impl FnOnce() -> Result<bool, McError>,
+        press: impl FnOnce(&mut ActionBudget) -> Result<super::PressOutcome, McError>,
+    ) -> Result<super::PressOutcome, McError> {
         super::spend_leg(budget, cleanup, open_spend)?;
-        let opened = mc_open()?;
+        let opened = open()?;
         match press(budget) {
             Ok(outcome) => Ok(finish_press(outcome, dismissal)),
             Err(e) => {
@@ -1031,7 +1193,11 @@ pub(crate) mod live {
     /// their typed classes and every non-pinned display's current must read
     /// user, checked before Mission Control opens and again at the press
     /// fence. Any drift, duplicate, off-row SID, or non-user current on
-    /// another display refuses without a press.
+    /// another display refuses without a press. When the fixture supplied an
+    /// exact registered member, that same owner/member proof is repeated
+    /// immediately before the press: typed SID/index checks alone cannot see
+    /// the member leave while its surface SID remains.
+    #[allow(clippy::too_many_arguments)] // ordered pinned leg inputs, one caller
     pub fn mc_goto_sid_pinned_detached(
         display_index: usize,
         pinned_cgid: u32,
@@ -1039,9 +1205,10 @@ pub(crate) mod live {
         prior: &TopologySnapshot,
         source_physical: crate::runtime_types::SelectPhysical,
         target_physical: crate::runtime_types::SelectPhysical,
+        registered_member: Option<(u64, u32, u32)>,
         budget: &mut ActionBudget,
     ) -> Result<super::PressOutcome, McError> {
-        mc_goto_pinned_after(
+        pinned_goto_leg(
             target_physical.sid(),
             (display_index, pinned_cgid, pinned_uuid),
             prior,
@@ -1049,11 +1216,12 @@ pub(crate) mod live {
             false,
             || Ok(()),
             Some((source_physical, target_physical)),
+            registered_member,
+            PinnedOpenRoute::DualSourceSample,
         )
     }
 
-    /// Signed fixture probe only: the harness proves the exact owned source
-    /// and destination immediately before opening Mission Control.
+    /// Ordinary fixture goto: keep the existing AX-only open policy.
     pub(crate) fn fixture_goto_pinned(
         sid: u64,
         pin: (usize, u32, &str),
@@ -1064,7 +1232,61 @@ pub(crate) mod live {
         mc_goto_pinned_after(sid, pin, prior, budget, false, fixture_source, None)
     }
 
+    /// Signed detached acceptance fixture goto with the same 8 s dual-source
+    /// open as the native detached selection. AX alone authorizes progress.
+    pub(crate) fn fixture_acceptance_goto_pinned(
+        sid: u64,
+        pin: (usize, u32, &str),
+        prior: &TopologySnapshot,
+        budget: &mut ActionBudget,
+        fixture_source: impl FnOnce() -> Result<(), String>,
+    ) -> Result<super::PressOutcome, McError> {
+        pinned_goto_leg(
+            sid,
+            pin,
+            prior,
+            budget,
+            false,
+            fixture_source,
+            None,
+            None,
+            fixture_goto_open_route(),
+        )
+    }
+
     fn mc_goto_pinned_after(
+        sid: u64,
+        pin: (usize, u32, &str),
+        prior: &TopologySnapshot,
+        budget: &mut ActionBudget,
+        cleanup: bool,
+        source: impl FnOnce() -> Result<(), String>,
+        detached: Option<(
+            crate::runtime_types::SelectPhysical,
+            crate::runtime_types::SelectPhysical,
+        )>,
+    ) -> Result<super::PressOutcome, McError> {
+        pinned_goto_leg(
+            sid,
+            pin,
+            prior,
+            budget,
+            cleanup,
+            source,
+            detached,
+            None,
+            PinnedOpenRoute::AxOnlyPoll,
+        )
+    }
+
+    /// One pinned goto leg: exact pinned preflight → the selected open →
+    /// the exact pre-press fence. Every dispatch check is shared; the
+    /// route value swaps only the readiness wait. A registered fixture
+    /// detached member is re-proved from fresh reads immediately before
+    /// the press because the asynchronous open gives it time to leave its
+    /// surface SID.
+    #[allow(clippy::too_many_arguments)] // one leg, explicit ordered inputs
+    fn pinned_goto_leg(
         sid: u64,
         (display_index, pinned_cgid, pinned_uuid): (usize, u32, &str),
         prior: &TopologySnapshot,
@@ -1075,6 +1297,8 @@ pub(crate) mod live {
             crate::runtime_types::SelectPhysical,
             crate::runtime_types::SelectPhysical,
         )>,
+        registered_member: Option<(u64, u32, u32)>,
+        route: PinnedOpenRoute,
     ) -> Result<super::PressOutcome, McError> {
         action_gates()?;
         if detached.is_none() {
@@ -1102,11 +1326,12 @@ pub(crate) mod live {
                 "Space {sid} is not on the pinned display {pinned_uuid}; refusing pinned goto"
             )));
         }
-        run_mc_leg(
+        run_mc_leg_opened(
             "goto-open",
             super::McDismissal::Auto,
             budget,
             cleanup,
+            route.open(),
             |b| {
                 let target = await_list_child(cgid, i0, snap0.displays[d0].spaces.len())?;
                 let snap1 = fresh_snapshot()?;
@@ -1136,6 +1361,11 @@ pub(crate) mod live {
                 }
                 super::spend_leg(b, cleanup, "goto-press")?;
                 action_gates()?;
+                crate::space_synthetic_gate::require_registered_detached_member(
+                    registered_member,
+                    crate::space_synthetic_gate::detached_surface_exact,
+                )
+                .map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
                 crate::ffi::ax_perform_action(&target, MC_ACTION_PRESS).map_err(|code| {
                     McError::Dispatch(format!(
                         "pinned goto press refused: {}",
@@ -1287,6 +1517,12 @@ pub(crate) mod live {
         unsupported("Mission Control lifecycle")
     }
 
+    /// Non-macOS stub: the independent WindowManager presentation read has no
+    /// live backend here.
+    pub fn mc_windowmanager_presentation_present() -> Result<bool, McError> {
+        unsupported("Mission Control lifecycle")
+    }
+
     // Live-only helpers (called only from the macOS `live` module); off-mac
     // the stub is never invoked, so silence dead_code there only.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -1349,6 +1585,7 @@ pub(crate) mod live {
         unsupported("Mission Control lifecycle")
     }
 
+    #[allow(clippy::too_many_arguments)] // mirrors the macOS signature
     pub fn mc_goto_sid_pinned_detached(
         _display_index: usize,
         _pinned_cgid: u32,
@@ -1356,6 +1593,7 @@ pub(crate) mod live {
         _prior: &TopologySnapshot,
         _source_physical: crate::runtime_types::SelectPhysical,
         _target_physical: crate::runtime_types::SelectPhysical,
+        _registered_member: Option<(u64, u32, u32)>,
         _budget: &mut ActionBudget,
     ) -> Result<super::PressOutcome, McError> {
         unsupported("Mission Control lifecycle")
@@ -2242,8 +2480,13 @@ pub fn run_mc_lifecycle(
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseDecision, McDismissal, decide_close, topology_preflight_matches};
-    use crate::mc_probe::{DisplaySpaces, TopologySnapshot};
+    use super::{
+        CloseDecision, MC_OPEN_SAMPLE_MS, McDismissal, PinnedOpenRoute, await_open_until_ax,
+        decide_close, fixture_goto_open_route, topology_preflight_matches,
+    };
+    use crate::mc_probe::{
+        DisplaySpaces, MC_ACTION_TIMEOUT_MS, MC_GROUP_POLL_MS, McError, TopologySnapshot,
+    };
 
     fn topology(displays: Vec<DisplaySpaces>) -> TopologySnapshot {
         TopologySnapshot { displays }
@@ -2339,5 +2582,164 @@ mod tests {
             decide_close(McDismissal::Auto, true, Some(false)),
             CloseDecision::Done
         );
+    }
+
+    /// Run the dual-source sampler with a clock that advances only by its
+    /// own sleep requests, so no real time passes.
+    fn run_dual(
+        timeout_ms: u64,
+        probe: impl FnMut() -> (Result<bool, McError>, Result<bool, McError>),
+    ) -> (Result<(), McError>, u64, Vec<u64>) {
+        let now = std::cell::Cell::new(0_u64);
+        let sleeps = std::cell::RefCell::new(Vec::new());
+        let outcome = await_open_until_ax(
+            timeout_ms,
+            MC_OPEN_SAMPLE_MS,
+            || now.get(),
+            |slice| {
+                sleeps.borrow_mut().push(slice);
+                now.set(now.get() + slice);
+            },
+            probe,
+        );
+        (outcome, now.get(), sleeps.into_inner())
+    }
+
+    #[test]
+    fn dual_source_open_reaches_ax_after_earlier_cg() {
+        // The CG presentation shows first; AX (the only readiness signal)
+        // appears later and ends the wait.
+        let mut reads = std::collections::VecDeque::from([
+            (Ok(false), Ok(true)),
+            (Ok(false), Ok(true)),
+            (Ok(true), Ok(true)),
+        ]);
+        let (outcome, elapsed, sleeps) =
+            run_dual(MC_ACTION_TIMEOUT_MS, || reads.pop_front().expect("scripted read"));
+        outcome.expect("AX presence authorizes readiness");
+        assert_eq!(elapsed, 500);
+        assert_eq!(sleeps, [250, 250]);
+    }
+
+    #[test]
+    fn dual_source_open_refuses_cg_only_and_read_errors_at_the_action_deadline() {
+        assert_eq!(MC_ACTION_TIMEOUT_MS, 8_000);
+        let (outcome, elapsed, sleeps) =
+            run_dual(MC_ACTION_TIMEOUT_MS, || (Ok(false), Ok(true)));
+        let error = outcome.expect_err("CG presence alone never authorizes the press");
+        assert_eq!(elapsed, MC_ACTION_TIMEOUT_MS);
+        assert_eq!(sleeps.len(), 32);
+        assert!(
+            error
+                .to_string()
+                .contains("CG presence alone cannot authorize the press")
+        );
+
+        // A CG positive seen earlier still cannot authorize a later unreadable.
+        let mut cg = Some(Ok(true));
+        let (outcome, ..) = run_dual(MC_ACTION_TIMEOUT_MS, || {
+            (
+                Ok(false),
+                cg.take()
+                    .unwrap_or(Err(McError::Blocked("CG read lost".to_owned()))),
+            )
+        });
+        assert!(
+            outcome
+                .expect_err("a transient CG positive never authorizes")
+                .to_string()
+                .contains("CG presence alone")
+        );
+
+        // Unreadable AX is never absence and never a CG-only presentation.
+        let (outcome, ..) = run_dual(MC_ACTION_TIMEOUT_MS, || {
+            (
+                Err(McError::Blocked("AX read refused".to_owned())),
+                Ok(true),
+            )
+        });
+        let message = outcome.expect_err("unreadable AX refuses").to_string();
+        assert!(message.contains("unreadable"));
+        assert!(message.contains("last AX error: blocked: AX read refused"));
+
+        // Unreadable CG with AX proven absent is unreadable, not both-absent.
+        let (outcome, ..) = run_dual(MC_ACTION_TIMEOUT_MS, || {
+            (
+                Ok(false),
+                Err(McError::Unsupported("CG unreadable".to_owned())),
+            )
+        });
+        let message = outcome.expect_err("unreadable CG refuses").to_string();
+        assert!(message.contains("WindowManager CG presentation (layer>=0) was unreadable"));
+        assert!(!message.contains("both read absent"));
+
+        // Both readable-absent stays its own distinct refusal.
+        let (outcome, ..) = run_dual(MC_ACTION_TIMEOUT_MS, || (Ok(false), Ok(false)));
+        assert!(
+            outcome
+                .expect_err("both absent refuses")
+                .to_string()
+                .contains("both read absent")
+        );
+    }
+
+    /// Run the dual-source sampler against first-positive timestamps on a
+    /// virtual clock (no real waiting).
+    fn replay_dual(ax_at_ms: u64, cg_at_ms: u64) -> (Result<(), McError>, u64) {
+        let now = std::cell::Cell::new(0_u64);
+        let outcome = await_open_until_ax(
+            MC_ACTION_TIMEOUT_MS,
+            MC_OPEN_SAMPLE_MS,
+            || now.get(),
+            |slice| now.set(now.get() + slice),
+            || (Ok(now.get() >= ax_at_ms), Ok(now.get() >= cg_at_ms)),
+        );
+        (outcome, now.get())
+    }
+
+    /// Test mirror of the ordinary AX-only readiness poll (2 s bound, 100 ms
+    /// slices) that the prior pinned route used, on the same virtual clock.
+    fn replay_ax_only(ax_at_ms: u64) -> (Result<(), McError>, u64) {
+        let mut now = 0_u64;
+        loop {
+            if now >= ax_at_ms {
+                return (Ok(()), now);
+            }
+            if now >= MC_GROUP_POLL_MS {
+                return (
+                    Err(McError::Blocked(format!(
+                        "Mission Control presence did not become true within {MC_GROUP_POLL_MS}ms"
+                    ))),
+                    now,
+                );
+            }
+            now += 100;
+        }
+    }
+
+    #[test]
+    fn fixture_goto_route_samples_past_the_ax_only_bound_at_capture3_timings() {
+        // The route chosen by the signed detached fixture goto is the
+        // dual-source sampler, not the ordinary AX-only poll.
+        assert_eq!(fixture_goto_open_route(), PinnedOpenRoute::DualSourceSample);
+
+        // capture3: WindowManager presentation first positive at 60 ms, AX
+        // group at 307 ms. The sampler sees the early CG signal but only AX
+        // authorizes, at its next 250 ms sample.
+        let (outcome, elapsed) = replay_dual(307, 60);
+        outcome.expect("AX presence at 307ms authorizes the open");
+        assert_eq!(elapsed, 500);
+        let (prior, prior_elapsed) = replay_ax_only(307);
+        prior.expect("the prior AX-only route also reaches a 307ms AX");
+        assert_eq!(prior_elapsed, 400);
+
+        // Stretch AX beyond the prior 2 s bound: the fixture sampler still
+        // authorizes to its 8 s action bound, while the prior route times out.
+        let (outcome, elapsed) = replay_dual(2_307, 60);
+        outcome.expect("the 8 s sampler reaches a late AX");
+        assert_eq!(elapsed, 2_500);
+        let (prior, prior_elapsed) = replay_ax_only(2_307);
+        prior.expect_err("the prior AX-only 2 s route cannot reach a 2307ms AX");
+        assert_eq!(prior_elapsed, MC_GROUP_POLL_MS);
     }
 }

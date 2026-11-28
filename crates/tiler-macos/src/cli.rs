@@ -2357,7 +2357,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 ));
             }
             for chord in &chords {
-                if crate::live_leg::required_scope(chord).is_none() {
+                if chord != crate::fixture_leg::DETACHED_AWAY_CHORD
+                    && crate::live_leg::required_scope(chord).is_none()
+                {
                     return Err(format!("fixture-leg: unknown --chord '{chord}'"));
                 }
             }

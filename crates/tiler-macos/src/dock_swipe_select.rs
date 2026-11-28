@@ -1325,6 +1325,96 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
         }
     }
 
+    /// Fixture-gated detached dispatch fence, called once immediately before
+    /// the exact native select. `Ok(None)` is the normal product path (no
+    /// gate or no detached source/target). Every gated Desktop involved must
+    /// be an owned SID, and any detached involvement requires the controller
+    /// registration with the exact pinned output and the registered surface
+    /// on both involved detached sides. The live member proof and the
+    /// structured dispatch line run at the call site, after every gate.
+    /// Fail closed; never a guess.
+    fn dispatch_detached_selection(
+        &self,
+        before: &SelectionSnapshot,
+        destination: SelectPhysical,
+    ) -> Result<
+        Option<crate::fixture_gate::FixtureDetachedRegistration>,
+        DispatchError,
+    > {
+        let Some(gate) = self.fixture_gate.as_ref() else {
+            return Ok(None);
+        };
+        let source_detached = before.detached;
+        let target_detached = match destination {
+            SelectPhysical::Desktop(_) => None,
+            SelectPhysical::Detached(sid) => Some(sid),
+        };
+        if source_detached.is_none() && target_detached.is_none() {
+            return Ok(None);
+        }
+        for physical in [before.physical(), destination] {
+            if let SelectPhysical::Desktop(sid) = physical
+                && !gate.allows(sid)
+            {
+                return Err(DispatchError::refused(format!(
+                    "fixture gate: select involving Desktop Space {sid} outside the owned set refused without actuation"
+                )));
+            }
+        }
+        let registration = gate
+            .detached_registration()
+            .map_err(|e| DispatchError::refused(format!("fixture detached registration unreadable ({e}); no actuation")))?
+            .ok_or_else(|| {
+                DispatchError::refused(
+                    "fixture detached registration absent for a detached select; no actuation"
+                        .to_owned(),
+                )
+            })?;
+        let pinned_output = crate::topology::output_key(self.legs.pinned_cgid);
+        if registration.output != pinned_output {
+            return Err(DispatchError::refused(format!(
+                "fixture detached registration output {} is not the pinned output {pinned_output}; no actuation",
+                registration.output
+            )));
+        }
+        for surface in [source_detached, target_detached].into_iter().flatten() {
+            if surface != registration.surface {
+                return Err(DispatchError::refused(format!(
+                    "fixture detached registration surface {} is not the involved detached surface {surface}; no actuation",
+                    registration.surface
+                )));
+            }
+        }
+        Ok(Some(registration))
+    }
+
+    /// One structured dispatch line per gated detached attempt, emitted after
+    /// every gate and immediately before the native MC call. Semantic kinds
+    /// only; no keycodes, flags, titles, or user content.
+    fn emit_fixture_detached_dispatch(
+        &self,
+        before: &SelectionSnapshot,
+        destination: SelectPhysical,
+        registration: &crate::fixture_gate::FixtureDetachedRegistration,
+    ) {
+        let kind = |physical: SelectPhysical| match physical {
+            SelectPhysical::Desktop(_) => "user",
+            SelectPhysical::Detached(_) => "fullscreen",
+        };
+        eprintln!(
+            "tiler-macos fixture detached-select dispatch op={} output={} source={} source_kind={} target={} target_kind={} member={}_{} surface={}",
+            self.op.as_deref().unwrap_or("none"),
+            registration.output,
+            before.physical().sid(),
+            kind(before.physical()),
+            destination.sid(),
+            kind(destination),
+            registration.pid,
+            registration.member,
+            registration.surface,
+        );
+    }
+
     /// The existing output-pinned MC AX route, also used as a zero-post
     /// fallback by the proven macOS 27 targeted swipe.
     fn select_pinned_mc(
@@ -1332,6 +1422,7 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
         before: &SelectionSnapshot,
         destination: SelectPhysical,
     ) -> Result<(), DispatchError> {
+        let registration = self.dispatch_detached_selection(before, destination)?;
         let sid = destination.sid();
         let target_proven = match destination {
             SelectPhysical::Desktop(sid) => before.spaces.contains(&sid),
@@ -1417,6 +1508,25 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
         let outcome = if matches!(source, SelectPhysical::Detached(_))
             || matches!(destination, SelectPhysical::Detached(_))
         {
+            if let Some(registration) = registration.as_ref() {
+                let exact = crate::space_synthetic_gate::detached_surface_exact(
+                    registration.surface,
+                    registration.pid,
+                    registration.member,
+                )
+                .map_err(|e| {
+                    DispatchError::refused(format!(
+                        "fixture detached surface unreadable ({e}); no actuation"
+                    ))
+                })?;
+                if !exact {
+                    return Err(DispatchError::refused(format!(
+                        "fixture detached surface {} member {}_{} is not exact; no actuation",
+                        registration.surface, registration.pid, registration.member
+                    )));
+                }
+                self.emit_fixture_detached_dispatch(before, destination, registration);
+            }
             crate::mc_lifecycle::live::mc_goto_sid_pinned_detached(
                 target,
                 self.legs.pinned_cgid,
@@ -1424,6 +1534,9 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
                 &pre,
                 source,
                 destination,
+                registration.as_ref().map(|registration| {
+                    (registration.surface, registration.pid, registration.member)
+                }),
                 &mut self.budget,
             )
         } else {
@@ -1552,14 +1665,12 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
         before: &SelectionSnapshot,
         target: SelectPhysical,
     ) -> Result<(), DispatchError> {
-        if self
-            .fixture_gate
-            .as_ref()
-            .is_some_and(|gate| !gate.allows(target.sid()))
+        if before.detached.is_none()
+            && let SelectPhysical::Desktop(sid) = target
+            && self.fixture_gate.as_ref().is_some_and(|gate| !gate.allows(sid))
         {
             return Err(DispatchError::refused(format!(
-                "fixture gate: select of Space {} outside the owned set refused without actuation",
-                target.sid()
+                "fixture gate: select of Space {sid} outside the owned set refused without actuation"
             )));
         }
         self.select_pinned_mc(before, target)

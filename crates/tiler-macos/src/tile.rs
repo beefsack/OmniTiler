@@ -2543,9 +2543,9 @@ mod native {
             InputGuard::Off(factory) => Arc::clone(factory) as Arc<dyn InputSourceFactory>,
         };
         // Development-only fixture gate (adapter boundary, default
-        // disabled): validated again here before the runtime starts so the
-        // optional one-shot issuance hold is armed at launch, never by a
-        // later mutable control.
+        // disabled): validated before the runtime starts so the optional
+        // one-shot issuance hold is armed at launch, never by a later
+        // mutable control.
         let fixture_gate = crate::fixture_gate::validate_fixture_gate(
             &request.scopes,
             request.unscoped,
@@ -2554,6 +2554,21 @@ mod native {
             request.fixture_starting_space,
         )
         .map_err(|reason| (2, reason))?;
+        // Fixture-gated oracle evidence only: the exact numbered select
+        // ordinals in the running tap table, formatted before `catalogue`
+        // moves into the runtime config. The validated owned gate is the
+        // sole condition, so ordinary product runs never emit this line;
+        // emission waits for the post-runtime dispatch-ready boundary
+        // below. Semantic ordinals and the actual build constant only - no
+        // keycodes or flags.
+        let fixture_select_readiness = fixture_gate.as_ref().map(|_| {
+            crate::workspace_select::format_fixture_select_readiness_line(
+                request.preset,
+                request.modifier,
+                &catalogue,
+                crate::world_connection::DETACHED_FULLSCREEN_VIEW,
+            )
+        });
         let fixture_reply_hold =
             crate::fixture_gate::FixtureReplyHold::from_env(fixture_gate.as_ref(), &request.scopes)
                 .map_err(|reason| (2, reason))?;
@@ -2755,6 +2770,12 @@ mod native {
                 ),
             )
         );
+        // Fixture-gated oracle evidence only: publish the exact numbered
+        // select ordinals in the running tap table at the same
+        // post-runtime dispatch-ready boundary. No SIDs or user content.
+        if let Some(line) = &fixture_select_readiness {
+            eprintln!("{line}");
+        }
         let mut poll = TopologyPoll::new();
         let mut tracked: BTreeMap<u32, TrackedApp> = BTreeMap::new();
         // The core owns product select history and targeting; the

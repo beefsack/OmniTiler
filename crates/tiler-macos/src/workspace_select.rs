@@ -726,6 +726,59 @@ pub fn bindings_with(trailing_enabled: bool) -> Vec<crate::runtime_types::TileBi
         .collect()
 }
 
+/// Exact fixture-gated readiness prefix for the running numbered select
+/// table. Emitted once at the product's post-runtime dispatch-ready
+/// boundary, only for a validated owned fixture gate; ordinary product runs
+/// never emit it.
+pub(crate) const FIXTURE_SELECT_READINESS_PREFIX: &str =
+    "tiler-macos fixture readiness select-bindings ";
+
+/// Numbered semantic select ordinals actually armed in the effective
+/// (post-preset) tap catalogue, in catalogue order. Index 0 (trailing
+/// select-or-create) is never reported: controller ownership keeps creation
+/// out of every fixture leg. No keycodes or flags: identity is semantic
+/// only, matching the no-raw-key diagnostic rule.
+#[must_use]
+pub(crate) fn numbered_select_ordinals(
+    catalogue: &[crate::runtime_types::TileBinding],
+) -> Vec<u8> {
+    catalogue
+        .iter()
+        .filter_map(|binding| match &binding.action {
+            InputSemanticAction::WorkspaceSelect { index } if (1..=9).contains(index) => {
+                Some(*index)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// One bounded metadata-only readiness line for the fixture controller: the
+/// preset and role that tuned the tap, the owned-gate marker, the actual
+/// build-time detached-view constant, the armed ordinal count, and one
+/// `ordinal=<1..9>` token per armed numbered select. No SIDs, keycodes,
+/// flags, titles, paths, or user content. Pure (the caller emits once).
+#[must_use]
+pub(crate) fn format_fixture_select_readiness_line(
+    preset: crate::input_policy::InputPreset,
+    modifier: crate::config::ProbeModifier,
+    catalogue: &[crate::runtime_types::TileBinding],
+    detached_view_enabled: bool,
+) -> String {
+    let ordinals = numbered_select_ordinals(catalogue);
+    let mut line = format!(
+        "{FIXTURE_SELECT_READINESS_PREFIX}preset={} role={} gate=owned detached={} count={}",
+        preset.as_str(),
+        modifier.as_str(),
+        if detached_view_enabled { "armed" } else { "off" },
+        ordinals.len()
+    );
+    for ordinal in ordinals {
+        line.push_str(&format!(" ordinal={ordinal}"));
+    }
+    line
+}
+
 /// Adopt the runtime-created trailing SID from a verified select effect
 /// into the lifecycle owner (no-op when the effect created nothing).
 /// Narrow ownership bookkeeping for the tile main loop: exact-append SIDs
@@ -2792,6 +2845,40 @@ mod fixture_gate_tests {
             err.reason
         );
         assert_eq!(err.setter, FrameSetter::Refused);
+    }
+
+    #[test]
+    fn fixture_readiness_reports_only_semantic_armed_ordinals() {
+        use crate::config::ProbeModifier;
+        use crate::input_policy::{InputPreset, effective_bindings};
+        let catalogue = effective_bindings(InputPreset::Authentic, ProbeModifier::Ctrl, &bindings());
+        let line = format_fixture_select_readiness_line(
+            InputPreset::Authentic,
+            ProbeModifier::Ctrl,
+            &catalogue,
+            true,
+        );
+        assert!(line.starts_with(FIXTURE_SELECT_READINESS_PREFIX));
+        assert!(line.contains("preset=authentic role=ctrl gate=owned detached=armed count=9"));
+        for ordinal in 1..=9 {
+            assert!(line.contains(&format!(" ordinal={ordinal}")), "{line}");
+        }
+        assert!(!line.contains("binding="));
+        assert!(!line.contains("key"));
+        assert!(!line.contains("flag"));
+        // Compatible/Ctrl leaves all unshifted digit selects to macOS.
+        let compatible = effective_bindings(
+            InputPreset::Compatible,
+            ProbeModifier::Ctrl,
+            &bindings(),
+        );
+        let line = format_fixture_select_readiness_line(
+            InputPreset::Compatible,
+            ProbeModifier::Ctrl,
+            &compatible,
+            false,
+        );
+        assert!(line.contains("preset=compatible role=ctrl gate=owned detached=off count=0"));
     }
 
     #[test]
