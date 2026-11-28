@@ -926,6 +926,21 @@ pub(crate) fn drain_claimed_select_with_os(
             | InputSemanticAction::WorkspacePrevious
             | InputSemanticAction::IndicatorSelectWorkspace { .. }
     );
+    // Standalone existing-target View shape: an explicit numbered,
+    // relative, previous, or indicator selection whose reply bound the exact
+    // core-owned View target (logical workspace plus live native binding)
+    // with no creation desire. The action kind alone is never proof: the
+    // bound plan fields carry the core-owned correlation. Trailing `index 0`
+    // is select-or-create and never takes this shape.
+    let existing_view_target = match &claim.action {
+        InputSemanticAction::WorkspaceSelect { index } => (1..=9).contains(index),
+        InputSemanticAction::WorkspaceRelative { .. }
+        | InputSemanticAction::WorkspacePrevious
+        | InputSemanticAction::IndicatorSelectWorkspace { .. } => true,
+        _ => false,
+    } && claim.select_creation_operation.is_none()
+        && claim.select_target_workspace.is_some()
+        && claim.select_native_binding.is_some();
     let Some(target_output) = claim.select_target_output.clone() else {
         return Err(refused_bare(
             "select refuses: no retained view target; no actuation".to_owned(),
@@ -1106,7 +1121,7 @@ pub(crate) fn drain_claimed_select_with_os(
         ) {
             (None, None) => None,
             (Some(surface), Some(member)) => {
-                if !claim.select_detached_enabled || !explicit_select || surface == 0 {
+                if !claim.select_detached_enabled || !existing_view_target || surface == 0 {
                     return Err(refused_bare(
                         "select refuses: detached fullscreen destination is not authorized on this route; no actuation"
                             .to_owned(),
@@ -1121,15 +1136,13 @@ pub(crate) fn drain_claimed_select_with_os(
             }
         };
         // A detached-source Desktop switch is never authorized by the
-        // capability alone: it must be a standalone explicit existing-Space
-        // selection (numbered/existing select, no creation/trailing
-        // authorization). Relative/previous/indicator/send/swap claims stay
+        // capability alone: it must be a standalone existing-target View
+        // selection (numbered/existing select, relative, previous, or
+        // indicator with a bound core-owned target, no creation/trailing
+        // shape). Send/swap and every other non-standalone claim stays
         // fenced out of a covered surface regardless of session capability.
-        let standalone_explicit_existing =
-            matches!(claim.action, InputSemanticAction::WorkspaceSelect { .. })
-                && claim.select_creation_operation.is_none();
         let detached_source = matches!(live_pre, SelectPhysical::Detached(_));
-        if detached_source && detached_target.is_none() && !standalone_explicit_existing {
+        if detached_source && detached_target.is_none() && !existing_view_target {
             let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
             return Err(SelectFailure {
                 reason:

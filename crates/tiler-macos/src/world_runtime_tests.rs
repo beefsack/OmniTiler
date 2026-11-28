@@ -1414,6 +1414,32 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         other => panic!("switch-view must accept, got {other:?}"),
     }
     use crate::runtime_types::SelectPhysical::Desktop;
+    // Capability-false: `detached_fullscreen_view` is off on the bound
+    // session, so detached physical reads must never become View rows or a
+    // postMember. Desktop reads stay. This stage is latest-wins for the
+    // exact `(op, output)` pair; the Desktop stage below replaces it.
+    assert!(
+        !session.detached_fullscreen_view(),
+        "the bound capability keeps detached fullscreen views off"
+    );
+    use crate::runtime_types::SelectPhysical::Detached;
+    session.stage_view_attempt(
+        "op-2",
+        Some(&output),
+        FrameSetter::Accepted,
+        Some(Detached(41)),
+        Some(Detached(42)),
+        Some(Detached(41)),
+        Some(WindowId("1001_7".to_owned())),
+    );
+    let withheld = session
+        .pending_views
+        .get(&("op-2".to_owned(), output.clone()))
+        .expect("the correlated view row is staged");
+    assert_eq!(withheld.pre, None, "detached pre withheld");
+    assert_eq!(withheld.post, None, "detached post withheld");
+    assert_eq!(withheld.baseline, None, "detached baseline withheld");
+    assert_eq!(withheld.post_member, None, "detached postMember withheld");
     session.stage_view_attempt(
         "op-2",
         Some(&output),

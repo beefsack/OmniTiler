@@ -1020,6 +1020,35 @@ pub(crate) mod live {
             sid, (display_index, pinned_cgid, pinned_uuid), prior, budget, cleanup, || {
                 if cleanup { Ok(()) } else { crate::space_synthetic_gate::require_mc_fallback() }
             },
+            None,
+        )
+    }
+
+    /// Go to the exact typed target on the caller-pinned display when the
+    /// pinned source current or the requested target is a detached fullscreen
+    /// surface. The ordinary all-user fallback fence is replaced only for
+    /// this route: both exact SIDs must stay uniquely on the pinned row with
+    /// their typed classes and every non-pinned display's current must read
+    /// user, checked before Mission Control opens and again at the press
+    /// fence. Any drift, duplicate, off-row SID, or non-user current on
+    /// another display refuses without a press.
+    pub fn mc_goto_sid_pinned_detached(
+        display_index: usize,
+        pinned_cgid: u32,
+        pinned_uuid: &str,
+        prior: &TopologySnapshot,
+        source_physical: crate::runtime_types::SelectPhysical,
+        target_physical: crate::runtime_types::SelectPhysical,
+        budget: &mut ActionBudget,
+    ) -> Result<super::PressOutcome, McError> {
+        mc_goto_pinned_after(
+            target_physical.sid(),
+            (display_index, pinned_cgid, pinned_uuid),
+            prior,
+            budget,
+            false,
+            || Ok(()),
+            Some((source_physical, target_physical)),
         )
     }
 
@@ -1032,7 +1061,7 @@ pub(crate) mod live {
         budget: &mut ActionBudget,
         fixture_source: impl FnOnce() -> Result<(), String>,
     ) -> Result<super::PressOutcome, McError> {
-        mc_goto_pinned_after(sid, pin, prior, budget, false, fixture_source)
+        mc_goto_pinned_after(sid, pin, prior, budget, false, fixture_source, None)
     }
 
     fn mc_goto_pinned_after(
@@ -1042,11 +1071,26 @@ pub(crate) mod live {
         budget: &mut ActionBudget,
         cleanup: bool,
         source: impl FnOnce() -> Result<(), String>,
+        detached: Option<(
+            crate::runtime_types::SelectPhysical,
+            crate::runtime_types::SelectPhysical,
+        )>,
     ) -> Result<super::PressOutcome, McError> {
         action_gates()?;
-        source().map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
+        if detached.is_none() {
+            source().map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
+        }
         let snap0 = fresh_snapshot()?;
         topology_preflight_matches(prior, &snap0)?;
+        if let Some((source_physical, target_physical)) = detached {
+            crate::space_synthetic_gate::require_mc_detached_selection(
+                &snap0.displays,
+                pinned_uuid,
+                source_physical,
+                target_physical,
+            )
+            .map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
+        }
         let (cgid, _) = display_cgid_of_pinned(&snap0, display_index, pinned_cgid, pinned_uuid)?;
         let (d0, i0) = snap0.locate(sid).ok_or_else(|| {
             McError::Ownership(format!(
@@ -1080,6 +1124,15 @@ pub(crate) mod live {
                     return Err(McError::Blocked(format!(
                         "pinned topology drifted during open (was display {d0} index {i0}, now {d1}/{i1}); refusing stale dispatch"
                     )));
+                }
+                if let Some((source_physical, target_physical)) = detached {
+                    crate::space_synthetic_gate::require_mc_detached_selection(
+                        &snap1.displays,
+                        pinned_uuid,
+                        source_physical,
+                        target_physical,
+                    )
+                    .map_err(|e| McError::Blocked(format!("MC selection refused: {e}")))?;
                 }
                 super::spend_leg(b, cleanup, "goto-press")?;
                 action_gates()?;
@@ -1289,6 +1342,18 @@ pub(crate) mod live {
         _prior: &TopologySnapshot,
         _budget: &mut ActionBudget,
         _cleanup: bool,
+    ) -> Result<super::PressOutcome, McError> {
+        unsupported("Mission Control lifecycle")
+    }
+
+    pub fn mc_goto_sid_pinned_detached(
+        _display_index: usize,
+        _pinned_cgid: u32,
+        _pinned_uuid: &str,
+        _prior: &TopologySnapshot,
+        _source_physical: crate::runtime_types::SelectPhysical,
+        _target_physical: crate::runtime_types::SelectPhysical,
+        _budget: &mut ActionBudget,
     ) -> Result<super::PressOutcome, McError> {
         unsupported("Mission Control lifecycle")
     }

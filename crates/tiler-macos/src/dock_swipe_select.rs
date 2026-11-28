@@ -1413,15 +1413,30 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
                 "multi-display indicator select refuses: Space {sid} is not in the pinned display's row; no actuation"
             )));
         }
-        let outcome = crate::mc_lifecycle::live::mc_goto_sid_pinned(
-            sid,
-            target,
-            self.legs.pinned_cgid,
-            &self.legs.pinned_uuid,
-            &pre,
-            &mut self.budget,
-            false,
-        )
+        let source = before.physical();
+        let outcome = if matches!(source, SelectPhysical::Detached(_))
+            || matches!(destination, SelectPhysical::Detached(_))
+        {
+            crate::mc_lifecycle::live::mc_goto_sid_pinned_detached(
+                target,
+                self.legs.pinned_cgid,
+                &self.legs.pinned_uuid,
+                &pre,
+                source,
+                destination,
+                &mut self.budget,
+            )
+        } else {
+            crate::mc_lifecycle::live::mc_goto_sid_pinned(
+                sid,
+                target,
+                self.legs.pinned_cgid,
+                &self.legs.pinned_uuid,
+                &pre,
+                &mut self.budget,
+                false,
+            )
+        }
         .map_err(DispatchError::from_mc)?;
         let _ = outcome.after;
         let post = crate::mc_lifecycle::live::await_snapshot(&|snapshot| {

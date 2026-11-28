@@ -8924,13 +8924,13 @@ mod trailing_join_tests {
         };
         assert_eq!(attempt.operation_id, op);
         assert_eq!(attempt.disposition, FrameSetter::Refused);
-        assert!(matches!(
-            (attempt.pre.as_ref(), attempt.post.as_ref()),
-            (
-                Some(tiler_core::world_report::ViewRef::Detached(_)),
-                Some(tiler_core::world_report::ViewRef::Detached(_))
-            )
-        ));
+        // The bound capability keeps detached fullscreen views off, so the
+        // typed detached pre/post are withheld at staging: the refusal row
+        // carries the exact correlation and verdict but no detached ViewRef.
+        assert!(
+            attempt.pre.is_none() && attempt.post.is_none(),
+            "capability-false withholds detached pre/post"
+        );
         assert_eq!(attempt.baseline, None);
         assert!(matches!(
             tiler_protocol::world_admission::handle_report_checked(

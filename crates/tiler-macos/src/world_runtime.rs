@@ -878,17 +878,26 @@ impl WorldSession {
         let Some(transfer) = transfer else {
             return;
         };
-        let to_view = |physical: SelectPhysical| physical.to_view(&transfer.target_output);
+        // The bound capability owns whether a detached surface is a reportable
+        // view at all: with `detachedFullscreenView` off, a typed detached
+        // pre/post/baseline is withheld instead of being published as a
+        // detached View row, and a detached post never carries a member.
+        // Desktop reads keep their exact native rows either way.
+        let detached_view = self.detached_fullscreen_view();
+        let to_view = |physical: SelectPhysical| {
+            (detached_view || !matches!(physical, SelectPhysical::Detached(_)))
+                .then(|| physical.to_view(&transfer.target_output))
+        };
         let attempt = ViewAttempt {
             operation_id: operation_id.to_owned(),
             target_output: transfer.target_output.clone(),
             target_workspace: transfer.target_workspace.clone(),
             disposition,
-            pre: pre.map(to_view),
-            post: post.map(to_view),
-            baseline: baseline.map(to_view),
+            pre: pre.and_then(to_view),
+            post: post.and_then(to_view),
+            baseline: baseline.and_then(to_view),
             attempt_ms: 0,
-            post_member,
+            post_member: if detached_view { post_member } else { None },
         };
         self.pending_views
             .insert((operation_id.to_owned(), transfer.target_output), attempt);

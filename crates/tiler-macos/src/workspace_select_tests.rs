@@ -2062,7 +2062,118 @@ fn detached_destination_requires_bound_typed_baseline_before_any_write() {
 }
 
 #[test]
-fn detached_source_desktop_switch_requires_standalone_explicit_select() {
+fn detached_destination_existing_view_allows_relative_previous_and_indicator() {
+    for (index, action) in [
+        Action::WorkspaceRelative { prev: false },
+        Action::WorkspaceRelative { prev: true },
+        Action::WorkspacePrevious,
+        Action::IndicatorSelectWorkspace {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-2".to_owned(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut fake = Fake {
+            row: SelectionSnapshot {
+                display: "display-a".to_owned(),
+                spaces: vec![20, 3],
+                current: 20,
+                detached: None,
+            },
+            ..Fake::default()
+        };
+        let mut state = SelectionState::default();
+        let mut claim = plan_claim(
+            action.clone(),
+            &format!("op-dest-{}", index + 1),
+            "macos-display-1",
+            "ws-2",
+            Some("space-3"),
+            None,
+            Some(20),
+        );
+        claim.select_detached_enabled = true;
+        claim.select_detached_surface = Some(900);
+        claim.select_detached_member = Some(crate::runtime_types::DetachedSelectMember {
+            window: tiler_core::directional::WindowId("4242_7".to_owned()),
+            generation: 1,
+        });
+        let success = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+            .expect("a core-owned existing View target reaches the detached destination");
+        assert_eq!(fake.selects, [900], "{action:?}");
+        assert_eq!(success.pre, Some(SelectPhysical::Desktop(20)), "{action:?}");
+        assert_eq!(
+            success.post,
+            Some(SelectPhysical::Detached(900)),
+            "{action:?}"
+        );
+        assert_eq!(
+            success
+                .post_member
+                .as_ref()
+                .map(|member| member.0.as_str()),
+            Some("4242_7"),
+            "{action:?}"
+        );
+        assert_eq!(fake.creates, 0, "{action:?}");
+    }
+}
+
+#[test]
+fn detached_source_existing_view_allows_relative_previous_and_indicator() {
+    for (index, action) in [
+        Action::WorkspaceRelative { prev: false },
+        Action::WorkspaceRelative { prev: true },
+        Action::WorkspacePrevious,
+        Action::IndicatorSelectWorkspace {
+            output: "macos-display-1".to_owned(),
+            workspace: "ws-2".to_owned(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut fake = Fake {
+            row: SelectionSnapshot {
+                display: "display-a".to_owned(),
+                spaces: vec![20, 3],
+                current: 900,
+                detached: Some(900),
+            },
+            ..Fake::default()
+        };
+        let mut state = SelectionState::default();
+        let mut claim = plan_claim(
+            action.clone(),
+            &format!("op-{}", index + 1),
+            "macos-display-1",
+            "ws-2",
+            Some("space-3"),
+            None,
+            None,
+        );
+        claim.select_detached_enabled = true;
+        claim.select_baseline = Some(SelectPhysical::Detached(900));
+        let success = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+            .expect("a core-owned existing View target leaves the covered surface");
+        assert_eq!(fake.selects, [3], "{action:?}");
+        assert_eq!(
+            success.pre,
+            Some(SelectPhysical::Detached(900)),
+            "{action:?}"
+        );
+        assert_eq!(success.post, Some(SelectPhysical::Desktop(3)), "{action:?}");
+        assert!(success.post_member.is_none(), "{action:?}");
+        assert_eq!(fake.creates, 0, "{action:?}");
+    }
+}
+
+#[test]
+fn detached_source_keeps_creation_and_trailing_fences() {
+    // Trailing `index 0` is never a standalone existing View target, even
+    // when the reply bound a live Desktop: creation/trailing stay fenced.
     let mut fake = Fake {
         row: SelectionSnapshot {
             display: "display-a".to_owned(),
@@ -2073,25 +2184,48 @@ fn detached_source_desktop_switch_requires_standalone_explicit_select() {
         ..Fake::default()
     };
     let mut state = SelectionState::default();
-    let mut claim = plan_claim(
-        Action::WorkspacePrevious,
-        "op-9",
+    let mut trailing = plan_claim(
+        Action::WorkspaceSelect { index: 0 },
+        "op-t",
         "macos-display-1",
         "ws-2",
         Some("space-3"),
         None,
-        Some(900),
+        None,
     );
-    claim.select_detached_enabled = true;
-    claim.select_baseline = Some(SelectPhysical::Detached(900));
-    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
-        .expect_err("previous never leaves a covered surface");
+    trailing.select_detached_enabled = true;
+    trailing.select_baseline = Some(SelectPhysical::Detached(900));
+    let failure = drain_claimed_select_with(&mut state, &mut fake, trailing, &open_gates(), true)
+        .expect_err("trailing never leaves a covered surface");
     assert!(
         failure.reason.contains("non-standalone explicit select"),
         "{}",
         failure.reason
     );
     assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
+
+    // A creation desire on an otherwise eligible action stays fenced.
+    let mut creation = plan_claim(
+        Action::WorkspaceRelative { prev: false },
+        "op-c",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        Some(("op-create", "ws-2", "macos-display-1")),
+        None,
+    );
+    creation.select_detached_enabled = true;
+    creation.select_baseline = Some(SelectPhysical::Detached(900));
+    let failure = drain_claimed_select_with(&mut state, &mut fake, creation, &open_gates(), true)
+        .expect_err("creation never leaves a covered surface");
+    assert!(
+        failure.reason.contains("non-standalone explicit select"),
+        "{}",
+        failure.reason
+    );
+    assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
 }
 
 #[test]
