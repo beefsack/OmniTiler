@@ -4421,6 +4421,8 @@ fn detached_membership_holds_only_the_detached_lifetime() {
         "adapter-1",
         HostCapabilities {
             host_owned: true,
+            native_sticky: true,
+            maximize: true,
             fullscreen: true,
             detached_fullscreen_view: true,
             ..HostCapabilities::default()
@@ -4428,6 +4430,24 @@ fn detached_membership_holds_only_the_detached_lifetime() {
         Vec::new(),
     )
     .expect("generation");
+    engine
+        .world
+        .workspace
+        .mapping
+        .insert("out-a".to_owned(), vec!["native-out-a-0".to_owned()]);
+    engine
+        .world
+        .workspace
+        .views
+        .insert("out-a".to_owned(), "native-out-a-0".to_owned());
+    engine
+        .world
+        .settlement
+        .native_map
+        .insert(
+            ("out-a".to_owned(), "native-out-a-0".to_owned()),
+            "native-out-a-0".to_owned(),
+        );
     let native = native_row("out-a");
     let desktop = |mut window: WindowFact| {
         window.native_workspace = NativeWorkspaceFact::Value("native-out-a-0".into());

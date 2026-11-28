@@ -3453,6 +3453,11 @@ fn detached_cursor_guard_is_output_scoped_and_uses_fresh_foreground() {
         "adapter-1",
         HostCapabilities {
             host_owned: true,
+            native_sticky: true,
+            maximize: true,
+            fullscreen: true,
+            above: true,
+            window_suppression: true,
             detached_fullscreen_view: true,
             ..HostCapabilities::default()
         },
@@ -3461,6 +3466,37 @@ fn detached_cursor_guard_is_output_scoped_and_uses_fresh_foreground() {
     .expect("valid host capability");
     let a = OutputId("out-a".into());
     let b = OutputId("out-b".into());
+    for (output, id) in [(&a, "desktop-a"), (&b, "desktop-b")] {
+        engine
+            .world
+            .workspace
+            .mapping
+            .insert(output.0.clone(), vec![id.to_owned()]);
+        engine
+            .world
+            .workspace
+            .views
+            .insert(output.0.clone(), id.to_owned());
+        engine
+            .world
+            .settlement
+            .native_map
+            .insert((output.0.clone(), id.to_owned()), id.to_owned());
+    }
+    for (window, output, id) in [("win-a", &a, "desktop-a"), ("win-b", &b, "desktop-b")] {
+        engine.world.workspace.members.insert(
+            WindowId(window.to_owned()),
+            crate::world_members::MemberState {
+                home: crate::session::DomainKey {
+                    output: output.clone(),
+                    workspace: crate::directional::WorkspaceId(id.to_owned()),
+                },
+                floating: false,
+                minimized: false,
+                geometry: None,
+            },
+        );
+    }
     let native = |output: &OutputId, id: &str| NativeObservation {
         output: output.clone(),
         native_order: vec![id.into()],
@@ -3469,14 +3505,16 @@ fn detached_cursor_guard_is_output_scoped_and_uses_fresh_foreground() {
         current_known: true,
         detached_current: None,
     };
-    let a_fact = WindowFact {
+    let mut a_fact = WindowFact {
         native_workspace: NativeWorkspaceFact::Value("desktop-a".into()),
         ..fact("win-a", "out-a", 0)
     };
-    let b_fact = WindowFact {
+    a_fact.visibility.visible = Some(true);
+    let mut b_fact = WindowFact {
         native_workspace: NativeWorkspaceFact::Value("desktop-b".into()),
         ..fact("win-b", "out-b", 800)
     };
+    b_fact.visibility.visible = Some(true);
     let capture = |seq, focused: &str| {
         let mut report = observe(seq, vec![a_fact.clone(), b_fact.clone()], focused);
         report.screens.push(screen("out-b", 800));

@@ -402,27 +402,28 @@ impl WorldTransaction<'_> {
         // must never become a Desktop fallback write.
         let native_free = !self.connection.host_owned_workspace_domains();
         let mut admitted: Vec<OutputId> = Vec::new();
-        if detached_capable {
-            if changed && shared {
-                // Capability-enabled changed shared selection: one view
-                // flight per affected live output, each with its own frozen
-                // destination, under the same parent operation and shared
-                // logical workspace.
-                for out in &affected {
-                    if plan.is_exact(out) {
-                        self.retire_view_on(out);
-                        continue;
-                    }
-                    self.retain_view_inner_with_destination(
-                        out,
-                        workspace,
-                        format!("op-{command_seq}"),
-                        Some(command_seq),
-                        plan.detached_for(out),
-                    );
-                    admitted.push(out.clone());
+        if changed && shared {
+            // Changed shared selection: one view flight per affected live
+            // output, each with its own frozen destination when the
+            // detached plan is capability-enabled (otherwise a plain
+            // Desktop flight), under the same parent operation and shared
+            // logical workspace.
+            for out in &affected {
+                if plan.is_exact(out) {
+                    self.retire_view_on(out);
+                    continue;
                 }
-            } else if changed {
+                self.retain_view_inner_with_destination(
+                    out,
+                    workspace,
+                    format!("op-{command_seq}"),
+                    Some(command_seq),
+                    plan.detached_for(out),
+                );
+                admitted.push(out.clone());
+            }
+        } else if detached_capable {
+            if changed {
                 if !plan.is_exact(output) {
                     self.retain_view_inner_with_destination(
                         output,
@@ -508,7 +509,7 @@ impl WorldTransaction<'_> {
         // redundant no-op that dispatched nothing leaves them exactly as
         // retained.
         if detached_eligible && !admitted.is_empty() {
-            self.replace_detached_cursor_guards(&affected, detached_any);
+            self.replace_detached_cursor_guards(&admitted, detached_any);
         }
         if shared {
             let canonical = self
@@ -652,15 +653,20 @@ impl WorldTransaction<'_> {
         CommandApplied::Effect(effect)
     }
 
-    /// Atomic per-output view plan from the pre-command observations. For
-    /// each affected output the plan names the exact detached destination
-    /// only when a grounded, live, fullscreen lifetime with an exact
-    /// previous retained same-output logical home for the selected
-    /// workspace owns a detached surface there. Already exact-current is
-    /// recorded separately so a redundant return mints no flight. Born,
-    /// staged-fallback, cross-output, and arbitrary-MRU candidates never
+    /// Atomic per-output view plan from the pre-command observations. The
+    /// destination is exactly the canonical remembered focus candidate
+    /// ([`Self::remembered_view_focus`]) when that candidate is a grounded
+    /// detached fullscreen lifetime homed on this output for the selected
+    /// workspace. A remembered Desktop member, or no remembered candidate,
+    /// never diverts to another detached member: only an already-exact fresh
+    /// current on a uniquely grounded member records the redundant no-op.
+    /// Born, staged-fallback, cross-output, and arbitrary candidates never
     /// enter the plan, and a later report can never add or retarget it.
-    fn selection_view_plan(&self, affected: &[OutputId], workspace: &str) -> SelectionViewPlan {
+    fn selection_view_plan(
+        &self,
+        affected: &[OutputId],
+        workspace: &str,
+    ) -> SelectionViewPlan {
         let mut plan = SelectionViewPlan::default();
         if !self.connection.detached_fullscreen_view()
             || !self.connection.host_owned_workspace_domains()
@@ -677,55 +683,48 @@ impl WorldTransaction<'_> {
                 Some(crate::world_report::ViewRef::Detached(surface)) => Some(surface),
                 _ => None,
             };
-            let mut exact = false;
-            let mut destination: Option<crate::world_report::DetachedDestination> = None;
-            for (window, fact) in &self.world.staged.facts {
-                if fact.output.as_ref() != Some(output) {
-                    continue;
+            // The detached destination may only come from the exact
+            // remembered member for this home: the canonical last-active
+            // identity, never the tiled MRU fallback and never fact order.
+            // A remembered Desktop member, an absent memory, or an
+            // ineligible member leaves the plan without a destination.
+            // Whole-scope holds are not a gate here: fullscreen detached
+            // members are not staged tiled domains, and a scope sweep hold
+            // (e.g. an unrelated Desktop sibling read gap) must not erase a
+            // valid detached return. `detached_plan_member` validates the
+            // lifetime's own liveness, hold/exclusion, fullscreen, output,
+            // surface, and exact retained home.
+            let remembered = self.world.focus.last_active_window.get(&home).cloned();
+            let remembered_detached = remembered
+                .as_ref()
+                .and_then(|window| self.detached_plan_member(window, output, &home));
+            let (destination, exact) = match (remembered, remembered_detached) {
+                (Some(window), Some(surface)) => (
+                    Some(crate::world_report::DetachedDestination {
+                        surface: surface.clone(),
+                        member: window,
+                    }),
+                    current_detached == Some(&surface),
+                ),
+                _ => {
+                    // No remembered detached member (Desktop remembered,
+                    // absent, or ineligible): never divert. A fresh current
+                    // that already reads a uniquely grounded member for the
+                    // same home is the redundant no-op.
+                    match current_detached.and_then(|surface| {
+                        self.unique_detached_member_on(surface, output, &home)
+                    }) {
+                        Some((window, surface)) => (
+                            Some(crate::world_report::DetachedDestination {
+                                surface,
+                                member: window,
+                            }),
+                            true,
+                        ),
+                        None => (None, false),
+                    }
                 }
-                if self.world.staged.observation.closed.contains(window) {
-                    continue;
-                }
-                if self
-                    .world
-                    .staged
-                    .derived
-                    .get(window)
-                    .is_some_and(|derived| derived.hold || derived.excluded)
-                {
-                    continue;
-                }
-                if fact.fullscreen != Some(true)
-                    || fact.minimized == Some(true)
-                    || fact.host_hidden == Some(true)
-                {
-                    continue;
-                }
-                let Some(detached) = fact.detached_surface.as_ref() else {
-                    continue;
-                };
-                if detached.output != *output {
-                    continue;
-                }
-                // Exact previous retained same-output logical home only: a
-                // born-fullscreen lifetime (no retained home) or a member
-                // homed elsewhere never enters the plan.
-                if self.core_homing(window).as_ref() != Some(&home) {
-                    continue;
-                }
-                exact = current_detached == Some(detached);
-                if exact || destination.is_none() {
-                    destination = Some(crate::world_report::DetachedDestination {
-                        surface: detached.clone(),
-                        member: window.clone(),
-                    });
-                }
-                // Prefer the already visible member. A redundant command
-                // must never dispatch to a different surface.
-                if exact {
-                    break;
-                }
-            }
+            };
             plan.targets.insert(
                 output.clone(),
                 PlannedViewTarget {
@@ -736,6 +735,72 @@ impl WorldTransaction<'_> {
             );
         }
         plan
+    }
+
+    /// Detached plan arming for one remembered candidate: a grounded live
+    /// fullscreen lifetime on this output with an exact previous retained
+    /// same-output logical home. A Desktop remembered member, born-fullscreen
+    /// lifetime, or member homed elsewhere yields `None`, so it cannot divert
+    /// the plan to another fullscreen member.
+    fn detached_plan_member(
+        &self,
+        window: &WindowId,
+        output: &OutputId,
+        home: &DomainKey,
+    ) -> Option<crate::world_report::DetachedRef> {
+        if self.world.staged.observation.closed.contains(window) {
+            return None;
+        }
+        if self
+            .world
+            .staged
+            .derived
+            .get(window)
+            .is_some_and(|derived| derived.hold || derived.excluded)
+        {
+            return None;
+        }
+        let fact = self.world.staged.facts.get(window)?;
+        if fact.output.as_ref() != Some(output)
+            || fact.fullscreen != Some(true)
+            || fact.minimized == Some(true)
+            || fact.host_hidden == Some(true)
+        {
+            return None;
+        }
+        let detached = fact.detached_surface.as_ref()?;
+        if detached.output != *output {
+            return None;
+        }
+        if self.core_homing(window).as_ref() != Some(home) {
+            return None;
+        }
+        Some(detached.clone())
+    }
+
+    /// The sole grounded member on one detached surface for the redundant
+    /// exact-current no-op. Several candidates are ambiguous and never
+    /// guessed.
+    fn unique_detached_member_on(
+        &self,
+        surface: &crate::world_report::DetachedRef,
+        output: &OutputId,
+        home: &DomainKey,
+    ) -> Option<(WindowId, crate::world_report::DetachedRef)> {
+        let mut found: Option<(WindowId, crate::world_report::DetachedRef)> = None;
+        for (window, fact) in &self.world.staged.facts {
+            if fact.detached_surface.as_ref() != Some(surface) {
+                continue;
+            }
+            let Some(detached) = self.detached_plan_member(window, output, home) else {
+                continue;
+            };
+            if found.is_some() {
+                return None;
+            }
+            found = Some((window.clone(), detached));
+        }
+        found
     }
 
     /// Remembered R-WS-09 focus candidate for one view target: the

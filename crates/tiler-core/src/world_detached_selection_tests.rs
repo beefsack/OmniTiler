@@ -225,6 +225,11 @@ fn seed_home_scene(engine: &mut WorldEngine, current: &str) {
     native_binding(engine, "out-a", "n-away", "ws-away");
     member(engine, "win-home", "out-a", "ws-home");
     member(engine, "win-fs", "out-a", "ws-away");
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(key("out-a", "ws-away"), WindowId("win-fs".to_owned()));
 }
 
 fn home_windows() -> Vec<WindowFact> {
@@ -538,10 +543,24 @@ fn shared_detached_siblings_settle_independently() {
     member(&mut engine, "win-home-b", "out-b", "ws-home");
     member(&mut engine, "win-fs-a", "out-a", "ws-away");
     member(&mut engine, "win-fs-b", "out-b", "ws-away");
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(key("out-a", "ws-away"), WindowId("win-fs-a".to_owned()));
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(key("out-b", "ws-away"), WindowId("win-fs-b".to_owned()));
     let windows = || {
+        let mut home_a = fact("win-home-a", "out-a", 0);
+        home_a.native_workspace = NativeWorkspaceFact::Value("n-home".to_owned());
+        let mut home_b = fact("win-home-b", "out-b", 800);
+        home_b.native_workspace = NativeWorkspaceFact::Value("n-home".to_owned());
         vec![
-            fact("win-home-a", "out-a", 0),
-            fact("win-home-b", "out-b", 800),
+            home_a,
+            home_b,
             detached_fact("win-fs-a", "out-a", "surf-a", 100),
             detached_fact("win-fs-b", "out-b", "surf-b", 900),
         ]
@@ -709,9 +728,23 @@ fn shared_pending_selection() -> (WorldEngine, Vec<WindowFact>) {
     member(&mut engine, "win-home-b", "out-b", "ws-home");
     member(&mut engine, "win-fs-a", "out-a", "ws-away");
     member(&mut engine, "win-fs-b", "out-b", "ws-away");
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(key("out-a", "ws-away"), WindowId("win-fs-a".to_owned()));
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(key("out-b", "ws-away"), WindowId("win-fs-b".to_owned()));
+    let mut home_a = fact("win-home-a", "out-a", 0);
+    home_a.native_workspace = NativeWorkspaceFact::Value("n-home".to_owned());
+    let mut home_b = fact("win-home-b", "out-b", 800);
+    home_b.native_workspace = NativeWorkspaceFact::Value("n-home".to_owned());
     let windows = vec![
-        fact("win-home-a", "out-a", 0),
-        fact("win-home-b", "out-b", 800),
+        home_a,
+        home_b,
         detached_fact("win-fs-a", "out-a", "surf-a", 100),
         detached_fact("win-fs-b", "out-b", "surf-b", 900),
     ];
@@ -733,22 +766,38 @@ fn shared_pending_selection() -> (WorldEngine, Vec<WindowFact>) {
     (engine, windows)
 }
 
-fn seed_swap_scene(engine: &mut WorldEngine, active_view: &str, other_view: &str) {
+fn seed_swap_scene(
+    engine: &mut WorldEngine,
+    active_view: &str,
+    other_view: &str,
+    detached_output: Option<&str>,
+) {
     for (output, current) in [("out-a", active_view), ("out-b", other_view)] {
         ring(engine, output, &["ws-a", "ws-b"]);
         view(engine, output, current);
         native_binding(engine, output, "n-a", "ws-a");
         native_binding(engine, output, "n-b", "ws-b");
     }
-    // A detached target member homed on the active output; the plan would
-    // name it if a selection path ever computed one.
-    member(engine, "win-fs", "out-a", "ws-b");
+    // A detached target member homed on the requested output; the plan would
+    // name it if a selection path ever computed one. The planned-swap scene
+    // homes it on the source output so the swap target stays unoccupied, and
+    // the empty scene omits membership entirely.
+    if let Some(output) = detached_output {
+        member(engine, "win-fs", output, "ws-b");
+        engine.world.focus.last_active_window.insert(
+            key(output, "ws-b"),
+            WindowId("win-fs".to_owned()),
+        );
+    }
 }
 
-fn swap_windows() -> Vec<WindowFact> {
+fn swap_windows(detached_output: &str) -> Vec<WindowFact> {
     let mut win_a = fact("win-a", "out-a", 0);
     win_a.native_workspace = NativeWorkspaceFact::Value("n-a".to_owned());
-    vec![win_a, detached_fact("win-fs", "out-a", "surf-swap", 100)]
+    vec![
+        win_a,
+        detached_fact("win-fs", detached_output, "surf-swap", 100),
+    ]
 }
 
 fn swap_report(
@@ -773,9 +822,9 @@ fn swap_report(
 #[test]
 fn global_unique_fallthrough_is_detached_eligible() {
     let mut engine = global_unique_engine();
-    seed_swap_scene(&mut engine, "ws-a", "ws-a");
+    seed_swap_scene(&mut engine, "ws-a", "ws-a", Some("out-a"));
     member(&mut engine, "win-a", "out-a", "ws-a");
-    let reply = accepted(&mut engine, &swap_report(11, swap_windows(), "n-a", "n-a"));
+    let reply = accepted(&mut engine, &swap_report(11, swap_windows("out-a"), "n-a", "n-a"));
     assert_eq!(
         reply
             .transfers
@@ -793,9 +842,9 @@ fn global_unique_planned_swaps_never_emit_a_detached_destination() {
     // Nonempty swap: a source member moves, so the stateful branch owns the
     // view flight and must never compute a detached plan.
     let mut engine = global_unique_engine();
-    seed_swap_scene(&mut engine, "ws-a", "ws-b");
+    seed_swap_scene(&mut engine, "ws-a", "ws-b", Some("out-b"));
     member(&mut engine, "win-a", "out-a", "ws-a");
-    let swapped = accepted(&mut engine, &swap_report(11, swap_windows(), "n-a", "n-b"));
+    let swapped = accepted(&mut engine, &swap_report(11, swap_windows("out-b"), "n-a", "n-b"));
     assert_eq!(
         engine.world.workspace.views.get("out-a"),
         Some(&"ws-b".to_owned()),
@@ -826,8 +875,8 @@ fn global_unique_planned_swaps_never_emit_a_detached_destination() {
     // Empty swap: no source members/domains, still a planned swap, and the
     // mapping-only branch keeps the plain view flight.
     let mut empty = global_unique_engine();
-    seed_swap_scene(&mut empty, "ws-a", "ws-b");
-    let swapped = accepted(&mut empty, &swap_report(11, swap_windows(), "n-a", "n-b"));
+    seed_swap_scene(&mut empty, "ws-a", "ws-b", None);
+    let swapped = accepted(&mut empty, &swap_report(11, swap_windows("out-b"), "n-a", "n-b"));
     assert_eq!(
         empty.world.workspace.views.get("out-a"),
         Some(&"ws-b".to_owned()),
@@ -902,5 +951,747 @@ fn physical_current_ref_is_typed_and_gaps_are_unknown() {
         engine.tx(|tx| tx.physical_current_ref(&out("out-a"))),
         None,
         "a read gap is never a typed physical view"
+    );
+}
+
+#[test]
+fn two_detached_members_return_to_the_remembered_member() {
+    let mut engine = detached_engine(false);
+    ring(&mut engine, "out-a", &["ws-home", "ws-away"]);
+    view(&mut engine, "out-a", "ws-home");
+    native_binding(&mut engine, "out-a", "n-home", "ws-home");
+    native_binding(&mut engine, "out-a", "n-away", "ws-away");
+    member(&mut engine, "win-home", "out-a", "ws-home");
+    member(&mut engine, "win-fs-a", "out-a", "ws-away");
+    member(&mut engine, "win-fs-b", "out-a", "ws-away");
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(key("out-a", "ws-away"), WindowId("win-fs-b".to_owned()));
+    let reply = accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            vec![
+                fact("win-home", "out-a", 0),
+                detached_fact("win-fs-a", "out-a", "surf-a", 100),
+                detached_fact("win-fs-b", "out-a", "surf-b", 200),
+            ],
+            vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    let flights = view_flights(&engine);
+    assert_eq!(flights.len(), 1, "one planned return: {flights:?}");
+    let destination = flights[0]
+        .detached_destination
+        .clone()
+        .expect("detached destination frozen");
+    assert_eq!(
+        destination.member,
+        WindowId("win-fs-b".to_owned()),
+        "the remembered member wins over WindowId order"
+    );
+    assert_eq!(destination.surface, detached_ref("out-a", "surf-b"));
+    assert!(reply.focus_request.is_none(), "detached return is focusless");
+}
+
+#[test]
+fn remembered_desktop_member_never_diverts_to_a_detached_member() {
+    let mut engine = detached_engine(false);
+    ring(&mut engine, "out-a", &["ws-home", "ws-away"]);
+    view(&mut engine, "out-a", "ws-home");
+    native_binding(&mut engine, "out-a", "n-home", "ws-home");
+    native_binding(&mut engine, "out-a", "n-away", "ws-away");
+    member(&mut engine, "win-home", "out-a", "ws-home");
+    member(&mut engine, "win-desk", "out-a", "ws-away");
+    member(&mut engine, "win-fs", "out-a", "ws-away");
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(key("out-a", "ws-away"), WindowId("win-desk".to_owned()));
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            vec![
+                fact("win-home", "out-a", 0),
+                fact("win-desk", "out-a", 100),
+                detached_fact("win-fs", "out-a", "surf-away", 200),
+            ],
+            vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    let flights = view_flights(&engine);
+    assert_eq!(flights.len(), 1, "ordinary Desktop view flight: {flights:?}");
+    assert!(
+        flights.iter().all(|flight| flight.detached_destination.is_none()),
+        "the remembered Desktop member never diverts to the detached sibling"
+    );
+}
+
+#[test]
+fn absent_remembered_focus_never_diverts_to_sorted_member() {
+    let mut engine = detached_engine(false);
+    ring(&mut engine, "out-a", &["ws-home", "ws-away"]);
+    view(&mut engine, "out-a", "ws-home");
+    native_binding(&mut engine, "out-a", "n-home", "ws-home");
+    native_binding(&mut engine, "out-a", "n-away", "ws-away");
+    member(&mut engine, "win-home", "out-a", "ws-home");
+    member(&mut engine, "win-fs-a", "out-a", "ws-away");
+    member(&mut engine, "win-fs-b", "out-a", "ws-away");
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            vec![
+                fact("win-home", "out-a", 0),
+                detached_fact("win-fs-a", "out-a", "surf-a", 100),
+                detached_fact("win-fs-b", "out-a", "surf-b", 200),
+            ],
+            vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    let flights = view_flights(&engine);
+    assert_eq!(flights.len(), 1, "ordinary Desktop view flight: {flights:?}");
+    assert!(
+        flights.iter().all(|flight| flight.detached_destination.is_none()),
+        "no remembered focus must not pick a fullscreen member by WindowId order"
+    );
+}
+
+#[test]
+fn ordinary_pending_desktop_selection_external_move_retires_scope_and_binding() {
+    let mut engine = detached_engine(false);
+    ring(&mut engine, "out-a", &["ws-1", "ws-2", "ws-3"]);
+    view(&mut engine, "out-a", "ws-1");
+    for (native, workspace) in [("n-1", "ws-1"), ("n-2", "ws-2"), ("n-3", "ws-3")] {
+        native_binding(&mut engine, "out-a", native, workspace);
+    }
+    for (window, workspace) in [("win-1", "ws-1"), ("win-2", "ws-2"), ("win-3", "ws-3")] {
+        member(&mut engine, window, "out-a", workspace);
+    }
+    let windows = || {
+        vec![
+            fact("win-1", "out-a", 0),
+            fact("win-2", "out-a", 100),
+            fact("win-3", "out-a", 200),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            windows(),
+            vec![native_row("out-a", &["n-1", "n-2", "n-3"], "n-1")],
+            "out-a",
+            "ws-2",
+        ),
+    );
+    assert!(
+        engine
+            .world
+            .settlement
+            .retained_selection
+            .contains_key(&out("out-a")),
+        "ordinary Desktop selection freezes a pending binding"
+    );
+    assert!(
+        engine
+            .world
+            .settlement
+            .selection_scopes
+            .contains_key(&out("out-a")),
+        "ordinary Desktop selection freezes a scope"
+    );
+    accepted(
+        &mut engine,
+        &observation_report(
+            11,
+            vec![screen("out-a", 0)],
+            windows(),
+            vec![native_row("out-a", &["n-1", "n-2", "n-3"], "n-3")],
+        ),
+    );
+    assert_eq!(
+        engine.world.workspace.views.get("out-a"),
+        Some(&"ws-3".to_owned()),
+        "the external move is adopted"
+    );
+    assert!(
+        engine.world.settlement.retained_selection.is_empty(),
+        "the stale ordinary binding retires"
+    );
+    assert!(
+        engine.world.settlement.selection_scopes.is_empty(),
+        "the stale ordinary scope retires"
+    );
+}
+
+#[test]
+fn ordinary_exact_native_arrival_settles_normally_without_pre_attempt_supersession() {
+    let mut engine = detached_engine(false);
+    ring(&mut engine, "out-a", &["ws-1", "ws-2", "ws-3"]);
+    view(&mut engine, "out-a", "ws-1");
+    for (native, workspace) in [("n-1", "ws-1"), ("n-2", "ws-2"), ("n-3", "ws-3")] {
+        native_binding(&mut engine, "out-a", native, workspace);
+    }
+    for (window, workspace) in [("win-1", "ws-1"), ("win-2", "ws-2"), ("win-3", "ws-3")] {
+        member(&mut engine, window, "out-a", workspace);
+    }
+    let windows = || {
+        vec![
+            fact("win-1", "out-a", 0),
+            fact("win-2", "out-a", 100),
+            fact("win-3", "out-a", 200),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            windows(),
+            vec![native_row("out-a", &["n-1", "n-2", "n-3"], "n-1")],
+            "out-a",
+            "ws-2",
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &observation_report(
+            11,
+            vec![screen("out-a", 0)],
+            windows(),
+            vec![native_row("out-a", &["n-1", "n-2", "n-3"], "n-2")],
+        ),
+    );
+    assert_eq!(
+        reply.switch_settled.len(),
+        1,
+        "the exact target arrival is the ordinary terminal, not external supersession: {reply:?}"
+    );
+    assert_eq!(
+        reply.switch_settled[0].outcome,
+        crate::world_report::SwitchOutcome::Complete
+    );
+    assert_eq!(
+        engine.world.workspace.views.get("out-a"),
+        Some(&"ws-2".to_owned())
+    );
+    assert!(view_flights(&engine).is_empty());
+    assert!(engine.world.settlement.retained_selection.is_empty());
+}
+
+#[test]
+fn shared_pre_attempt_supersession_keeps_a_pending_sibling_obligation() {
+    let (mut engine, windows) = shared_pending_selection();
+    let mut moved = observation_report(
+        11,
+        vec![screen("out-a", 0), screen("out-b", 800)],
+        windows,
+        vec![
+            native_row("out-a", &["n-home", "n-away"], "n-away"),
+            native_row("out-b", &["n-home", "n-away"], "n-away"),
+        ],
+    );
+    // out-b has a correlated attempt that has not proven yet: its flight and
+    // binding target must survive while out-a's external departure retires
+    // only out-a.
+    moved.view_attempts = vec![ViewAttempt {
+        operation_id: "op-10".to_owned(),
+        target_output: out("out-b"),
+        target_workspace: "ws-away".to_owned(),
+        disposition: FrameSetter::Accepted,
+        pre: Some(ViewRef::Native {
+            output: out("out-b"),
+            workspace: crate::ids::NativeWorkspaceId::parse("n-home").expect("native id"),
+        }),
+        post: Some(ViewRef::Native {
+            output: out("out-b"),
+            workspace: crate::ids::NativeWorkspaceId::parse("n-away").expect("native id"),
+        }),
+        baseline: None,
+        attempt_ms: 7,
+        post_member: None,
+    }];
+    let reply = accepted(&mut engine, &moved);
+    assert!(
+        reply.switch_settled.is_empty(),
+        "the pending sibling keeps the shared terminal open: {reply:?}"
+    );
+    let flights = view_flights(&engine);
+    assert_eq!(flights.len(), 1, "only the pending sibling flight survives");
+    assert_eq!(flights[0].target.target_output, out("out-b"));
+    assert!(flights[0].detached_destination.is_some());
+    let binding = engine
+        .world
+        .settlement
+        .retained_selection
+        .get(&out("out-a"))
+        .expect("the superseded output's binding key still carries its sibling");
+    assert_eq!(
+        binding.view_targets.keys().cloned().collect::<Vec<_>>(),
+        vec![out("out-b")],
+        "out-a's obligation is retired per-output, out-b's is preserved"
+    );
+    assert!(
+        binding
+            .view_targets
+            .get(&out("out-b"))
+            .is_some_and(|target| target.is_pending()),
+        "the sibling's pending proof is untouched"
+    );
+    assert!(
+        engine
+            .world
+            .settlement
+            .selection_scopes
+            .contains_key(&out("out-b")),
+        "the sibling scope survives"
+    );
+    assert!(
+        !engine
+            .world
+            .settlement
+            .selection_scopes
+            .contains_key(&out("out-a")),
+        "only the superseded output's scope retires"
+    );
+    for output in ["out-a", "out-b"] {
+        assert_eq!(
+            engine.world.workspace.views.get(output),
+            Some(&"ws-away".to_owned()),
+            "the coherent shared departure is adopted for {output}"
+        );
+    }
+}
+
+#[test]
+fn detached_pre_attempt_external_desktop_departure_supersedes_without_replay() {
+    let mut engine = detached_engine(false);
+    seed_home_scene(&mut engine, "ws-home");
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            home_windows(),
+            vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    assert_eq!(view_flights(&engine).len(), 1, "detached flight admitted");
+    let moved = accepted(
+        &mut engine,
+        &observation_report(
+            11,
+            vec![screen("out-a", 0)],
+            home_windows(),
+            vec![native_row("out-a", &["n-home", "n-away"], "n-away")],
+        ),
+    );
+    assert!(
+        moved.switch_settled.is_empty(),
+        "external supersession mints no event: {moved:?}"
+    );
+    assert_eq!(
+        engine.world.workspace.views.get("out-a"),
+        Some(&"ws-away".to_owned()),
+        "the observed Desktop logical is adopted once"
+    );
+    assert!(
+        view_flights(&engine).is_empty(),
+        "the superseded detached flight retires"
+    );
+    assert!(
+        engine.world.settlement.retained_selection.is_empty(),
+        "the matching binding retires"
+    );
+    assert!(
+        engine.world.settlement.selection_scopes.is_empty(),
+        "the matching scope retires"
+    );
+    assert!(
+        engine
+            .world
+            .settlement
+            .retained
+            .iter()
+            .all(|flight| flight.target.operation_id != "op-10"),
+        "no replay or sibling flight survives"
+    );
+}
+
+#[test]
+fn detached_pre_attempt_supersession_holds_on_gap_preimage_and_attempt() {
+    let select = |engine: &mut WorldEngine| {
+        seed_home_scene(engine, "ws-home");
+        accepted(
+            engine,
+            &command_report(
+                10,
+                vec![screen("out-a", 0)],
+                home_windows(),
+                vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+                "out-a",
+                "ws-away",
+            ),
+        );
+    };
+    // A read gap is never a departure.
+    let mut gap = detached_engine(false);
+    select(&mut gap);
+    accepted(
+        &mut gap,
+        &observation_report(
+            11,
+            vec![screen("out-a", 0)],
+            home_windows(),
+            vec![gap_row("out-a", &["n-home", "n-away"])],
+        ),
+    );
+    assert_eq!(view_flights(&gap).len(), 1, "gap holds the detached flight");
+    assert!(
+        gap.world
+            .settlement
+            .retained_selection
+            .contains_key(&out("out-a")),
+        "gap keeps the binding"
+    );
+    // An unchanged frozen preimage is not newer external input.
+    let mut unchanged = detached_engine(false);
+    select(&mut unchanged);
+    accepted(
+        &mut unchanged,
+        &observation_report(
+            11,
+            vec![screen("out-a", 0)],
+            home_windows(),
+            vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+        ),
+    );
+    assert_eq!(
+        view_flights(&unchanged).len(),
+        1,
+        "unchanged preimage holds the detached flight"
+    );
+    assert!(
+        unchanged
+            .world
+            .settlement
+            .retained_selection
+            .contains_key(&out("out-a")),
+        "unchanged preimage keeps the binding"
+    );
+    // A correlated attempt owns the proof lanes; the external pre-attempt
+    // supersession never races it.
+    let mut attempted = detached_engine(false);
+    select(&mut attempted);
+    let mut with_attempt = observation_report(
+        11,
+        vec![screen("out-a", 0)],
+        home_windows(),
+        vec![native_row("out-a", &["n-home", "n-away"], "n-away")],
+    );
+    with_attempt.view_attempts = vec![ViewAttempt {
+        operation_id: "op-10".to_owned(),
+        target_output: out("out-a"),
+        target_workspace: "ws-away".to_owned(),
+        disposition: FrameSetter::Refused,
+        pre: Some(ViewRef::Native {
+            output: out("out-a"),
+            workspace: crate::ids::NativeWorkspaceId::parse("n-away").expect("native id"),
+        }),
+        post: Some(ViewRef::Native {
+            output: out("out-a"),
+            workspace: crate::ids::NativeWorkspaceId::parse("n-away").expect("native id"),
+        }),
+        baseline: None,
+        attempt_ms: 7,
+        post_member: None,
+    }];
+    accepted(&mut attempted, &with_attempt);
+    assert_eq!(
+        view_flights(&attempted).len(),
+        1,
+        "a correlated attempt holds the flight for the proof lanes"
+    );
+    assert!(
+        attempted
+            .world
+            .settlement
+            .retained_selection
+            .contains_key(&out("out-a")),
+        "the attempt keeps the binding pending"
+    );
+}
+
+#[test]
+fn branch_b_terminal_adopts_same_reply_desktop_logical() {
+    let mut engine = detached_engine(false);
+    seed_home_scene(&mut engine, "ws-home");
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            home_windows(),
+            vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    let mut proof = observation_report(
+        11,
+        vec![screen("out-a", 0)],
+        home_windows(),
+        vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+    );
+    proof.view_attempts = vec![ViewAttempt {
+        operation_id: "op-10".to_owned(),
+        target_output: out("out-a"),
+        target_workspace: "ws-away".to_owned(),
+        disposition: FrameSetter::Accepted,
+        pre: None,
+        post: Some(ViewRef::Detached(detached_ref("out-a", "surf-away"))),
+        baseline: None,
+        attempt_ms: 7,
+        post_member: Some(WindowId("win-fs".to_owned())),
+    }];
+    let reply = accepted(&mut engine, &proof);
+    assert_eq!(reply.switch_settled.len(), 1, "Branch B proves: {reply:?}");
+    assert_eq!(
+        engine.world.workspace.views.get("out-a"),
+        Some(&"ws-home".to_owned()),
+        "the same reply adopts the newer coherent Desktop instead of echoing ws-away"
+    );
+}
+
+#[test]
+fn true_detached_refusal_terminal_adopts_same_reply_desktop_logical() {
+    let mut engine = detached_engine(false);
+    seed_home_scene(&mut engine, "ws-home");
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            home_windows(),
+            vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    let mut refused = observation_report(
+        11,
+        vec![screen("out-a", 0)],
+        home_windows(),
+        vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+    );
+    let preimage = ViewRef::Native {
+        output: out("out-a"),
+        workspace: crate::ids::NativeWorkspaceId::parse("n-home").expect("native id"),
+    };
+    refused.view_attempts = vec![ViewAttempt {
+        operation_id: "op-10".to_owned(),
+        target_output: out("out-a"),
+        target_workspace: "ws-away".to_owned(),
+        disposition: FrameSetter::Refused,
+        pre: Some(preimage.clone()),
+        post: Some(preimage),
+        baseline: None,
+        attempt_ms: 7,
+        post_member: None,
+    }];
+    let reply = accepted(&mut engine, &refused);
+    assert_eq!(reply.switch_settled.len(), 1, "refusal terminal: {reply:?}");
+    assert_eq!(
+        reply.switch_settled[0].outcome,
+        crate::world_report::SwitchOutcome::CompletedWithFailures
+    );
+    assert_eq!(
+        engine.world.workspace.views.get("out-a"),
+        Some(&"ws-home".to_owned()),
+        "the refusal adopts the unchanged readable Desktop preimage"
+    );
+}
+
+#[test]
+fn detached_refusal_holds_under_the_gesture_barrier() {
+    let mut engine = detached_engine(false);
+    seed_home_scene(&mut engine, "ws-home");
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            home_windows(),
+            vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    let preimage = ViewRef::Native {
+        output: out("out-a"),
+        workspace: crate::ids::NativeWorkspaceId::parse("n-home").expect("native id"),
+    };
+    let mut refused = observation_report(
+        11,
+        vec![screen("out-a", 0)],
+        home_windows(),
+        vec![native_row("out-a", &["n-home", "n-away"], "n-home")],
+    );
+    refused.gesture_barrier = true;
+    refused.view_attempts = vec![ViewAttempt {
+        operation_id: "op-10".to_owned(),
+        target_output: out("out-a"),
+        target_workspace: "ws-away".to_owned(),
+        disposition: FrameSetter::Refused,
+        pre: Some(preimage.clone()),
+        post: Some(preimage),
+        baseline: None,
+        attempt_ms: 7,
+        post_member: None,
+    }];
+    let reply = accepted(&mut engine, &refused);
+    assert!(
+        reply.switch_settled.is_empty(),
+        "gesture barrier holds the detached refusal: {reply:?}"
+    );
+    assert_eq!(
+        view_flights(&engine).len(),
+        1,
+        "the detached flight survives the barrier"
+    );
+}
+
+#[test]
+fn detached_preimage_refusal_holds_under_the_gesture_barrier() {
+    let mut engine = detached_engine(false);
+    ring(&mut engine, "out-a", &["ws-home", "ws-away"]);
+    view(&mut engine, "out-a", "ws-home");
+    native_binding(&mut engine, "out-a", "n-away", "ws-away");
+    member(&mut engine, "win-fs", "out-a", "ws-home");
+    member(&mut engine, "win-away", "out-a", "ws-away");
+    let windows = || {
+        vec![
+            detached_fact("win-fs", "out-a", "surf-home", 0),
+            fact("win-away", "out-a", 100),
+        ]
+    };
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0)],
+            windows(),
+            vec![detached_row("out-a", &["n-away"], "surf-home")],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    let preimage = ViewRef::Detached(detached_ref("out-a", "surf-home"));
+    let mut refused = observation_report(
+        11,
+        vec![screen("out-a", 0)],
+        windows(),
+        vec![detached_row("out-a", &["n-away"], "surf-home")],
+    );
+    refused.gesture_barrier = true;
+    refused.view_attempts = vec![ViewAttempt {
+        operation_id: "op-10".to_owned(),
+        target_output: out("out-a"),
+        target_workspace: "ws-away".to_owned(),
+        disposition: FrameSetter::Refused,
+        pre: Some(preimage.clone()),
+        post: Some(preimage),
+        baseline: None,
+        attempt_ms: 7,
+        post_member: None,
+    }];
+    let reply = accepted(&mut engine, &refused);
+    assert!(
+        reply.switch_settled.is_empty(),
+        "gesture barrier holds the detached-preimage refusal: {reply:?}"
+    );
+    assert_eq!(
+        view_flights(&engine).len(),
+        1,
+        "the Desktop obligation survives the barrier"
+    );
+}
+
+#[test]
+fn shared_exact_current_sibling_keeps_no_cursor_guard() {
+    let mut engine = detached_engine(true);
+    for output in ["out-a", "out-b"] {
+        ring(&mut engine, output, &["ws-home", "ws-away"]);
+        view(&mut engine, output, "ws-home");
+        native_binding(&mut engine, output, "n-home", "ws-home");
+        native_binding(&mut engine, output, "n-away", "ws-away");
+    }
+    member(&mut engine, "win-home-a", "out-a", "ws-home");
+    member(&mut engine, "win-home-b", "out-b", "ws-home");
+    member(&mut engine, "win-fs-a", "out-a", "ws-away");
+    member(&mut engine, "win-fs-b", "out-b", "ws-away");
+    for (output, window) in [("out-a", "win-fs-a"), ("out-b", "win-fs-b")] {
+        engine
+            .world
+            .focus
+            .last_active_window
+            .insert(key(output, "ws-away"), WindowId(window.to_owned()));
+    }
+    accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            vec![
+                fact("win-home-a", "out-a", 0),
+                fact("win-home-b", "out-b", 800),
+                detached_fact("win-fs-a", "out-a", "surf-a", 100),
+                detached_fact("win-fs-b", "out-b", "surf-b", 900),
+            ],
+            vec![
+                detached_row("out-a", &["n-home", "n-away"], "surf-a"),
+                native_row("out-b", &["n-home", "n-away"], "n-home"),
+            ],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    assert_eq!(
+        view_flights(&engine).len(),
+        1,
+        "only the non-exact sibling dispatches"
+    );
+    assert!(
+        !engine
+            .world
+            .focus
+            .detached_cursor_guards
+            .contains_key(&out("out-a")),
+        "an already exact-current sibling keeps no new guard"
+    );
+    assert!(
+        engine
+            .world
+            .focus
+            .detached_cursor_guards
+            .contains_key(&out("out-b")),
+        "the admitted sibling owns the retained guard"
     );
 }

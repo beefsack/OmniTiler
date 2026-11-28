@@ -646,11 +646,13 @@ impl WorldTransaction<'_> {
                 .retained_selection
                 .values()
                 .any(|binding| {
+                    let detached_family = binding
+                        .view_targets
+                        .values()
+                        .any(|target| target.detached_destination.is_some());
                     binding.view_targets.contains_key(output)
-                        && binding
-                            .view_targets
-                            .values()
-                            .any(|target| target.is_pending())
+                        && detached_family
+                        && binding.view_targets.values().any(|target| target.is_pending())
                 });
             if planned_pending {
                 continue;
@@ -788,13 +790,17 @@ impl WorldTransaction<'_> {
             .retained_selection
             .iter()
             .filter(|(key, binding)| {
-                // Never erase a planned binding while any output's typed
-                // verdict is still pending, even if a covering scope went
-                // stale: the terminal owns that final removal.
-                if binding
+                // Never erase a detached-family binding while any sibling
+                // output's typed verdict is still pending, even if a covering
+                // scope went stale: the terminal owns that final removal.
+                // Ordinary Desktop obligations (no detached destination at
+                // all) keep the legacy supersession drop.
+                let detached_family = binding
                     .view_targets
                     .values()
-                    .any(|target| target.is_pending())
+                    .any(|target| target.detached_destination.is_some());
+                if detached_family
+                    && binding.view_targets.values().any(|target| target.is_pending())
                 {
                     return false;
                 }
@@ -2098,6 +2104,7 @@ impl WorldTransaction<'_> {
             && pre != frozen
             && preimage == Some(&pre)
             && self.physical_current_ref(output).as_ref() == Some(&pre)
+            && !self.world.staged.gesture_barrier
         {
             return ViewTargetVerdict::Refused(pre);
         }
@@ -2139,6 +2146,7 @@ impl WorldTransaction<'_> {
             if matches!(frozen_preimage, ViewRef::Detached(_)) {
                 return if evidence.disposition == crate::world_attempts::AttemptDisposition::Refused
                     && self.physical_current_ref(output).as_ref() == Some(frozen_preimage)
+                    && !self.world.staged.gesture_barrier
                 {
                     ViewTargetVerdict::Refused(frozen_preimage.clone())
                 } else {
@@ -2175,6 +2183,53 @@ impl WorldTransaction<'_> {
         }
     }
 
+    /// Same-reply physical adoption when a detached obligation terminates.
+    /// Branch B (proven then abandoned) and a true refusal both leave a newer
+    /// known Desktop current: adopt it as external input so the reply never
+    /// echoes the stale detached target for a turn. Shared mode adopts only a
+    /// coherent common logical across every live sibling; a non-Desktop or
+    /// gapped read keeps the existing later observation lane and focus stays
+    /// whatever the terminal already decided.
+    fn adopt_terminal_detached_desktop_views(&mut self, binding: &RetainedSelection) {
+        let shared = self.connection.workspace_mode_setting()
+            == crate::workspace_scope::WorkspaceMode::Shared;
+        if shared {
+            let terminal_desktop = binding.view_targets.iter().any(|(out, target)| {
+                target.detached_destination.is_some()
+                    && target.verdict != ViewTargetVerdict::Pending
+                    && matches!(
+                        self.physical_current_ref(out),
+                        Some(crate::world_report::ViewRef::Native { .. })
+                    )
+            });
+            if !terminal_desktop {
+                return;
+            }
+            if let Some(common) = self.shared_common_desktop_logical() {
+                self.adopt_shared_logical_view(&common);
+            }
+            return;
+        }
+        for (out, target) in &binding.view_targets {
+            if target.detached_destination.is_none()
+                || target.verdict == ViewTargetVerdict::Pending
+            {
+                continue;
+            }
+            let Some(crate::world_report::ViewRef::Native { workspace, .. }) =
+                self.physical_current_ref(out)
+            else {
+                continue;
+            };
+            let Some(logical) = self.native_logical(out, workspace.as_str()) else {
+                continue;
+            };
+            if self.known_workspace(out, &logical) {
+                self.adopt_observed_logical_view(out, &logical);
+            }
+        }
+    }
+
     /// Stage one settled switch terminal: release the finite feedback
     /// binding, retire the actual retained view parent flight, and update
     /// the output's retained `switch_settled` slot latest-wins. The single
@@ -2182,7 +2237,10 @@ impl WorldTransaction<'_> {
     /// issuing point.
     fn stage_selection_terminal(&mut self, output: &OutputId, event: SwitchEvent) {
         let parent = event.operation_id.clone();
-        self.world.settlement.retained_selection.remove(output);
+        let binding = self.world.settlement.retained_selection.remove(output);
+        if let Some(binding) = &binding {
+            self.adopt_terminal_detached_desktop_views(binding);
+        }
         self.world.settlement.retained.retain(|retained| {
             !(retained.target.operation_id == parent
                 && matches!(retained.target.kind, TransferKind::View))

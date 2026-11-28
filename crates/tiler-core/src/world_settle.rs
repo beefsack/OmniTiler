@@ -529,6 +529,10 @@ impl WorldTransaction<'_> {
             .map(|retained| retained.target.operation_id.clone())
             .collect();
         let native_free = !self.connection.host_owned_workspace_domains();
+        let shared = self.connection.workspace_mode_setting()
+            == crate::workspace_scope::WorkspaceMode::Shared;
+        let mut superseded: Vec<(OutputId, String)> = Vec::new();
+        let mut ordinary_superseded: Vec<(OutputId, String)> = Vec::new();
         let mut keep: Vec<RetainedTransfer> = Vec::new();
         for retained in std::mem::take(&mut self.world.settlement.retained) {
             if !matches!(&retained.target.kind, TransferKind::View) {
@@ -553,8 +557,38 @@ impl WorldTransaction<'_> {
             if retained.detached_destination.is_some() {
                 // Detached view proof is the frozen selection binding's
                 // typed current-ref check (`settle_selection_switch`), never
-                // a logical Desktop echo: keep the flight until its
-                // terminal retires it.
+                // a logical Desktop echo. Before any correlated attempt, a
+                // newer coherent Desktop current different from the frozen
+                // preimage is external supersession: adopt it once and retire
+                // only this output's flight/obligation, and never replay the
+                // command. Gaps, barrier reports, unchanged preimages,
+                // attempts, and divergent shared siblings hold for the proof
+                // lanes. Ordinary (non-detached) flights never take this
+                // lane: their native echo/attempt settlement is unchanged.
+                if let Some(logical) = self.pre_attempt_desktop_departure(&retained) {
+                    if shared {
+                        // Shared adoption only on the coherent common
+                        // logical across every live sibling; otherwise the
+                        // flight and binding stay for canonical
+                        // reconciliation.
+                        if let Some(common) = self.shared_common_desktop_logical() {
+                            self.adopt_shared_logical_view(&common);
+                        } else {
+                            keep.push(retained);
+                            continue;
+                        }
+                    } else {
+                        self.adopt_observed_logical_view(
+                            &retained.target.target_output,
+                            &logical,
+                        );
+                    }
+                    superseded.push((
+                        retained.target.target_output.clone(),
+                        retained.target.operation_id.clone(),
+                    ));
+                    continue;
+                }
                 keep.push(retained);
                 continue;
             }
@@ -656,6 +690,10 @@ impl WorldTransaction<'_> {
                         &ring,
                     );
                 }
+                ordinary_superseded.push((
+                    retained.target.target_output.clone(),
+                    retained.target.operation_id.clone(),
+                ));
             } else if raw_view.is_some_and(|attempt| {
                 self.view_third_location(
                     attempt,
@@ -674,6 +712,10 @@ impl WorldTransaction<'_> {
             }) {
                 // Newer external input proven by the raw post: settle to
                 // observed instead of fighting the user.
+                ordinary_superseded.push((
+                    retained.target.target_output.clone(),
+                    retained.target.operation_id.clone(),
+                ));
             } else {
                 let last = self.last_view_logical(&retained.target.target_output);
                 let last = last.as_deref();
@@ -712,6 +754,10 @@ impl WorldTransaction<'_> {
                             echo,
                             &ring,
                         );
+                        ordinary_superseded.push((
+                            retained.target.target_output.clone(),
+                            retained.target.operation_id.clone(),
+                        ));
                     } else {
                         keep.push(retained);
                     }
@@ -723,6 +769,76 @@ impl WorldTransaction<'_> {
             }
         }
         self.world.settlement.retained = keep;
+        // External supersession retires only the output whose own flight was
+        // dropped. Sibling flights, their frozen binding targets, and their
+        // scopes stay for normal per-output settlement; a sibling may carry a
+        // pending/latched attempt proof that must not be erased by one
+        // output's departure. Scope and target cleanup is revision-matched:
+        // a newer command on the same output owns its own state.
+        for (output, parent) in superseded {
+            self.retire_superseded_view(&output, &parent, false);
+        }
+        // An ordinary Desktop echo supersedes the stale binding: with no
+        // sibling target left the whole binding drops, as it did before the
+        // detached per-output lanes existed.
+        for (output, parent) in ordinary_superseded {
+            self.retire_superseded_view(&output, &parent, true);
+        }
+    }
+
+    /// Retire one output's frozen view obligation after its flight was
+    /// superseded by external input. For a detached departure only this
+    /// output's target retires and siblings keep normal settlement; an
+    /// ordinary Desktop supersession is stale as a whole and drops the
+    /// covering binding, matching the legacy shared binding lane.
+    fn retire_superseded_view(
+        &mut self,
+        output: &OutputId,
+        parent: &str,
+        drop_whole_binding: bool,
+    ) {
+        let removed = self
+            .world
+            .settlement
+            .retained_selection
+            .iter_mut()
+            .find_map(|(key, binding)| {
+                if binding.parent_op != parent {
+                    return None;
+                }
+                let target = binding.view_targets.remove(output)?;
+                binding.view_raw.remove(output);
+                let empty = binding.view_targets.is_empty()
+                    && binding.effect.is_none()
+                    && binding.members.is_empty()
+                    && binding.switch_members.is_empty()
+                    && binding.switch_evidence.is_empty()
+                    && binding.feedback.is_none();
+                Some((
+                    target.home,
+                    binding.rev,
+                    (drop_whole_binding || empty).then(|| key.clone()),
+                ))
+            });
+        let Some((home, rev, remove_key)) = removed else {
+            return;
+        };
+        if self
+            .world
+            .settlement
+            .selection_scopes
+            .get(output)
+            .is_some_and(|scope| scope.rev == rev)
+        {
+            self.world.settlement.selection_scopes.remove(output);
+        }
+        self.world
+            .settlement
+            .selection_targets
+            .retain(|_, entry| !(entry.home == home && entry.rev == rev));
+        if let Some(key) = remove_key {
+            self.world.settlement.retained_selection.remove(&key);
+        }
     }
 
     /// Settle outstanding window and migration transfers plus explicit
