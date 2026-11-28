@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 //! Receipt-bound recovery of one proven owned Space whose only occupants are
-//! positively authenticated offscreen system surfaces.
+//! positively authenticated system surfaces.
 //!
 //! A stopped owned-Space leg can leave its created Desktop behind when a
 //! Mission Control chrome window (for example an offscreen WindowManager
@@ -15,17 +15,16 @@
 //!    beside receipt `live-leg-residue.json`) records the exact target SID
 //!    as an owned Space whose removal was refused, and the target is absent
 //!    from the baseline preimage;
-//! 2. the fresh SLS topology is exactly that preimage with one append of the
-//!    recorded SID at the end of exactly one display, every other display
-//!    unchanged, and the target is not any display's current;
+//! 2. stripping only receipt-recorded owned SIDs from the fresh SLS rows
+//!    recovers exactly the preimage's order and currents; the target is
+//!    present on exactly one row and is not current;
 //! 3. a fresh `SLSSpaceGetType` read proves the target is a User Space;
-//! 4. a fresh title-free CG/SLS membership enumeration proves every window
-//!    on the target is offscreen and is exactly WindowManager, Dock,
-//!    WindowServer (canonical executable), Finder, or ControlCenter chrome,
-//!    with every membership readable (an unknown membership can hide the
-//!    target) and every target member's Space set inside the fresh User set.
+//! 4. a fresh title-free CG/SLS census proves each target member is
+//!    authenticated offscreen system chrome or the exact Finder desktop-
+//!    icon layer. All memberships must be readable and target members
+//!    must belong only to fresh User Spaces.
 //!
-//! The receipt records authorization input only: the SID and its preimage.
+//! The retained receipt supplies the owned SIDs and their common preimage.
 //! It is never treated as live evidence, and no read here is cached across
 //! the removal dispatch.
 
@@ -45,6 +44,7 @@ pub const WINDOWMANAGER_EXE: &str =
 pub const FINDER_BUNDLE_ID: &str = "com.apple.finder";
 /// Exact Finder executable for that surface.
 pub const FINDER_EXE: &str = "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder";
+const FINDER_DESKTOP_LAYER: i32 = -2_147_483_603;
 /// Exact Dock executable (never a bundle-only match).
 pub const DOCK_EXE: &str = "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock";
 
@@ -79,7 +79,7 @@ pub struct RecoveryMemberRow {
     pub spaces: Option<Vec<u64>>,
 }
 
-/// One positively authenticated offscreen system surface on the target.
+/// One positively authenticated system surface on the target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuthenticatedMember {
     pub wid: u32,
@@ -98,15 +98,15 @@ pub struct AuthenticatedMembers {
     pub members: Vec<AuthenticatedMember>,
 }
 
-/// One receipt-pinned owned Space: the recorded SID plus the exact native
-/// preimage it must still appear as a single append over.
+/// One removal target within the retained receipt's created-SID set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedSpaceReceipt {
     pub sid: u64,
+    pub created: Vec<u64>,
     pub preimage: NativeBaseline,
 }
 
-/// The exact append binding proven against the fresh topology.
+/// The unique target binding proven against the fresh topology.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct OwnedSpaceBinding {
     pub display: usize,
@@ -156,10 +156,8 @@ pub fn owned_sids_in_residue(residue: &serde_json::Value) -> Vec<u64> {
 
 /// Build the receipt authorization from the retained receipt set. Requires
 /// the residue to retain the receipt and name the exact target SID, and the
-/// baseline preimage to exclude it (a Space already present at capture time
-/// is not a leg-created append and is never authorized here). Positional
-/// display rows must match their recorded indexes with a readable current in
-/// each row.
+/// baseline preimage to exclude all recorded created SIDs. Positional rows
+/// must match their indexes with a readable current in each row.
 pub fn receipt_from_persisted(
     baseline: &LiveBaseline,
     residue: &serde_json::Value,
@@ -196,14 +194,15 @@ pub fn receipt_from_persisted(
                 display.current, display.spaces
             ));
         }
-        if display.spaces.contains(&space) {
+        if let Some(sid) = display.spaces.iter().find(|sid| named.contains(sid)) {
             return Err(format!(
-                "owned-recovery: Space {space} is already in the receipt preimage; it is not a leg-created append — refusing"
+                "owned-recovery: recorded Space {sid} is already in the receipt preimage; refusing"
             ));
         }
     }
     Ok(OwnedSpaceReceipt {
         sid: space,
+        created: named,
         preimage: baseline.native.clone(),
     })
 }
@@ -238,106 +237,57 @@ fn load_residue_value(path: &Path) -> Result<serde_json::Value, String> {
         .map_err(|_| "owned-recovery: residue artifact corrupt; refusing".to_owned())
 }
 
-/// Prove the fresh topology is the receipt preimage plus exactly one append
-/// of `sid` at the end of exactly one display, every other display unchanged,
-/// and `sid` is not any display's current. Pure over plain data.
-pub fn prove_exact_append(
+/// Strip only receipt-recorded additions. Already removed SIDs may be
+/// absent, but the requested SID must be present, unique and noncurrent.
+fn prove_recorded_ownership(
     preimage: &NativeBaseline,
+    created: &[u64],
     sid: u64,
     snapshot: &TopologySnapshot,
 ) -> Result<OwnedSpaceBinding, McError> {
-    if sid == 0 {
+    if sid == 0 || !created.contains(&sid) {
         return Err(McError::Ownership(
-            "owned-recovery: zero target SID; refusing".to_owned(),
+            "owned-recovery: target is not a recorded owned SID; refusing".to_owned(),
         ));
     }
-    if preimage.displays.is_empty() || snapshot.displays.is_empty() {
+    if preimage.displays.is_empty() || preimage.displays.len() != snapshot.displays.len() {
         return Err(McError::Ownership(
-            "owned-recovery: empty topology on one side; ownership uncertain — refusing".to_owned(),
+            "owned-recovery: display shape changed; refusing".to_owned(),
         ));
     }
-    if preimage.displays.len() != snapshot.displays.len() {
-        return Err(McError::Ownership(format!(
-            "owned-recovery: fresh topology has {} displays but the receipt preimage has {}; ownership uncertain — refusing",
-            snapshot.displays.len(),
-            preimage.displays.len()
-        )));
-    }
-    if preimage
-        .displays
-        .iter()
-        .any(|display| display.spaces.contains(&sid))
-    {
-        return Err(McError::Ownership(format!(
-            "owned-recovery: Space {sid} is already in the receipt preimage; not a leg-created append — refusing"
-        )));
-    }
-    let mut bound: Option<usize> = None;
-    for (index, before) in preimage.displays.iter().enumerate() {
-        if before.index != index {
+    for (index, (before, after)) in preimage.displays.iter().zip(&snapshot.displays).enumerate() {
+        if before.index != index || before.spaces.iter().any(|sid| created.contains(sid)) {
             return Err(McError::Ownership(format!(
-                "owned-recovery: receipt display at position {index} records index {}; refusing",
-                before.index
+                "owned-recovery: display {index} has an invalid receipt preimage; refusing"
             )));
         }
-        let after = &snapshot.displays[index];
         if after.current != Some(before.current) {
             return Err(McError::Blocked(format!(
                 "owned-recovery: display {index} current {:?} differs from receipt current {}; refusing",
                 after.current, before.current
             )));
         }
-        if after.spaces == before.spaces {
-            continue;
-        }
-        let exact = after.spaces.split_last() == Some((&sid, before.spaces.as_slice()));
-        if !exact {
+        if !after
+            .spaces
+            .iter()
+            .filter(|sid| !created.contains(sid))
+            .eq(&before.spaces)
+        {
             return Err(McError::Ownership(format!(
-                "owned-recovery: display {index} Spaces {:?} are not exactly the receipt preimage {:?} plus one append of {sid}; refusing",
-                after.spaces, before.spaces
-            )));
-        }
-        if bound.replace(index).is_some() {
-            return Err(McError::Ownership(format!(
-                "owned-recovery: Space {sid} reads as an append on more than one display; ownership uncertain — refusing"
+                "owned-recovery: display {index} is not exactly the receipt preimage after excluding recorded owned SIDs; refusing"
             )));
         }
     }
-    let display = bound.ok_or_else(|| {
+    let (display, _) = snapshot.locate(sid).ok_or_else(|| {
         McError::Ownership(format!(
-            "owned-recovery: fresh topology shows no append of Space {sid} over the receipt preimage; refusing"
+            "owned-recovery: recorded Space {sid} is absent or ambiguous; refusing"
         ))
     })?;
-    if snapshot.locate(sid) != Some((display, snapshot.displays[display].spaces.len() - 1)) {
-        return Err(McError::Ownership(format!(
-            "owned-recovery: Space {sid} is not uniquely located at the proved append index; refusal"
-        )));
-    }
-    let Some(current) = snapshot.displays[display].current else {
-        return Err(McError::Unsupported(format!(
-            "owned-recovery: display {display} current is unreadable; refusal"
-        )));
-    };
-    if current == sid {
-        return Err(McError::Blocked(format!(
-            "owned-recovery: Space {sid} is the current Space on display {display}; an active Space is never removed"
-        )));
-    }
-    if !snapshot.displays[display].spaces.contains(&current) {
-        return Err(McError::Ownership(format!(
-            "owned-recovery: display {display} current {current} is not in its Space set; refusing"
-        )));
-    }
-    Ok(OwnedSpaceBinding {
-        display,
-        sid,
-    })
+    Ok(OwnedSpaceBinding { display, sid })
 }
 
-/// Positively authenticate one offscreen system owner by bundle plus exact
-/// executable. WindowServer has no bundle: its identity is the canonical
-/// executable (the versioned `Resources/WindowServer` alias is accepted only
-/// when it canonicalizes to [`crate::mc_probe::WINDOWSERVER_EXE`]).
+/// Authenticate one system owner by bundle plus exact executable.
+/// WindowServer lacks a bundle; its identity is its canonical executable.
 #[must_use]
 pub fn authenticate_system_owner(row: &RecoveryMemberRow) -> Option<(&'static str, String)> {
     if windowserver_identity(row) {
@@ -416,10 +366,9 @@ fn windowserver_identity(row: &RecoveryMemberRow) -> bool {
 }
 
 /// Pure pre-removal gate over fresh title-free rows: every membership must be
-/// readable, and every window on `sid` must be offscreen and one of the
-/// explicitly authenticated system owners above, with its Space set wholly
-/// inside the fresh User set. Ordinary/foreign/fixture windows and onscreen
-/// chrome always block; nothing is ever assumed empty.
+/// readable, and every window on `sid` must be authenticated system chrome
+/// with membership wholly inside the fresh User set. Only the Finder icon
+/// plane may be onscreen. Ordinary or unknown owners always block.
 pub fn authorize_owned_members(
     rows: &[RecoveryMemberRow],
     sid: u64,
@@ -454,7 +403,14 @@ pub fn authorize_owned_members(
                 row.wid, row.pid
             )));
         }
-        if row.onscreen {
+        // The Finder icon plane is visible on the current Desktop even
+        // when its membership includes an inactive owned Desktop. Ordinary
+        // Finder windows do not have this layer.
+        if row.onscreen
+            && !(row.layer == FINDER_DESKTOP_LAYER
+                && row.bundle == FINDER_BUNDLE_ID
+                && row.exe.as_deref() == Some(FINDER_EXE))
+        {
             return Err(McError::Blocked(format!(
                 "owned-recovery: window {} (pid {}, bundle '{}') is onscreen on Space {sid}; refusing",
                 row.wid, row.pid, row.bundle
@@ -468,7 +424,7 @@ pub fn authorize_owned_members(
         }
         let Some((class, detail)) = authenticate_system_owner(row) else {
             return Err(McError::Blocked(format!(
-                "owned-recovery: window {} (pid {}, bundle '{}', exe {:?}, layer {}, membership {spaces:?}) is not a positively authenticated offscreen system owner on Space {sid}; refusing",
+                "owned-recovery: window {} (pid {}, bundle '{}', exe {:?}, layer {}, membership {spaces:?}) is not a positively authenticated system owner on Space {sid}; refusing",
                 row.wid, row.pid, row.bundle, row.exe, row.layer
             )));
         };
@@ -507,7 +463,7 @@ fn user_spaces_of(snapshot: &TopologySnapshot) -> Result<Vec<u64>, McError> {
 }
 
 /// Independent live re-read of the receipt-bound authorization against one
-/// caller-supplied fresh topology snapshot: the exact-append binding, the
+/// caller-supplied fresh topology snapshot: the recorded-set binding, the
 /// Space types, and the CG/SLS membership are all proven here. Nothing from
 /// the captured evidence is reused as authorization except the recorded SID
 /// and preimage. The removal seam calls this with the dispatch's own
@@ -516,7 +472,8 @@ pub fn verify_owned_space_recovery(
     receipt: &OwnedSpaceReceipt,
     snapshot: &TopologySnapshot,
 ) -> Result<OwnedSpaceRecoveryProof, McError> {
-    let binding = prove_exact_append(&receipt.preimage, receipt.sid, snapshot)?;
+    let binding =
+        prove_recorded_ownership(&receipt.preimage, &receipt.created, receipt.sid, snapshot)?;
     membership_proof(receipt.sid, binding.display, snapshot)
 }
 
@@ -524,9 +481,8 @@ pub fn verify_owned_space_recovery(
 /// against one fresh topology snapshot. This is the seam for a Space whose
 /// ownership the caller already holds in memory (the active `LiveLeg`
 /// created-Space registration): the SID must still be uniquely located, and
-/// every member must re-read as offscreen WindowManager/Dock/WindowServer/
-/// Finder/ControlCenter chrome with no unknown membership. The default
-/// emptiness gate is neither consulted nor widened.
+/// every member must pass the typed system-chrome gate with no unknown
+/// membership. The default emptiness gate is neither consulted nor widened.
 pub fn verify_owned_space_members(
     sid: u64,
     snapshot: &TopologySnapshot,
@@ -721,7 +677,7 @@ mod tests {
 
     #[test]
     fn captured_305_rows_and_single_append_authorize() {
-        let binding = prove_exact_append(&captured_preimage(), 305, &captured_snapshot())
+        let binding = prove_recorded_ownership(&captured_preimage(), &[305], 305, &captured_snapshot())
             .expect("exact captured append proves");
         assert_eq!(binding.display, 0);
         assert_eq!(binding.sid, 305);
@@ -834,7 +790,7 @@ mod tests {
     fn current_target_refuses() {
         let mut snapshot = captured_snapshot();
         snapshot.displays[0].current = Some(305);
-        let err = prove_exact_append(&captured_preimage(), 305, &snapshot)
+        let err = prove_recorded_ownership(&captured_preimage(), &[305], 305, &snapshot)
             .expect_err("active Space blocks");
         assert!(err.to_string().contains("current"), "{err}");
     }
@@ -843,7 +799,7 @@ mod tests {
     fn extra_append_refuses() {
         let mut snapshot = captured_snapshot();
         snapshot.displays[0].spaces.push(306);
-        let err = prove_exact_append(&captured_preimage(), 305, &snapshot)
+        let err = prove_recorded_ownership(&captured_preimage(), &[305], 305, &snapshot)
             .expect_err("two appends block");
         assert!(err.to_string().contains("exactly"), "{err}");
     }
@@ -852,18 +808,46 @@ mod tests {
     fn unrelated_display_change_refuses() {
         let mut snapshot = captured_snapshot();
         snapshot.displays[1].spaces.push(999);
-        let err = prove_exact_append(&captured_preimage(), 305, &snapshot)
+        let err = prove_recorded_ownership(&captured_preimage(), &[305], 305, &snapshot)
             .expect_err("other display drift blocks");
         assert!(err.to_string().contains("display 1"), "{err}");
     }
 
     #[test]
-    fn reordered_append_refuses() {
-        let mut snapshot = captured_snapshot();
-        snapshot.displays[0].spaces = vec![305, 1];
-        let err = prove_exact_append(&captured_preimage(), 305, &snapshot)
-            .expect_err("append must stay at the end");
-        assert!(err.to_string().contains("exactly"), "{err}");
+    fn two_recorded_desktops_allow_one_removal_then_the_other() {
+        let preimage = captured_preimage();
+        let residue = serde_json::json!({"residue": [
+            "owned Space 308: Finder desktop row onscreen",
+            "owned Space 310: Finder desktop row onscreen"
+        ]});
+        let created = owned_sids_in_residue(&residue);
+        let mut snap = captured_snapshot();
+        snap.displays[0].spaces = vec![1, 308, 310];
+        for sid in [308, 310] {
+            assert_eq!(
+                prove_recorded_ownership(&preimage, &created, sid, &snap)
+                    .expect("recorded inactive SID authorizes")
+                    .sid,
+                sid
+            );
+            snap.displays[0].spaces.retain(|candidate| *candidate != sid);
+        }
+        assert!(prove_recorded_ownership(&preimage, &created, 310, &snap).is_err());
+    }
+
+    #[test]
+    fn captured_onscreen_finder_desktop_is_not_a_file_window() {
+        let mut finder = captured_rows().remove(0);
+        finder.onscreen = true;
+        finder.spaces = Some(vec![1, 308, 310]);
+        for sid in [308, 310] {
+            let proof =
+                authorize_owned_members(std::slice::from_ref(&finder), sid, &[1, 156, 308, 310])
+                    .expect("captured Finder icon plane is not an occupant");
+            assert_eq!(proof.members[0].class, "finder");
+        }
+        finder.layer = 0;
+        assert!(authorize_owned_members(&[finder], 308, &[1, 156, 308, 310]).is_err());
     }
 
     #[test]
@@ -872,14 +856,14 @@ mod tests {
         preimage.displays[0].spaces.push(2);
         let mut snapshot = captured_snapshot();
         snapshot.displays[0].spaces = vec![2, 1, 305];
-        assert!(prove_exact_append(&preimage, 305, &snapshot).is_err());
+        assert!(prove_recorded_ownership(&preimage, &[305], 305, &snapshot).is_err());
     }
 
     #[test]
     fn unrecorded_sid_refuses() {
         let mut preimage = captured_preimage();
         preimage.displays[0].spaces.push(305);
-        let err = prove_exact_append(&preimage, 305, &captured_snapshot())
+        let err = prove_recorded_ownership(&preimage, &[305], 305, &captured_snapshot())
             .expect_err("preimage membership is not an owned append");
         assert!(err.to_string().contains("preimage"), "{err}");
     }
