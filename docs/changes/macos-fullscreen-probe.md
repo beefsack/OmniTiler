@@ -63,6 +63,14 @@ The diagnostic repair passed nine targeted offline tests. The repaired harness s
 
 Mission Control's host-only away leg reached the exact Desktop SID while AX still named the fullscreen member. This does not block a physical switch-away proof that separately checks exact current and unchanged detached membership; it does block claiming that the Desktop sibling gained foreground.
 
+## Signed product rerun with the repaired oracle
+
+On the one signed SIP-on rerun, the first new current SID was sampled at 565,031 µs, the exact fullscreen type and singleton window membership at 565,147 µs, and exact AX-focused fullscreen at 565,427 µs. The redundant chord was posted and exact SLS readback still showed the same detached current. The controller did not obtain the candidate's redundant-refusal line in its four-second wait, so it never posted the away chord.
+
+The retained stderr read succeeded. Terminal tap counters showed two key deliveries, zero exact chord matches or suppressions, zero input forwarded, and zero select enqueues or refusals. The repaired oracle classified **no matching tap delivery**. It does not identify the two delivered events or explain why neither matched. There was no evidence of a pre-core or core refusal, or of a candidate owner refusal. LaunchServices stderr was empty. The raw product streams and terminal outcome were retained.
+
+The product stopped cleanly. Independent readback found the same currents and ordered Spaces, Mission Control closed, the pointer unchanged, no fixture or product process, and no pending receipt. The only raw CG differences were same-owner, same-layer and same-bounds offscreen window-ID replacements. Neither route was promoted. The experimental product candidate and its candidate-specific oracle were removed from the source tree; no additional live leg was run.
+
 ## Restoration and evidence boundaries
 
 Both completed host runs were the first live exercises of fullscreen-before-shutdown. They retired the detached SID, restored the original currents and ordered topology, and left no owned fixture lifetime or Space and no pending receipt. The retry had only benign offscreen replacements in the controller comparison, with no new residue. Independent native rechecks confirmed restoration; every readable retry pointer sample matched the starting location. Exact Desktop currents and no remaining detached SID rule out a detached Space left current; pixels were not sampled, so visual absence of a black screen is unproven.
