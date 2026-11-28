@@ -531,6 +531,74 @@ fn settlement_branch_b_correlated_post_and_member_proves_only_exactly() {
 }
 
 #[test]
+fn shared_select_without_detached_capability_retains_only_the_command_output() {
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            detached_fullscreen_view: false,
+            ..detached_caps()
+        },
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("shared".to_owned()),
+        )],
+    )
+    .expect("generation");
+    for output in ["out-a", "out-b"] {
+        ring(&mut engine, output, &["ws-home", "ws-away"]);
+        view(&mut engine, output, "ws-home");
+        native_binding(&mut engine, output, "n-home", "ws-home");
+        native_binding(&mut engine, output, "n-away", "ws-away");
+    }
+    let _ = accepted(
+        &mut engine,
+        &command_report(
+            10,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            Vec::new(),
+            vec![
+                native_row("out-a", &["n-home", "n-away"], "n-home"),
+                native_row("out-b", &["n-home", "n-away"], "n-home"),
+            ],
+            "out-a",
+            "ws-away",
+        ),
+    );
+    let flights = view_flights(&engine);
+    assert_eq!(flights.len(), 1);
+    assert_eq!(flights[0].target.target_output, out("out-a"));
+    assert!(flights[0].detached_destination.is_none());
+    let binding = engine
+        .world
+        .settlement
+        .retained_selection
+        .get(&out("out-a"))
+        .expect("shared command output keeps the binding");
+    assert_eq!(
+        binding.view_targets.keys().cloned().collect::<Vec<_>>(),
+        vec![out("out-a"), out("out-b")],
+        "capability-off shared selection keeps every output's proof obligation"
+    );
+    for output in ["out-a", "out-b"] {
+        let target = binding
+            .view_targets
+            .get(&out(output))
+            .expect("per-output proof target");
+        assert!(
+            target.detached_destination.is_none(),
+            "{output} keeps a Desktop proof target"
+        );
+    }
+    for output in ["out-a", "out-b"] {
+        assert_eq!(
+            engine.world.workspace.views.get(output).map(String::as_str),
+            Some("ws-away")
+        );
+    }
+}
+
+#[test]
 fn shared_detached_siblings_settle_independently() {
     let mut engine = detached_engine(true);
     for output in ["out-a", "out-b"] {

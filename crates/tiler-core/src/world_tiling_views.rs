@@ -402,12 +402,9 @@ impl WorldTransaction<'_> {
         // must never become a Desktop fallback write.
         let native_free = !self.connection.host_owned_workspace_domains();
         let mut admitted: Vec<OutputId> = Vec::new();
-        if changed && shared {
-            // Changed shared selection: one view flight per affected live
-            // output, each with its own frozen destination when the
-            // detached plan is capability-enabled (otherwise a plain
-            // Desktop flight), under the same parent operation and shared
-            // logical workspace.
+        if changed && shared && detached_capable {
+            // Capability-enabled shared selection: each affected output
+            // gets its own frozen destination under the parent operation.
             for out in &affected {
                 if plan.is_exact(out) {
                     self.retire_view_on(out);
@@ -486,21 +483,24 @@ impl WorldTransaction<'_> {
         }
         let mut view_plan: BTreeMap<OutputId, crate::world_selection::PendingViewTarget> =
             BTreeMap::new();
-        for out in &admitted {
-            view_plan.insert(
-                out.clone(),
-                crate::world_selection::PendingViewTarget {
-                    home: DomainKey {
-                        output: out.clone(),
-                        workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        // Capability-off leaves view_plan empty for world_selection's legacy all-output proofs.
+        if detached_capable {
+            for out in &admitted {
+                view_plan.insert(
+                    out.clone(),
+                    crate::world_selection::PendingViewTarget {
+                        home: DomainKey {
+                            output: out.clone(),
+                            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+                        },
+                        detached_destination: plan.detached_for(out),
+                        preimage: plan
+                            .targets
+                            .get(out)
+                            .and_then(|target| target.preimage.clone()),
                     },
-                    detached_destination: plan.detached_for(out),
-                    preimage: plan
-                        .targets
-                        .get(out)
-                        .and_then(|target| target.preimage.clone()),
-                },
-            );
+                );
+            }
         }
         // Guard supersession is one decision per command, taken after the
         // final flight decision: an admitted superseding selection replaces
