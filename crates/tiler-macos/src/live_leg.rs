@@ -2672,7 +2672,7 @@ mod tests {
             vec![
                 "snapshot-before",
                 "create-temp",
-                "verify-append",
+                "verify-create",
                 "temp-empty",
                 "goto-away",
                 "goto-back",

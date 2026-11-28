@@ -237,6 +237,30 @@ fn record_mc(state: &McLegState, leg: &str, notes: &mut Vec<String>) {
     }
 }
 
+fn exact_space_insertion(
+    before: &SpaceTopology,
+    after: &SpaceTopology,
+    display: usize,
+    sid: u64,
+) -> bool {
+    before.displays.len() == after.displays.len()
+        && !before.displays.iter().any(|row| row.spaces.contains(&sid))
+        && after.locate(sid).is_some_and(|(row, _)| row == display)
+        && before
+            .displays
+            .iter()
+            .zip(&after.displays)
+            .all(|(old, new)| {
+                old.current == new.current
+                    && new
+                        .spaces
+                        .iter()
+                        .copied()
+                        .filter(|&s| s != sid)
+                        .eq(old.spaces.iter().copied())
+            })
+}
+
 /// Execute the pre-mutation return proof: snapshot, create one owned temp on
 /// display 0, prove it empty, go away to it, return to the starting current,
 /// remove only it after re-proving emptiness, and verify the final currents
@@ -288,42 +312,50 @@ pub(crate) fn probe_return_to_starting_on<S: NativeSpaces>(
     let starting_sid = row.current;
     let mut steps = Vec::new();
     let mut mc_notes: Vec<String> = Vec::new();
-    // Entry: the current must already be the starting current; a drifted
-    // entry restores once before the probe (one attempt, never a loop).
-    match spaces.space_snapshot() {
-        Ok(before) => {
-            steps.push("snapshot-before".to_owned());
-            if before.displays.get(display).map(|row| row.current) != Some(starting_sid) {
-                match spaces.space_goto(display, starting_sid) {
-                    Ok(mc) => {
-                        record_mc(&mc, "entry restore", &mut mc_notes);
-                        steps.push("entry-restore".to_owned());
-                    }
-                    Err(e) => {
-                        return Err(fail(
-                            "probe-entry",
-                            format!("starting current unrestored at probe entry ({e})"),
-                            vec![format!(
-                                "residue: display {display} not on starting Space {starting_sid}"
-                            )],
-                            &mc_notes,
-                        ));
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            return Err(fail(
+    let read_entry = |spaces: &mut S, notes: &[String]| {
+        spaces.space_snapshot().map_err(|e| {
+            fail(
                 "probe-entry",
-                format!("pre-probe snapshot unreadable ({e})"),
+                format!("pre-create snapshot unreadable ({e})"),
                 vec!["residue: starting topology unknown".to_owned()],
+                notes,
+            )
+        })
+    };
+    let mut before = read_entry(spaces, &mc_notes)?;
+    steps.push("snapshot-before".to_owned());
+    // Restore a drifted entry once; the create preimage is the row after
+    // that restore, not the leg baseline (which predates any owned additions).
+    if before.displays.get(display).map(|row| row.current) != Some(starting_sid) {
+        let mc = spaces.space_goto(display, starting_sid).map_err(|e| {
+            fail(
+                "probe-entry",
+                format!("starting current unrestored at probe entry ({e})"),
+                vec![format!(
+                    "residue: display {display} not on starting Space {starting_sid}"
+                )],
                 &mc_notes,
-            ));
-        }
+            )
+        })?;
+        record_mc(&mc, "entry restore", &mut mc_notes);
+        steps.push("entry-restore".to_owned());
+        before = read_entry(spaces, &mc_notes)?;
     }
-    // Create the owned temp, then verify the append independently of the
-    // seam's own check: exactly one new SID on this display, currents
-    // untouched everywhere. A rogue append refuses here, never probed.
+    if !before
+        .displays
+        .iter()
+        .map(|row| row.current)
+        .eq(starting_topo.displays.iter().map(|row| row.current))
+    {
+        return Err(fail(
+            "probe-entry",
+            "starting display currents not exact before creation".to_owned(),
+            vec!["residue: starting currents not restored".to_owned()],
+            &mc_notes,
+        ));
+    }
+    // Verify the create independently of the seam's own check: exactly one
+    // new SID on the pinned display, with existing order and currents intact.
     let temp = match spaces.space_create(display) {
         Ok(created) => {
             record_mc(&created.mc, "create", &mut mc_notes);
@@ -341,39 +373,19 @@ pub(crate) fn probe_return_to_starting_on<S: NativeSpaces>(
     };
     match spaces.space_snapshot() {
         Ok(created) => {
-            let entry_spaces = &starting_topo.displays[display].spaces;
-            let created_row = created.displays.get(display);
-            let appended: Vec<u64> = created_row
-                .map(|row| {
-                    row.spaces
-                        .iter()
-                        .filter(|sid| !entry_spaces.contains(sid))
-                        .copied()
-                        .collect()
-                })
-                .unwrap_or_default();
-            let currents_steady = created
-                .displays
-                .iter()
-                .zip(starting_topo.displays.iter())
-                .all(|(got, want)| got.current == want.current);
-            let exact_append = appended.len() == 1
-                && appended[0] == temp
-                && created_row.map(|row| row.spaces.len()) == Some(entry_spaces.len() + 1)
-                && currents_steady;
-            if !exact_append {
+            if !exact_space_insertion(&before, &created, display, temp) {
                 let mut residue = vec![format!(
-                    "residue: display {display} Space set is not exactly one append of {temp}; refusing without probing"
+                    "residue: display {display} did not gain exactly one Space {temp} with order and currents intact; refusing without probing"
                 )];
                 cleanup_probe_space(spaces, display, starting_sid, Some(temp), &mut residue);
                 return Err(fail(
                     "probe-create",
-                    "post-create Space set is not exactly one append".to_owned(),
+                    "post-create topology is not an exact insertion".to_owned(),
                     residue,
                     &mc_notes,
                 ));
             }
-            steps.push("verify-append".to_owned());
+            steps.push("verify-create".to_owned());
         }
         Err(e) => {
             let mut residue = Vec::new();
@@ -1058,7 +1070,7 @@ mod tests {
             vec![
                 "snapshot-before",
                 "create-temp",
-                "verify-append",
+                "verify-create",
                 "temp-empty",
                 "goto-away",
                 "goto-back",
@@ -1074,31 +1086,63 @@ mod tests {
     }
 
     #[test]
-    fn probe_refuses_inexact_append_before_probing() {
-        // A rogue double append is refused at the orchestration's own
-        // exact-append gate, before any goto lands on the temp. Cleanup
+    fn second_return_probe_uses_fresh_preimage_after_restoring_starting_current() {
+        // The rehearsal's second probe enters after home 305 already exists
+        // and is current, but the restoration baseline predates that Space.
+        let baseline = native_baseline_for_test(vec![(vec![1], 1), (vec![156], 156)], true);
+        let mut model = ModelSpaces::new(vec![(vec![1, 305], 305), (vec![156], 156)]);
+        let proof = probe_return_to_starting(&mut model, &baseline).expect("second probe proves");
+        assert!(proof.steps.iter().any(|step| step == "entry-restore"));
+        assert_eq!(model.spaces, vec![vec![1, 305], vec![156]]);
+        assert_eq!(model.current, vec![1, 156]);
+    }
+
+    #[test]
+    fn create_proof_accepts_any_insertion_index_but_preserves_existing_order() {
+        let before = ModelSpaces::new(vec![(vec![1, 305], 1), (vec![156], 156)])
+            .snapshot_now()
+            .unwrap();
+        for index in 0..=2 {
+            let mut after = before.clone();
+            after.displays[0].spaces.insert(index, 306);
+            assert!(exact_space_insertion(&before, &after, 0, 306));
+            after.displays[0].spaces.reverse();
+            assert!(!exact_space_insertion(&before, &after, 0, 306));
+        }
+        let mut after = before.clone();
+        after.displays[0].spaces.push(306);
+        after.displays[1].spaces.push(307);
+        assert!(!exact_space_insertion(&before, &after, 0, 306));
+        after.displays.pop();
+        assert!(!exact_space_insertion(&before, &after, 0, 306));
+    }
+
+    #[test]
+    fn probe_refuses_inexact_create_before_probing() {
+        // A rogue double addition is refused at the orchestration's own
+        // create gate, before any goto lands on the temp. Cleanup
         // still attempts the starting return; the ambiguous extra Space is
         // named residue, never force-removed.
         let mut model = ModelSpaces::new(vec![(vec![11, 22], 11)]);
         model.rogue = Some(Rogue::DoubleAppend);
-        let err = probe_return_to_starting(&mut model, &starting()).unwrap_err();
+        let err = probe_return_to_starting(&mut model, &starting_single()).unwrap_err();
         assert_eq!(err.stage, "probe-create", "unexpected: {err}");
         assert!(
             !model.log.contains(&"goto-temp"),
-            "no goto may land before the append verifies: {:?}",
+            "no goto may land before the create verifies: {:?}",
             model.log
         );
         assert!(
             err.residue
                 .iter()
-                .any(|r| r.contains("not exactly one append")),
+                .any(|r| r.contains("did not gain exactly one Space")),
             "unexpected residue: {:?}",
             err.residue
         );
         // A current stolen mid-create refuses the same gate.
         let mut steal = ModelSpaces::new(vec![(vec![11, 22], 11)]);
         steal.rogue = Some(Rogue::StealCurrent);
-        let err = probe_return_to_starting(&mut steal, &starting()).unwrap_err();
+        let err = probe_return_to_starting(&mut steal, &starting_single()).unwrap_err();
         assert_eq!(err.stage, "probe-create", "unexpected: {err}");
     }
 
