@@ -111,9 +111,14 @@ impl Expect {
         let dispatches: Vec<&str> = raw.lines().filter(|line| line.starts_with(DISPATCH_PREFIX)).collect();
         if kind == LegKind::Redundant {
             let suffix = format!(" refused reason={} complete=false", self.reason());
-            let refusals: Vec<&str> = raw.lines().filter(|line| line.starts_with(ACTION_PREFIX)).collect();
-            let valid = match (dispatches.as_slice(), refusals.as_slice()) {
-                ([], [line]) => line.strip_prefix(ACTION_PREFIX).and_then(|rest| rest.strip_suffix(&suffix))
+            let mut terminals = raw.lines().filter_map(|line| line.strip_prefix(ACTION_PREFIX)).filter(|rest| {
+                !rest.split_once(' ').is_some_and(|(_, phase)|
+                    (phase.starts_with("submitted route=") && phase.ends_with(" complete=false"))
+                        || (phase.starts_with("observed route=") && phase.rsplit_once(" complete=false observed_ms=")
+                            .is_some_and(|(_, ms)| ms.parse::<u64>().is_ok())))
+            });
+            let valid = match (dispatches.as_slice(), terminals.next(), terminals.next()) {
+                ([], Some(line), None) => line.strip_suffix(&suffix)
                     .and_then(|op| op.strip_prefix("op-"))
                     .is_some_and(|id| id.parse::<u64>().is_ok_and(|id| id != 0)),
                 _ => false,
@@ -902,13 +907,15 @@ mod tests {
 
     #[test]
     fn redundant_refusal_is_exact_and_dispatches_nothing() {
-        let expect = expect(LegKind::Redundant);
-        let refusal = format!("{ACTION_PREFIX}op-42 refused reason={} complete=false", expect.reason());
-        assert_eq!(expect.classify(LegKind::Redundant, &refusal), Ok(0));
-        assert!(expect.classify(LegKind::Redundant, &refusal.replace("op-42", "select-3")).is_err());
-        assert!(expect.classify(LegKind::Redundant, &refusal.replace("op-42", "op-0")).is_err());
-        assert!(expect.classify(LegKind::Redundant, &format!("{DISPATCH_PREFIX}op=op-42 {}\n{refusal}", expect.tail())).is_err());
-        assert!(expect.classify(LegKind::Redundant, &refusal.replace("surface 320", "surface 319")).is_err());
+        let expect = Expect { surface: 337, source: 337, target: 337, pid: 32796, wid: 11071, ..expect(LegKind::Redundant) };
+        let refusal = format!("{ACTION_PREFIX}op-1 refused reason={} complete=false", expect.reason());
+        let segment = format!("{ACTION_PREFIX}workspace-select-2 submitted route=dock-swipe-pinned output=macos-display-1 complete=false\n{ACTION_PREFIX}op-1 observed route=dock-swipe complete=false observed_ms=297\n{refusal}");
+        assert_eq!(expect.classify(LegKind::Redundant, &segment), Ok(0));
+        assert!(expect.classify(LegKind::Redundant, &refusal.replace("op-1", "select-3")).is_err());
+        assert!(expect.classify(LegKind::Redundant, &refusal.replace("op-1", "op-0")).is_err());
+        assert!(expect.classify(LegKind::Redundant, &format!("{DISPATCH_PREFIX}op=op-1 {}\n{segment}", expect.tail())).is_err());
+        assert!(expect.classify(LegKind::Redundant, &segment.replace("surface 337", "surface 319")).is_err());
+        assert!(expect.classify(LegKind::Redundant, &format!("{segment}\n{refusal}")).is_err());
     }
 
     #[test]

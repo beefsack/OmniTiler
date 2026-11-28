@@ -88,6 +88,18 @@ The native refresh records CG/SLS evidence for a retained member omitted by `AXW
 
 The repair reuses the selection owner's read-only proof for a known, retained window that `AXWindows` omits. It requires the exact owner and window, a positive AX fullscreen read with minimized false, a live CG row, and matching singleton SLS membership on the typed fullscreen Space. A refusal keeps the hold and cannot supply a Desktop home. The absence trace now records the typed singleton and the retained-read outcome so another refusal can distinguish the two.
 
+The second signed attempt proved fullscreen entry at 653 ms and registered the member at 658 ms. The wrapper took about 14 s by wall clock. The new trace observed `retained=proved` on the typed fullscreen Space while `AXWindows` omitted the member.
+
+| Leg | Result | Timing |
+| --- | --- | --- |
+| Redundant | The product emitted the exact operation-correlated refusal with zero native dispatch. The controller stopped because it counted the preceding submission and observation records as extra terminals. | 607 ms from leg start to stop |
+| Away | Not reached | — |
+| Return | Not reached | — |
+
+The controller did not reach its completed-span no-write audit. It proved fullscreen retirement and clean shutdown. Independent readbacks matched the starting Space order, currents, and pointer, confirmed Mission Control closed, and found no owned process, Space, socket, or pending receipt. No external disturbance was proved.
+
+Replaying the captured three records reproduced the controller refusal offline. The classifier now excludes the two nonterminal progress record forms and still requires zero dispatch and exactly one refusal with a nonzero operation ID, the exact surface and member, and the exact no-dispatch reason. A duplicate refusal, a different target, or any dispatch fails the replay.
+
 ## Scope and sample rules
 
 Signed, SIP-on, host-only fixture runs exercised an owned windowed Desktop sibling and the same window's detached fullscreen Space through pinned Mission Control and the Dock gesture. A separate product switch-away candidate and a single signed rerun tested the product path; neither established a product route.
