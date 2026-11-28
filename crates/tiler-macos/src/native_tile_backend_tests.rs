@@ -849,3 +849,209 @@ fn refused_first_leg_reports_partial_with_redundant_rest() {
     assert_eq!(setter.size_calls.get(), 1);
     assert_eq!(setter.position_calls.get(), 0);
 }
+
+/// Detached owner-membership proof over the exact anchor retained for a
+/// genuine snapshot. The capture3 Away fixture supplies the regression:
+/// w0 WID 10747 is layer-0, offscreen, and valid on target SID 320, while
+/// `AXWindows` listed only the windowed sibling w1 WID 10808.
+#[cfg(target_os = "macos")]
+mod retained_membership_tests {
+    use crate::detached_membership::classify_membership;
+    use crate::ffi::{CgBounds, CgWindowBasic};
+    use crate::native_tile_backend::{
+        RetainedAnchorFacts, RetainedMembershipFacts, classify_retained_membership,
+    };
+
+    const PID: u32 = 12_168;
+    const W0: u32 = 10_747;
+    const W1: u32 = 10_808;
+    const TARGET: u64 = 320;
+
+    fn row(pid: u32, wid: u32, layer: i32, onscreen: bool, w: f64, h: f64) -> CgWindowBasic {
+        CgWindowBasic {
+            wid,
+            pid,
+            layer,
+            onscreen,
+            bounds: CgBounds {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            },
+        }
+    }
+
+    fn away_cg() -> Vec<CgWindowBasic> {
+        vec![
+            // The true fullscreen member: layer 0, offscreen, 2240x1260.
+            row(PID, W0, 0, false, 2240.0, 1260.0),
+            // The windowed sibling `AXWindows` did list at Away.
+            row(PID, W1, 0, true, 800.0, 632.0),
+        ]
+    }
+
+    fn anchor(wid: u32) -> RetainedAnchorFacts {
+        RetainedAnchorFacts {
+            wid: Some(wid),
+            fullscreen: Some(true),
+            before_minimized: Some(false),
+            after_minimized: Some(false),
+        }
+    }
+
+    fn facts(cg: Option<&[CgWindowBasic]>) -> RetainedMembershipFacts<'_> {
+        RetainedMembershipFacts {
+            identity_current: true,
+            anchor: Some(anchor(W0)),
+            cg,
+            spaces: vec![TARGET],
+            frame: Some((0, 0, 2240, 1260)),
+            before_hidden: Some(false),
+            after_hidden: Some(false),
+        }
+    }
+
+    #[test]
+    fn capture3_away_offscreen_member_proves_exact_surface() {
+        let cg = away_cg();
+        let read = classify_retained_membership(PID, W0, &facts(Some(&cg)))
+            .expect("the offscreen retained fullscreen member proves");
+        assert_eq!(read.wid, W0);
+        assert_eq!(read.owner_pid, Some(PID));
+        assert_eq!(read.spaces, vec![TARGET]);
+        assert_eq!(
+            read.frame,
+            Some((0, 0, 2240, 1260)),
+            "the retained fullscreen frame rides through unchanged"
+        );
+        assert_eq!(
+            classify_membership(Some(&read), PID, W0, TARGET),
+            Ok(true)
+        );
+        assert!(!cg[0].onscreen, "capture3 Away w0 was offscreen");
+        assert!(
+            !cg.iter().any(|row| row.wid == W0 && row.onscreen),
+            "on-screen is never required for the true member"
+        );
+    }
+
+    #[test]
+    fn foreign_ambiguous_or_duplicate_cg_owner_refuses() {
+        let foreign = [row(9999, W0, 0, false, 2240.0, 1260.0)];
+        assert!(classify_retained_membership(PID, W0, &facts(Some(&foreign))).is_none());
+
+        let dual = [
+            row(PID, W0, 0, false, 2240.0, 1260.0),
+            row(9999, W0, 0, false, 2240.0, 1260.0),
+        ];
+        assert!(
+            classify_retained_membership(PID, W0, &facts(Some(&dual))).is_none(),
+            "a wid under a foreign owner is not an exact unique (pid, wid)"
+        );
+
+        let duplicate = [
+            row(PID, W0, 0, false, 2240.0, 1260.0),
+            row(PID, W0, 0, false, 2240.0, 1260.0),
+        ];
+        assert!(classify_retained_membership(PID, W0, &facts(Some(&duplicate))).is_none());
+    }
+
+    #[test]
+    fn layer_or_degenerate_cg_bounds_refuse() {
+        for cg in [
+            vec![row(PID, W0, 1, false, 2240.0, 1260.0)],
+            vec![row(PID, W0, -1, false, 2240.0, 1260.0)],
+            vec![row(PID, W0, 0, true, 0.0, 1260.0)],
+            vec![row(PID, W0, 0, true, 2240.0, -1.0)],
+            vec![row(PID, W0, 0, true, f64::NAN, 1260.0)],
+            vec![row(PID, W0, 0, true, 2240.0, f64::INFINITY)],
+        ] {
+            assert!(classify_retained_membership(PID, W0, &facts(Some(&cg))).is_none());
+        }
+    }
+
+    #[test]
+    fn missing_or_unreadable_cg_and_sls_refuse() {
+        assert!(classify_retained_membership(PID, W0, &facts(None)).is_none());
+        let empty: Vec<CgWindowBasic> = Vec::new();
+        assert!(classify_retained_membership(PID, W0, &facts(Some(&empty))).is_none());
+
+        let cg = away_cg();
+        let mut unreadable = facts(Some(&cg));
+        unreadable.spaces = Vec::new();
+        assert!(classify_retained_membership(PID, W0, &unreadable).is_none());
+    }
+
+    #[test]
+    fn anchor_liveness_identity_fullscreen_and_minimized_refuse() {
+        let cg = away_cg();
+        let base = facts(Some(&cg));
+
+        let mut absent = base.clone();
+        absent.anchor = None;
+        assert!(
+            classify_retained_membership(PID, W0, &absent).is_none(),
+            "no live non-tombstoned anchor never proves"
+        );
+
+        let mut replaced = base.clone();
+        replaced.anchor = Some(anchor(W1));
+        assert!(
+            classify_retained_membership(PID, W0, &replaced).is_none(),
+            "a retained anchor naming another wid never proves"
+        );
+
+        for fullscreen in [None, Some(false)] {
+            let mut drifted = base.clone();
+            drifted.anchor = Some(RetainedAnchorFacts {
+                fullscreen,
+                ..anchor(W0)
+            });
+            assert!(classify_retained_membership(PID, W0, &drifted).is_none());
+        }
+
+        for (before, after) in [
+            (Some(true), Some(false)),
+            (Some(false), Some(true)),
+            (None, Some(false)),
+            (Some(false), None),
+        ] {
+            let mut minimized = base.clone();
+            minimized.anchor = Some(RetainedAnchorFacts {
+                before_minimized: before,
+                after_minimized: after,
+                ..anchor(W0)
+            });
+            assert!(classify_retained_membership(PID, W0, &minimized).is_none());
+        }
+
+        let mut recycled = base.clone();
+        recycled.identity_current = false;
+        assert!(
+            classify_retained_membership(PID, W0, &recycled).is_none(),
+            "a recycled/replaced process never inherits the anchor"
+        );
+    }
+
+    #[test]
+    fn wrong_or_multi_sid_is_a_readable_non_member() {
+        let cg = away_cg();
+        let read = classify_retained_membership(PID, W0, &facts(Some(&cg)))
+            .expect("readable membership facts");
+        assert_eq!(
+            classify_membership(Some(&read), PID, W0, 319),
+            Ok(false),
+            "a different readable singleton is definitely not this surface"
+        );
+
+        let mut split = facts(Some(&cg));
+        split.spaces = vec![TARGET, 319];
+        let read =
+            classify_retained_membership(PID, W0, &split).expect("multi-Space stays readable");
+        assert_eq!(
+            classify_membership(Some(&read), PID, W0, TARGET),
+            Ok(false)
+        );
+    }
+}

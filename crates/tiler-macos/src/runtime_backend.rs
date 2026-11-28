@@ -198,6 +198,19 @@ pub trait AxBackend {
         let _ = wids;
         Vec::new()
     }
+    /// Read-only detached-membership proof for one frozen member on THIS
+    /// owning thread. Unlike [`AxBackend::capture_brackets`], this never
+    /// enumerates the app's current `AXWindows` set (a true fullscreen
+    /// member is absent from that listing once Mission Control has moved it
+    /// off the current Space). The native scoped backend proves the member
+    /// from the exact AX anchor retained for this lifetime plus fresh CG and
+    /// SLS facts; `None` on any unreadable, unattested, replaced, or
+    /// tombstoned anchor. Default withholds (fail closed, never a fabricated
+    /// bracket).
+    fn read_retained_membership(&mut self, wid: u32) -> Option<crate::runtime_types::BracketRead> {
+        let _ = wid;
+        None
+    }
 }
 
 /// Factory for per-app AX backends. Shared across threads; `create` is

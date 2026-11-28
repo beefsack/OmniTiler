@@ -650,6 +650,99 @@ pub fn attest_capture_owner(
     }
 }
 
+/// Raw facts read from the exact anchor retained for one member on its
+/// owning thread. `wid`/`fullscreen`/minimized are `None` when the
+/// corresponding AX read failed; any one of those gaps refuses the whole
+/// proof (never guessed from the request's numeric wid).
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetainedAnchorFacts {
+    pub(crate) wid: Option<u32>,
+    pub(crate) fullscreen: Option<bool>,
+    pub(crate) before_minimized: Option<bool>,
+    pub(crate) after_minimized: Option<bool>,
+}
+
+/// Pure inputs for one detached owner-membership proof. `cg` is the fresh
+/// title-free CG window list (all owners; `None` = unreadable), `spaces` the
+/// fresh live SLS membership (empty = unreadable/unknown), and `anchor` the
+/// exact retained AX element facts (`None` = no live, non-tombstoned anchor).
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RetainedMembershipFacts<'a> {
+    pub(crate) identity_current: bool,
+    pub(crate) anchor: Option<RetainedAnchorFacts>,
+    pub(crate) cg: Option<&'a [crate::ffi::CgWindowBasic]>,
+    pub(crate) spaces: Vec<u64>,
+    pub(crate) frame: Option<(i32, i32, i32, i32)>,
+    pub(crate) before_hidden: Option<bool>,
+    pub(crate) after_hidden: Option<bool>,
+}
+
+/// Classify one owner-side retained-anchor read as a detached-member proof.
+/// Every leg is fail-closed: the fresh process identity must still be the
+/// bound lifetime owner, the exact retained anchor must name `wid` and read
+/// `fullscreen == true` and `AXMinimized == false` both before and after,
+/// the fresh CG list must name exactly one `(pid, wid)` row at layer 0 with
+/// finite nondegenerate bounds (on-screen is deliberately irrelevant), and
+/// the fresh SLS membership must be readable. The requester still applies
+/// the exact frozen-surface comparison over `spaces`; a readable different
+/// or multi-Space membership stays `Some` so that comparison can return a
+/// definite "not here" rather than an unknown.
+#[cfg(target_os = "macos")]
+pub(crate) fn classify_retained_membership(
+    pid: u32,
+    wid: u32,
+    facts: &RetainedMembershipFacts<'_>,
+) -> Option<crate::runtime_types::BracketRead> {
+    if !facts.identity_current {
+        return None;
+    }
+    let anchor = facts.anchor.as_ref()?;
+    if anchor.wid != Some(wid) || anchor.fullscreen != Some(true) {
+        return None;
+    }
+    if anchor.before_minimized != Some(false) || anchor.after_minimized != Some(false) {
+        return None;
+    }
+    let cg = facts.cg?;
+    let mut rows = cg.iter().filter(|row| row.wid == wid);
+    let row = rows.next()?;
+    if rows.next().is_some() {
+        // The same numeric wid under two owners (or a duplicate row) is
+        // not an exact unique `(pid, wid)` join; never guess which is real.
+        return None;
+    }
+    if row.pid != pid || row.layer != 0 {
+        return None;
+    }
+    let bounds = row.bounds;
+    if !(bounds.x.is_finite()
+        && bounds.y.is_finite()
+        && bounds.w.is_finite()
+        && bounds.h.is_finite())
+        || bounds.w <= 0.0
+        || bounds.h <= 0.0
+    {
+        return None;
+    }
+    // Never require `row.onscreen`: the true fullscreen member is offscreen
+    // on the Away Space (capture3 Away) and must still prove.
+    if facts.spaces.is_empty() {
+        return None;
+    }
+    Some(crate::runtime_types::BracketRead {
+        wid,
+        owner_pid: Some(pid),
+        before_minimized: anchor.before_minimized,
+        before_hidden: facts.before_hidden,
+        spaces: facts.spaces.clone(),
+        frame: facts.frame,
+        after_minimized: anchor.after_minimized,
+        after_hidden: facts.after_hidden,
+    })
+}
+
 /// Build one scoped snapshot from a complete native read (pure over
 /// injected readers, so offline tests drive the exact admission shape):
 /// whole-snapshot refusal on the first incomplete leg, per-window Space
@@ -1123,6 +1216,16 @@ impl AxSubjectAnchors {
         }
     }
 
+    /// The live, non-tombstoned anchor retained for `wid` from a genuine
+    /// snapshot. `None` means absent or proved-close (never rebindable).
+    /// Pure read: never binds or replaces.
+    fn retained(&self, wid: u32) -> Option<&AxElement> {
+        if self.tombstones.contains(&wid) {
+            return None;
+        }
+        self.live.get(&wid)
+    }
+
     /// Capture gate for one freshly joined element: true only when a live
     /// anchor exists for `wid`, the wid is not tombstoned, and the fresh
     /// element is `CFEqual` to the anchor. `None` (unjoined/unreadable)
@@ -1131,11 +1234,7 @@ impl AxSubjectAnchors {
         let Some(fresh) = fresh else {
             return false;
         };
-        if self.tombstones.contains(&wid) {
-            return false;
-        }
-        self.live
-            .get(&wid)
+        self.retained(wid)
             .is_some_and(|anchor| ax_elements_equal(anchor, fresh))
     }
 }
@@ -1546,6 +1645,23 @@ impl AxBackend for ScopedAxBackend {
         {
             let _ = wids;
             Vec::new()
+        }
+    }
+
+    /// Read-only detached-membership proof from the exact anchor retained for
+    /// this member (macOS). This path never enumerates `AXWindows`, so an
+    /// off-Space fullscreen member that the current listing omits still
+    /// proves against its retained anchor, a fresh identity check, fresh CG
+    /// geometry, and fresh SLS membership.
+    fn read_retained_membership(&mut self, wid: u32) -> Option<crate::runtime_types::BracketRead> {
+        #[cfg(target_os = "macos")]
+        {
+            self.read_retained_membership_native(wid)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = wid;
+            None
         }
     }
 }
@@ -2137,6 +2253,94 @@ mod native {
                 });
             }
             out
+        }
+
+        /// Read-only detached-membership proof on the owning thread for one
+        /// member retained by a genuine snapshot/admission. Deliberately NOT
+        /// `capture_brackets`: that path re-enumerates `AXWindows`, which
+        /// omits a true fullscreen member once it is off the current Space
+        /// (capture3 Away listed only the windowed sibling). Here the exact
+        /// retained anchor supplies the subject identity; the proof also
+        /// requires the fresh process identity to still match the bound
+        /// lifetime, fresh unique layer-0 CG geometry (on-screen is never
+        /// required), and fresh readable SLS membership. Any read gap, a
+        /// tombstoned/missing anchor, a replaced subject, `fullscreen !=
+        /// true`, or `AXMinimized != false` refuses (`None`), and the
+        /// requester turns that into an error rather than a guessed home.
+        pub(super) fn read_retained_membership_native(
+            &self,
+            wid: u32,
+        ) -> Option<crate::runtime_types::BracketRead> {
+            use crate::ffi::{
+                app_hidden_for_pid, ax_bool_attribute, ax_fullscreen_state, ax_get_frame,
+                ax_window_id, cg_window_list_basic, ns_app_identity_for_pid,
+                sls_spaces_for_window,
+            };
+
+            if self.pid <= 1 || self.pid > i32::MAX as u32 {
+                return None;
+            }
+            // Only an anchor admitted by a genuine snapshot can prove this
+            // member: never a bare `(pid, wid)` request, never a tombstone.
+            let anchor = self.ax_anchors.retained(wid)?;
+            // The anchor is retained across Space changes, so its lifetime
+            // owner must still be the same live process. A recycle refuses
+            // before any anchor read.
+            let live = ns_app_identity_for_pid(self.pid as i32);
+            let live_exe = live.exe.as_deref().unwrap_or_default();
+            let live_start = live.launch_date.as_deref().unwrap_or_default();
+            let revalidated = if self.scope.is_unscoped() {
+                self.identity.revalidate_unscoped(
+                    self.pid,
+                    live.bundle.as_deref(),
+                    live_exe,
+                    live_start,
+                )
+            } else {
+                self.identity.revalidate(
+                    self.pid,
+                    live.bundle.as_deref(),
+                    live_exe,
+                    live_start,
+                )
+            };
+            if revalidated.is_err() {
+                return None;
+            }
+            if ax_set_messaging_timeout(anchor, messaging_secs()) != 0 {
+                return None;
+            }
+
+            let anchor_wid = ax_window_id(anchor);
+            let fullscreen = ax_fullscreen_state(anchor).ok();
+            let before_minimized = ax_bool_attribute(anchor, "AXMinimized").ok();
+            let frame = ax_get_frame(anchor).ok().and_then(|read| {
+                let rect = (read.x as i32, read.y as i32, read.w as i32, read.h as i32);
+                (rect.2 > 0 && rect.3 > 0).then_some(rect)
+            });
+            let before_hidden = app_hidden_for_pid(self.pid as i32).ok();
+            let cg = cg_window_list_basic().ok();
+            let spaces = sls_spaces_for_window(wid).unwrap_or_default();
+            // Final visibility legs on the SAME retained element.
+            let after_minimized = ax_bool_attribute(anchor, "AXMinimized").ok();
+            let after_hidden = app_hidden_for_pid(self.pid as i32).ok();
+
+            let facts = super::RetainedMembershipFacts {
+                // The identity fence above already refused on drift.
+                identity_current: true,
+                anchor: Some(super::RetainedAnchorFacts {
+                    wid: anchor_wid,
+                    fullscreen,
+                    before_minimized,
+                    after_minimized,
+                }),
+                cg: cg.as_deref(),
+                spaces,
+                frame,
+                before_hidden,
+                after_hidden,
+            };
+            super::classify_retained_membership(self.pid, wid, &facts)
         }
     }
 
@@ -2985,6 +3189,7 @@ mod tests {
             let fresh = app(std::process::id() as i32);
             assert!(!anchors.allows(7, Some(&fresh)));
             assert!(!anchors.allows(7, None));
+            assert!(anchors.retained(7).is_none());
         }
 
         #[test]
@@ -2995,6 +3200,10 @@ mod tests {
             let mut anchors = AxSubjectAnchors::new();
             anchors.note_genuine_snapshot(retained(&[(7, 4242)]), true, &set(&[7]));
             assert!(anchors.allows(7, Some(&app(4242))));
+            assert!(
+                anchors.retained(7).is_some(),
+                "a live admitted anchor is the exact retained subject"
+            );
             assert!(!anchors.allows(7, Some(&app(4243))));
             assert!(!anchors.allows(9, Some(&app(4242))));
             assert!(!anchors.allows(7, None));
@@ -3022,6 +3231,10 @@ mod tests {
             anchors.note_genuine_snapshot(Vec::new(), true, &set(&[]));
             assert!(!anchors.allows(7, Some(&app(4242))));
             assert!(!anchors.allows(7, Some(&app(4243))));
+            assert!(
+                anchors.retained(7).is_none(),
+                "a proved-close tombstone has no live anchor to prove"
+            );
             // A later genuine snapshot naming the same numeric wid — even
             // with a fresh AX subject — never rebinds: the tombstone is
             // inert for the backend lifetime (no global-remint stand-in).

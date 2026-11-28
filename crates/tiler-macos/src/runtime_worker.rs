@@ -431,15 +431,16 @@ pub(crate) fn arrival_capture_due(
     Some(key)
 }
 /// Service at most one pending detached-membership request on THIS owning
-/// worker thread: the same thread that observed the window performs one
-/// ordered [`AxBackend::capture_brackets`] batch for the requested wid, so
-/// the reply carries the real owner joins (window enumeration, anchor
-/// identity, SLS membership, before/after lifetime) and never a bare
-/// pid/wid guess. Read-only: no setter, no clock bump, no retry, no new
-/// work id. A request naming another generation is answered without any
-/// native read (the waiter refuses); an unreadable/empty bracket is
-/// answered as `None` and the waiter refuses. Returns whether a request
-/// was serviced.
+/// worker thread: the same thread that owns the exact retained AX anchor
+/// performs one read-only [`AxBackend::read_retained_membership`] proof for
+/// the requested wid, so the reply carries the real owner lifetime, anchor
+/// identity, fresh CG geometry, and SLS membership without consulting the
+/// app's current `AXWindows` listing (an off-Space fullscreen member is
+/// absent from it). Never a bare pid/wid guess. Read-only: no setter, no
+/// clock bump, no retry, no new work id. A request naming another generation
+/// is answered without any native read (the waiter refuses); an
+/// unreadable/refused proof is answered as `None` and the waiter refuses.
+/// Returns whether a request was serviced.
 pub(crate) fn serve_membership_probe(
     backend: &mut dyn AxBackend,
     generation: u64,
@@ -454,10 +455,7 @@ pub(crate) fn serve_membership_probe(
         slot.complete(request, generation, None);
         return true;
     }
-    let read = backend
-        .capture_brackets(&[request.wid])
-        .into_iter()
-        .find(|read| read.wid == request.wid);
+    let read = backend.read_retained_membership(request.wid);
     slot.complete(request, generation, read);
     true
 }
@@ -2299,6 +2297,9 @@ mod arrival_capture_dedupe_tests {
 
     struct ScriptBackend {
         reads: Vec<BracketRead>,
+        /// Scripted retained-anchor facts for the dedicated membership
+        /// operation (never the `AXWindows` capture path).
+        retained: Vec<BracketRead>,
         calls: usize,
     }
 
@@ -2323,6 +2324,10 @@ mod arrival_capture_dedupe_tests {
                 .filter(|r| wids.contains(&r.wid))
                 .cloned()
                 .collect()
+        }
+
+        fn read_retained_membership(&mut self, wid: u32) -> Option<BracketRead> {
+            self.retained.iter().find(|r| r.wid == wid).cloned()
         }
     }
 
@@ -2438,10 +2443,11 @@ mod arrival_capture_dedupe_tests {
     }
 
     #[test]
-    fn membership_probe_reuses_owner_bracket_reads_exactly() {
-        // Real bridge protocol with the existing scripted owner backend: a
-        // select-side request is serviced by `serve_membership_probe` on the
-        // owning thread through `capture_brackets`, and only an attested
+    fn membership_probe_uses_retained_anchor_not_ax_window_enumeration() {
+        // Real bridge protocol with a scripted owner backend: a select-side
+        // request is serviced by `serve_membership_probe` on the owning
+        // thread through the dedicated `read_retained_membership` operation,
+        // never through `capture_brackets`/`AXWindows`, and only an attested
         // exact singleton proves. Every gap refuses or refutes, never
         // guesses.
         let shared = test_shared(pending_for("adapter-1", "gen-1"));
@@ -2461,10 +2467,11 @@ mod arrival_capture_dedupe_tests {
             },
         );
         let probe = crate::detached_membership::MembershipProbe::new(Arc::clone(&shared));
-        let read_with = |backend: &mut ScriptBackend, surface: u64| {
+        let read_member = |backend: &mut ScriptBackend, member: &str, surface: u64| {
+            let member = member.to_owned();
             let requester = {
                 let probe = probe.clone();
-                std::thread::spawn(move || probe.read_membership("4242_7", 1, surface))
+                std::thread::spawn(move || probe.read_membership(&member, 1, surface))
             };
             let deadline = Instant::now() + std::time::Duration::from_secs(2);
             while !serve_membership_probe(backend, 1, &slot) {
@@ -2477,43 +2484,104 @@ mod arrival_capture_dedupe_tests {
             requester.join().expect("requester joins")
         };
 
-        // Exact lifetime on exactly the frozen surface.
+        // Exact lifetime on exactly the frozen surface, with the security
+        // degradation disabled: the retained anchor alone supplies it (the
+        // `AXWindows` capture path is empty).
         let mut backend = ScriptBackend {
-            reads: vec![good_read()],
+            reads: Vec::new(),
+            retained: vec![good_read()],
             calls: 0,
         };
-        assert_eq!(read_with(&mut backend, 3), Ok(true));
+        assert_eq!(read_member(&mut backend, "4242_7", 3), Ok(true));
+        assert_eq!(backend.calls, 0, "membership proof must not enumerate AX");
+
+        // The reverse: a valid `AXWindows` capture cannot stand in for a
+        // missing retained anchor.
+        let mut backend = ScriptBackend {
+            reads: vec![good_read()],
+            retained: Vec::new(),
+            calls: 0,
+        };
+        assert!(read_member(&mut backend, "4242_7", 3).is_err());
 
         // A readable move is a definite "not here".
-        assert_eq!(read_with(&mut backend, 4), Ok(false));
+        let mut backend = ScriptBackend {
+            reads: Vec::new(),
+            retained: vec![good_read()],
+            calls: 0,
+        };
+        assert_eq!(read_member(&mut backend, "4242_7", 4), Ok(false));
 
         // Split View (more than one Space) is readable but not the exact
         // singleton.
         let mut split = good_read();
         split.spaces = vec![3, 4];
         let mut backend = ScriptBackend {
-            reads: vec![split],
+            reads: Vec::new(),
+            retained: vec![split],
             calls: 0,
         };
-        assert_eq!(read_with(&mut backend, 3), Ok(false));
+        assert_eq!(read_member(&mut backend, "4242_7", 3), Ok(false));
 
         // Unreadable membership refuses.
         let mut unreadable = good_read();
         unreadable.spaces = Vec::new();
         let mut backend = ScriptBackend {
-            reads: vec![unreadable],
+            reads: Vec::new(),
+            retained: vec![unreadable],
             calls: 0,
         };
-        assert!(read_with(&mut backend, 3).is_err());
+        assert!(read_member(&mut backend, "4242_7", 3).is_err());
 
         // Unattested owner identity (a reused wid) refuses.
         let mut reused = good_read();
         reused.owner_pid = None;
         let mut backend = ScriptBackend {
-            reads: vec![reused],
+            reads: Vec::new(),
+            retained: vec![reused],
             calls: 0,
         };
-        assert!(read_with(&mut backend, 3).is_err());
+        assert!(read_member(&mut backend, "4242_7", 3).is_err());
+
+        // A foreign owner attestation never proves this member.
+        let mut foreign = good_read();
+        foreign.owner_pid = Some(9999);
+        let mut backend = ScriptBackend {
+            reads: Vec::new(),
+            retained: vec![foreign],
+            calls: 0,
+        };
+        assert!(read_member(&mut backend, "4242_7", 3).is_err());
+
+        // Capture3 Away regression: the true fullscreen member w0 WID 10747
+        // is offscreen (valid) on the target SID 320, while AXWindows listed
+        // only the windowed sibling w1 WID 10808. The retained anchor still
+        // proves w0 even though the capture path returns nothing for it.
+        let away_member = BracketRead {
+            wid: 10_747,
+            owner_pid: Some(4242),
+            before_minimized: Some(false),
+            before_hidden: Some(false),
+            spaces: vec![320],
+            frame: Some((0, 0, 2240, 1260)),
+            after_minimized: Some(false),
+            after_hidden: Some(false),
+        };
+        let windowed_sibling = BracketRead {
+            wid: 10_808,
+            spaces: vec![319],
+            ..away_member.clone()
+        };
+        let mut backend = ScriptBackend {
+            reads: vec![windowed_sibling],
+            retained: vec![away_member.clone()],
+            calls: 0,
+        };
+        assert_eq!(
+            read_member(&mut backend, "4242_10747", 320),
+            Ok(true),
+            "an offscreen fullscreen member absent from AXWindows must prove"
+        );
 
         // Unknown owner (no live app record for the pid) refuses.
         assert!(
@@ -2535,6 +2603,7 @@ mod arrival_capture_dedupe_tests {
         let inbox = Arc::new(Inbox::new(8));
         let mut backend = ScriptBackend {
             reads: vec![good_read()],
+            retained: Vec::new(),
             calls: 0,
         };
         let mut last = None;
@@ -2568,6 +2637,7 @@ mod arrival_capture_dedupe_tests {
         let inbox = Arc::new(Inbox::new(8));
         let mut backend = ScriptBackend {
             reads: Vec::new(),
+            retained: Vec::new(),
             calls: 0,
         };
         let mut last = None;
@@ -2601,6 +2671,7 @@ mod arrival_capture_dedupe_tests {
         let inbox = Arc::new(Inbox::new(0));
         let mut backend = ScriptBackend {
             reads: vec![good_read()],
+            retained: Vec::new(),
             calls: 0,
         };
         let mut last = None;
@@ -2637,6 +2708,7 @@ mod arrival_capture_dedupe_tests {
         let inbox = Arc::new(Inbox::new(8));
         let mut backend = ScriptBackend {
             reads: vec![good_read()],
+            retained: Vec::new(),
             calls: 0,
         };
         let mut last = None;
@@ -2692,6 +2764,7 @@ mod arrival_capture_dedupe_tests {
         let inbox = Arc::new(Inbox::new(8));
         let mut backend = ScriptBackend {
             reads: vec![good_read()],
+            retained: Vec::new(),
             calls: 0,
         };
         let mut last = None;

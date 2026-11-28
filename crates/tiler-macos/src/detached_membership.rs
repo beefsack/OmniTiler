@@ -3,12 +3,15 @@
 //! Bounded read-only detached-membership proof bridge.
 //!
 //! One detached-fullscreen select leg must prove that a frozen member still
-//! belongs to exactly the frozen fullscreen surface. That proof is an
-//! ordered [`crate::runtime_types::BracketRead`] from the SAME per-app AX
-//! owner that observed the window (lifetime before/after joins plus the
-//! anchor identity), so the select owner cannot read it itself: it asks the
-//! owner through this single-flight slot and the owner reuses its existing
-//! [`crate::runtime_backend::AxBackend::capture_brackets`] batch.
+//! belongs to exactly the frozen fullscreen surface. That proof is a
+//! [`crate::runtime_types::BracketRead`] from the SAME per-app AX owner that
+//! observed the window (fresh lifetime identity, the exact AX anchor
+//! retained for it, fresh CG geometry, fresh SLS membership), so the select
+//! owner cannot read it itself: it asks the owner through this single-flight
+//! slot and the owner performs its dedicated read-only
+//! [`crate::runtime_backend::AxBackend::read_retained_membership`] operation.
+//! It deliberately does NOT re-enumerate `AXWindows`: a true fullscreen
+//! member is absent from that listing once it is off the current Space.
 //!
 //! Contract, fail-closed on every leg:
 //! - the requester verifies the generation frozen with the command report
