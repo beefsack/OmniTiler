@@ -121,6 +121,9 @@ fn focus_changes_required_and_canonical_with_exact_size_delta() {
                             workspace: tiler_core::ids::NativeWorkspaceId::parse("desktop_1.2").unwrap(),
                         },
                     },
+                    FocusChange::Foreground {
+                        win: Some(WindowId("".into())),
+                    },
                     FocusChange::Foreground { win: None },
                     foreground,
                 ]),

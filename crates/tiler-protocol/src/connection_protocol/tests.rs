@@ -775,6 +775,7 @@ fn route_connection_request_bounded_refuses_overflow_without_consuming_revision(
             "windowSuppression": false,
             "maximize": true,
             "fullscreen": true,
+            "detachedFullscreenView": false,
             "nativeSticky": true,
             "above": false,
             "warp": false,

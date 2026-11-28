@@ -6022,7 +6022,7 @@ fn encode_native_observation_v4(row: &NativeObservation) -> Result<String> {
         None => out.push_str("null"),
         Some(id) => push_json_string(&mut out, id),
     }
-    out.push_str("],\"occupancy\":[");
+    out.push_str(",\"occupancy\":[");
     for (i, item) in row.occupancy.iter().enumerate() {
         if i > 0 {
             out.push(',');

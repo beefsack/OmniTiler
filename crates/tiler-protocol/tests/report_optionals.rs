@@ -1291,6 +1291,7 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
         "fullscreenExitable",
         "suppressionAvailable",
         "visibility",
+        "detachedSurface",
     ];
     assert_eq!(&names[..schema_order.len()], &schema_order);
     assert_eq!(names[schema_order.len()..], ["floating"]);
@@ -1486,6 +1487,28 @@ fn detached_capability_required_and_only_per_output_host_owned() {
         .unwrap()
         .remove("detachedFullscreenView");
     assert!(decode_handshake_request(&value.to_string()).is_err());
+}
+
+#[test]
+fn desktop_native_observation_preserves_occupancy_in_round_trip() {
+    let mut value = fixture_value("report-native");
+    value["native"][0]["occupancy"][0]["count"] = 2.into();
+    let host = detached_host(false);
+    let decoded = tiler_protocol::world_protocol::decode_report_v4_for_host(
+        &value.to_string(),
+        &host,
+    )
+    .expect("valid Desktop observation");
+    let encoded = encode_report_v4(&decoded).expect("encode Desktop observation");
+    let json = serde_json::from_str::<serde_json::Value>(&encoded).expect("valid report JSON");
+    assert_eq!(json["native"], value["native"]);
+    assert_eq!(
+        tiler_protocol::world_protocol::decode_report_v4_for_host(&encoded, &host)
+            .expect("decode encoded report")
+            .report
+            .native,
+        decoded.report.native,
+    );
 }
 
 #[test]
