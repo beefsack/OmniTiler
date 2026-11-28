@@ -1276,6 +1276,143 @@ fn multi_keyboard_submit_pins_the_exact_reply_target_output_on_two_displays() {
 }
 
 #[test]
+fn multi_submit_routes_admit_only_the_exact_redundant_detached_marker() {
+    let published = crate::runtime_shared::PublishedDisplayInputs {
+        displays: vec![
+            geometry(7, Some("display-a")),
+            geometry(2, Some("display-b")),
+        ],
+        separate: Some(true),
+    };
+    let rows = vec![
+        sls_row(Some("display-a"), &[156], Some(156)),
+        sls_row(Some("display-b"), &[1, 317, 320, 319], Some(320)),
+    ];
+    let mut marker = tap_claim(InputSemanticAction::WorkspaceSelect { index: 1 }, "op-marker");
+    marker.select_target_output = Some("macos-display-2".to_owned());
+    marker.select_detached_enabled = true;
+    marker.select_detached_surface = Some(320);
+    marker.select_detached_member = Some(crate::runtime_types::DetachedSelectMember {
+        window: tiler_core::directional::WindowId("12168_10747".to_owned()),
+        generation: 3,
+    });
+    marker.select_baseline = Some(crate::runtime_types::SelectPhysical::Detached(320));
+    let as_indicator = |claim: &crate::runtime_types::ClaimedSelect| {
+        let mut claim = claim.clone();
+        claim.action = InputSemanticAction::IndicatorSelectWorkspace {
+            output: "macos-display-2".to_owned(),
+            workspace: "ws-317".to_owned(),
+        };
+        claim
+    };
+    // Exactly the core blackboard marker shape is admitted so the drain's
+    // own exact redundant refusal is reachable; the pinned row is derived
+    // from the reply output exactly like every other keyboard select.
+    assert_eq!(
+        crate::select_owner::multi_keyboard_submit_display(&marker, &published, &rows, Some(27)),
+        Ok((1, 2, "display-b".to_owned()))
+    );
+    assert_eq!(
+        crate::select_owner::multi_indicator_submit_display(
+            &as_indicator(&marker),
+            &published,
+            &rows
+        ),
+        Ok((1, 2, "display-b".to_owned()))
+    );
+    // Every deviation leaves the marker shape and keeps the existing
+    // workspace-plus-binding requirements (so it refuses here).
+    let mut desktop_baseline = marker.clone();
+    desktop_baseline.select_baseline = Some(crate::runtime_types::SelectPhysical::Desktop(319));
+    let mut wrong_surface = marker.clone();
+    wrong_surface.select_detached_surface = Some(321);
+    let mut zero_surface = marker.clone();
+    zero_surface.select_detached_surface = Some(0);
+    let mut no_member = marker.clone();
+    no_member.select_detached_member = None;
+    let mut disabled = marker.clone();
+    disabled.select_detached_enabled = false;
+    let mut with_workspace = marker.clone();
+    with_workspace.select_target_workspace = Some("ws-319".to_owned());
+    let mut with_binding = marker.clone();
+    with_binding.select_native_binding = Some("space-319".to_owned());
+    let mut creation = marker.clone();
+    creation.select_creation_operation = Some("op-create".to_owned());
+    let mut trailing = marker.clone();
+    trailing.action = InputSemanticAction::WorkspaceSelect { index: 0 };
+    let indicator = as_indicator(&marker);
+    let mut no_output = marker.clone();
+    no_output.select_target_output = None;
+    let mut wrong_output = marker.clone();
+    wrong_output.select_target_output = Some("macos-display-99".to_owned());
+    for (label, claim) in [
+        ("desktop baseline", &desktop_baseline),
+        ("wrong surface", &wrong_surface),
+        ("zero surface", &zero_surface),
+        ("missing member", &no_member),
+        ("capability off", &disabled),
+        ("logical workspace", &with_workspace),
+        ("native binding", &with_binding),
+        ("creation desire", &creation),
+        ("wrong output", &wrong_output),
+        ("no output", &no_output),
+    ] {
+        assert!(
+            crate::select_owner::multi_keyboard_submit_display(claim, &published, &rows, Some(27))
+                .is_err(),
+            "{label} must refuse"
+        );
+        assert!(
+            crate::select_owner::multi_indicator_submit_display(
+                &as_indicator(claim),
+                &published,
+                &rows
+            )
+            .is_err(),
+            "{label} must refuse indicator too"
+        );
+    }
+    for claim in [&trailing, &indicator] {
+        assert!(
+            crate::select_owner::multi_keyboard_submit_display(claim, &published, &rows, Some(27))
+                .is_err()
+        );
+    }
+    let mut wrong_clicked_output = as_indicator(&marker);
+    wrong_clicked_output.select_target_output = Some("macos-display-7".to_owned());
+    assert!(
+        crate::select_owner::multi_indicator_submit_display(
+            &wrong_clicked_output,
+            &published,
+            &rows,
+        )
+        .is_err()
+    );
+    // The marker shape still needs the two-separate-display macOS 27 route.
+    for major in [Some(15), Some(26), Some(28), None] {
+        assert!(
+            crate::select_owner::multi_keyboard_submit_display(
+                &marker,
+                &published,
+                &rows,
+                major
+            )
+            .is_err(),
+            "{major:?} refuses the marker"
+        );
+    }
+    let mut unified = published.clone();
+    unified.separate = Some(false);
+    assert!(
+        crate::select_owner::multi_keyboard_submit_display(&marker, &unified, &rows, Some(27))
+            .is_err()
+    );
+    assert!(
+        crate::select_owner::multi_indicator_submit_display(&indicator, &unified, &rows).is_err()
+    );
+}
+
+#[test]
 fn multi_select_arrival_requires_target_and_untouched_non_targets() {
     use crate::mc_probe::{DisplaySpaces, TopologySnapshot};
     let spaces = |uuid: &str, spaces: &[u64], current: u64| DisplaySpaces {

@@ -104,9 +104,26 @@ pub struct SelectSubmit<'a> {
     pub wake: &'a SpaceSelectWake,
 }
 
+/// Core's exact-current detached marker binds only the output, typed
+/// baseline and frozen member. It carries no View target or creation.
+/// The drain still has to re-read current and membership before refusing.
+fn redundant_detached_marker(claim: &ClaimedSelect) -> bool {
+    claim.select_detached_enabled
+        && claim.select_creation_operation.is_none()
+        && claim.select_target_workspace.is_none()
+        && claim.select_native_binding.is_none()
+        && claim.select_detached_member.is_some()
+        && matches!(
+            claim.select_baseline,
+            Some(crate::runtime_types::SelectPhysical::Detached(surface))
+                if surface != 0 && Some(surface) == claim.select_detached_surface
+        )
+}
+
 /// Resolve the exact published display a grouped indicator click names.
 /// This is the production submit seam for the multi-display route: the
-/// claim's action output/workspace must equal the reply-bound target, the
+/// claim's action output/workspace must equal the reply-bound target (or
+/// the claim must be the exact redundant marker for the clicked output),
 /// separate-Spaces mode must be proven on, and the clicked output must join
 /// exactly one published `(CG display id, managed UUID)` and one fresh SLS
 /// row. Returns the fresh row index plus the pinned pair; any ambiguity or
@@ -126,7 +143,8 @@ pub(crate) fn multi_indicator_submit_display(
         );
     };
     if claim.select_target_output.as_deref() != Some(output.as_str())
-        || claim.select_target_workspace.as_deref() != Some(workspace.as_str())
+        || (claim.select_target_workspace.as_deref() != Some(workspace.as_str())
+            && !redundant_detached_marker(claim))
     {
         return Err(format!(
             "multi-display indicator route refuses: claim target does not name the clicked {output}/{workspace}; no actuation"
@@ -190,17 +208,19 @@ pub(crate) fn multi_keyboard_submit_display(
                 .to_owned(),
         );
     };
-    if claim.select_target_workspace.is_none() {
-        return Err(
-            "multi-display keyboard route refuses: claim has no reply target workspace; no actuation"
-                .to_owned(),
-        );
-    }
-    if claim.select_native_binding.is_none() {
-        return Err(
-            "multi-display keyboard route refuses: claim has no existing Space binding; creation and trailing stay single-display"
-                .to_owned(),
-        );
+    if !redundant_detached_marker(claim) {
+        if claim.select_target_workspace.is_none() {
+            return Err(
+                "multi-display keyboard route refuses: claim has no reply target workspace; no actuation"
+                    .to_owned(),
+            );
+        }
+        if claim.select_native_binding.is_none() {
+            return Err(
+                "multi-display keyboard route refuses: claim has no existing Space binding; creation and trailing stay single-display"
+                    .to_owned(),
+            );
+        }
     }
     if !keyboard_two_display_route_allowed(published.displays.len(), published.separate, os_major) {
         return Err(format!(
