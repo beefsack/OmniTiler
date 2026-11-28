@@ -2122,8 +2122,9 @@ fn detached_destination_existing_view_allows_relative_previous_and_indicator() {
 }
 
 #[test]
-fn detached_source_existing_view_allows_relative_previous_and_indicator() {
+fn detached_source_existing_view_allows_trailing_reuse_relative_previous_and_indicator() {
     for (index, action) in [
+        Action::WorkspaceSelect { index: 0 },
         Action::WorkspaceRelative { prev: false },
         Action::WorkspaceRelative { prev: true },
         Action::WorkspacePrevious,
@@ -2171,9 +2172,7 @@ fn detached_source_existing_view_allows_relative_previous_and_indicator() {
 }
 
 #[test]
-fn detached_source_keeps_creation_and_trailing_fences() {
-    // Trailing `index 0` is never a standalone existing View target, even
-    // when the reply bound a live Desktop: creation/trailing stay fenced.
+fn detached_source_keeps_trailing_creation_fenced() {
     let mut fake = Fake {
         row: SelectionSnapshot {
             display: "display-a".to_owned(),
@@ -2189,16 +2188,16 @@ fn detached_source_keeps_creation_and_trailing_fences() {
         "op-t",
         "macos-display-1",
         "ws-2",
-        Some("space-3"),
         None,
+        Some(("op-create", "ws-2", "macos-display-1")),
         None,
     );
     trailing.select_detached_enabled = true;
     trailing.select_baseline = Some(SelectPhysical::Detached(900));
     let failure = drain_claimed_select_with(&mut state, &mut fake, trailing, &open_gates(), true)
-        .expect_err("trailing never leaves a covered surface");
+        .expect_err("trailing creation never leaves a covered surface");
     assert!(
-        failure.reason.contains("non-standalone explicit select"),
+        failure.reason.contains("detached fullscreen"),
         "{}",
         failure.reason
     );
@@ -2212,7 +2211,7 @@ fn detached_source_keeps_creation_and_trailing_fences() {
         "macos-display-1",
         "ws-2",
         Some("space-3"),
-        Some(("op-create", "ws-2", "macos-display-1")),
+        Some(("op-create-2", "ws-2", "macos-display-1")),
         None,
     );
     creation.select_detached_enabled = true;

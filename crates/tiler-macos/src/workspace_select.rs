@@ -926,14 +926,11 @@ pub(crate) fn drain_claimed_select_with_os(
             | InputSemanticAction::WorkspacePrevious
             | InputSemanticAction::IndicatorSelectWorkspace { .. }
     );
-    // Standalone existing-target View shape: an explicit numbered,
-    // relative, previous, or indicator selection whose reply bound the exact
-    // core-owned View target (logical workspace plus live native binding)
-    // with no creation desire. The action kind alone is never proof: the
-    // bound plan fields carry the core-owned correlation. Trailing `index 0`
-    // is select-or-create and never takes this shape.
+    // Existing-target View shape: a standalone selection with a core-bound
+    // logical workspace and live native binding, and no creation desire.
+    // Index 0 qualifies only when core resolved it to reuse, not creation.
     let existing_view_target = match &claim.action {
-        InputSemanticAction::WorkspaceSelect { index } => (1..=9).contains(index),
+        InputSemanticAction::WorkspaceSelect { index } => *index <= 9,
         InputSemanticAction::WorkspaceRelative { .. }
         | InputSemanticAction::WorkspacePrevious
         | InputSemanticAction::IndicatorSelectWorkspace { .. } => true,
@@ -1137,10 +1134,9 @@ pub(crate) fn drain_claimed_select_with_os(
         };
         // A detached-source Desktop switch is never authorized by the
         // capability alone: it must be a standalone existing-target View
-        // selection (numbered/existing select, relative, previous, or
-        // indicator with a bound core-owned target, no creation/trailing
-        // shape). Send/swap and every other non-standalone claim stays
-        // fenced out of a covered surface regardless of session capability.
+        // selection with a core-bound target and no creation desire.
+        // Send/swap and every other non-standalone claim stay fenced out
+        // of a covered surface regardless of session capability.
         let detached_source = matches!(live_pre, SelectPhysical::Detached(_));
         if detached_source && detached_target.is_none() && !existing_view_target {
             let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
