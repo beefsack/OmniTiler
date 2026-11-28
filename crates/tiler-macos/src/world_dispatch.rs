@@ -20,20 +20,22 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use tiler_core::boundary::CoreCommand;
-use tiler_core::directional::{WindowId, WindowSubject};
+use tiler_core::directional::{WindowId, WindowSubject, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIngress, GestureSettled};
-use tiler_core::world_engine::WorldOutcome;
+use tiler_core::session::DomainKey;
+use tiler_core::world_engine::{SelectionResolution, WorldOutcome};
 #[cfg(test)]
 use tiler_core::world_report::AttemptLaneV4;
 use tiler_core::world_report::{
-    FocusNoCallReason, ScopeAuthority, WorldCommand, WorldReplyV4, WorldReportV4,
+    FocusNoCallReason, ScopeAuthority, TransferKind, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 #[cfg(test)]
 use tiler_protocol::world_protocol::{
     CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire, ReportWireOptionals,
 };
 
+use crate::detached_membership::MembershipProbe;
 use crate::focus_route::FocusRoute;
 use crate::runtime::{
     AppliedGeometryKey, DeferredSelectionFocus, DesiredFrame, FocusBaselines, FocusCommand,
@@ -43,8 +45,8 @@ use crate::runtime_core::RetainedCore;
 use crate::runtime_thread::{CoherencePending, FocusSlot, FrameSlot, Inbox};
 use crate::runtime_types::{CloseFocusBinding, ProvenArrivalStamp, TopologyMode};
 use crate::world_runtime::{
-    DispatchContext, WorldSession, build_dispatch_report, map_gesture_preview, track_layout_write,
-    track_write,
+    DispatchContext, StaleDetachedInjection, WorldSession, build_dispatch_report,
+    map_gesture_preview, track_layout_write, track_write,
 };
 use crate::world_sequencer::{CloseEnvelope, ReplyVerdict, RequestTicket, command_operation_id};
 
@@ -1178,6 +1180,308 @@ pub(crate) fn dispatch_ticket(
     verdict
 }
 
+/// Distinct structured refusal for the exact detached-anchor revision fence.
+const STALE_DETACHED_ANCHOR_REFUSAL: &str = "refused-select-stale-detached-anchor";
+
+/// One retained stale detached candidate: an unknown-home, live, observed
+/// fullscreen row whose withheld membership is from an older topology
+/// revision and whose canonical remembered home is still retained.
+struct StaleDetachedCandidate {
+    window: WindowId,
+    pid: u32,
+    wid: u32,
+    generation: u64,
+    stale_revision: u64,
+    surface: u64,
+}
+
+/// Exact revision-fence plan for one select dispatch. Empty on the ordinary
+/// fast path (capability off, not a bound select, no canonical stale
+/// candidate), so `typed_transact` stays byte-for-byte unchanged.
+#[derive(Default)]
+struct StaleAnchorFence {
+    /// Canonical remembered homes whose only retained detached membership is
+    /// stale.
+    homes: BTreeSet<DomainKey>,
+    /// Command-local owner proof for exactly the previewed target, if read.
+    injection: Option<StaleDetachedInjection>,
+    /// The previewed target had a stale anchor and the exact owner read (or
+    /// its topology/owner recheck) did not prove it.
+    refusal: bool,
+}
+
+impl StaleAnchorFence {
+    fn inactive() -> Self {
+        Self::default()
+    }
+}
+
+/// Plan the exact stale-anchor fence for one production select dispatch.
+///
+/// Fast path (no retained stale canonical candidate, capability off, or no
+/// exact provisional target) performs no native probe. Only the one exact
+/// candidate whose canonical remembered home is the previewed output and
+/// workspace is probed, through its retained AX owner generation, and only
+/// after the probe proves the exact singleton surface against the report
+/// revision does this return an injection for the report build. A failed or
+/// refuting read, or any topology/owner drift at receipt, refuses instead of
+/// dispatching a Desktop/Home switch.
+fn plan_stale_detached_fence(
+    session: &mut WorldSession,
+    retained: &RetainedCore,
+    shared: &Arc<Mutex<Shared>>,
+    dispatch: &DispatchContext,
+    command: &WorldCommand,
+    command_seq: u64,
+) -> StaleAnchorFence {
+    let DispatchContext::Native(ctx) = dispatch else {
+        return StaleAnchorFence::inactive();
+    };
+    if session.coverage_gap() {
+        return StaleAnchorFence::inactive();
+    }
+    let mut candidates: BTreeMap<DomainKey, Vec<StaleDetachedCandidate>> = BTreeMap::new();
+    for (pid, app) in &retained.apps {
+        if app.roster_incomplete {
+            continue;
+        }
+        for (wid, entry) in &app.roster {
+            if entry.excluded.is_some() {
+                continue;
+            }
+            let Some(observed) = entry.observed else {
+                continue;
+            };
+            if !observed.fullscreen {
+                continue;
+            }
+            let window = crate::runtime_types::window_id(*pid, *wid);
+            if retained.window_domains.contains_key(&window) {
+                continue;
+            }
+            let Some((stale_revision, surface)) = entry.detached_membership else {
+                continue;
+            };
+            if stale_revision == ctx.revision {
+                continue;
+            }
+            // Canonical memory only: the exact member that owns this home's
+            // remembered selection identity. Never a rank or a fallback.
+            let Some(home) = session
+                .engine_mut()
+                .remembered_detached_selection_home(&WindowId(window.clone()))
+            else {
+                continue;
+            };
+            candidates.entry(home.clone()).or_default().push(
+                StaleDetachedCandidate {
+                    window: WindowId(window),
+                    pid: *pid,
+                    wid: *wid,
+                    generation: app.generation,
+                    stale_revision,
+                    surface,
+                },
+            );
+        }
+    }
+    if candidates.is_empty() {
+        return StaleAnchorFence::inactive();
+    }
+    let homes: BTreeSet<DomainKey> = candidates.keys().cloned().collect();
+    let mut fence = StaleAnchorFence {
+        homes,
+        injection: None,
+        refusal: false,
+    };
+    let target = match session.engine_mut().preview_selection(command) {
+        SelectionResolution::Existing { output, workspace } => DomainKey {
+            output,
+            workspace: WorkspaceId(workspace),
+        },
+        _ => return fence,
+    };
+    let Some(list) = candidates.get(&target) else {
+        return fence;
+    };
+    // Several candidates for one canonical home are ambiguous: never probe a
+    // guess. Any eventual View to that home is rejected by the guard.
+    if list.len() != 1 {
+        return fence;
+    }
+    let candidate = &list[0];
+    let Some(native_home) = session.engine_mut().native_selection_binding(&target) else {
+        return fence;
+    };
+    let Some(domain) = ctx.domains.iter().find(|domain| {
+        domain.output == target.output && domain.workspace.0 == native_home
+    }) else {
+        return fence;
+    };
+    if ctx.detached_owner(candidate.surface) != Some(domain.cg_id) {
+        return fence;
+    }
+    // Existing bounded read-only owner bridge: exact frozen generation,
+    // dedicated retained-anchor read (never AXWindows), no shared lock while
+    // waiting.
+    let probe = MembershipProbe::new(Arc::clone(shared));
+    match probe.read_membership(&candidate.window.0, candidate.generation, candidate.surface) {
+        Ok(true) => {}
+        Ok(false) | Err(_) => {
+            fence.refusal = true;
+            return fence;
+        }
+    }
+    // The receipt is usable only while the dispatch's native topology and the
+    // owner lifetime are both still exactly current; the probe already fences
+    // its own owner lifetime at receipt.
+    let receipt_current = {
+        let guard = lock_shared(shared);
+        guard
+            .native_context
+            .as_ref()
+            .is_some_and(|current| **current == **ctx)
+            && guard
+                .apps
+                .get(&candidate.pid)
+                .is_some_and(|app| {
+                    !app.terminated && app.generation == candidate.generation
+                })
+    };
+    if !receipt_current {
+        fence.refusal = true;
+        return fence;
+    }
+    let still_exact = retained.apps.get(&candidate.pid).is_some_and(|app| {
+        app.generation == candidate.generation
+            && !app.roster_incomplete
+            && app.roster.get(&candidate.wid).is_some_and(|entry| {
+                entry.excluded.is_none()
+                    && entry.observed.is_some_and(|observed| observed.fullscreen)
+                    && entry.detached_membership
+                        == Some((candidate.stale_revision, candidate.surface))
+            })
+    });
+    if !still_exact {
+        fence.refusal = true;
+        return fence;
+    }
+    fence.injection = Some(StaleDetachedInjection {
+        command_seq,
+        report_revision: ctx.revision,
+        window: candidate.window.clone(),
+        pid: candidate.pid,
+        wid: candidate.wid,
+        generation: candidate.generation,
+        stale_revision: candidate.stale_revision,
+        surface: candidate.surface,
+        home: target.clone(),
+        detached: crate::runtime_types::detached_ref(target.output.clone(), candidate.surface),
+    });
+    fence
+}
+
+/// Pre-adoption guard for a checked select candidate while canonical stale
+/// detached homes exist. Every transfer this ticket correlates must either
+/// avoid those homes or be the one proved detached View on exactly the
+/// previewed output/workspace/member/surface. A Home/Desktop view, a missing
+/// or different destination, a changed member, or a newly targeted still
+/// stale sibling home (without probing it) rejects the candidate before core
+/// adoption and before any native product.
+pub(crate) fn stale_detached_candidate_guard(
+    reply: &WorldReplyV4,
+    command_seq: u64,
+    homes: &BTreeSet<DomainKey>,
+    proof: Option<&StaleDetachedInjection>,
+) -> Result<(), ()> {
+    let mut proved_view = false;
+    for row in &reply.transfers {
+        if row.command_seq != Some(command_seq) {
+            continue;
+        }
+        let key = DomainKey {
+            output: row.target_output.clone(),
+            workspace: WorkspaceId(row.target_workspace.clone()),
+        };
+        if homes.contains(&key) {
+            let Some(proof) = proof else {
+                return Err(());
+            };
+            if key != proof.home {
+                return Err(());
+            }
+            if !matches!(&row.kind, TransferKind::View) {
+                return Err(());
+            }
+            if row.follow || row.parent.is_some() {
+                return Err(());
+            }
+            let Some(destination) = row.detached_destination.as_ref() else {
+                return Err(());
+            };
+            if destination.surface != proof.detached
+                || destination.member != proof.window
+                || destination.surface.output != row.target_output
+            {
+                return Err(());
+            }
+            proved_view = true;
+        } else if let Some(proof) = proof
+            && row.target_output == proof.home.output
+        {
+            // A proved target that dispatched elsewhere on its own output is
+            // plan drift, never a Home fallback.
+            return Err(());
+        }
+    }
+    if proof.is_some() && !proved_view {
+        // A proved stale target must produce exactly the correlated detached
+        // View this ticket; no transfer (or none for this target) is a
+        // missing claim, never an accepted Home selection.
+        return Err(());
+    }
+    Ok(())
+}
+
+/// The receipt's native topology and owner lifetime must still be exactly
+/// current immediately before adoption (the owner probe already rechecked its
+/// own lifetime at receipt; this closes the prepare window).
+fn stale_anchor_receipt_still_current(
+    shared: &Arc<Mutex<Shared>>,
+    dispatch: &DispatchContext,
+    proof: Option<&StaleDetachedInjection>,
+) -> bool {
+    let DispatchContext::Native(ctx) = dispatch else {
+        return true;
+    };
+    let Some(proof) = proof else {
+        return true;
+    };
+    let guard = lock_shared(shared);
+    guard
+        .native_context
+        .as_ref()
+        .is_some_and(|current| **current == **ctx)
+        && guard
+            .apps
+            .get(&proof.pid)
+            .is_some_and(|app| !app.terminated && app.generation == proof.generation)
+}
+
+/// Clear the flight and route the distinct structured refusal (never a
+/// Desktop/Home command, never core adoption).
+fn refuse_stale_detached_anchor(
+    session: &mut WorldSession,
+    shared: &Arc<Mutex<Shared>>,
+) -> DispatchVerdict {
+    session.sequencer().clear_flight();
+    crate::runtime_thread::refuse_select_claim(shared, STALE_DETACHED_ANCHOR_REFUSAL);
+    DispatchVerdict::Refused {
+        token: STALE_DETACHED_ANCHOR_REFUSAL.to_owned(),
+        select_operation: None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_ticket_inner(
     session: &mut WorldSession,
@@ -1208,6 +1512,21 @@ fn dispatch_ticket_inner(
     // The fixture one-shot hold applies only to this ordinary ticket lane,
     // never a gesture-lifecycle report (which has its own dispatch path).
     let ordinary_float_hold_allowed = gesture.is_none();
+    // Exact stale detached-anchor revision fence: capability-off, ordinary,
+    // and candidate-free dispatches take no probe and keep the ordinary typed
+    // path. A probed target stages one command-local report injection here.
+    let stale_fence = if command_is_select
+        && let Some(command) = ticket.command.as_ref()
+        && let Some(command_seq) = ticket.command_seq
+        && session.detached_fullscreen_view()
+    {
+        plan_stale_detached_fence(session, retained, shared, &dispatch, command, command_seq)
+    } else {
+        StaleAnchorFence::inactive()
+    };
+    if let Some(injection) = stale_fence.injection.as_ref() {
+        session.attach_stale_detached_injection(injection.clone());
+    }
     let report_clock = crate::stage_timing::PhaseClock::start();
     let Some(report) = build_dispatch_report(
         session,
@@ -1235,6 +1554,12 @@ fn dispatch_ticket_inner(
         );
         return DispatchVerdict::NoReport;
     };
+    if stale_fence.refusal {
+        // The report build drained ordinary feedback exactly as on any
+        // refusal, but the exact anchor was not proved: no Home command and
+        // no core adoption.
+        return refuse_stale_detached_anchor(session, shared);
+    }
     if crate::diag_cause::enabled() {
         let (unreadable_domains, skipped_outputs) = match &dispatch {
             DispatchContext::Native(ctx) => (
@@ -1314,7 +1639,44 @@ fn dispatch_ticket_inner(
     // and the exact reply byte bound before sequencer acceptance or
     // actuation.
     let core_clock = crate::stage_timing::PhaseClock::start();
-    let outcome = typed_transact(session, &report);
+    let outcome = if stale_fence.homes.is_empty() {
+        // No canonical stale detached home: the ordinary typed path is
+        // byte-for-byte unchanged.
+        typed_transact(session, &report)
+    } else {
+        // Canonical stale detached homes exist: validate the checked
+        // candidate before core adoption and before any native product. The
+        // same gate as the ordinary typed path, plus the exact
+        // ticket-correlated target proof.
+        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+        let guard_seq = ticket
+            .command_seq
+            .expect("a stale-anchor fence only runs for a bound select command");
+        let checked = gate.dispatch_with_prepare(
+            session.engine_mut(),
+            &report,
+            &[],
+            |candidate| {
+                if !stale_anchor_receipt_still_current(
+                    shared,
+                    &dispatch,
+                    stale_fence.injection.as_ref(),
+                ) {
+                    return Err(());
+                }
+                stale_detached_candidate_guard(
+                    candidate.reply.reply(),
+                    guard_seq,
+                    &stale_fence.homes,
+                    stale_fence.injection.as_ref(),
+                )
+            },
+        );
+        match checked {
+            Ok(transition) => transition.outcome,
+            Err(()) => return refuse_stale_detached_anchor(session, shared),
+        }
+    };
     if let Some(span) = crate::stage_timing::with_current(|held| *held) {
         crate::stage_timing::record(
             shared,

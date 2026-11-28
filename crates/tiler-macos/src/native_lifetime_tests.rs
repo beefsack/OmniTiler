@@ -762,6 +762,103 @@ fn parked_detached_membership_refreshes_only_exact_same_lifetime_and_sid() {
     assert!(retained.apps[&1001].roster_incomplete);
 }
 
+#[test]
+fn away_topology_publication_can_precede_the_parked_anchor_reread() {
+    use crate::runtime_core::rehydrate_cg_alive;
+    use crate::runtime_types::CgAliveDetail;
+    use crate::world_runtime::{DispatchContext, build_dispatch_report};
+    use tiler_core::world_engine::WorldEngine;
+    use tiler_core::world_report::WorldCommand;
+
+    let mut session = session_native();
+    let mut cap = crate::world_connection::macos_capabilities();
+    cap.detached_fullscreen_view = true;
+    let engine = WorldEngine::new_test_bound_with_capabilities(GENERATION, session.incarnation(), cap)
+        .expect("capability-enabled test handshake");
+    session.sequencer().bind_generation(engine.core_generation());
+    *session.engine_mut() = engine;
+    let mut ctx = two_display_ctx();
+    for (domain, sid) in ctx.domains.iter_mut().zip([317, 319, 156]) {
+        domain.space = sid;
+        domain.workspace = WorkspaceId(format!("space-{sid}"));
+        domain.current = sid == 156;
+    }
+    ctx.detached_spaces.insert(320, (1, true));
+    let mut retained = retained_with_roster(12_168, 1);
+    let mut w0 = observed(10_747, 0, 0, 2240, 1260);
+    w0.fullscreen = true;
+    let current = scoped_snapshot(
+        vec![w0],
+        vec![vec![320]],
+        0,
+        ctx.revision,
+        true,
+        vec![w0.wid],
+    );
+    assert!(apply_roster_covering(&mut retained, 12_168, &current, &ctx).is_empty());
+    let w0_id = crate::runtime_types::window_id(12_168, w0.wid);
+    let home = ctx.domains[0].workspace.clone();
+    let output = ctx.domains[0].output.clone();
+    let fullscreen = crate::runtime_types::detached_ref(output.clone(), 320);
+    let report = |session: &mut WorldSession, retained: &RetainedCore, ctx: &NativeContext, seq| {
+        let command = (seq > 1).then(|| WorldCommand::SelectWorkspace {
+            output: output.clone(),
+            workspace: home.clone(),
+        });
+        build_dispatch_report(
+            session,
+            retained,
+            &DispatchContext::Native(Arc::new(ctx.clone())),
+            &[],
+            seq,
+            seq,
+            command.as_ref().map(|_| seq),
+            command,
+            None,
+            "req-native-fullscreen",
+        )
+        .expect("native context reports")
+    };
+    let initial = report(&mut session, &retained, &ctx, 1);
+    assert!(initial.windows.iter().any(|w| {
+        w.window.0 == w0_id && w.detached_surface.as_ref() == Some(&fullscreen)
+    }));
+
+    // The main thread publishes R+1 for the current change without waiting
+    // for the app owner's topology reread. A Return command can run here.
+    ctx.revision += 1;
+    ctx.domains[1].current = true;
+    ctx.detached_spaces.insert(320, (1, false));
+    let before_reread = report(&mut session, &retained, &ctx, 2);
+    assert!(before_reread.windows.iter().any(|w| w.window.0 == w0_id));
+    assert!(before_reread.windows.iter().all(|w| w.detached_surface.is_none()));
+
+    // Away exposes only w1 to AX; fresh nondegenerate offscreen CG/SLS
+    // evidence carries the already witnessed fullscreen lifetime to R+1.
+    let w1 = observed(10_808, 10, 25, 800, 632);
+    let mut parked = scoped_snapshot(
+        vec![w1],
+        vec![vec![319]],
+        0,
+        ctx.revision,
+        true,
+        vec![w0.wid, w1.wid],
+    );
+    parked.cg_alive.push(CgAliveDetail {
+        wid: w0.wid,
+        spaces: vec![320],
+        layer: 0,
+        onscreen: false,
+        bounds: Some((0, 0, 2240, 1260)),
+    });
+    assert!(apply_roster_covering(&mut retained, 12_168, &parked, &ctx).is_empty());
+    assert!(rehydrate_cg_alive(&mut retained, 12_168, &parked, &ctx, true).is_empty());
+    let after_reread = report(&mut session, &retained, &ctx, 3);
+    assert!(after_reread.windows.iter().any(|w| {
+        w.window.0 == w0_id && w.detached_surface.as_ref() == Some(&fullscreen)
+    }));
+}
+
 /// Selected classification exclusions never hold: a new accessory /
 /// unknown-role excluded sibling (never live, never reportable) stalls
 /// nothing, while a previously live unknown lifetime turned HiddenApp
@@ -2569,4 +2666,917 @@ fn snapshot_fence_ignores_auxiliary_legs_and_refuses_unknown_members() {
             .and_then(|m| m.role.as_deref()),
         Some(ROLE_SHEET)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Select revision fence: exact stale detached anchor.
+// ---------------------------------------------------------------------------
+
+mod stale_anchor_fence {
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::detached_membership::MembershipProbeSlot;
+    use crate::runtime_shared::AppRecord;
+    use crate::runtime_thread::{FocusSlot, FrameSlot, Inbox};
+    use crate::runtime_types::{BracketRead, CgAliveDetail};
+    use crate::world_dispatch::{DispatchVerdict, dispatch_report};
+    use crate::world_runtime::{DispatchContext, StaleDetachedInjection, build_dispatch_report};
+    use tiler_core::world_engine::WorldEngine;
+    use tiler_core::world_report::{ActivationPolicy, TransferKind, WorldCommand, WorldReplyV4};
+
+    const PID: u32 = 12_168;
+    const OWNER_GENERATION: u64 = 1;
+    const W0: u32 = 10_747;
+    const W1: u32 = 10_808;
+    const HOME_SID: u64 = 317;
+    const AWAY_SID: u64 = 319;
+    const CURRENT_SID: u64 = 156;
+    const DETACHED_SID: u64 = 320;
+
+    fn w0_id() -> String {
+        crate::runtime_types::window_id(PID, W0)
+    }
+
+    fn w0_window() -> WindowId {
+        WindowId(w0_id())
+    }
+
+    /// Fake per-app AX owner mailbox: serves exactly the configured frozen
+    /// bracket for every request, counting attempts. This is the same
+    /// single-flight slot the production owner thread serves.
+    struct OwnerServer {
+        stop: Arc<AtomicBool>,
+        attempts: Arc<AtomicUsize>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl OwnerServer {
+        fn start(
+            slot: Arc<MembershipProbeSlot>,
+            generation: u64,
+            read: Option<BracketRead>,
+        ) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let thread_stop = Arc::clone(&stop);
+            let thread_attempts = Arc::clone(&attempts);
+            let handle = std::thread::spawn(move || {
+                while !thread_stop.load(Ordering::SeqCst) {
+                    match slot.take() {
+                        Some(request) => {
+                            thread_attempts.fetch_add(1, Ordering::SeqCst);
+                            slot.complete(request, generation, read.clone());
+                        }
+                        None => std::thread::sleep(Duration::from_millis(1)),
+                    }
+                }
+            });
+            Self {
+                stop,
+                attempts,
+                handle: Some(handle),
+            }
+        }
+
+        fn attempts(&self) -> usize {
+            self.attempts.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for OwnerServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn exact_read(spaces: Vec<u64>) -> BracketRead {
+        BracketRead {
+            wid: W0,
+            owner_pid: Some(PID),
+            before_minimized: Some(false),
+            before_hidden: Some(false),
+            spaces,
+            frame: Some((0, 0, 2240, 1260)),
+            after_minimized: Some(false),
+            after_hidden: Some(false),
+        }
+    }
+
+    fn dispatch_shared(
+        slot: Arc<MembershipProbeSlot>,
+        clock: Arc<crate::world_sequencer::ObservationClock>,
+    ) -> Arc<Mutex<crate::runtime::Shared>> {
+        let config = crate::runtime_types::RuntimeConfig {
+            topology_mode: crate::runtime_types::TopologyMode::Native,
+            ..Default::default()
+        };
+        let mut apps = BTreeMap::new();
+        apps.insert(
+            PID,
+            AppRecord {
+                generation: OWNER_GENERATION,
+                terminated: false,
+                stop: Arc::new(AtomicBool::new(false)),
+                frames: Arc::new(FrameSlot::new()),
+                focus: Arc::new(FocusSlot::new()),
+                membership: slot,
+                ready: Arc::new(Mutex::new(Some(Ok(())))),
+                worker: None,
+                worker_name: "stale-anchor-test".to_owned(),
+            },
+        );
+        Arc::new(Mutex::new(crate::runtime::Shared {
+            config,
+            handles_live: 0,
+            generation_counter: 0,
+            log_counter: 0,
+            start: Instant::now(),
+            apps,
+            clock,
+            cursor_ack_seq: 0,
+            midflight_hook: Mutex::new(None),
+            post_accept_hook: Mutex::new(None),
+            topology: None,
+            display_inputs: None,
+            select_wake: None,
+            main_wake: None,
+            topology_revision: 9,
+            native_context: None,
+            native_cell: crate::runtime_shared::NativeContextCell::new(),
+            select_pending: std::collections::VecDeque::new(),
+            select_busy: false,
+            select_claim_pending: false,
+            selection_focus_pending: None,
+            arrival_captures: std::collections::BTreeMap::new(),
+            selection_focus_floor_seq: 0,
+            close_focus_current: None,
+            focus_evidence: None,
+            zombies: Vec::new(),
+            engine_handle: None,
+            input_handle: None,
+            logger_handle: None,
+            input_thread: None,
+            terminal: None,
+            admission_closed: false,
+            stop_engine: Arc::new(AtomicBool::new(false)),
+            stop_input: Arc::new(AtomicBool::new(false)),
+            stop_logger: Arc::new(AtomicBool::new(false)),
+            log_tx: None,
+            diagnostics: crate::runtime_types::RuntimeDiagnostics::default(),
+            log: std::collections::VecDeque::new(),
+            last_desired: Vec::new(),
+            test_wake: None,
+            test_seq: 0,
+            last_geometry_key: None,
+            last_presentation: crate::runtime::empty_world_presentation_v4(),
+            last_pager_bindings: Vec::new(),
+            last_workspace_desires: Vec::new(),
+            last_native_creations: Vec::new(),
+            last_core_generation: String::new(),
+            indicator_revision: 0,
+            presentation_style: crate::active_border::PresentationStylePx::default(),
+            gesture_settlement: None,
+            gesture_settlement_seq: 0,
+        }))
+    }
+
+    /// Genuine-report fixture: a live member on its canonical home at
+    /// revision R with command focus memory, then the same member observed as
+    /// a current detached fullscreen surface, then the topology published at
+    /// R+1 for the away Display *without* the owner reread: the retained row
+    /// still carries `(R, 320)`.
+    struct Fixture {
+        session: WorldSession,
+        retained: RetainedCore,
+        shared: Arc<Mutex<crate::runtime::Shared>>,
+        slot: Arc<MembershipProbeSlot>,
+        ctx: NativeContext,
+        output: OutputId,
+        /// Adapter wire workspace id for the command/context.
+        home: WorkspaceId,
+        /// Core logical workspace id the engine resolves that wire id to.
+        home_logical: WorkspaceId,
+    }
+
+    impl Fixture {
+        fn build(detached_capability: bool) -> Self {
+            let clock = Arc::new(crate::world_sequencer::ObservationClock::new());
+            let mut session = WorldSession::new(
+                true,
+                crate::focus_route::FocusRoute::Slps,
+                Arc::clone(&clock),
+                &[],
+            );
+            let mut cap = crate::world_connection::macos_capabilities();
+            cap.detached_fullscreen_view = detached_capability;
+            let engine = WorldEngine::new_test_bound_with_capabilities(
+                GENERATION,
+                session.incarnation(),
+                cap,
+            )
+            .expect("capability-enabled test handshake");
+            session.sequencer().bind_generation(engine.core_generation());
+            *session.engine_mut() = engine;
+
+            let mut ctx = two_display_ctx();
+            for (domain, sid) in ctx.domains.iter_mut().zip([HOME_SID, AWAY_SID, CURRENT_SID]) {
+                domain.space = sid;
+                domain.workspace = WorkspaceId(format!("space-{sid}"));
+                domain.current = sid == HOME_SID || sid == CURRENT_SID;
+            }
+            let home = ctx.domains[0].workspace.clone();
+            let home_logical = WorkspaceId("ws-1".to_owned());
+            let output = ctx.domains[0].output.clone();
+
+            let mut retained = retained_with_roster(PID, OWNER_GENERATION);
+            let slot = Arc::new(MembershipProbeSlot::new());
+            let shared = dispatch_shared(Arc::clone(&slot), clock);
+
+            // R: w0 is a plain live member of its canonical home.
+            let mut plain = observed(W0, 0, 0, 400, 300);
+            plain.fullscreen = false;
+            let mut current = scoped_snapshot(
+                vec![plain.clone()],
+                vec![vec![HOME_SID]],
+                0,
+                ctx.revision,
+                true,
+                vec![W0],
+            );
+            current.meta[0].role = Some("AXWindow".to_owned());
+            current.meta[0].subrole = Some("AXStandardWindow".to_owned());
+            current.meta[0].modal = Some(false);
+            current.meta[0].layer = Some(0);
+            current.meta[0].resizable = Some(true);
+            current.meta[0].activation_policy = Some(ActivationPolicy::Regular);
+            assert!(
+                apply_roster_covering(&mut retained, PID, &current, &ctx).is_empty(),
+                "covering home read applies"
+            );
+            crate::runtime_core::note_scoped_members(
+                &mut retained,
+                PID,
+                &BTreeMap::from([(
+                    DomainKey {
+                        output: output.clone(),
+                        workspace: home.clone(),
+                    },
+                    vec![plain.clone()],
+                )]),
+            );
+            retained
+                .apps
+                .get_mut(&PID)
+                .expect("roster pid")
+                .windows = vec![plain];
+            let mut fixture = Self {
+                session,
+                retained,
+                shared,
+                slot,
+                ctx,
+                output,
+                home,
+                home_logical,
+            };
+            let first = fixture.dispatch(None, 1);
+            assert!(
+                matches!(first, DispatchVerdict::Applied { .. }),
+                "first observation applied: {first:?}"
+            );
+            // Native focus arrives while the window is still on Home.
+            // No typed Focus command is needed to remember that window.
+            fixture.retained.observed_focus = Some(w0_window());
+            fixture.retained.observed_focus_known = true;
+            assert!(matches!(
+                fixture.dispatch(None, 2),
+                DispatchVerdict::Applied { .. }
+            ));
+            let home_key = fixture.home_key();
+            let engine = fixture.session.engine_mut();
+            assert_eq!(
+                engine.native_selection_binding(&home_key).as_deref(),
+                Some(fixture.home.0.as_str()),
+                "logical Home is joined to the native Desktop through its binding",
+            );
+            assert_eq!(
+                engine.remembered_detached_selection_home(&w0_window()),
+                Some(home_key),
+                "the observed windowed focus seeds canonical Home memory",
+            );
+
+            // R: the same lifetime is now the current detached fullscreen
+            // surface, still attributed to its retained home.
+            fixture.ctx.detached_spaces.insert(DETACHED_SID, (1, true));
+            fixture.ctx.domains[0].current = false;
+            let mut full = observed(W0, 0, 0, 2240, 1260);
+            full.fullscreen = true;
+            let mut detached = scoped_snapshot(
+                vec![full],
+                vec![vec![DETACHED_SID]],
+                0,
+                fixture.ctx.revision,
+                true,
+                vec![W0],
+            );
+            // The retained off-Space read keeps the same standard-window
+            // metadata on the fullscreen lifetime as the windowed read.
+            detached.meta[0].role = Some("AXWindow".to_owned());
+            detached.meta[0].subrole = Some("AXStandardWindow".to_owned());
+            detached.meta[0].modal = Some(false);
+            detached.meta[0].layer = Some(0);
+            detached.meta[0].resizable = Some(true);
+            detached.meta[0].activation_policy = Some(ActivationPolicy::Regular);
+            assert!(
+                apply_roster_covering(&mut fixture.retained, PID, &detached, &fixture.ctx)
+                    .is_empty(),
+                "detached covering read applies"
+            );
+            crate::runtime_core::note_scoped_members(
+                &mut fixture.retained,
+                PID,
+                &BTreeMap::new(),
+            );
+            fixture
+                .retained
+                .apps
+                .get_mut(&PID)
+                .expect("roster pid")
+                .windows
+                .clear();
+            assert_eq!(
+                fixture.retained.apps[&PID].roster[&W0].detached_membership,
+                Some((fixture.ctx.revision, DETACHED_SID))
+            );
+            assert!(!fixture.retained.window_domains.contains_key(&w0_id()));
+            assert!(matches!(
+                fixture.dispatch(None, 3),
+                DispatchVerdict::Applied { .. }
+            ));
+            let home_key = DomainKey {
+                output: fixture.output.clone(),
+                workspace: fixture.home_logical.clone(),
+            };
+            assert_eq!(
+                fixture
+                    .session
+                    .engine_mut()
+                    .remembered_detached_selection_member(&home_key),
+                Some(w0_window()),
+                "canonical memory names the home member before the detach"
+            );
+
+            // R+1: the away Display is current and the detached surface is no
+            // longer current; the owner reread has not arrived, so the
+            // retained membership revision is stale.
+            fixture.ctx.revision += 1;
+            fixture.ctx.domains[1].current = true;
+            fixture.ctx.domains[0].current = false;
+            fixture.ctx.detached_spaces.insert(DETACHED_SID, (1, false));
+            fixture
+                .shared
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .native_context = Some(Arc::new(fixture.ctx.clone()));
+            assert_eq!(
+                fixture.retained.apps[&PID].roster[&W0].detached_membership,
+                Some((fixture.ctx.revision - 1, DETACHED_SID)),
+                "the withheld row is stale at the published revision"
+            );
+            fixture
+        }
+
+        fn dispatch(&mut self, command: Option<WorldCommand>, seq: u64) -> DispatchVerdict {
+            let inbox = Arc::new(Inbox::new(16));
+            let focus_queue = Arc::new(Mutex::new(Vec::new()));
+            let command_is_select = command.is_some();
+            let native = Arc::new(self.ctx.clone());
+            {
+                let mut shared = self
+                    .shared
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                shared.native_context = Some(Arc::clone(&native));
+                shared.topology_revision = self.ctx.revision;
+            }
+            self.session.sequencer().invalidate();
+            dispatch_report(
+                &mut self.session,
+                &mut self.retained,
+                &self.shared,
+                &inbox,
+                &focus_queue,
+                16,
+                DispatchContext::Native(native),
+                Vec::new(),
+                command,
+                None,
+                command_is_select,
+                if command_is_select { "select" } else { "reconcile" },
+                0,
+                0,
+                seq,
+            )
+        }
+
+        fn select_home(&mut self) -> DispatchVerdict {
+            self.dispatch(
+                Some(WorldCommand::SelectWorkspace {
+                    output: self.output.clone(),
+                    workspace: self.home_logical.clone(),
+                }),
+                4,
+            )
+        }
+
+        fn home_key(&self) -> DomainKey {
+            DomainKey {
+                output: self.output.clone(),
+                workspace: self.home_logical.clone(),
+            }
+        }
+
+        fn reply_transfer_to_home(&self) -> Option<tiler_core::world_report::TransferTargetV4> {
+            self.session
+                .sequencer()
+                .last_reply()?
+                .transfers
+                .into_iter()
+                .find(|row| {
+                    row.target_output == self.output
+                        && row.target_workspace == self.home_logical.0
+                        && row.kind == TransferKind::View
+                })
+        }
+    }
+
+    fn applied_operation(verdict: &DispatchVerdict) -> String {
+        match verdict {
+            DispatchVerdict::Applied {
+                select_operation: Some(operation),
+            } => operation.clone(),
+            other => panic!("expected an applied select, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stale_detached_anchor_exact_proof_dispatches_detached_view_and_pins() {
+        let mut fixture = Fixture::build(true);
+        let home_key = fixture.home_key();
+        let before_revision = fixture.session.engine_mut().state_revision();
+        let server = OwnerServer::start(
+            Arc::clone(&fixture.slot),
+            OWNER_GENERATION,
+            Some(exact_read(vec![DETACHED_SID])),
+        );
+
+        let verdict = fixture.select_home();
+        let operation = applied_operation(&verdict);
+        assert_eq!(server.attempts(), 1, "exactly the provisional target probes");
+
+        let transfer = fixture
+            .reply_transfer_to_home()
+            .expect("the proved target keeps its View");
+        let destination = transfer
+            .detached_destination
+            .as_ref()
+            .expect("never a Home/Desktop view");
+        assert_eq!(
+            crate::runtime_types::detached_sid(&destination.surface),
+            Some(DETACHED_SID)
+        );
+        assert_eq!(destination.surface.output, fixture.output);
+        assert_eq!(destination.member, w0_window());
+
+        let command_seq: u64 = operation
+            .strip_prefix("op-")
+            .expect("operation identity")
+            .parse()
+            .expect("command sequence");
+        let pinned = fixture
+            .session
+            .pin_detached_select_member(command_seq, &w0_window())
+            .expect("the report pins the proved member for the drain");
+        assert_eq!(pinned.generation, OWNER_GENERATION);
+
+        let engine = fixture.session.engine_mut();
+        assert!(engine.state_revision() > before_revision, "core adopted once");
+        assert_eq!(
+            engine.logical_view(&fixture.output.0),
+            Some(fixture.home_logical.0.clone()),
+            "the view switched, the window did not land on a Desktop home"
+        );
+        assert_eq!(
+            engine.remembered_detached_selection_member(&home_key),
+            Some(w0_window())
+        );
+    }
+
+    fn assert_refused_without_adoption(
+        mut fixture: Fixture,
+        server: OwnerServer,
+        label: &str,
+    ) {
+        let before_revision = fixture.session.engine_mut().state_revision();
+        let before_view = fixture
+            .session
+            .engine_mut()
+            .logical_view(&fixture.output.0);
+        let refused_before = fixture
+            .shared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .diagnostics
+            .input_select_refused;
+
+        let verdict = fixture.select_home();
+        assert_eq!(server.attempts(), 1, "{label}: the exact target was read once");
+        match verdict {
+            DispatchVerdict::Refused { token, select_operation } => {
+                assert_eq!(token, "refused-select-stale-detached-anchor", "{label}");
+                assert!(select_operation.is_none(), "{label}: never binds a plan");
+            }
+            other => panic!("{label}: expected the distinct refusal, got {other:?}"),
+        }
+        assert_eq!(
+            fixture.session.engine_mut().state_revision(),
+            before_revision,
+            "{label}: no core adoption"
+        );
+        assert_eq!(
+            fixture.session.engine_mut().logical_view(&fixture.output.0),
+            before_view,
+            "{label}: no Home view switch"
+        );
+        assert!(
+            fixture.reply_transfer_to_home().is_none(),
+            "{label}: no native View to the stale home"
+        );
+        assert_eq!(
+            fixture
+                .shared
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .diagnostics
+                .input_select_refused,
+            refused_before + 1,
+            "{label}: one distinct structured refusal"
+        );
+        // The flight was cleared: the next ordinary observation dispatches.
+        let observation = fixture.dispatch(None, 5);
+        assert!(
+            matches!(observation, DispatchVerdict::Applied { .. }),
+            "{label}: flight cleared for the next report, got {observation:?}"
+        );
+    }
+
+    #[test]
+    fn stale_detached_anchor_read_failure_refuses_without_home_or_adoption() {
+        let fixture = Fixture::build(true);
+        let server = OwnerServer::start(Arc::clone(&fixture.slot), OWNER_GENERATION, None);
+        assert_refused_without_adoption(fixture, server, "unreadable owner bracket");
+    }
+
+    #[test]
+    fn stale_detached_anchor_wrong_surface_refuses_without_home_or_adoption() {
+        let fixture = Fixture::build(true);
+        let server = OwnerServer::start(
+            Arc::clone(&fixture.slot),
+            OWNER_GENERATION,
+            Some(exact_read(vec![321])),
+        );
+        assert_refused_without_adoption(fixture, server, "readable different surface");
+    }
+
+    #[test]
+    fn stale_detached_anchor_fresh_reread_needs_no_preflight_probe() {
+        use crate::runtime_core::{apply_roster_covering, rehydrate_cg_alive};
+
+        let mut fixture = Fixture::build(true);
+        let w1 = observed(W1, 10, 25, 800, 632);
+        let mut parked = scoped_snapshot(
+            vec![w1],
+            vec![vec![AWAY_SID]],
+            0,
+            fixture.ctx.revision,
+            true,
+            vec![W0, W1],
+        );
+        parked.cg_alive.push(CgAliveDetail {
+            wid: W0,
+            spaces: vec![DETACHED_SID],
+            layer: 0,
+            onscreen: false,
+            bounds: Some((0, 0, 2240, 1260)),
+        });
+        assert!(
+            apply_roster_covering(&mut fixture.retained, PID, &parked, &fixture.ctx)
+                .is_empty()
+        );
+        assert!(
+            rehydrate_cg_alive(&mut fixture.retained, PID, &parked, &fixture.ctx, true)
+                .is_empty()
+        );
+        assert_eq!(
+            fixture.retained.apps[&PID].roster[&W0].detached_membership,
+            Some((fixture.ctx.revision, DETACHED_SID)),
+            "the owner reread refreshed the membership at the current revision"
+        );
+        assert!(!fixture.retained.apps[&PID].roster_incomplete);
+        assert!(!fixture.retained.window_domains.contains_key(&w0_id()));
+        fixture
+            .shared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .native_context = Some(Arc::new(fixture.ctx.clone()));
+
+        let server = OwnerServer::start(
+            Arc::clone(&fixture.slot),
+            OWNER_GENERATION,
+            Some(exact_read(vec![DETACHED_SID])),
+        );
+        let verdict = fixture.select_home();
+        applied_operation(&verdict);
+        assert_eq!(server.attempts(), 0, "fresh membership never preflights");
+        let transfer = fixture
+            .reply_transfer_to_home()
+            .expect("fresh detached member keeps its View");
+        let destination = transfer
+            .detached_destination
+            .as_ref()
+            .expect("fresh detached destination");
+        assert_eq!(
+            crate::runtime_types::detached_sid(&destination.surface),
+            Some(DETACHED_SID)
+        );
+    }
+
+    #[test]
+    fn stale_detached_anchor_capability_off_takes_ordinary_path() {
+        let mut fixture = Fixture::build(false);
+        let server = OwnerServer::start(
+            Arc::clone(&fixture.slot),
+            OWNER_GENERATION,
+            Some(exact_read(vec![DETACHED_SID])),
+        );
+        let before_revision = fixture.session.engine_mut().state_revision();
+        let verdict = fixture.select_home();
+        applied_operation(&verdict);
+        assert_eq!(server.attempts(), 0, "capability-off never probes");
+        assert!(fixture.session.engine_mut().state_revision() > before_revision);
+        if let Some(transfer) = fixture.reply_transfer_to_home() {
+            assert!(
+                transfer.detached_destination.is_none(),
+                "no detached claim without the capability"
+            );
+        }
+    }
+
+    /// A false preview to the stale Home (proof exists but the checked
+    /// candidate publishes a plain Native View) is rejected by the same gate
+    /// before adoption; this drives the genuine typed candidate, not a
+    /// synthetic reply.
+    #[test]
+    fn stale_detached_home_view_is_rejected_before_adoption() {
+        let mut fixture = Fixture::build(true);
+        let command_seq = 7u64;
+        let homes = BTreeSet::from([fixture.home_key()]);
+        let proof = StaleDetachedInjection {
+            command_seq,
+            report_revision: fixture.ctx.revision,
+            window: w0_window(),
+            pid: PID,
+            wid: W0,
+            generation: OWNER_GENERATION,
+            stale_revision: fixture.ctx.revision - 1,
+            surface: DETACHED_SID,
+            home: fixture.home_key(),
+            detached: crate::runtime_types::detached_ref(fixture.output.clone(), DETACHED_SID),
+        };
+        let command = WorldCommand::SelectWorkspace {
+            output: fixture.output.clone(),
+            workspace: fixture.home_logical.clone(),
+        };
+        let native = Arc::new(fixture.ctx.clone());
+        let report = build_dispatch_report(
+            &mut fixture.session,
+            &fixture.retained,
+            &DispatchContext::Native(native),
+            &[],
+            // Beyond the accepted detach watermark, so this candidate is
+            // admitted and the guard (not observation freshness) refuses it.
+            4,
+            7,
+            Some(command_seq),
+            Some(command),
+            None,
+            "req-stale-anchor-guard",
+        )
+        .expect("native context reports");
+
+        let before_revision = fixture.session.engine_mut().state_revision();
+        let before_view = fixture
+            .session
+            .engine_mut()
+            .logical_view(&fixture.output.0);
+        let before_members = fixture
+            .session
+            .engine_mut()
+            .logical_members(&fixture.output.0, &fixture.home_logical.0);
+        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+        let checked = gate.dispatch_with_prepare(
+            fixture.session.engine_mut(),
+            &report,
+            &[],
+            |candidate| {
+                crate::world_dispatch::stale_detached_candidate_guard(
+                    candidate.reply.reply(),
+                    command_seq,
+                    &homes,
+                    Some(&proof),
+                )
+            },
+        );
+        assert!(checked.is_err(), "a Home/Desktop View is never accepted");
+        assert_eq!(
+            fixture.session.engine_mut().state_revision(),
+            before_revision,
+            "rejected before core adoption"
+        );
+        assert_eq!(
+            fixture.session.engine_mut().logical_view(&fixture.output.0),
+            before_view,
+            "the refused candidate never switched the view"
+        );
+        assert_eq!(
+            fixture
+                .session
+                .engine_mut()
+                .logical_members(&fixture.output.0, &fixture.home_logical.0),
+            before_members,
+            "no Desktop adoption of the detached member"
+        );
+    }
+
+    #[test]
+    fn stale_detached_guard_requires_the_exact_correlated_view() {
+        use tiler_core::world_report::{DetachedDestination, TransferTargetV4};
+
+        let home = DomainKey {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId("ws-a".to_owned()),
+        };
+        let proof = StaleDetachedInjection {
+            command_seq: 1,
+            report_revision: 9,
+            window: WindowId("1_7".to_owned()),
+            pid: 1,
+            wid: 7,
+            generation: 1,
+            stale_revision: 8,
+            surface: 320,
+            home: home.clone(),
+            detached: crate::runtime_types::detached_ref(home.output.clone(), 320),
+        };
+        let homes = BTreeSet::from([home.clone()]);
+        let view = |destination: Option<DetachedDestination>| TransferTargetV4 {
+            operation_id: "op-1".to_owned(),
+            kind: TransferKind::View,
+            target_output: home.output.clone(),
+            target_workspace: home.workspace.0.clone(),
+            follow: false,
+            held: false,
+            command_seq: Some(1),
+            parent: None,
+            detached_destination: destination,
+        };
+        let exact = DetachedDestination {
+            surface: crate::runtime_types::detached_ref(home.output.clone(), 320),
+            member: proof.window.clone(),
+        };
+        let reply = |transfers: Vec<TransferTargetV4>| {
+            let reply = WorldReplyV4 {
+                contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
+                adapter_incarnation: "adapter-1".to_owned(),
+                core_generation: "gen-1".to_owned(),
+                request_id: "req-0".to_owned(),
+                based_on_observation_seq: 0,
+                state_revision: 0,
+                ready: false,
+                command_consumed: false,
+                scopes: Vec::new(),
+                workspaces: Vec::new(),
+                outputs: Vec::new(),
+                windows: Vec::new(),
+                transfers,
+                focus_request: None,
+                drag_preview: None,
+                gesture_settled: None,
+                operation_settled: Vec::new(),
+                native_creations: Vec::new(),
+                warp_request: None,
+                presentation: crate::runtime::empty_world_presentation_v4(),
+                intent_desired: Vec::new(),
+                switch_settled: Vec::new(),
+                diagnostics: Vec::new(),
+            };
+            reply
+        };
+
+        assert_eq!(
+            crate::world_dispatch::stale_detached_candidate_guard(
+                &reply(vec![view(Some(exact.clone()))]),
+                1,
+                &homes,
+                Some(&proof),
+            ),
+            Ok(())
+        );
+        // Proof with no correlated View at all (e.g. every transfer is on
+        // another output) is a missing claim, never acceptance.
+        assert_eq!(
+            crate::world_dispatch::stale_detached_candidate_guard(
+                &reply(Vec::new()),
+                1,
+                &homes,
+                Some(&proof),
+            ),
+            Err(())
+        );
+        // A correlated View missing its frozen destination is Home drift.
+        assert_eq!(
+            crate::world_dispatch::stale_detached_candidate_guard(
+                &reply(vec![view(None)]),
+                1,
+                &homes,
+                Some(&proof),
+            ),
+            Err(())
+        );
+        // A different member/surface never satisfies the proved target.
+        let wrong = DetachedDestination {
+            surface: crate::runtime_types::detached_ref(home.output.clone(), 320),
+            member: WindowId("1_8".to_owned()),
+        };
+        assert_eq!(
+            crate::world_dispatch::stale_detached_candidate_guard(
+                &reply(vec![view(Some(wrong))]),
+                1,
+                &homes,
+                Some(&proof),
+            ),
+            Err(())
+        );
+        // A still-stale sibling home newly targeted without a probe rejects.
+        let sibling = DomainKey {
+            output: home.output.clone(),
+            workspace: WorkspaceId("ws-b".to_owned()),
+        };
+        let sibling_view = TransferTargetV4 {
+            target_workspace: sibling.workspace.0.clone(),
+            ..view(None)
+        };
+        assert_eq!(
+            crate::world_dispatch::stale_detached_candidate_guard(
+                &reply(vec![sibling_view]),
+                1,
+                &BTreeSet::from([sibling]),
+                Some(&proof),
+            ),
+            Err(())
+        );
+        // Ordinary fast path: no proof and no stale home target accepts.
+        assert_eq!(
+            crate::world_dispatch::stale_detached_candidate_guard(
+                &reply(Vec::new()),
+                1,
+                &homes,
+                None,
+            ),
+            Ok(())
+        );
+        let ordinary = DomainKey {
+            output: home.output.clone(),
+            workspace: WorkspaceId("ws-ordinary".to_owned()),
+        };
+        assert_eq!(
+            crate::world_dispatch::stale_detached_candidate_guard(
+                &reply(vec![TransferTargetV4 {
+                    target_workspace: ordinary.workspace.0.clone(),
+                    ..view(None)
+                }]),
+                1,
+                &homes,
+                None,
+            ),
+            Ok(())
+        );
+    }
 }

@@ -26,7 +26,7 @@ use crate::world_engine::{
     MSG_MIGRATION_INVENTORY, MSG_MIGRATION_RECIPROCAL, MSG_MIGRATION_RESIDUE, MSG_MIGRATION_SHARED,
     MSG_MIGRATION_SOURCE, MSG_MIGRATION_SOURCE_UNREADABLE, MSG_MIGRATION_TARGET_GEOMETRY,
     MSG_MIGRATION_TARGET_INCOMPLETE, MSG_OPERATION, MSG_SCOPE_HELD, MSG_SELECT_UNKNOWN,
-    MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, WorldEngine,
+    MSG_SEND_TARGET, MSG_SEND_WINDOW, RetainedTransfer, SelectionResolution, WorldEngine,
 };
 use crate::world_layout::{LayoutFailure, WorkspaceMigrationFailure, WorkspaceSwapSide};
 use crate::world_report::{
@@ -552,160 +552,123 @@ impl WorldTransaction<'_> {
                 }
                 self.retain_selection_view(command_seq, output, &workspace.0, held_scopes, by_id)
             }
-            WorldCommand::SelectNumbered { output, index } => {
-                let Some(resolved) = self.resolve_selection_output(
-                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
-                    output.as_ref(),
-                ) else {
-                    return CommandApplied::Rejected {
+            WorldCommand::SelectNumbered { .. } => {
+                match self.resolve_positional_selection(command) {
+                    SelectionTarget::Existing { output, workspace } => self.retain_selection_view(
+                        command_seq,
+                        &output,
+                        &workspace,
+                        held_scopes,
+                        by_id,
+                    ),
+                    _ => CommandApplied::Rejected {
                         kind: KIND_SELECT_UNKNOWN,
                         message: MSG_SELECT_UNKNOWN,
-                    };
-                };
-                let Some(target) = self
-                    .resolve_selection_ring(
-                        &crate::world_engine::RawRouting::from_staged(&self.world.staged),
-                        &resolved,
-                    )
-                    .and_then(|ring| resolve_numbered(&ring, *index))
-                else {
-                    return CommandApplied::Rejected {
-                        kind: KIND_SELECT_UNKNOWN,
-                        message: MSG_SELECT_UNKNOWN,
-                    };
-                };
-                self.retain_selection_view(command_seq, &resolved, &target, held_scopes, by_id)
+                    },
+                }
             }
             WorldCommand::SelectRelative { output, delta } => {
-                let Some(resolved) = self.resolve_selection_output(
-                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
-                    output.as_ref(),
-                ) else {
-                    return CommandApplied::Rejected {
-                        kind: KIND_SELECT_UNKNOWN,
-                        message: MSG_SELECT_UNKNOWN,
-                    };
-                };
-                let current = self.effective_view(&resolved).unwrap_or_default();
-                let padding = if *delta == 1 {
-                    self.materialize_next_shared_slot(&resolved, &current)
+                // Shared-native-roster next slot: the one mutating positional
+                // precedence. Only this dispatch runs it, only for this
+                // capability combination, and it runs first: the output and
+                // current view are read once, and an existing padding slot is
+                // entered without building the fallback ring at all. A failed
+                // mint falls through to the same ordinary relative resolution
+                // preview uses.
+                let padding = if *delta == 1 && self.connection.shared_roster_slots() {
+                    let ctx = crate::world_engine::RawRouting::from_staged(&self.world.staged);
+                    self.resolve_selection_output(&ctx, output.as_ref())
+                        .and_then(|resolved| {
+                            let current = self.effective_view(&resolved).unwrap_or_default();
+                            self.materialize_next_shared_slot(&resolved, &current)
+                                .map(|target| (resolved, target))
+                        })
                 } else {
                     None
                 };
-                let Some(target) = padding.or_else(|| {
-                    self.resolve_selection_ring(
-                        &crate::world_engine::RawRouting::from_staged(&self.world.staged),
+                if let Some((resolved, target)) = padding {
+                    return self.retain_selection_view(
+                        command_seq,
                         &resolved,
-                    )
-                    .and_then(|ring| resolve_relative_step(&ring, &current, *delta))
-                }) else {
-                    return CommandApplied::Rejected {
+                        &target,
+                        held_scopes,
+                        by_id,
+                    );
+                }
+                match self.resolve_positional_selection(command) {
+                    SelectionTarget::Existing { output, workspace } => self.retain_selection_view(
+                        command_seq,
+                        &output,
+                        &workspace,
+                        held_scopes,
+                        by_id,
+                    ),
+                    _ => CommandApplied::Rejected {
                         kind: KIND_SELECT_UNKNOWN,
                         message: MSG_SELECT_UNKNOWN,
-                    };
-                };
-                self.retain_selection_view(command_seq, &resolved, &target, held_scopes, by_id)
-            }
-            WorldCommand::SelectPrevious { output } => {
-                let Some(resolved) = self.resolve_selection_output(
-                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
-                    output.as_ref(),
-                ) else {
-                    return CommandApplied::Rejected {
-                        kind: KIND_SELECT_UNKNOWN,
-                        message: MSG_SELECT_UNKNOWN,
-                    };
-                };
-                // Shared mode walks the one shared history over the
-                // unified order; scoped modes use the per-output entry.
-                if self.connection.workspace_mode_setting()
-                    == crate::workspace_scope::WorkspaceMode::Shared
-                {
-                    let live: Vec<String> = self.selection_ring(
-                        &crate::world_engine::RawRouting::from_staged(&self.world.staged),
-                        &resolved,
-                    );
-                    let current = self.effective_view(&resolved).unwrap_or_default();
-                    match self
-                        .world
-                        .workspace
-                        .history
-                        .resolve_shared_for(&live, &current)
-                    {
-                        PreviousTarget::Select(target) => {
-                            self.retain_selection_view(
-                                command_seq,
-                                &resolved,
-                                &target,
-                                held_scopes,
-                                by_id,
-                            )
-                        }
-                        PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
-                            self.note_command(command_seq);
-                            CommandApplied::NoEffect
-                        }
-                    }
-                } else {
-                    let live: Vec<String> = self.selection_ring(
-                        &crate::world_engine::RawRouting::from_staged(&self.world.staged),
-                        &resolved,
-                    );
-                    let current = self.effective_view(&resolved).unwrap_or_default();
-                    match self.world.workspace.history.resolve_previous_for(
-                        &resolved.0,
-                        &live,
-                        &current,
-                    ) {
-                        PreviousTarget::Select(target) => self.retain_selection_view(
-                            command_seq,
-                            &resolved,
-                            &target,
-                            held_scopes,
-                            by_id,
-                        ),
-                        PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
-                            // No-op until the next recorded change: reconcile
-                            // only, never retain or emit.
-                            self.note_command(command_seq);
-                            CommandApplied::NoEffect
-                        }
-                    }
+                    },
                 }
             }
-            WorldCommand::SelectTrailing { output } => {
-                let Some(resolved) = self.resolve_selection_output(
-                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
-                    output.as_ref(),
-                ) else {
-                    return CommandApplied::Rejected {
+            WorldCommand::SelectPrevious { .. } => {
+                match self.resolve_positional_selection(command) {
+                    SelectionTarget::Existing { output, workspace } => self.retain_selection_view(
+                        command_seq,
+                        &output,
+                        &workspace,
+                        held_scopes,
+                        by_id,
+                    ),
+                    // No-op until the next recorded change: reconcile only,
+                    // never retain or emit. A stale retained entry is cleared
+                    // exactly here, on execution, never in a preview.
+                    SelectionTarget::NoEffect {
+                        output,
+                        stale_previous,
+                    } => {
+                        if stale_previous {
+                            self.forget_stale_previous(&output);
+                        }
+                        self.note_command(command_seq);
+                        CommandApplied::NoEffect
+                    }
+                    _ => CommandApplied::Rejected {
                         kind: KIND_SELECT_UNKNOWN,
                         message: MSG_SELECT_UNKNOWN,
-                    };
-                };
-                let ring = self.selection_ring(
-                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
-                    &resolved,
-                );
-                let occupied = self.ring_occupied(&resolved);
-                let selection = resolve_trailing(&ring, &occupied);
-                match selection {
-                    TrailingSelection::Reuse(target) => {
-                        self.retain_selection_view(command_seq, &resolved, &target, held_scopes, by_id)
-                    }
-                    TrailingSelection::Create => {
+                    },
+                }
+            }
+            WorldCommand::SelectTrailing { .. } => {
+                match self.resolve_positional_selection(command) {
+                    SelectionTarget::Existing { output, workspace } => self.retain_selection_view(
+                        command_seq,
+                        &output,
+                        &workspace,
+                        held_scopes,
+                        by_id,
+                    ),
+                    SelectionTarget::TrailingCreate { output } => {
                         // Trailing workspaces exist immediately in the
                         // logical contract: mint, then select.
                         let created = self
-                            .create_trailing_workspace(&resolved, self.connection.default_tiled());
+                            .create_trailing_workspace(&output, self.connection.default_tiled());
                         let Some(logical) = created else {
                             return CommandApplied::Rejected {
                                 kind: KIND_CREATION_EXHAUSTED,
                                 message: MSG_CREATION_EXHAUSTED,
                             };
                         };
-                        self.retain_selection_view(command_seq, &resolved, &logical, held_scopes, by_id)
+                        self.retain_selection_view(
+                            command_seq,
+                            &output,
+                            &logical,
+                            held_scopes,
+                            by_id,
+                        )
                     }
+                    _ => CommandApplied::Rejected {
+                        kind: KIND_SELECT_UNKNOWN,
+                        message: MSG_SELECT_UNKNOWN,
+                    },
                 }
             }
             WorldCommand::SendRelative {
@@ -1727,6 +1690,200 @@ impl WorldTransaction<'_> {
             return CommandApplied::Effect(effect);
         }
         CommandApplied::NoEffect
+    }
+
+    /// Read-only resolution of one positional select command's exact target:
+    /// the sole owner of what `SelectNumbered`, `SelectRelative`,
+    /// `SelectPrevious`, and `SelectTrailing` resolve to, consumed by both
+    /// dispatch and [`WorldEngine::preview_selection`]. It never mutates the
+    /// world: the trailing mint and the shared-native-roster padding mint stay
+    /// on the mutating dispatch side, and both history lanes resolve through
+    /// their read-only peeks, so a preview cannot clear retained history. A
+    /// stale previous entry is carried as data; only dispatch clears it.
+    /// Explicit `SelectWorkspace` never reaches here: it is already exact and
+    /// keeps its own global-swap dispatch lane.
+    pub(crate) fn resolve_positional_selection(&self, command: &WorldCommand) -> SelectionTarget {
+        let ctx = crate::world_engine::RawRouting::from_staged(&self.world.staged);
+        match command {
+            WorldCommand::SelectNumbered { output, index } => {
+                let Some(resolved) = self.resolve_selection_output(&ctx, output.as_ref()) else {
+                    return SelectionTarget::Unknown { output: None };
+                };
+                match self
+                    .resolve_selection_ring(&ctx, &resolved)
+                    .and_then(|ring| resolve_numbered(&ring, *index))
+                {
+                    Some(workspace) => SelectionTarget::Existing {
+                        output: resolved,
+                        workspace,
+                    },
+                    None => SelectionTarget::Unknown {
+                        output: Some(resolved),
+                    },
+                }
+            }
+            WorldCommand::SelectRelative { output, delta } => {
+                let Some(resolved) = self.resolve_selection_output(&ctx, output.as_ref()) else {
+                    return SelectionTarget::Unknown { output: None };
+                };
+                let current = self.effective_view(&resolved).unwrap_or_default();
+                match self
+                    .resolve_selection_ring(&ctx, &resolved)
+                    .and_then(|ring| resolve_relative_step(&ring, &current, *delta))
+                {
+                    Some(workspace) => SelectionTarget::Existing {
+                        output: resolved,
+                        workspace,
+                    },
+                    None => SelectionTarget::Unknown {
+                        output: Some(resolved),
+                    },
+                }
+            }
+            WorldCommand::SelectPrevious { output } => {
+                let Some(resolved) = self.resolve_selection_output(&ctx, output.as_ref()) else {
+                    return SelectionTarget::Unknown { output: None };
+                };
+                // Shared mode walks the one shared history over the unified
+                // order; scoped modes use the per-output entry. Both reads are
+                // read-only; the stale bit is what dispatch later clears.
+                let live: Vec<String> = self.selection_ring(&ctx, &resolved);
+                let current = self.effective_view(&resolved).unwrap_or_default();
+                let decision = if self.connection.workspace_mode_setting()
+                    == crate::workspace_scope::WorkspaceMode::Shared
+                {
+                    self.world
+                        .workspace
+                        .history
+                        .peek_shared_for(&live, &current)
+                } else {
+                    self.world
+                        .workspace
+                        .history
+                        .peek_previous_for(&resolved.0, &live, &current)
+                };
+                match decision.target {
+                    PreviousTarget::Select(workspace) => SelectionTarget::Existing {
+                        output: resolved,
+                        workspace,
+                    },
+                    PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
+                        SelectionTarget::NoEffect {
+                            output: resolved,
+                            stale_previous: decision.stale,
+                        }
+                    }
+                }
+            }
+            WorldCommand::SelectTrailing { output } => {
+                let Some(resolved) = self.resolve_selection_output(&ctx, output.as_ref()) else {
+                    return SelectionTarget::Unknown { output: None };
+                };
+                let ring = self.selection_ring(&ctx, &resolved);
+                let occupied = self.ring_occupied(&resolved);
+                match resolve_trailing(&ring, &occupied) {
+                    TrailingSelection::Reuse(workspace) => SelectionTarget::Existing {
+                        output: resolved,
+                        workspace,
+                    },
+                    TrailingSelection::Create => {
+                        SelectionTarget::TrailingCreate { output: resolved }
+                    }
+                }
+            }
+            _ => SelectionTarget::Unsupported,
+        }
+    }
+
+    /// Dispatch-only companion to read-only previous resolution: drop the
+    /// retained entry that resolution reported stale (outside the consulted
+    /// scope), exactly as the mutating history resolvers did before. Previews
+    /// never call this, so a stale entry survives a preview and is cleared on
+    /// execution.
+    pub(crate) fn forget_stale_previous(&mut self, output: &OutputId) {
+        if self.connection.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
+        {
+            self.world.workspace.history.forget_shared_previous();
+        } else {
+            self.world.workspace.history.forget_previous(&output.0);
+        }
+    }
+}
+
+/// Internal read-only select target: the dispatch-facing twin of
+/// [`SelectionResolution`]. It additionally carries the dispatch-only history
+/// staleness bit, which never crosses the adapter preview boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SelectionTarget {
+    Existing {
+        output: OutputId,
+        workspace: String,
+    },
+    TrailingCreate {
+        output: OutputId,
+    },
+    /// `stale_previous` marks a retained previous entry outside the
+    /// consulted scope: dispatch clears exactly that entry, previews report
+    /// plain no-effect.
+    NoEffect {
+        output: OutputId,
+        stale_previous: bool,
+    },
+    Unknown {
+        output: Option<OutputId>,
+    },
+    Unsupported,
+}
+
+impl From<SelectionTarget> for SelectionResolution {
+    fn from(target: SelectionTarget) -> Self {
+        match target {
+            SelectionTarget::Existing { output, workspace } => {
+                SelectionResolution::Existing { output, workspace }
+            }
+            SelectionTarget::TrailingCreate { output } => {
+                SelectionResolution::TrailingCreate { output }
+            }
+            SelectionTarget::NoEffect { output, .. } => SelectionResolution::NoEffect { output },
+            SelectionTarget::Unknown { output } => SelectionResolution::Unknown { output },
+            SelectionTarget::Unsupported => SelectionResolution::Unsupported,
+        }
+    }
+}
+
+impl WorldEngine {
+    /// Read-only preview of the exact target a select command resolves to
+    /// under the current retained world and settings, before any dispatch.
+    /// Shares [`WorldTransaction::resolve_positional_selection`] with
+    /// dispatch, so a preview and the dispatch that follows it on unchanged
+    /// state cannot disagree, and never runs a command: no trailing mint, no
+    /// shared-native-roster padding mint, no history clear, no view flight.
+    ///
+    /// An explicit `SelectWorkspace` previews its named output and workspace
+    /// provisionally: the caller still admits against the actual dispatch and
+    /// reply. The shared-native-roster relative `+1` lane reports
+    /// [`SelectionResolution::Unsupported`] because dispatch may mint a
+    /// padding slot first, and non-select commands report it too.
+    #[must_use]
+    pub fn preview_selection(&mut self, command: &WorldCommand) -> SelectionResolution {
+        if matches!(command, WorldCommand::SelectRelative { delta: 1, .. })
+            && self.connection.shared_roster_slots()
+        {
+            return SelectionResolution::Unsupported;
+        }
+        let prev_transfers = self
+            .replay
+            .as_ref()
+            .map(|replay| replay.reply.transfers.as_slice())
+            .unwrap_or(&[]);
+        let tx = WorldTransaction::new(&self.connection, prev_transfers, &mut self.world);
+        match command {
+            WorldCommand::SelectWorkspace { output, workspace } => SelectionResolution::Existing {
+                output: output.clone(),
+                workspace: workspace.0.clone(),
+            },
+            _ => tx.resolve_positional_selection(command).into(),
+        }
     }
 }
 

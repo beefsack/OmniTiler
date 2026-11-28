@@ -501,6 +501,19 @@ pub enum PreviousTarget {
     Select(String),
 }
 
+/// Read-only previous-view decision: the retained target plus whether a
+/// retained entry is stale, i.e. present but outside the consulted scope so
+/// the decision is [`PreviousTarget::NoHistory`] only because of it. The
+/// mutating resolvers clear exactly a stale entry; read-only previews must
+/// not, and report the same target either way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviousDecision {
+    pub target: PreviousTarget,
+    /// A retained entry exists but is out of scope (`target` is then
+    /// always [`PreviousTarget::NoHistory`]).
+    pub stale: bool,
+}
+
 /// Scoped previous-view history: per-output entries for local/global-unique
 /// plus one shared entry. Baselines prime without recording; only completed
 /// observed changes record.
@@ -622,24 +635,62 @@ impl ScopeHistory {
 
     /// Resolve the previous-view toggle target with validation: a removed
     /// or out-of-scope id clears and reports [`PreviousTarget::NoHistory`].
-    /// A surviving empty id stays valid.
+    /// A surviving empty id stays valid. One decision tree:
+    /// [`Self::peek_previous_for`] decides, this clears exactly its stale
+    /// entry.
     pub fn resolve_previous_for(
         &mut self,
         output: &str,
         scope: &[String],
         current: &str,
     ) -> PreviousTarget {
-        let Some(id) = self.previous.get(output).cloned() else {
-            return PreviousTarget::NoHistory;
-        };
-        if !scope.iter().any(|kept| kept == &id) {
+        let decision = self.peek_previous_for(output, scope, current);
+        if decision.stale {
             self.previous.remove(output);
-            return PreviousTarget::NoHistory;
         }
-        if id == current {
-            return PreviousTarget::AlreadyThere(id);
+        decision.target
+    }
+
+    /// Read-only twin of [`Self::resolve_previous_for`] for command target
+    /// resolution: the same decision, but a removed or out-of-scope id
+    /// reports [`PreviousTarget::NoHistory`] while the retained entry stays
+    /// for the mutating dispatch to clear. A stale entry can never change a
+    /// decision before then, so previews and dispatch resolve identically
+    /// without a preview mutating history.
+    #[must_use]
+    pub fn peek_previous_for(
+        &self,
+        output: &str,
+        scope: &[String],
+        current: &str,
+    ) -> PreviousDecision {
+        let Some(id) = self.previous.get(output) else {
+            return PreviousDecision {
+                target: PreviousTarget::NoHistory,
+                stale: false,
+            };
+        };
+        if !scope.iter().any(|kept| kept == id) {
+            return PreviousDecision {
+                target: PreviousTarget::NoHistory,
+                stale: true,
+            };
         }
-        PreviousTarget::Select(id)
+        let target = if id == current {
+            PreviousTarget::AlreadyThere(id.clone())
+        } else {
+            PreviousTarget::Select(id.clone())
+        };
+        PreviousDecision {
+            target,
+            stale: false,
+        }
+    }
+
+    /// Drop one output's retained previous entry (dispatch clearing a stale
+    /// entry that read-only resolution already reported; baseline untouched).
+    pub(crate) fn forget_previous(&mut self, output: &str) {
+        self.previous.remove(output);
     }
 
     /// Prime a baseline without recording (output creation, enable, or
@@ -695,19 +746,50 @@ impl ScopeHistory {
         }
     }
 
-    /// Resolve the shared previous-view toggle with validation.
+    /// Resolve the shared previous-view toggle with validation. One decision
+    /// tree: [`Self::peek_shared_for`] decides, this clears exactly its stale
+    /// entry.
     pub fn resolve_shared_for(&mut self, live: &[String], current: &str) -> PreviousTarget {
-        let Some(id) = self.shared_previous.clone() else {
-            return PreviousTarget::NoHistory;
-        };
-        if !live.iter().any(|kept| kept == &id) {
+        let decision = self.peek_shared_for(live, current);
+        if decision.stale {
             self.shared_previous = None;
-            return PreviousTarget::NoHistory;
         }
-        if id == current {
-            return PreviousTarget::AlreadyThere(id);
+        decision.target
+    }
+
+    /// Read-only twin of [`Self::resolve_shared_for`] for command target
+    /// resolution: the same decision, but an id outside the live order
+    /// reports [`PreviousTarget::NoHistory`] while the retained entry stays
+    /// for the mutating dispatch to clear.
+    #[must_use]
+    pub fn peek_shared_for(&self, live: &[String], current: &str) -> PreviousDecision {
+        let Some(id) = self.shared_previous.as_ref() else {
+            return PreviousDecision {
+                target: PreviousTarget::NoHistory,
+                stale: false,
+            };
+        };
+        if !live.iter().any(|kept| kept == id) {
+            return PreviousDecision {
+                target: PreviousTarget::NoHistory,
+                stale: true,
+            };
         }
-        PreviousTarget::Select(id)
+        let target = if id == current {
+            PreviousTarget::AlreadyThere(id.clone())
+        } else {
+            PreviousTarget::Select(id.clone())
+        };
+        PreviousDecision {
+            target,
+            stale: false,
+        }
+    }
+
+    /// Drop the shared retained previous entry (dispatch clearing a stale
+    /// entry that read-only resolution already reported; baseline untouched).
+    pub(crate) fn forget_shared_previous(&mut self) {
+        self.shared_previous = None;
     }
 
     /// Prime the shared baseline without recording.

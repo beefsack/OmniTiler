@@ -1403,8 +1403,9 @@ pub(crate) fn admit_send_claim_with(
 }
 
 /// Refuse one select claim narrowly (counted, never dispatched, never
-/// replayed). Shared by tap and indicator lanes.
-fn refuse_select_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
+/// replayed). Shared by tap and indicator lanes and by the select dispatch
+/// revision fence.
+pub(crate) fn refuse_select_claim(shared: &Arc<Mutex<Shared>>, token: &'static str) {
     lock_shared(shared).diagnostics.input_select_refused += 1;
     emit(shared, 0, 0, 0, "input", token, 0);
 }
@@ -3026,6 +3027,10 @@ fn handle_select_action_with(
             // Every other refusal binds nothing (the core never ran).
             if let Some(operation) = select_operation {
                 store_select_claim(shared, claim, Some(&operation));
+            } else if token == "refused-select-stale-detached-anchor" {
+                // The select dispatch revision fence already counted and
+                // emitted this distinct structured refusal (never a Home
+                // command); do not double-count or reword it.
             } else {
                 lock_shared(shared).diagnostics.input_select_refused += 1;
                 emit(shared, 0, 0, 0, "input", "select-refused", 0);

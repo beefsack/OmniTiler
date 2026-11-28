@@ -58,6 +58,59 @@ impl SelectionViewPlan {
     }
 }
 
+impl crate::world_engine::WorldState {
+    /// Canonical remembered selection member for one logical home: the exact
+    /// `last_active_window` identity for that home, and only while its
+    /// retained core home is still that domain. No MRU or other fallback, and
+    /// no staged-fact freshness requirement: this identifies the member; the
+    /// caller proves the detached fact and the revision itself. The detached
+    /// plan and the adapter's stale-anchor inventory share this one rule
+    /// through [`Self::remembered_selection_home`], never a second ranking.
+    pub(crate) fn remembered_selection_member(&self, home: &DomainKey) -> Option<&WindowId> {
+        self.focus
+            .last_active_window
+            .get(home)
+            .filter(|window| self.workspace.core_homing(window).as_ref() == Some(home))
+    }
+
+    /// Inverse of [`Self::remembered_selection_member`]: the canonical home of
+    /// `window` as a remembered selection member, only while `window` is
+    /// exactly that home's retained last-active identity. `None` for any other
+    /// lifetime, including one whose remembered home now names a different
+    /// member, so a candidate can never be credited to a home it does not own.
+    pub(crate) fn remembered_selection_home(&self, window: &WindowId) -> Option<DomainKey> {
+        let home = self.workspace.core_homing(window)?;
+        (self.remembered_selection_member(&home) == Some(window)).then_some(home)
+    }
+}
+
+impl crate::world_engine::WorldEngine {
+    /// Adapter facing wrapper over
+    /// [`crate::world_engine::WorldState::remembered_selection_member`]: the
+    /// canonical remembered member for `home`, or `None` when the memory is
+    /// absent or no longer homes there (never a fallback candidate).
+    #[must_use]
+    pub fn remembered_detached_selection_member(&self, home: &DomainKey) -> Option<WindowId> {
+        self.world.remembered_selection_member(home).cloned()
+    }
+
+    /// Adapter facing inverse for one candidate lifetime: its canonical
+    /// remembered home, only while the candidate is exactly that home's
+    /// remembered member. The drift inventory asks this per candidate instead
+    /// of ranking windows itself.
+    #[must_use]
+    pub fn remembered_detached_selection_home(&self, window: &WindowId) -> Option<DomainKey> {
+        self.world.remembered_selection_home(window)
+    }
+
+    /// The exact retained native binding for a logical selection target.
+    #[must_use]
+    pub fn native_selection_binding(&mut self, home: &DomainKey) -> Option<String> {
+        WorldTransaction::new(&self.connection, &[], &mut self.world)
+            .native_binding_for(&home.output.0, &home.workspace.0)
+    }
+}
+
 impl WorldTransaction<'_> {
     /// Planner-owned per-workspace tiling toggle. The workspace must be a
     /// known logical id on `output`. Disabling releases the retained
@@ -694,7 +747,7 @@ impl WorldTransaction<'_> {
             // valid detached return. `detached_plan_member` validates the
             // lifetime's own liveness, hold/exclusion, fullscreen, output,
             // surface, and exact retained home.
-            let remembered = self.world.focus.last_active_window.get(&home).cloned();
+            let remembered = self.world.remembered_selection_member(&home).cloned();
             let remembered_detached = remembered
                 .as_ref()
                 .and_then(|window| self.detached_plan_member(window, output, &home));

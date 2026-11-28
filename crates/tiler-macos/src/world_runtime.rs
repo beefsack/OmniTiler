@@ -188,6 +188,31 @@ pub(crate) struct PendingFullscreenFloatPlacement {
     pub(crate) generation: u64,
 }
 
+/// One command-local proof that a retained stale detached anchor still owns
+/// exactly its frozen fullscreen surface. Produced only by the select
+/// dispatch revision fence and consumed by exactly the next report build:
+/// it injects the member into that report's existing detached map (so the
+/// typed core and the command's member pins see it) without refreshing the
+/// retained roster stamp or granting any later command authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StaleDetachedInjection {
+    /// Command sequence this proof was read for.
+    pub(crate) command_seq: u64,
+    /// Native topology revision the owner read was fenced against.
+    pub(crate) report_revision: u64,
+    /// Exact runtime lifetime identity under the retained app generation.
+    pub(crate) window: WindowId,
+    pub(crate) pid: u32,
+    pub(crate) wid: u32,
+    pub(crate) generation: u64,
+    /// Withheld retained membership revision and its exact surface.
+    pub(crate) stale_revision: u64,
+    pub(crate) surface: u64,
+    /// Canonical remembered home and the typed detached reference it names.
+    pub(crate) home: DomainKey,
+    pub(crate) detached: tiler_core::world_report::DetachedRef,
+}
+
 /// Engine-thread-owned world session: the retained [`WorldEngine`], the
 /// adapter-side [`WorldSequencer`], pending attempt feedback, and the
 /// completion-correlation maps. None of this is shared: submitters reach
@@ -248,6 +273,10 @@ pub(crate) struct WorldSession {
     /// Owner generations of exact detached facts in the current command
     /// report. Never a source of authority for a later command or rebind.
     detached_select_members: Option<(u64, BTreeMap<WindowId, u64>)>,
+    /// One command-local stale-anchor proof read for the very next report
+    /// build. Never durable roster truth: it is consumed by that build (or
+    /// dropped with it) and never authorizes another command.
+    stale_detached_injection: Option<StaleDetachedInjection>,
     /// One bounded staged close-focus feedback row: the first correlated
     /// raw row since the previous dispatch. First-wins (later rows drop
     /// until drained); drained once into the next dispatched report with
@@ -382,6 +411,7 @@ impl WorldSession {
                 spent_frame_ops: VecDeque::new(),
                 pending_fullscreen_float_placements: BTreeMap::new(),
                 detached_select_members: None,
+                stale_detached_injection: None,
                 pending_close_feedback: None,
                 coverage_gap: false,
                 pending_closes: BTreeSet::new(),
@@ -433,6 +463,7 @@ impl WorldSession {
             spent_frame_ops: VecDeque::new(),
             pending_fullscreen_float_placements: BTreeMap::new(),
             detached_select_members: None,
+            stale_detached_injection: None,
             pending_close_feedback: None,
             coverage_gap: false,
             pending_closes: BTreeSet::new(),
@@ -1141,6 +1172,19 @@ impl WorldSession {
         &mut self.engine
     }
 
+    /// Stage one command-local stale-anchor proof for the next report build.
+    /// The dispatch fence attaches it only after the exact owner read and
+    /// topology recheck; the builder consumes it once.
+    pub(crate) fn attach_stale_detached_injection(&mut self, injection: StaleDetachedInjection) {
+        self.stale_detached_injection = Some(injection);
+    }
+
+    /// Consume the staged proof (at most one report sees it, even when the
+    /// report is later refused).
+    fn take_stale_detached_injection(&mut self) -> Option<StaleDetachedInjection> {
+        self.stale_detached_injection.take()
+    }
+
     /// Adapter-side sequencer access for the dispatch half. All sequencing
     /// operations take `&self` (interior mutability), so dispatches never
     /// hold the session mutably for ordering.
@@ -1455,6 +1499,9 @@ pub(crate) fn build_dispatch_report(
     request_id: &str,
 ) -> Option<WorldReportV4> {
     session.detached_select_members = None;
+    // One command-local stale-anchor proof (if the select fence read one)
+    // is consumed by exactly this build; it never survives as roster truth.
+    let stale_injection = session.take_stale_detached_injection();
     // No-context guard BEFORE any drain: an empty native context reports
     // nothing (KDE null parity), and the staged rows must survive for the
     // next real dispatch — attempts describe attempted actuation and must
@@ -1543,6 +1590,37 @@ pub(crate) fn build_dispatch_report(
                 }
             }
             unknown.sort_by_key(|(pid, w)| (*pid, w.wid));
+            // Exact stale-anchor revision fence proof: the command-local
+            // owner read proved this lifetime still owns this surface at the
+            // report revision, so publish the member into THIS report's
+            // detached map. The retained roster stamp is never refreshed,
+            // later commands still need their own proof, and every existing
+            // completeness/exclusion/homing gate below still applies.
+            if let Some(injection) = stale_injection
+                && let Some(members) = &mut detached_members
+                && ticket_command_seq == Some(injection.command_seq)
+                && ctx.revision == injection.report_revision
+                && !session.coverage_gap
+                && !retained.window_domains.contains_key(&injection.window.0)
+                && let Some(app) = retained.apps.get(&injection.pid)
+                && app.generation == injection.generation
+                && !app.roster_incomplete
+                && let Some(entry) = app.roster.get(&injection.wid)
+                && entry.excluded.is_none()
+                && entry.observed.is_some_and(|obs| obs.fullscreen)
+                && entry.detached_membership
+                    == Some((injection.stale_revision, injection.surface))
+                && injection.stale_revision != ctx.revision
+                && let Some(native_home) = session.engine_mut().native_selection_binding(&injection.home)
+                && let Some(domain) = ctx.domains.iter().find(|domain| {
+                    domain.output == injection.home.output
+                        && domain.workspace.0 == native_home
+                })
+                && ctx.detached_owner(injection.surface) == Some(domain.cg_id)
+                && injection.detached.output == injection.home.output
+            {
+                members.insert((injection.pid, injection.wid), injection.surface);
+            }
             let roster_incomplete = retained.apps.values().any(|a| a.roster_incomplete);
             let unreadable: BTreeMap<DomainKey, HoldReason> = ctx
                 .domains

@@ -162,6 +162,38 @@ pub enum StaySourceFocus {
     Unknown,
 }
 
+/// Read-only resolution of one select command's target, shared by command
+/// dispatch and the adapter-facing [`WorldEngine::preview_selection`].
+///
+/// Dispatch retains exactly what a preview reported on the same retained
+/// state: `Existing` retains that output plus workspace view, `TrailingCreate`
+/// mints the new trailing id, `NoEffect` only notes the command, and `Unknown`
+/// refuses. The two mutating lanes (trailing mint and the shared-native-roster
+/// padding mint) are never resolved here, so a preview never runs them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectionResolution {
+    /// An existing logical workspace on the resolved output. For an explicit
+    /// `SelectWorkspace` this is the named pair, carried provisionally: the
+    /// caller still admits against the actual dispatch and reply.
+    Existing { output: OutputId, workspace: String },
+    /// Trailing select with no reusable trailing cell: dispatch mints a fresh
+    /// workspace id, so no workspace exists to report before that mutation.
+    TrailingCreate { output: OutputId },
+    /// Previous has no usable retained history, or is already the current
+    /// view: dispatch notes the command without retaining or emitting.
+    NoEffect { output: OutputId },
+    /// No read-only target. `output` is `None` when the switch output itself
+    /// is unresolved, `Some` when only the positional step failed; that
+    /// resolved output is what the dispatch-only shared-native-roster padding
+    /// mint still needs.
+    Unknown { output: Option<OutputId> },
+    /// Only [`WorldEngine::preview_selection`] returns this: the
+    /// shared-native-roster relative `+1` lane may mint a padding slot before
+    /// the ordinary step on dispatch, which has no read-only equivalent, so
+    /// no preview can be exact for that capability combination.
+    Unsupported,
+}
+
 /// Neutral safety-exclusion intent ledger: lifetime fixed-size intent the
 /// retained Engine sessions held when a safety/own-process exclusion
 /// retired the slot. Never a public verdict, never membership, never an

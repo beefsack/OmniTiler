@@ -11,7 +11,8 @@
 use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, WindowId};
 use crate::session::DomainKey;
-use crate::world_engine::WorldEngine;
+use crate::world_commands::SelectionTarget;
+use crate::world_engine::{SelectionResolution, WorldEngine};
 use crate::world_members::MemberState;
 use crate::world_report::{
     DetachedRef, FrameSetter, NativeObservation, NativeOccupancy, NativeWorkspaceFact,
@@ -1762,4 +1763,363 @@ fn shared_exact_current_sibling_keeps_no_cursor_guard() {
             .contains_key(&out("out-b")),
         "the admitted sibling owns the retained guard"
     );
+}
+
+/// Seed the three-workspace `out-a` scene: a bound native id per ring
+/// workspace and `current` as the retained view, so real intake and real
+/// dispatch resolve against it unchanged.
+fn seed_three_ring(engine: &mut WorldEngine, current: &str) {
+    ring(engine, "out-a", &["ws-a", "ws-b", "ws-c"]);
+    view(engine, "out-a", current);
+    for id in ["ws-a", "ws-b", "ws-c"] {
+        native_binding(engine, "out-a", &format!("n-{id}"), id);
+    }
+}
+
+/// One observation over the seeded scene. `command` rides the same report's
+/// command lane when present, so dispatch is the real accepted run.
+fn ring_observation(seq: u64, current: &str, command: Option<WorldCommand>) -> WorldReportV4 {
+    let mut report = observation_report(
+        seq,
+        vec![screen("out-a", 0)],
+        vec![fact("win-a", "out-a", 0)],
+        vec![native_row(
+            "out-a",
+            &["n-ws-a", "n-ws-b", "n-ws-c"],
+            &format!("n-{current}"),
+        )],
+    );
+    if command.is_some() {
+        report.command_seq = Some(seq);
+        report.command = command;
+    }
+    report
+}
+
+/// The preview-side contract: retained world, revision, history, and flights
+/// stay exactly as captured.
+fn assert_preview_left_retained_untouched(
+    engine: &WorldEngine,
+    revision: u64,
+    mapping: &std::collections::BTreeMap<String, Vec<String>>,
+    views: &std::collections::BTreeMap<String, String>,
+    history: &crate::workspace_scope::ScopeHistory,
+    retained: usize,
+) {
+    assert_eq!(
+        engine.state_revision(),
+        revision,
+        "preview never bumps the state revision"
+    );
+    assert_eq!(
+        &engine.world.workspace.mapping, mapping,
+        "preview never re-rings or mints a workspace"
+    );
+    assert_eq!(
+        &engine.world.workspace.views, views,
+        "preview never moves a view"
+    );
+    assert_eq!(
+        &engine.world.workspace.history, history,
+        "preview never rewrites history"
+    );
+    assert_eq!(
+        engine.world.settlement.retained.len(),
+        retained,
+        "preview never retains or clears a flight"
+    );
+}
+
+#[test]
+fn preview_relative_selection_resolves_the_dispatched_target_without_mutation() {
+    let mut engine = detached_engine(false);
+    seed_three_ring(&mut engine, "ws-b");
+    accepted(&mut engine, &ring_observation(10, "ws-b", None));
+    let command = WorldCommand::SelectRelative {
+        output: Some(out("out-a")),
+        delta: 1,
+    };
+    let revision = engine.state_revision();
+    let mapping = engine.world.workspace.mapping.clone();
+    let views = engine.world.workspace.views.clone();
+    let history = engine.world.workspace.history.clone();
+    let retained = engine.world.settlement.retained.len();
+    assert_eq!(
+        engine.preview_selection(&WorldCommand::SelectWorkspace {
+            output: out("out-a"),
+            workspace: crate::directional::WorkspaceId("ws-b".to_owned()),
+        }),
+        SelectionResolution::Existing {
+            output: out("out-a"),
+            workspace: "ws-b".to_owned(),
+        },
+        "an explicit SelectWorkspace previews its named pair"
+    );
+    assert_eq!(
+        engine.preview_selection(&command),
+        SelectionResolution::Existing {
+            output: out("out-a"),
+            workspace: "ws-c".to_owned(),
+        },
+        "relative +1 previews the next ring member"
+    );
+    assert_preview_left_retained_untouched(&engine, revision, &mapping, &views, &history, retained);
+    accepted(&mut engine, &ring_observation(11, "ws-b", Some(command)));
+    let flights = view_flights(&engine);
+    assert_eq!(
+        flights.len(),
+        1,
+        "the dispatched relative selection retains one view flight"
+    );
+    assert_eq!(flights[0].target.target_output, out("out-a"));
+    assert_eq!(
+        flights[0].target.target_workspace, "ws-c",
+        "dispatch adopts the previewed workspace"
+    );
+}
+
+#[test]
+fn preview_previous_selection_resolves_the_dispatched_target_without_mutation() {
+    for shared in [false, true] {
+        let mut engine = detached_engine(shared);
+        seed_three_ring(&mut engine, "ws-a");
+        accepted(&mut engine, &ring_observation(10, "ws-a", None));
+        // One real observed change records ws-a as the previous view.
+        view(&mut engine, "out-a", "ws-b");
+        accepted(&mut engine, &ring_observation(11, "ws-b", None));
+        let command = WorldCommand::SelectPrevious {
+            output: Some(out("out-a")),
+        };
+        let revision = engine.state_revision();
+        let mapping = engine.world.workspace.mapping.clone();
+        let views = engine.world.workspace.views.clone();
+        let history = engine.world.workspace.history.clone();
+        let retained = engine.world.settlement.retained.len();
+        assert_eq!(
+            engine.preview_selection(&command),
+            SelectionResolution::Existing {
+                output: out("out-a"),
+                workspace: "ws-a".to_owned(),
+            },
+            "previous previews the recorded view (shared={shared})"
+        );
+        assert_preview_left_retained_untouched(
+            &engine, revision, &mapping, &views, &history, retained,
+        );
+        accepted(&mut engine, &ring_observation(12, "ws-b", Some(command)));
+        let flights = view_flights(&engine);
+        assert_eq!(
+            flights.len(),
+            1,
+            "the dispatched previous selection retains one view flight (shared={shared})"
+        );
+        assert_eq!(flights[0].target.target_output, out("out-a"));
+        assert_eq!(
+            flights[0].target.target_workspace, "ws-a",
+            "dispatch adopts the previewed workspace (shared={shared})"
+        );
+    }
+}
+
+#[test]
+fn preview_refuses_only_the_shared_native_roster_relative_next_slot() {
+    let caps = HostCapabilities {
+        shared_native_roster: true,
+        ..detached_caps()
+    };
+    let mut engine =
+        WorldEngine::new_test_bound_with_initial_settings("gen-1", "adapter-1", caps, Vec::new())
+            .expect("generation");
+    seed_three_ring(&mut engine, "ws-b");
+    assert_eq!(
+        engine.preview_selection(&WorldCommand::SelectRelative {
+            output: Some(out("out-a")),
+            delta: 1,
+        }),
+        SelectionResolution::Unsupported,
+        "the dispatch-only padding mint has no read-only preview"
+    );
+    assert_eq!(
+        engine.preview_selection(&WorldCommand::SelectRelative {
+            output: Some(out("out-a")),
+            delta: -1,
+        }),
+        SelectionResolution::Existing {
+            output: out("out-a"),
+            workspace: "ws-a".to_owned(),
+        },
+        "every other relative step still previews exactly"
+    );
+}
+
+#[test]
+fn canonical_remembered_selection_identity_uses_only_memory_and_retained_home() {
+    // No staged fact at all: identity never requires a detached fact to
+    // already be fresh, only the remembered member and its retained home.
+    let mut engine = detached_engine(false);
+    ring(&mut engine, "out-a", &["ws-away"]);
+    ring(&mut engine, "out-b", &["ws-away"]);
+    let home = key("out-a", "ws-away");
+    member(&mut engine, "win-fs", "out-a", "ws-away");
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(home.clone(), WindowId("win-fs".to_owned()));
+    assert_eq!(
+        engine.remembered_detached_selection_member(&home),
+        Some(WindowId("win-fs".to_owned()))
+    );
+    assert_eq!(
+        engine.remembered_detached_selection_home(&WindowId("win-fs".to_owned())),
+        Some(home.clone())
+    );
+
+    // A sibling homed on the same domain is not the remembered member.
+    member(&mut engine, "win-sibling", "out-a", "ws-away");
+    assert_eq!(
+        engine.remembered_detached_selection_home(&WindowId("win-sibling".to_owned())),
+        None
+    );
+
+    // A remembered lifetime rehomed elsewhere is no fallback member here.
+    member(&mut engine, "win-away", "out-b", "ws-away");
+    engine
+        .world
+        .focus
+        .last_active_window
+        .insert(home.clone(), WindowId("win-away".to_owned()));
+    assert_eq!(engine.remembered_detached_selection_member(&home), None);
+    assert_eq!(
+        engine.remembered_detached_selection_home(&WindowId("win-away".to_owned())),
+        None
+    );
+
+    // Absent memory stays absent.
+    assert_eq!(
+        engine.remembered_detached_selection_member(&key("out-b", "ws-away")),
+        None
+    );
+}
+
+/// Seed a retained previous view that has since left the ring: `previous`
+/// was recorded while in scope, and the retained ring now keeps only
+/// `ws-a`. Covers both history lanes.
+fn seed_stale_previous(engine: &mut WorldEngine, shared: bool) {
+    let scope: Vec<String> = ["ws-gone", "ws-a"]
+        .iter()
+        .map(|id| (*id).to_owned())
+        .collect();
+    if shared {
+        engine
+            .world
+            .workspace
+            .history
+            .observe_shared(&scope, "ws-gone");
+        engine
+            .world
+            .workspace
+            .history
+            .observe_shared(&scope, "ws-a");
+    } else {
+        engine
+            .world
+            .workspace
+            .history
+            .observe("out-a", "ws-gone", &scope);
+        engine
+            .world
+            .workspace
+            .history
+            .observe("out-a", "ws-a", &scope);
+    }
+    ring(engine, "out-a", &["ws-a"]);
+    view(engine, "out-a", "ws-a");
+}
+
+/// The restored in-scope order used to observe whether the retained entry
+/// survives: a live entry resolves here, a cleared one does not.
+fn restored_scope() -> Vec<String> {
+    ["ws-gone", "ws-a"]
+        .iter()
+        .map(|id| (*id).to_owned())
+        .collect()
+}
+
+#[test]
+fn stale_previous_survives_preview_and_dispatch_clears_it() {
+    for shared in [false, true] {
+        let mut engine = detached_engine(shared);
+        seed_stale_previous(&mut engine, shared);
+        // The entry is retained but out of the retained ring's scope.
+        let restored = restored_scope();
+        let live = if shared {
+            engine
+                .world
+                .workspace
+                .history
+                .peek_shared_for(&restored, "ws-a")
+                .target
+        } else {
+            engine
+                .world
+                .workspace
+                .history
+                .peek_previous_for("out-a", &restored, "ws-a")
+                .target
+        };
+        assert_eq!(
+            live,
+            crate::workspace_scope::PreviousTarget::Select("ws-gone".to_owned()),
+            "the stale entry is retained before dispatch (shared={shared})"
+        );
+        let command = WorldCommand::SelectPrevious {
+            output: Some(out("out-a")),
+        };
+        let history = engine.world.workspace.history.clone();
+        assert_eq!(
+            engine.preview_selection(&command),
+            SelectionResolution::NoEffect {
+                output: out("out-a"),
+            },
+            "an out-of-scope previous previews as no effect (shared={shared})"
+        );
+        assert_eq!(
+            engine.world.workspace.history, history,
+            "preview never clears the stale entry (shared={shared})"
+        );
+
+        // Dispatch clears exactly that entry (the accepted-run reconcile
+        // validates live outputs first, so the arm helper is exercised at the
+        // transaction boundary the command itself runs on).
+        let target = engine.tx(|tx| tx.resolve_positional_selection(&command));
+        assert!(matches!(
+            target,
+            SelectionTarget::NoEffect {
+                stale_previous: true,
+                ..
+            }
+        ));
+        engine.tx(|tx| tx.forget_stale_previous(&out("out-a")));
+        let cleared = if shared {
+            engine
+                .world
+                .workspace
+                .history
+                .peek_shared_for(&restored, "ws-a")
+                .target
+        } else {
+            engine
+                .world
+                .workspace
+                .history
+                .peek_previous_for("out-a", &restored, "ws-a")
+                .target
+        };
+        assert_eq!(
+            cleared,
+            crate::workspace_scope::PreviousTarget::NoHistory,
+            "dispatch clears the stale entry (shared={shared})"
+        );
+    }
 }
