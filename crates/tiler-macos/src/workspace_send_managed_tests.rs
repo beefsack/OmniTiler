@@ -68,6 +68,7 @@ fn fresh_ok() -> SendFreshEvidence {
 
 fn row() -> SelectionSnapshot {
     SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 7],
         current: 20,
@@ -1033,6 +1034,7 @@ fn managed_holder_display_and_sid_refusals_post_nothing() {
     let handoff = SendEffectHandoff::new();
     let mut backend = FakeManaged::new();
     backend.snapshot = Ok(SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 7],
         current: 20,
@@ -1611,6 +1613,7 @@ fn trailing_send_drain_bound_target_submits_and_settles_through_the_same_lane() 
     }
     let mut prep_backend = PrepFake {
         row: SelectionSnapshot {
+            detached: None,
             display: "display-a".to_owned(),
             spaces: vec![1, 277],
             current: 1,
@@ -1640,6 +1643,7 @@ fn trailing_send_drain_bound_target_submits_and_settles_through_the_same_lane() 
     // Desktop-2 ordinal; the fake lands the drag there on release).
     let mut fake = FakeManaged::new();
     fake.snapshot = Ok(SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![1, 277],
         current: 1,
@@ -1693,6 +1697,7 @@ fn trailing_send_bound_target_refuses_focus_swap_without_actuation() {
     .expect("trailing binds");
     let mut fake = FakeManaged::new();
     fake.snapshot = Ok(SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![1, 277],
         current: 1,
@@ -1850,6 +1855,7 @@ fn effect_refusal_row_stage_refuses_without_posts() {
     let handoff = SendEffectHandoff::new();
     let mut backend = FakeManaged::new();
     backend.snapshot = Ok(SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 7],
         current: 999,
@@ -1861,6 +1867,7 @@ fn effect_refusal_row_stage_refuses_without_posts() {
     let handoff = SendEffectHandoff::new();
     let mut backend = FakeManaged::new();
     backend.snapshot = Ok(SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 3],
         current: 20,
@@ -2139,6 +2146,7 @@ fn stay_changed_topology_return_holds_without_select() {
     let handoff = SendEffectHandoff::new();
     let mut backend = stay_ready_backend();
     backend.snapshot_script.push_back(Ok(SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 9],
         current: 3,
@@ -2186,6 +2194,7 @@ fn stay_display_identity_change_holds_without_select() {
     let handoff = SendEffectHandoff::new();
     let mut backend = stay_ready_backend();
     backend.snapshot_script.push_back(Ok(SelectionSnapshot {
+        detached: None,
         display: "display-b".to_owned(),
         spaces: vec![20, 3, 7],
         current: 3,
@@ -2210,6 +2219,7 @@ fn stay_arrival_moved_before_return_holds_without_select() {
     let handoff = SendEffectHandoff::new();
     let mut backend = stay_ready_backend();
     backend.snapshot_script.push_back(Ok(SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 7],
         current: 7,
@@ -2539,6 +2549,7 @@ fn trailing_prep(target: u64, created: Option<u64>) -> TrailingPrepProof {
 
 fn appended_row() -> SelectionSnapshot {
     SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 7, 21],
         current: 20,
@@ -2687,6 +2698,7 @@ fn trailing_request_with_desire() -> TrailingSendRequest {
 
 fn prep_row() -> SelectionSnapshot {
     SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 7],
         current: 20,
@@ -2766,6 +2778,7 @@ fn trailing_ambiguous_prep_retains_deferred_receipt() {
     assert_eq!(handoff.pending_creation_count(), 1);
     // A later readable row completes the retained receipt exactly once.
     let row = SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 7, 21],
         current: 20,
@@ -2891,7 +2904,10 @@ fn trailing_claim() -> crate::runtime_types::ClaimedSelect {
         select_creation_operation: None,
         select_creation_logical: None,
         select_creation_output: None,
-        select_baseline_sid: None,
+        select_baseline: None,
+        select_detached_surface: None,
+        select_detached_member: None,
+        select_detached_enabled: false,
         send_follow_view_operation: None,
     }
 }
@@ -3084,6 +3100,7 @@ fn trailing_controller_observation_path_completes_deferred_receipt_once() {
     let observe_ms = crate::input_eligibility::now_ms();
     // Mismatched display: retained, nothing submitted.
     let foreign = SelectionSnapshot {
+        detached: None,
         display: "display-b".to_owned(),
         spaces: vec![20, 3, 7, 21],
         current: 20,
@@ -3096,6 +3113,7 @@ fn trailing_controller_observation_path_completes_deferred_receipt_once() {
     );
     // Fresh readable same-display delta: exactly one genuine receipt.
     let arrived = SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 3, 7, 21],
         current: 20,
@@ -3306,6 +3324,7 @@ fn bridged_anchor_drift_refuses_pre_dispatch_without_select() {
     let lane = SendEffectHandoff::new();
     let mut backend = fast_backend();
     backend.bridged_drift_row = Some(SelectionSnapshot {
+        detached: None,
         display: "display-a".to_owned(),
         spaces: vec![20, 7],
         current: 20,
@@ -3617,6 +3636,7 @@ mod send_join_tests {
                 domain(3, &workspace_key(3), false),
             ],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -3650,6 +3670,7 @@ mod send_join_tests {
                 observed: Some(subject),
                 spaces: vec![20],
                 fullscreen_meta: false,
+                detached_membership: None,
                 minimized_meta: false,
                 hidden_meta: false,
                 excluded: None,
@@ -3803,6 +3824,7 @@ mod send_join_tests {
     fn fake_send_backend() -> FakeManaged {
         let mut backend = FakeManaged::new();
         backend.snapshot = Ok(crate::workspace_select::SelectionSnapshot {
+            detached: None,
             display: "display-a".to_owned(),
             spaces: vec![20, 3],
             current: 20,
@@ -3971,6 +3993,7 @@ mod send_join_tests {
                 domain(3, &workspace_key(3), true),
             ],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -3986,6 +4009,7 @@ mod send_join_tests {
                 domain(99, &workspace_key(99), false),
             ],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -4042,7 +4066,7 @@ mod send_join_tests {
             completion.pre_member,
             completion.post_member,
         );
-        assert_eq!(claim.select_baseline_sid, Some(20));
+        assert_eq!(claim.select_baseline, Some(crate::runtime_types::SelectPhysical::Desktop(20)));
         // Arrival observation: homing names the bound target's native key
         // under the moved current, so the next production dispatch settles
         // the transfer.
@@ -4455,6 +4479,7 @@ mod send_join_tests {
         lane.take_for_owner().expect("owner takes");
         let mut backend = fake_send_backend();
         backend.snapshot = Ok(crate::workspace_select::SelectionSnapshot {
+            detached: None,
             display: "display-a".to_owned(),
             spaces: vec![20, 3, 7],
             current: 20,
@@ -4549,7 +4574,10 @@ mod send_join_tests {
             select_creation_operation: None,
             select_creation_logical: None,
             select_creation_output: None,
-            select_baseline_sid: None,
+            select_baseline: None,
+            select_detached_surface: None,
+            select_detached_member: None,
+            select_detached_enabled: false,
             send_follow_view_operation: None,
         };
         assert!(
@@ -4595,7 +4623,10 @@ mod send_join_tests {
             select_creation_operation: Some("op-native-7".to_owned()),
             select_creation_logical: Some("ws-trailing".to_owned()),
             select_creation_output: Some("macos-display-1".to_owned()),
-            select_baseline_sid: Some(20),
+            select_baseline: Some(crate::runtime_types::SelectPhysical::Desktop(20)),
+            select_detached_surface: None,
+            select_detached_member: None,
+            select_detached_enabled: false,
             send_follow_view_operation: Some("op-native-7-follow".to_owned()),
         };
         assert!(

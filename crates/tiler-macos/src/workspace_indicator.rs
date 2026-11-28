@@ -2504,6 +2504,7 @@ mod tests {
     fn click_fake() -> ClickFake {
         ClickFake {
             row: crate::workspace_select::SelectionSnapshot {
+                detached: None,
                 display: "display-a".to_owned(),
                 spaces: vec![20, 3],
                 current: 20,
@@ -2533,7 +2534,7 @@ mod tests {
             claim.select_target_output = Some("macos-display-1".to_owned());
             claim.select_target_workspace = Some("ws-2".to_owned());
             claim.select_native_binding = Some("space-3".to_owned());
-            claim.select_baseline_sid = Some(20);
+            claim.select_baseline = Some(crate::runtime_types::SelectPhysical::Desktop(20));
             claim.expected_sid = Some(3);
             claim.topology_revision = None;
             claim
@@ -3612,6 +3613,7 @@ mod tests {
     /// One fresh live native row for the single-output projection tests.
     fn native_row(spaces: &[u64], current: u64) -> crate::workspace_select::SelectionSnapshot {
         crate::workspace_select::SelectionSnapshot {
+            detached: None,
             display: "display-a".to_owned(),
             spaces: spaces.to_vec(),
             current,

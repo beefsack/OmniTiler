@@ -24,6 +24,9 @@ use tiler_protocol::connection_protocol::{
     route_connection_request,
 };
 
+/// Keep both product detached selection routes off until signed acceptance.
+pub(crate) const DETACHED_FULLSCREEN_VIEW: bool = false;
+
 /// macOS host capabilities: conservative initial primitive.
 ///
 /// - `host_owned: true`: native Spaces are host-managed; the adapter
@@ -76,6 +79,7 @@ pub(crate) fn macos_capabilities() -> HostCapabilities {
             FactName::Class,
             FactName::Title,
         ],
+        detached_fullscreen_view: DETACHED_FULLSCREEN_VIEW,
     }
 }
 

@@ -313,6 +313,7 @@ fn capabilities() -> HostCapabilities {
         warp: false,
         tiled_float_transfer: false,
         unavailable_facts: Vec::new(),
+        detached_fullscreen_view: false,
     }
 }
 
@@ -325,7 +326,8 @@ fn handshake_json(adapter: &str, req: &str) -> String {
           \"sharedNativeRoster\":false,\"birthClear\":false,\
           \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
           \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
-          \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+          \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[],\
+          \"detachedFullscreenView\":false}}}}"
     )
 }
 
@@ -354,7 +356,8 @@ fn window_json_at(id: &str, x: i32) -> String {
           \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
+          \"detachedSurface\":null}}"
     )
 }
 
@@ -436,6 +439,7 @@ fn typed_window(id: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 

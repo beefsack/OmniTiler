@@ -76,6 +76,7 @@ fn two_display_ctx() -> NativeContext {
             },
         ],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     }
 }
 
@@ -250,7 +251,7 @@ fn unknown_fullscreen_grounds_and_holds_without_actuation() {
     assert!(pruned.is_empty());
     // No domain homing yet: the audit grounds the frame, so the fact can
     // surface without an incomplete hold from this row alone.
-    audit_roster_hold(&mut retained, 1001, &ctx);
+    audit_roster_hold(&mut retained, 1001, &ctx, false);
     let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::new();
     let memory = crate::runtime_core::LifetimeMemory::empty();
     let closed: Vec<WindowId> = Vec::new();
@@ -327,7 +328,7 @@ fn repeated_unrepresentable_min_hidden_keep_hold_and_identity() {
     let outside = observed(1, 5000, 5000, 10, 10);
     let cover = scoped_snapshot(vec![outside], vec![vec![99]], 0, 7, true, vec![1]);
     assert!(apply_roster_covering(&mut retained, 1001, &cover, &ctx).is_empty());
-    audit_roster_hold(&mut retained, 1001, &ctx);
+    audit_roster_hold(&mut retained, 1001, &ctx, false);
     assert!(
         retained.apps[&1001].roster_incomplete,
         "outside frame holds"
@@ -346,7 +347,7 @@ fn repeated_unrepresentable_min_hidden_keep_hold_and_identity() {
             hidden.excluded > 0
         ));
         assert!(apply_roster_covering(&mut retained, 1001, &hidden, &ctx).is_empty());
-        audit_roster_hold(&mut retained, 1001, &ctx);
+        audit_roster_hold(&mut retained, 1001, &ctx, false);
         // Unrelated B clean covering read clears only B.
         let b_cover = scoped_snapshot(
             vec![observed(5, 10, 10, 50, 50)],
@@ -534,6 +535,7 @@ fn pending_close_survives_no_report_and_drains_only_on_incorporation() {
         revision: 7,
         domains: Vec::new(),
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let dispatch = crate::world_runtime::DispatchContext::Native(Arc::new(empty_ctx));
     let report = crate::world_runtime::build_dispatch_report(
@@ -634,6 +636,8 @@ fn fullscreen_current_derives_ordered_users_with_full_and_work_screen() {
     );
     assert_eq!(ctx.domains.len(), 2, "both user Spaces stay domains");
     assert!(ctx.domains.iter().all(|d| !d.current));
+    // A current-only SID is not proof of a unique fullscreen surface.
+    assert_eq!(ctx.detached_current(1), None);
     let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::new();
     let memory = crate::runtime_core::LifetimeMemory::empty();
     let closed: Vec<WindowId> = Vec::new();
@@ -672,6 +676,90 @@ fn fullscreen_current_derives_ordered_users_with_full_and_work_screen() {
         (1440, 875),
         "derived work geometry survives"
     );
+
+    let mut rows = rows;
+    rows[0].spaces.push(99);
+    let (ctx, _) = NativeContext::derive(&build_snapshot(&ns, &rows, Some(true)), &space_type);
+    assert_eq!(ctx.detached_current(1), Some(99));
+    let output = OutputId(crate::topology::output_key(1));
+    let surface = crate::runtime_types::detached_ref(output.clone(), 99);
+    let mut input = ReportInput::new(
+        INCARNATION, GENERATION, &ctx, 6, 6, "req-6", &members, &memory,
+        &closed, &unreadable, &[], "", false,
+    );
+    let mut fullscreen = observed(7, -500, -500, 100, 100);
+    fullscreen.fullscreen = true;
+    let unknown = [(1001, fullscreen)];
+    let detached = BTreeMap::from([((1001, 7), 99)]);
+    input.unknown = &unknown;
+
+    let off = build_report(&mut input);
+    assert!(!off.native[0].current_known);
+    assert_eq!(off.native[0].detached_current, None);
+    assert!(off.windows.is_empty(), "offscreen geometry proves no output");
+
+    input.detached_members = Some(&detached);
+    let on = build_report(&mut input);
+    assert!(validate_report_v4_reason(&on).is_none());
+    assert!(on.native[0].current_known);
+    assert_eq!(on.native[0].current_native, None);
+    assert_eq!(on.native[0].detached_current.as_ref(), Some(&surface));
+    assert_eq!(on.native[0].native_order, ["space-11", "space-12"]);
+    assert_eq!(on.windows[0].output.as_ref(), Some(&output));
+    assert_eq!(on.windows[0].detached_surface.as_ref(), Some(&surface));
+    assert_eq!(
+        on.windows[0].native_workspace,
+        tiler_core::world_report::NativeWorkspaceFact::Null
+    );
+
+    rows[0].spaces.push(99);
+    let (ambiguous, _) =
+        NativeContext::derive(&build_snapshot(&ns, &rows, Some(true)), &space_type);
+    assert_eq!(ambiguous.detached_owner(99), None);
+}
+
+#[test]
+fn parked_detached_membership_refreshes_only_exact_same_lifetime_and_sid() {
+    let mut ctx = two_display_ctx();
+    ctx.detached_spaces.insert(99, (1, false));
+    let mut retained = retained_with_roster(1001, 1);
+    let mut window = observed(7, 20, 20, 100, 100);
+    window.fullscreen = true;
+    let current = scoped_snapshot(
+        vec![window], vec![vec![99]], 0, ctx.revision, true, vec![7],
+    );
+    apply_roster_covering(&mut retained, 1001, &current, &ctx);
+    assert_eq!(
+        retained.apps[&1001].roster[&7].detached_membership,
+        Some((ctx.revision, 99))
+    );
+    assert!(retained.apps[&1001].roster[&7].spaces.is_empty());
+
+    ctx.revision += 1;
+    let mut parked = scoped_snapshot(Vec::new(), Vec::new(), 0, ctx.revision, true, vec![7]);
+    parked.cg_alive.push(crate::runtime_types::CgAliveDetail {
+        wid: 7,
+        spaces: vec![99],
+        layer: 0,
+        onscreen: false,
+        bounds: Some((20, 20, 100, 100)),
+    });
+    mark_roster_incomplete(&mut retained, 1001, "blank-hidden");
+    let desktop_homes =
+        crate::runtime_core::rehydrate_cg_alive(&mut retained, 1001, &parked, &ctx, true);
+    assert!(desktop_homes.is_empty());
+    assert_eq!(
+        retained.apps[&1001].roster[&7].detached_membership,
+        Some((ctx.revision, 99))
+    );
+    assert!(!retained.apps[&1001].roster_incomplete);
+
+    ctx.detached_spaces.insert(100, (1, false));
+    parked.cg_alive[0].spaces[0] = 100;
+    mark_roster_incomplete(&mut retained, 1001, "blank-hidden");
+    crate::runtime_core::rehydrate_cg_alive(&mut retained, 1001, &parked, &ctx, true);
+    assert_eq!(retained.apps[&1001].roster[&7].detached_membership, None);
+    assert!(retained.apps[&1001].roster_incomplete);
 }
 
 /// Selected classification exclusions never hold: a new accessory /
@@ -734,7 +822,7 @@ fn selected_exclusions_never_hold_hidden_unknown_holds_without_live_fact() {
     if let Some(app) = retained.apps.get_mut(&1001) {
         app.windows = members.values().flatten().copied().collect();
     }
-    audit_roster_hold(&mut retained, 1001, &ctx);
+    audit_roster_hold(&mut retained, 1001, &ctx, false);
     // The grounded unknown is representable and the selected exclusions
     // hold nothing: no hold at all after a fully representable read.
     assert!(!retained.apps[&1001].roster_incomplete);
@@ -805,7 +893,7 @@ fn selected_exclusions_never_hold_hidden_unknown_holds_without_live_fact() {
         if let Some(app) = retained.apps.get_mut(&1001) {
             app.windows = members.values().flatten().copied().collect();
         }
-        audit_roster_hold(&mut retained, 1001, &ctx);
+        audit_roster_hold(&mut retained, 1001, &ctx, false);
         assert!(
             retained.apps[&1001].roster_incomplete,
             "hidden hold persists on covering read {seq}"
@@ -830,7 +918,7 @@ fn selected_exclusions_never_hold_hidden_unknown_holds_without_live_fact() {
         if let Some(app) = retained.apps.get_mut(&1002) {
             app.windows = b_members.values().flatten().copied().collect();
         }
-        audit_roster_hold(&mut retained, 1002, &ctx);
+        audit_roster_hold(&mut retained, 1002, &ctx, false);
         assert!(!retained.apps[&1002].roster_incomplete, "B stays clean");
         assert!(
             retained.apps[&1001].roster_incomplete,
@@ -1004,6 +1092,7 @@ fn homed_current_retained(pid: u32, wid: u32) -> RetainedCore {
                 observed: Some(observed(wid, 10, 10, 100, 100)),
                 spaces: vec![11],
                 fullscreen_meta: false,
+                detached_membership: None,
                 minimized_meta: false,
                 hidden_meta: false,
                 excluded: None,
@@ -1201,7 +1290,7 @@ fn cg_alive_hold_then_fresh_membership_adopt_clears() {
     if let Some(app) = retained.apps.get_mut(&1001) {
         app.windows = members.values().flatten().copied().collect();
     }
-    audit_roster_hold(&mut retained, 1001, &ctx);
+    audit_roster_hold(&mut retained, 1001, &ctx, false);
     assert!(!retained.apps[&1001].roster_incomplete, "adopt clears hold");
     assert!(retained.apps[&1001].roster.contains_key(&1));
 }
@@ -1218,6 +1307,7 @@ fn terminate_flat_close_rides_while_other_app_holds_on_oracle() {
                 observed: Some(observed(1, 100, 100, 200, 200)),
                 spaces: Vec::new(),
                 fullscreen_meta: false,
+                detached_membership: None,
                 minimized_meta: false,
                 hidden_meta: false,
                 excluded: None,
@@ -1346,6 +1436,7 @@ fn grouped_user_rows(
     rows.iter()
         .map(|row| {
             Some(crate::workspace_select::SelectionSnapshot {
+                detached: None,
                 display: row.identifier.clone().expect("test row identity"),
                 spaces: row.spaces.clone(),
                 current: row.current.expect("test row current"),
@@ -1622,6 +1713,7 @@ fn grouped_hotplug_regroups_and_ambiguous_joins_safe_hide() {
     let single_rows = vec![group_row(GROUP_UUID_A, &[11, 12], 11)];
     let single_reply = grouped_reply(&single_ns, &single_rows);
     let single_native = crate::workspace_select::SelectionSnapshot {
+        detached: None,
         display: GROUP_UUID_A.to_owned(),
         spaces: single_rows[0].spaces.clone(),
         current: single_rows[0].current.expect("test row current"),

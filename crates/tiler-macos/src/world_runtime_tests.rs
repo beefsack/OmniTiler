@@ -244,6 +244,7 @@ fn operation_commands_cover_every_supported_tiling_action() {
         revision: 9,
         domains: vec![toggle_native_domain(11, true, true)],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let native_key = domain_key();
     let bindings = [crate::pager::PagerWorkspaceBinding {
@@ -310,6 +311,7 @@ fn workspace_tiling_toggle_resolver_prefers_the_focused_homed_domain() {
         revision: 9,
         domains: vec![toggle_native_domain(11, true, true)],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let mut retained = retained_with_window(4242, 7, &domain_key());
     retained.observed_focus = Some(WindowId(window_id(4242, 7)));
@@ -346,6 +348,7 @@ fn workspace_tiling_toggle_resolver_refuses_an_unbound_focused_home() {
         revision: 9,
         domains: vec![toggle_native_domain(11, true, true)],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let mut retained = retained_with_window(4242, 7, &domain_key());
     retained.observed_focus = Some(WindowId(window_id(4242, 7)));
@@ -383,6 +386,7 @@ fn workspace_tiling_toggle_resolver_refuses_a_hidden_focused_home() {
             toggle_native_domain(12, true, true),
         ],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let mut retained = retained_with_window(4242, 7, &domain_key());
     retained.observed_focus = Some(WindowId(window_id(4242, 7)));
@@ -414,6 +418,7 @@ fn workspace_tiling_toggle_resolver_refuses_an_unhomed_focused_window() {
         revision: 9,
         domains: vec![toggle_native_domain(11, true, true)],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let bindings = [crate::pager::PagerWorkspaceBinding {
         output: "macos-display-1".to_owned(),
@@ -444,6 +449,7 @@ fn workspace_tiling_toggle_resolver_falls_back_to_the_unique_current_readable_do
             toggle_native_domain(13, true, false),
         ],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let bindings = [crate::pager::PagerWorkspaceBinding {
         output: "macos-display-1".to_owned(),
@@ -471,6 +477,7 @@ fn workspace_tiling_toggle_resolver_refuses_zero_current_readable_domains() {
             toggle_native_domain(13, true, false),
         ],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let bindings = [crate::pager::PagerWorkspaceBinding {
         output: "macos-display-1".to_owned(),
@@ -492,6 +499,7 @@ fn workspace_tiling_toggle_resolver_refuses_ambiguous_current_domains() {
             toggle_native_domain(12, true, true),
         ],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let bindings = [
         crate::pager::PagerWorkspaceBinding {
@@ -834,6 +842,7 @@ fn select_output_prefers_focus_home_then_first_current() {
             },
         }],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     // No observed focus yet: first current output.
     let mut unfocused = retained;
@@ -985,10 +994,12 @@ fn raw_attempt_staging_drops_unknown_operations_without_evidence() {
     );
     session.stage_view_attempt(
         "op-404",
+        Some(&OutputId("missing-output".to_owned())),
         FrameSetter::Accepted,
-        Some(11),
-        Some(12),
-        Some(11),
+        None,
+        None,
+        None,
+        None,
     );
     session.stage_member_attempt("op-404", FrameSetter::Accepted, None, Some(12));
     let retained = RetainedCore::default();
@@ -1280,6 +1291,7 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
             },
         ],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
         DomainKey {
@@ -1401,7 +1413,28 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         WorldOutcome::Accepted(_) => {}
         other => panic!("switch-view must accept, got {other:?}"),
     }
-    session.stage_view_attempt("op-2", FrameSetter::Accepted, Some(11), Some(12), Some(11));
+    use crate::runtime_types::SelectPhysical::Desktop;
+    session.stage_view_attempt(
+        "op-2",
+        Some(&output),
+        FrameSetter::Accepted,
+        Some(Desktop(11)),
+        Some(Desktop(12)),
+        Some(Desktop(11)),
+        None,
+    );
+    // The same operation on another output must not overwrite this row.
+    let foreign = OutputId("macos-display-other".to_owned());
+    session.stage_view_attempt(
+        "op-2",
+        Some(&foreign),
+        FrameSetter::Refused,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(session.pending_views.len(), 1);
     // Window transfer via Send to the hidden logical workspace retains
     // operation `op-3`; its native pre/post ride the native keys too.
     let owned_third = "req-3".to_owned();
@@ -1456,10 +1489,12 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     // Stage with unknown operation drops (existing fence, unchanged).
     session.stage_view_attempt(
         "op-404",
+        Some(&output),
         FrameSetter::Accepted,
-        Some(11),
-        Some(12),
-        Some(11),
+        Some(Desktop(11)),
+        Some(Desktop(12)),
+        Some(Desktop(11)),
+        None,
     );
     session.stage_member_attempt("op-404", FrameSetter::Accepted, None, Some(12));
     let retained = RetainedCore::default();
@@ -1493,15 +1528,17 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
         workspace: tiler_core::ids::NativeWorkspaceId::parse(&native_b)
             .expect("valid native workspace"),
     };
-    assert_eq!(view.pre, Some(native_pre.clone()), "view pre rides native");
+    let view_pre = Desktop(11).to_view(&output);
+    let view_post = Desktop(12).to_view(&output);
+    assert_eq!(view.pre, Some(view_pre.clone()), "view pre rides native");
     assert_eq!(
         view.post,
-        Some(native_post.clone()),
+        Some(view_post),
         "view post rides native"
     );
     assert_eq!(
         view.baseline,
-        Some(native_pre.clone()),
+        Some(view_pre),
         "view baseline rides native"
     );
     assert_eq!(view.target_output, output);
@@ -2040,6 +2077,7 @@ fn cursor_ctx() -> NativeContext {
             },
         }],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     }
 }
 
@@ -2260,6 +2298,7 @@ fn add_second_member(retained: &mut RetainedCore, pid: u32, wid: u32) {
             observed: Some(window),
             spaces: vec![11],
             fullscreen_meta: false,
+            detached_membership: None,
             minimized_meta: false,
             hidden_meta: false,
             excluded: None,
@@ -2307,6 +2346,7 @@ fn retained_with_tiled(pid: u32, wid: u32, frame: Rect) -> RetainedCore {
                     observed: Some(window),
                     spaces: vec![11],
                     fullscreen_meta: false,
+                    detached_membership: None,
                     minimized_meta: false,
                     hidden_meta: false,
                     excluded: None,

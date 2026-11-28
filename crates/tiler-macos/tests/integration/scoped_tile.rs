@@ -3366,13 +3366,14 @@ fn numbered_send_hotkey_claim_settles_transfer_end_to_end() {
         "reply plan binds the retained transfer target"
     );
     let op = claimed.operation_id.clone().expect("bound operation id");
-    let baseline = claimed.select_baseline_sid;
+    let baseline = claimed.select_baseline;
     let follow_view = claimed.send_follow_view_operation.clone();
     fixture.handle.release_select_after_drain();
     // Offline no-touch pathway: no native write fired, so the raw setter is
     // `Refused` with no reads (holds without actuation — never a verdict).
     fixture.handle.report_send_outcome(
         &op,
+        claimed.select_target_output.as_deref(),
         FrameSetter::Refused,
         None,
         None,
@@ -4019,7 +4020,10 @@ fn select_claim_release_discard_protocol() {
         Some("space-12"),
         "numbered tap actuates the live binding, never a pinned ordinal"
     );
-    assert_eq!(claimed.select_baseline_sid, Some(11));
+    assert_eq!(
+        claimed.select_baseline,
+        Some(tiler_macos::runtime::SelectPhysical::Desktop(11))
+    );
     assert!(fixture.handle.claim_select_for_drain().is_none());
     assert!(
         !fixture.handle.discard_select_pending(),
@@ -4077,9 +4081,15 @@ fn select_drain_and_discard_outcomes_stage_feedback_end_to_end() {
     let claimed = fixture.handle.claim_select_for_drain().expect("claim");
     let op = claimed.operation_id.clone().expect("bound operation id");
     fixture.handle.release_select_after_drain();
-    fixture
-        .handle
-        .report_select_attempt(&op, FrameSetter::Accepted, None, None, None);
+    fixture.handle.report_select_attempt(
+        &op,
+        claimed.select_target_output.as_deref(),
+        FrameSetter::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(fixture.handle.flush(FLUSH));
     assert_eq!(staged_count(), 1, "drain outcome must stage exactly once");
     // Discard path: a second pending claim dropped without dispatch still
@@ -4183,7 +4193,10 @@ fn stale_select_flight_still_binds_claim_and_never_replays() {
         Some("space-12"),
         "recovered plan binds the live native, not the stale occupant"
     );
-    assert_eq!(claimed.select_baseline_sid, Some(11));
+    assert_eq!(
+        claimed.select_baseline,
+        Some(tiler_macos::runtime::SelectPhysical::Desktop(11))
+    );
     fixture.handle.release_select_after_drain();
     shutdown_clean(&fixture);
 }

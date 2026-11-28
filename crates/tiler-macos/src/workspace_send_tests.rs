@@ -414,6 +414,7 @@ fn trailing_send_prepare_reuse_append_and_ordinal_guards() {
     fn fake(spaces: Vec<u64>, empty: Result<bool, String>) -> PrepFake {
         PrepFake {
             row: SelectionSnapshot {
+                detached: None,
                 display: "display-a".to_owned(),
                 spaces,
                 current: 1,
@@ -750,6 +751,7 @@ fn context_row_resolution_follows_native_order_per_output() {
             domain("macos-display-2", 40),
         ],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let out1 = OutputId("macos-display-1".to_owned());
     assert_eq!(context_target_sid(&ctx, &out1, 1), Some(20));
@@ -2060,7 +2062,10 @@ fn stay_claim_pins_follow_intent_and_refuses_unpinnable_focus() {
             select_creation_operation: None,
             select_creation_logical: None,
             select_creation_output: None,
-            select_baseline_sid: None,
+            select_baseline: None,
+            select_detached_surface: None,
+            select_detached_member: None,
+            select_detached_enabled: false,
             send_follow_view_operation: None,
         }
     }
@@ -2304,7 +2309,7 @@ fn drive_covering_snapshot_allow_close(
     );
     let pruned = apply_roster_covering(retained, pid, snapshot, ctx);
     let (mut members, _) = partition_scoped_members(&snapshot.windows, &snapshot.meta, ctx);
-    for (key, windows) in rehydrate_cg_alive(retained, pid, snapshot, ctx) {
+    for (key, windows) in rehydrate_cg_alive(retained, pid, snapshot, ctx, false) {
         for w in windows {
             for members_of_domain in members.values_mut() {
                 members_of_domain.retain(|other| other.wid != w.wid);
@@ -2316,7 +2321,7 @@ fn drive_covering_snapshot_allow_close(
     if let Some(app) = retained.apps.get_mut(&pid) {
         app.windows = members.values().flatten().copied().collect();
     }
-    audit_roster_hold(retained, pid, ctx);
+    audit_roster_hold(retained, pid, ctx, false);
     pruned
 }
 
@@ -3083,6 +3088,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         }
         fn snapshot(&mut self) -> Result<crate::workspace_select::SelectionSnapshot, String> {
             Ok(crate::workspace_select::SelectionSnapshot {
+                detached: None,
                 display: "display-a".to_owned(),
                 spaces: vec![1, 277, 278],
                 current: 277,
@@ -3638,6 +3644,7 @@ fn prepare_trailing_send_with_desire_appends_despite_empty_last() {
     }
     fn row() -> crate::workspace_select::SelectionSnapshot {
         crate::workspace_select::SelectionSnapshot {
+            detached: None,
             display: "display-a".to_owned(),
             spaces: vec![1, 277],
             current: 277,
@@ -4186,6 +4193,7 @@ fn cg_alive_skips_excluded_and_foreign_lifetimes() {
             observed: None,
             spaces: Vec::new(),
             fullscreen_meta: false,
+            detached_membership: None,
             minimized_meta: false,
             hidden_meta: false,
             excluded: Some(ExcludeReason::Minimized),
@@ -4218,7 +4226,7 @@ fn cg_alive_skips_excluded_and_foreign_lifetimes() {
     snap.cg_alive.sort_by_key(|d| d.wid);
     snap.cg_owner_wids.push(77);
     snap.cg_owner_wids.sort_unstable();
-    let extras = rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx);
+    let extras = rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx, false);
     assert!(
         extras.values().flatten().all(|w| w.wid != 9 && w.wid != 77),
         "excluded and unknown ids never re-home, extras={extras:?}"
@@ -4242,7 +4250,7 @@ fn cg_alive_skips_excluded_and_foreign_lifetimes() {
     // unknown there, so the call is a no-op).
     let foreign = live_snapshot(vec![], vec![], vec![7], vec![(7, vec![277])], ctx.revision);
     let before: BTreeMap<String, DomainKey> = retained.window_domains.clone();
-    let foreign_extras = rehydrate_cg_alive(&mut retained, 9999, &foreign, &ctx);
+    let foreign_extras = rehydrate_cg_alive(&mut retained, 9999, &foreign, &ctx, false);
     assert!(foreign_extras.is_empty(), "unknown PID re-homes nothing");
     assert_eq!(
         retained.window_domains, before,
@@ -4347,7 +4355,7 @@ fn non_covering_empty_ax_with_cg_alive_rehomes_hidden() {
         retained.apps[&4242].roster_incomplete,
         "production non-covering marks blank-hidden before re-homing"
     );
-    for (key, windows) in rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx277) {
+    for (key, windows) in rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx277, false) {
         for w in windows {
             for members_of_domain in members.values_mut() {
                 members_of_domain.retain(|other| other.wid != w.wid);
@@ -4359,7 +4367,7 @@ fn non_covering_empty_ax_with_cg_alive_rehomes_hidden() {
     if let Some(app) = retained.apps.get_mut(&4242) {
         app.windows = members.values().flatten().copied().collect();
     }
-    audit_roster_hold(&mut retained, 4242, &ctx277);
+    audit_roster_hold(&mut retained, 4242, &ctx277, false);
     assert!(
         !retained.apps[&4242].roster_incomplete,
         "fresh hidden membership clears the production blank-hidden hold"
@@ -4445,6 +4453,7 @@ fn cg_alive_shared_output_holds_without_stale_assignment() {
             },
         ],
         skipped: Vec::new(),
+        detached_spaces: std::collections::BTreeMap::new(),
     };
     let w8 = repro_observed(8);
     // AX observes nothing for 7; fresh SLS proves singleton 277 (shared).
@@ -4459,7 +4468,7 @@ fn cg_alive_shared_output_holds_without_stale_assignment() {
     // Seed the hold as the covering path would (`cg-alive`): the shared
     // detail must not clear it and must not home either output.
     mark_roster_incomplete(&mut retained, 4242, "cg-alive");
-    let extras = rehydrate_cg_alive(&mut retained, 4242, &snap, &shared);
+    let extras = rehydrate_cg_alive(&mut retained, 4242, &snap, &shared, false);
     assert!(
         extras.is_empty(),
         "shared SID homes nothing, extras={extras:?}"
@@ -4589,7 +4598,7 @@ fn non_covering_contradicted_facts_drop_stale_home() {
             members.entry(key).or_default().push(w);
         }
         mark_roster_incomplete(&mut retained, 4242, "blank-hidden");
-        for (key, windows) in rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx277) {
+        for (key, windows) in rehydrate_cg_alive(&mut retained, 4242, &snap, &ctx277, false) {
             for w in windows {
                 for members_of_domain in members.values_mut() {
                     members_of_domain.retain(|other| other.wid != w.wid);
@@ -4601,7 +4610,7 @@ fn non_covering_contradicted_facts_drop_stale_home() {
         if let Some(app) = retained.apps.get_mut(&4242) {
             app.windows = members.values().flatten().copied().collect();
         }
-        audit_roster_hold(&mut retained, 4242, &ctx277);
+        audit_roster_hold(&mut retained, 4242, &ctx277, false);
         assert!(
             retained.apps[&4242].roster_incomplete,
             "{label}: contradicted facts hold"

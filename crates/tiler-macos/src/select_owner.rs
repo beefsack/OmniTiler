@@ -59,6 +59,10 @@ pub struct SelectJob {
     /// product unchanged). Carried from the controller submit into the
     /// owner backend, enforced on the reply-resolved SID at execution.
     pub fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+    /// Bounded read-only membership proof bridge to the per-app AX owner
+    /// (`None` on lanes that have no runtime owner: the detached route then
+    /// refuses instead of guessing). Carried across the serialized owner.
+    pub(crate) membership: Option<crate::detached_membership::MembershipProbe>,
     pub latch: Arc<SpaceSelectLatch>,
     pub wake: SpaceSelectWake,
     pub cancel: Arc<AtomicBool>,
@@ -73,6 +77,10 @@ pub struct SelectJob {
 #[derive(Debug, Clone)]
 pub struct SelectCompletion {
     pub operation_id: Option<String>,
+    /// Exact core-owned output the claim plan bound (`None` when no plan
+    /// bound). The reporting side stages the raw attempt against this exact
+    /// output; it never guesses one after the fact.
+    pub target_output: Option<tiler_core::directional::OutputId>,
     pub result: Result<SelectSuccess, SelectFailure>,
     pub proof: Option<TrailingAppendProof>,
     pub base: Instant,
@@ -90,6 +98,9 @@ pub struct SelectSubmit<'a> {
     pub published_displays: &'a [crate::topology::DisplayGeometry],
     pub published_separate: Option<bool>,
     pub trailing_enabled: bool,
+    /// Bounded read-only membership proof bridge to the per-app AX owner
+    /// (`None` on lanes without a runtime owner).
+    pub(crate) membership: Option<crate::detached_membership::MembershipProbe>,
     pub wake: &'a SpaceSelectWake,
 }
 
@@ -492,6 +503,7 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
         job.fixture_gate.clone(),
         &job.claim.action,
     );
+    backend.bind_membership(job.membership.clone());
     let result = crate::workspace_select::drain_claimed_select_with(
         state,
         &mut backend,
@@ -502,6 +514,11 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
     let proof = state.take_trailing_proof();
     SelectCompletion {
         operation_id: job.claim.operation_id.clone(),
+        target_output: job
+            .claim
+            .select_target_output
+            .clone()
+            .map(tiler_core::directional::OutputId),
         result,
         proof,
         base: job.submitted_at,
@@ -514,12 +531,17 @@ pub(crate) fn execute_select_job(job: &SelectJob, state: &mut SelectionState) ->
 fn cancelled_completion(job: &SelectJob) -> SelectCompletion {
     SelectCompletion {
         operation_id: job.claim.operation_id.clone(),
+        target_output: job
+            .claim
+            .select_target_output
+            .clone()
+            .map(tiler_core::directional::OutputId),
         result: Err(crate::workspace_select::SelectFailure {
             reason: "select refused: cancelled before dispatch".to_owned(),
             setter: tiler_core::world_report::FrameSetter::Refused,
             pre: None,
             post: None,
-            baseline: job.claim.select_baseline_sid,
+            baseline: job.claim.select_baseline,
             creation: None,
             attempt_ms: crate::input_eligibility::now_ms(),
         }),
@@ -831,6 +853,7 @@ impl SelectController {
             published_separate: legs.published_separate,
             trailing_enabled: legs.trailing_enabled,
             fixture_gate: self.fixture_gate.clone(),
+            membership: legs.membership.clone(),
             latch: Arc::new(legs.wake.subscribe()),
             wake: legs.wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),

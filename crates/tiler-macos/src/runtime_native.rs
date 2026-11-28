@@ -904,7 +904,10 @@ pub(crate) fn handle_scoped_observation(
     // the hold pending fresh AX; actual closes already pruned above.
     // Fresh wins over the stale non-covering preservation (same function,
     // above): drop any same-wid preserved row before pushing the fresh home.
-    for (key, windows) in crate::runtime_core::rehydrate_cg_alive(retained, pid, &snapshot, &ctx) {
+    let detached_enabled = session.detached_fullscreen_view();
+    for (key, windows) in
+        crate::runtime_core::rehydrate_cg_alive(retained, pid, &snapshot, &ctx, detached_enabled)
+    {
         for w in windows {
             for members_of_domain in members.values_mut() {
                 members_of_domain.retain(|other| other.wid != w.wid);
@@ -981,7 +984,7 @@ pub(crate) fn handle_scoped_observation(
     // Re-audit the hold after homing: unrepresentable roster rows (no
     // frame, or a frame no single FULL output uniquely owns) keep this
     // PID incomplete; grounded rows and homed rows do not hold.
-    crate::runtime_core::audit_roster_hold(retained, pid, &ctx);
+    crate::runtime_core::audit_roster_hold(retained, pid, &ctx, detached_enabled);
     emit(
         shared,
         pid,
@@ -1179,6 +1182,7 @@ mod tests {
             revision,
             domains: vec![close_domain(current, readable)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1196,6 +1200,7 @@ mod tests {
             }),
             spaces: vec![277],
             fullscreen_meta: false,
+            detached_membership: None,
             minimized_meta: false,
             hidden_meta: false,
             excluded: None,
@@ -1471,6 +1476,7 @@ mod tests {
             revision: CLOSE_REV,
             domains: vec![close_domain(true, false)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         };
         assert_eq!(
             gate_close_retained(

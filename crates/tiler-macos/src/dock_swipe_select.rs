@@ -43,6 +43,7 @@ use std::time::{Duration, Instant};
 
 use crate::ffi::{LatchWait, SpaceSelectLatch};
 use crate::space_switch_edges::{GesturePairsOutcome, gesture_payload_allowed, swipe_plan};
+use crate::runtime_types::SelectPhysical;
 use crate::workspace_select::{DispatchError, SelectGates, SelectionBackend, SelectionSnapshot};
 
 /// Absolute arrival deadline for one Dock-swipe settlement (ms). Async
@@ -76,6 +77,9 @@ pub struct FullRow {
     pub full_order: Vec<u64>,
     pub user_spaces: Vec<u64>,
     pub current: u64,
+    /// `Some(current)` exactly when the current Space is a fullscreen
+    /// surface on this display (the user row excludes it by construction).
+    pub detached: Option<u64>,
 }
 
 /// Injectable fresh-topology seam for the Dock-swipe executor. Every method
@@ -462,9 +466,11 @@ pub(crate) fn assemble_pinned_row(
         return Err("dock-swipe refused: current Space not in native order".to_owned());
     }
     let mut user_spaces = Vec::new();
+    let mut detached = None;
     for sid in spaces {
         match space_type(*sid)? {
             crate::ffi::SlsSpaceType::User => user_spaces.push(*sid),
+            crate::ffi::SlsSpaceType::Fullscreen if *sid == current => detached = Some(*sid),
             _ => continue,
         }
     }
@@ -476,6 +482,7 @@ pub(crate) fn assemble_pinned_row(
         full_order: spaces.to_vec(),
         user_spaces,
         current,
+        detached,
     })
 }
 
@@ -1062,6 +1069,10 @@ pub(crate) struct OwnerSelectBackend<T: SwipeTopology, P: SwipePoster> {
     /// actuate only owned SIDs and creates refuse (the controller owns
     /// creation). `None` leaves the normal product unchanged.
     fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+    /// Bounded read-only membership proof bridge to the per-app AX owner
+    /// (`None` on lanes without a runtime owner: the detached membership
+    /// route then refuses).
+    membership: Option<crate::detached_membership::MembershipProbe>,
     /// The gesture payload the select leg dispatches under. Production
     /// reads the running OS major; offline tests pin the newest supported
     /// major so the scripted seams exercise the payload itself rather than
@@ -1097,6 +1108,7 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
             op: args.op,
             t_base: args.t_base,
             fixture_gate: args.fixture_gate,
+            membership: None,
             os_major: crate::ffi::macos_major(),
             targeted_keyboard_select: false,
             unproven_swipe_27: false,
@@ -1108,6 +1120,16 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
     #[cfg(test)]
     pub(crate) fn test_force_os_major(&mut self, major: u32) {
         self.os_major = Some(major);
+    }
+
+    /// Attach the bounded read-only membership proof bridge. Production
+    /// callers pass the live runtime owner handle; test/legacy lanes pass
+    /// `None` and the detached membership route refuses without guessing.
+    pub(crate) fn bind_membership(
+        &mut self,
+        membership: Option<crate::detached_membership::MembershipProbe>,
+    ) {
+        self.membership = membership;
     }
 
     /// Test-only readback of the injected poster (lets offline tests prove
@@ -1308,8 +1330,13 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
     fn select_pinned_mc(
         &mut self,
         before: &SelectionSnapshot,
-        sid: u64,
+        destination: SelectPhysical,
     ) -> Result<(), DispatchError> {
+        let sid = destination.sid();
+        let target_proven = match destination {
+            SelectPhysical::Desktop(sid) => before.spaces.contains(&sid),
+            SelectPhysical::Detached(_) => before.detached_selector_target_proven(destination),
+        };
         let count = self.legs.published_displays.len();
         if count > 1 && self.legs.published_separate != Some(true) {
             return Err(DispatchError::refused(
@@ -1348,7 +1375,7 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
         })?;
         if pre.displays.len() != count
             || self.snapshot().map_err(DispatchError::refused)? != *before
-            || !before.spaces.contains(&sid)
+            || !target_proven
         {
             return Err(DispatchError::refused(
                 "pinned Mission Control row drifted before dispatch",
@@ -1430,6 +1457,7 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
             display: row.display_id,
             spaces: row.user_spaces,
             current: row.current,
+            detached: row.detached,
         })
     }
 
@@ -1490,6 +1518,36 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
 
     fn empty(&mut self, sid: u64) -> Result<bool, String> {
         crate::workspace_select::probe_trailing_emptiness(sid)
+    }
+
+    fn detached_membership(
+        &mut self,
+        member: &str,
+        generation: u64,
+        surface: u64,
+    ) -> Result<bool, String> {
+        let probe = self.membership.as_ref().ok_or_else(|| {
+            "detached membership read unavailable: no per-app AX owner bridge".to_owned()
+        })?;
+        probe.read_membership(member, generation, surface)
+    }
+
+    fn select_detached_view(
+        &mut self,
+        before: &SelectionSnapshot,
+        target: SelectPhysical,
+    ) -> Result<(), DispatchError> {
+        if self
+            .fixture_gate
+            .as_ref()
+            .is_some_and(|gate| !gate.allows(target.sid()))
+        {
+            return Err(DispatchError::refused(format!(
+                "fixture gate: select of Space {} outside the owned set refused without actuation",
+                target.sid()
+            )));
+        }
+        self.select_pinned_mc(before, target)
     }
 
     fn create(&mut self, before: &SelectionSnapshot) -> Result<(), DispatchError> {
@@ -1602,14 +1660,14 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
                             return Err(err);
                         }
                         eprintln!("tiler-macos select route=mc-pinned reason={}", err.reason);
-                        return self.select_pinned_mc(before, sid);
+                        return self.select_pinned_mc(before, SelectPhysical::Desktop(sid));
                     }
                     result => return result,
                 }
             }
         }
         if self.legs.published_displays.len() > 1 {
-            return self.select_pinned_mc(before, sid);
+            return self.select_pinned_mc(before, SelectPhysical::Desktop(sid));
         }
         // Owner-fresh gates (never the stale submit-time snapshot), the
         // per-job settle latch, and the shared cancellation flag travel

@@ -1,8 +1,8 @@
 # Proposal: return to a remembered native fullscreen member on macOS
 
-**Status:** Pass 4 spec fixes applied (doc-only); core contract ready for coordinated implementation. Host single-window round-trip evidence collected; macOS adapter live acceptance (explicit detached current, redundant refusal → armed away → return) and Split View remain open.
+**Status:** Pass 4 approved. The [amended v4 contract](../porting/world-contract.md#native-observation) defines the coordinated cutover. Single-window host round-trip evidence was collected; signed product acceptance (redundant refusal → armed away → exact return) and Split View remain open.
 
-No wire, core, or return-route change is enabled by this proposal.
+Neither macOS product route advertises detached fullscreen support before signed acceptance.
 
 ## Problem
 

@@ -893,10 +893,12 @@ mod native {
                     }
                     handle.report_select_attempt(
                         operation_id,
+                        completion.target_output.as_ref().map(|output| output.0.as_str()),
                         success.setter,
                         success.pre,
                         success.post,
                         success.effect.baseline,
+                        success.post_member.clone(),
                     );
                 }
             }
@@ -907,10 +909,12 @@ mod native {
                     }
                     handle.report_select_attempt(
                         operation_id,
+                        completion.target_output.as_ref().map(|output| output.0.as_str()),
                         failure.setter,
                         failure.pre,
                         failure.post,
                         failure.baseline,
+                        None,
                     );
                 }
             }
@@ -3444,12 +3448,15 @@ mod native {
                 // verbatim — never re-derived here from the arrival outcome.
                 handle.report_send_outcome(
                     settle.target.operation_id(),
+                    Some(settle.target.source().output.0.as_str()),
                     settle.setter,
                     settle.pre_member,
                     settle.post_member,
                     settle.pre_view,
                     settle.post_view,
-                    settle.baseline,
+                    settle
+                        .baseline
+                        .map(crate::runtime_types::SelectPhysical::Desktop),
                     settle.follow_view_operation.as_deref(),
                 );
             }
@@ -3466,6 +3473,7 @@ mod native {
                 );
                 handle.report_send_outcome(
                     &refusal.operation_id,
+                    None,
                     refusal.setter,
                     None,
                     None,
@@ -3718,12 +3726,13 @@ mod native {
                                 // under the claim's own bound identity.
                                 handle.report_send_outcome(
                                     operation_id,
+                                    claim.select_target_output.as_deref(),
                                     tiler_core::world_report::FrameSetter::Refused,
                                     None,
                                     None,
                                     None,
                                     None,
-                                    claim.select_baseline_sid,
+                                    claim.select_baseline,
                                     claim.send_follow_view_operation.as_deref(),
                                 );
                             }
@@ -3741,6 +3750,8 @@ mod native {
                     // BOTH outcomes.
                     let published = handle.published_display_inputs();
                     let wake = handle.select_wake();
+                    let membership =
+                        crate::detached_membership::MembershipProbe::from_runtime(&handle);
                     let grouped_route = matches!(
                         &claim.action,
                         crate::runtime_types::InputSemanticAction::IndicatorSelectWorkspace { .. }
@@ -3777,6 +3788,7 @@ mod native {
                                             published_separate: published.separate,
                                             trailing_enabled:
                                                 crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                                            membership: Some(membership.clone()),
                                             wake: &wake,
                                         },
                                     )
@@ -3804,6 +3816,7 @@ mod native {
                                             published_separate: published.separate,
                                             trailing_enabled:
                                                 crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                                            membership: Some(membership.clone()),
                                             wake: &wake,
                                         },
                                     )
@@ -3833,6 +3846,7 @@ mod native {
                                         published_separate: published.separate,
                                         trailing_enabled:
                                             crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+                                        membership: Some(membership.clone()),
                                         wake: &wake,
                                     },
                                 ),
@@ -3875,7 +3889,9 @@ mod native {
                                 use tiler_core::world_report::FrameSetter;
                                 handle.report_select_attempt(
                                     operation_id,
+                                    claim.select_target_output.as_deref(),
                                     FrameSetter::Refused,
+                                    None,
                                     None,
                                     None,
                                     None,
@@ -4169,12 +4185,15 @@ mod native {
                     );
                     handle.report_send_outcome(
                         settle.target.operation_id(),
+                        Some(settle.target.source().output.0.as_str()),
                         settle.setter,
                         settle.pre_member,
                         settle.post_member,
                         settle.pre_view,
                         settle.post_view,
-                        settle.baseline,
+                        settle
+                            .baseline
+                            .map(crate::runtime_types::SelectPhysical::Desktop),
                         settle.follow_view_operation.as_deref(),
                     );
                 }
@@ -4187,6 +4206,7 @@ mod native {
                     );
                     handle.report_send_outcome(
                         &refusal.operation_id,
+                        None,
                         refusal.setter,
                         None,
                         None,
@@ -4832,6 +4852,11 @@ mod native {
                         .push(job.claim.operation_id.clone().unwrap_or_default());
                     crate::select_owner::SelectCompletion {
                         operation_id: job.claim.operation_id.clone(),
+                        target_output: job
+                            .claim
+                            .select_target_output
+                            .clone()
+                            .map(tiler_core::directional::OutputId),
                         result: Ok(crate::workspace_select::SelectSuccess {
                             effect: crate::workspace_select::SelectionEffect {
                                 from: 1001,
@@ -4841,8 +4866,9 @@ mod native {
                                 baseline: None,
                             },
                             setter: tiler_core::world_report::FrameSetter::Accepted,
-                            pre: Some(1001),
-                            post: Some(1002),
+                            pre: Some(crate::runtime_types::SelectPhysical::Desktop(1001)),
+                            post: Some(crate::runtime_types::SelectPhysical::Desktop(1002)),
+                            post_member: None,
                             creation: None,
                             attempt_ms: 0,
                         }),
@@ -4965,6 +4991,7 @@ mod native {
                     published_separate: Some(true),
                     trailing_enabled: false,
                     fixture_gate: None,
+                    membership: None,
                     latch: Arc::new(select_wake.subscribe()),
                     wake: select_wake.clone(),
                     cancel: Arc::new(AtomicBool::new(false)),
@@ -5675,6 +5702,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -5737,6 +5765,8 @@ mod tests {
                     output: OutputId("out-a".to_owned()),
                     native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
                     current_native: Some("space-1".to_owned()),
+                    current_known: true,
+                    detached_current: None,
                     occupancy: vec![
                         NativeOccupancy {
                             native: "space-1".to_owned(),
@@ -6099,6 +6129,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -6150,6 +6181,8 @@ mod tests {
                 output: OutputId("out-a".to_owned()),
                 native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
                 current_native: Some("space-1".to_owned()),
+                current_known: true,
+                detached_current: None,
                 occupancy: vec![
                     tiler_core::world_report::NativeOccupancy {
                         native: "space-1".to_owned(),

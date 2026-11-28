@@ -430,6 +430,38 @@ pub(crate) fn arrival_capture_due(
     }
     Some(key)
 }
+/// Service at most one pending detached-membership request on THIS owning
+/// worker thread: the same thread that observed the window performs one
+/// ordered [`AxBackend::capture_brackets`] batch for the requested wid, so
+/// the reply carries the real owner joins (window enumeration, anchor
+/// identity, SLS membership, before/after lifetime) and never a bare
+/// pid/wid guess. Read-only: no setter, no clock bump, no retry, no new
+/// work id. A request naming another generation is answered without any
+/// native read (the waiter refuses); an unreadable/empty bracket is
+/// answered as `None` and the waiter refuses. Returns whether a request
+/// was serviced.
+pub(crate) fn serve_membership_probe(
+    backend: &mut dyn AxBackend,
+    generation: u64,
+    slot: &crate::detached_membership::MembershipProbeSlot,
+) -> bool {
+    let Some(request) = slot.take() else {
+        return false;
+    };
+    if request.generation != generation {
+        // Wrong lifetime: answer with our generation and no read so the
+        // waiter fails closed immediately instead of timing out.
+        slot.complete(request, generation, None);
+        return true;
+    }
+    let read = backend
+        .capture_brackets(&[request.wid])
+        .into_iter()
+        .find(|read| read.wid == request.wid);
+    slot.complete(request, generation, read);
+    true
+}
+
 /// Owner-side capture for the current pending intent: one ordered bracket
 /// batch for the frozen members owned by `pid`, mapped with the sampled
 /// watermark/cell generations, sent as one evidence-only
@@ -1148,6 +1180,7 @@ pub(crate) fn app_worker_main(
     factory: Arc<dyn AxBackendFactory>,
     frames: Arc<FrameSlot>,
     focus: Arc<FocusSlot>,
+    membership: Arc<crate::detached_membership::MembershipProbeSlot>,
     inbox: Arc<Inbox>,
     shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
@@ -1156,6 +1189,7 @@ pub(crate) fn app_worker_main(
     let mut backend = match factory.create(pid) {
         Ok(backend) => backend,
         Err(reason) => {
+            membership.stop();
             *ready.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Err(reason));
             return WorkerExit::Clean;
         }
@@ -1180,6 +1214,7 @@ pub(crate) fn app_worker_main(
             0,
             false,
         ));
+        membership.stop();
         return teardown_worker(&mut backend, &shared, pid, generation, 0, reason);
     }
     let native_mode = matches!(
@@ -1294,6 +1329,12 @@ pub(crate) fn app_worker_main(
             break;
         }
         if native_mode {
+            // Bounded read-only detached-membership service at the
+            // existing multiplex trigger: at most one pending select-route
+            // request for THIS app generation, answered by one ordered
+            // bracket read on this owning thread. Never a timer, never a
+            // retry.
+            serve_membership_probe(&mut *backend, generation, &membership);
             // Re-bind EVERY multiplex iteration (not just on revision
             // drift): the hook carries a copy of the main-thread frontmost
             // plus the live cell, so a cleared context or a frontmost change
@@ -1995,6 +2036,7 @@ pub(crate) fn app_worker_main(
         (false, true) => "frames-stopped",
         (false, false) => "loop-exit",
     };
+    membership.stop();
     teardown_worker(&mut backend, &shared, pid, generation, seq, reason)
 }
 
@@ -2393,6 +2435,97 @@ mod arrival_capture_dedupe_tests {
             gesture_settlement: None,
             gesture_settlement_seq: 0,
         }))
+    }
+
+    #[test]
+    fn membership_probe_reuses_owner_bracket_reads_exactly() {
+        // Real bridge protocol with the existing scripted owner backend: a
+        // select-side request is serviced by `serve_membership_probe` on the
+        // owning thread through `capture_brackets`, and only an attested
+        // exact singleton proves. Every gap refuses or refutes, never
+        // guesses.
+        let shared = test_shared(pending_for("adapter-1", "gen-1"));
+        let slot = Arc::new(crate::detached_membership::MembershipProbeSlot::new());
+        lock_shared(&shared).apps.insert(
+            4242,
+            crate::runtime_shared::AppRecord {
+                generation: 1,
+                terminated: false,
+                stop: Arc::new(AtomicBool::new(false)),
+                frames: Arc::new(FrameSlot::new()),
+                focus: Arc::new(FocusSlot::new()),
+                membership: Arc::clone(&slot),
+                ready: Arc::new(Mutex::new(Some(Ok(())))),
+                worker: None,
+                worker_name: "test-4242".to_owned(),
+            },
+        );
+        let probe = crate::detached_membership::MembershipProbe::new(Arc::clone(&shared));
+        let read_with = |backend: &mut ScriptBackend, surface: u64| {
+            let requester = {
+                let probe = probe.clone();
+                std::thread::spawn(move || probe.read_membership("4242_7", 1, surface))
+            };
+            let deadline = Instant::now() + std::time::Duration::from_secs(2);
+            while !serve_membership_probe(backend, 1, &slot) {
+                assert!(
+                    Instant::now() < deadline,
+                    "owner never saw the membership request"
+                );
+                std::thread::yield_now();
+            }
+            requester.join().expect("requester joins")
+        };
+
+        // Exact lifetime on exactly the frozen surface.
+        let mut backend = ScriptBackend {
+            reads: vec![good_read()],
+            calls: 0,
+        };
+        assert_eq!(read_with(&mut backend, 3), Ok(true));
+
+        // A readable move is a definite "not here".
+        assert_eq!(read_with(&mut backend, 4), Ok(false));
+
+        // Split View (more than one Space) is readable but not the exact
+        // singleton.
+        let mut split = good_read();
+        split.spaces = vec![3, 4];
+        let mut backend = ScriptBackend {
+            reads: vec![split],
+            calls: 0,
+        };
+        assert_eq!(read_with(&mut backend, 3), Ok(false));
+
+        // Unreadable membership refuses.
+        let mut unreadable = good_read();
+        unreadable.spaces = Vec::new();
+        let mut backend = ScriptBackend {
+            reads: vec![unreadable],
+            calls: 0,
+        };
+        assert!(read_with(&mut backend, 3).is_err());
+
+        // Unattested owner identity (a reused wid) refuses.
+        let mut reused = good_read();
+        reused.owner_pid = None;
+        let mut backend = ScriptBackend {
+            reads: vec![reused],
+            calls: 0,
+        };
+        assert!(read_with(&mut backend, 3).is_err());
+
+        // Unknown owner (no live app record for the pid) refuses.
+        assert!(
+            probe
+                .read_membership("9999_7", 1, 3)
+                .is_err(),
+            "a bare pid with no live AX owner never proves"
+        );
+        assert!(
+            probe.read_membership("4242_7", 2, 3).is_err(),
+            "a replacement process generation cannot prove the frozen grant"
+        );
     }
 
     #[test]

@@ -923,6 +923,13 @@ impl LiveSendController {
             );
         }
         let target = crate::workspace_send_effect::ManagedSendTarget::from_claim(claim)?;
+        let baseline = match claim.select_baseline {
+            Some(crate::runtime_types::SelectPhysical::Desktop(sid)) => Some(sid),
+            Some(crate::runtime_types::SelectPhysical::Detached(_)) => {
+                return Err("managed send refuses a detached fullscreen source".to_owned());
+            }
+            None => None,
+        };
         // Fixture gate on the reply-bound target SID before any owner
         // effect (no thread spawn, no post): unowned destinations refuse
         // proven here; the drain stages `Refused` with no reads.
@@ -950,7 +957,7 @@ impl LiveSendController {
             target,
             display: display.to_owned(),
             from,
-            baseline: claim.select_baseline_sid,
+            baseline,
             follow_view_operation: claim.send_follow_view_operation.clone(),
         }));
         Ok(())

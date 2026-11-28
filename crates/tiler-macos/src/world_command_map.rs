@@ -456,6 +456,7 @@ mod directional_codec_tests {
                 visible: rect(0, 0, 800, 560),
             }],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         };
         let domain = DomainKey {
             output: output.clone(),
@@ -655,6 +656,7 @@ mod directional_codec_tests {
                 visible: rect(0, 0, 1440, 900),
             }],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         };
         let domain = DomainKey {
             output: output.clone(),
@@ -1170,6 +1172,7 @@ mod trailing_command_tests {
                     },
                 ],
                 skipped: Vec::new(),
+                detached_spaces: std::collections::BTreeMap::new(),
             }
         }
         fn spare_members(output: &OutputId) -> BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> {
@@ -1385,6 +1388,7 @@ mod trailing_command_tests {
             .and_then(parse_native_binding)
             .expect("fixture native current parses");
         let native = crate::workspace_select::SelectionSnapshot {
+            detached: None,
             display: "screen-1".to_owned(),
             spaces: native_spaces,
             current: native_current,
@@ -1530,7 +1534,7 @@ mod trailing_command_tests {
             claim.select_native_binding, None,
             "unbound spare binds no SID"
         );
-        assert_eq!(claim.select_baseline_sid, Some(1));
+        assert_eq!(claim.select_baseline, Some(crate::runtime_types::SelectPhysical::Desktop(1)));
         assert_eq!(
             claim.select_creation_logical.as_deref(),
             Some(spare.as_str())

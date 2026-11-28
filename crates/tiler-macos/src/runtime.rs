@@ -54,8 +54,8 @@ pub use crate::runtime_types::{
     IntentStoreMode, LifecycleEvent, LifecycleLogEntry, NativeContext, NativeCreationRequest,
     NativeDomain, ObservedWindow, PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP,
     PHASE1_OUTPUT, PHASE1_OWNER, PHASE1_WORKSPACE, RuntimeConfig, RuntimeDiagnostics,
-    ScopedBackendSnapshot, ScopedWindowMeta, StartupError, SubmitOutcome, TerminateOutcome,
-    TileBinding, TopologyMode, WorkerReadiness, parse_window_id, window_id,
+    ScopedBackendSnapshot, ScopedWindowMeta, SelectPhysical, StartupError, SubmitOutcome,
+    TerminateOutcome, TileBinding, TopologyMode, WorkerReadiness, parse_window_id, window_id,
 };
 pub use crate::scope::{AppScope, ProcessIdentity};
 pub use crate::topology::TopologySnapshot;
@@ -2073,12 +2073,21 @@ impl RuntimeHandle {
                 guard.apps.values().map(|r| Arc::clone(&r.frames)).collect();
             let focus_slots: Vec<Arc<FocusSlot>> =
                 guard.apps.values().map(|r| Arc::clone(&r.focus)).collect();
+            let membership_slots: Vec<Arc<crate::detached_membership::MembershipProbeSlot>> =
+                guard
+                    .apps
+                    .values()
+                    .map(|r| Arc::clone(&r.membership))
+                    .collect();
             let stops: Vec<Arc<AtomicBool>> =
                 guard.apps.values().map(|r| Arc::clone(&r.stop)).collect();
             for slot in &slots {
                 slot.stop();
             }
             for slot in &focus_slots {
+                slot.stop();
+            }
+            for slot in &membership_slots {
                 slot.stop();
             }
             for stop in &stops {
@@ -2280,6 +2289,7 @@ impl Drop for RuntimeHandle {
                     record.stop.store(true, Ordering::SeqCst);
                     record.frames.stop();
                     record.focus.stop();
+                    record.membership.stop();
                 }
                 (guard.input_thread.clone(), Some(guard.stop_logger.clone()))
             }
@@ -2291,6 +2301,7 @@ impl Drop for RuntimeHandle {
                     record.stop.store(true, Ordering::SeqCst);
                     record.frames.stop();
                     record.focus.stop();
+                    record.membership.stop();
                 }
                 (guard.input_thread.clone(), Some(guard.stop_logger.clone()))
             }

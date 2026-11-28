@@ -1637,6 +1637,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -1693,6 +1694,8 @@ mod tests {
                     output: OutputId("macos-display-1".to_owned()),
                     native_order: vec!["space-11".to_owned()],
                     current_native: Some("space-11".to_owned()),
+                    current_known: true,
+                    detached_current: None,
                     occupancy: vec![NativeOccupancy {
                         native: "space-11".to_owned(),
                         count: None,

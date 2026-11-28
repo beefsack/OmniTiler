@@ -291,6 +291,7 @@ fn owner_consumes_real_cell_topology_and_arrival_without_ax() {
             revision,
             domains: Vec::new(),
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
     let cell = NativeContextCell::new();

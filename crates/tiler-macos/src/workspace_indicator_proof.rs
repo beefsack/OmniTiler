@@ -978,10 +978,15 @@ mod live {
                     .claim_select_for_drain()
                     .ok_or_else(|| "tap claim missing after engine admission".to_owned())?
             };
+            let membership = self
+                .runtime
+                .as_ref()
+                .map(crate::detached_membership::MembershipProbe::from_runtime);
             let outcome = crate::workspace_select::drain_live_claimed(
                 &mut self.select_state,
                 claim,
                 &select_gates(),
+                membership,
             );
             if let Some(handle) = self.runtime.as_ref() {
                 handle.release_select_after_drain();
@@ -1035,10 +1040,15 @@ mod live {
                     .claim_select_for_drain()
                     .ok_or_else(|| "click claim missing after engine admission".to_owned())?
             };
+            let membership = self
+                .runtime
+                .as_ref()
+                .map(crate::detached_membership::MembershipProbe::from_runtime);
             let outcome = crate::workspace_select::drain_live_claimed(
                 &mut self.select_state,
                 claim,
                 &select_gates(),
+                membership,
             );
             if let Some(handle) = self.runtime.as_ref() {
                 handle.release_select_after_drain();

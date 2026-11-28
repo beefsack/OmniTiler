@@ -87,30 +87,41 @@ impl RuntimeHandle {
     /// view-attempt row for the next world report (data lane, best-effort:
     /// a full or closed queue drops counted, and the retained view target
     /// settles on the next select or observation instead). Call with the
-    /// `operation_id` of the drained claim (the engine ignores ids naming
-    /// no retained target) plus the drain's typed setter disposition and
-    /// genuine native Space reads around the actuation (`None` where
-    /// unread - never guessed) and the observation-time baseline (`None`
-    /// where unread at dispatch - never guessed). The core derives
-    /// confirmation, refusal, ambiguity, and supersession from the row
-    /// plus the staged observation - the adapter never sends verdicts.
+    /// `operation_id` of the drained claim, the exact core-owned
+    /// `target_output` the plan bound (`None` when no plan bound - the
+    /// stage drops without a row and never guesses an output), the drain's
+    /// typed setter disposition, genuine typed native Space reads around
+    /// the actuation (`None` where unread - never guessed), the
+    /// observation-time typed baseline (`None` where unread at dispatch -
+    /// never guessed), and the adapter-bracketed membership read for an
+    /// accepted exact detached post (`None` withholds proof). A
+    /// Desktop/Detached read is never flattened to a bare SID: both arms
+    /// keep their own authority. The core derives confirmation, refusal,
+    /// ambiguity, and supersession from the row plus the staged
+    /// observation - the adapter never sends verdicts.
+    #[allow(clippy::too_many_arguments)]
     pub fn report_select_attempt(
         &self,
         operation_id: &str,
+        target_output: Option<&str>,
         setter: FrameSetter,
-        pre_sid: Option<u64>,
-        post_sid: Option<u64>,
-        baseline_sid: Option<u64>,
+        pre: Option<crate::runtime_types::SelectPhysical>,
+        post: Option<crate::runtime_types::SelectPhysical>,
+        baseline: Option<crate::runtime_types::SelectPhysical>,
+        post_member: Option<tiler_core::directional::WindowId>,
     ) {
         if operation_id.is_empty() {
             return;
         }
         let job = EngineJob::ViewAttempt {
             operation_id: operation_id.to_owned(),
+            target_output: target_output
+                .map(|output| tiler_core::directional::OutputId(output.to_owned())),
             setter,
-            pre_sid,
-            post_sid,
-            baseline_sid,
+            pre,
+            post,
+            baseline,
+            post_member,
         };
         // Bump before enqueue (see `invalidate_clock` in runtime).
         invalidate_clock(&self.shared);
@@ -187,12 +198,13 @@ impl RuntimeHandle {
     pub fn report_send_outcome(
         &self,
         operation_id: &str,
+        target_output: Option<&str>,
         setter: FrameSetter,
         pre_member: Option<u64>,
         post_member: Option<u64>,
         pre_view: Option<u64>,
         post_view: Option<u64>,
-        baseline_sid: Option<u64>,
+        baseline: Option<crate::runtime_types::SelectPhysical>,
         follow_view_operation: Option<&str>,
     ) {
         if operation_id.is_empty() {
@@ -210,7 +222,17 @@ impl RuntimeHandle {
             lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
         }
         if let Some(follow_op) = follow_view_operation {
-            self.report_select_attempt(follow_op, setter, pre_view, post_view, baseline_sid);
+            // Follow view flights never carry a detached destination, so
+            // their member reads are Desktop-arm only by contract.
+            self.report_select_attempt(
+                follow_op,
+                target_output,
+                setter,
+                pre_view.map(crate::runtime_types::SelectPhysical::Desktop),
+                post_view.map(crate::runtime_types::SelectPhysical::Desktop),
+                baseline,
+                None,
+            );
         }
     }
 
@@ -287,7 +309,7 @@ impl RuntimeHandle {
 
     /// Release one deferred selection focus after the native selection
     /// proved arrival (main thread, on the matching select completion's
-    /// verified post): the post must name the bound native Space, the app
+    /// verified post): the post must name the bound Desktop Space, the app
     /// must be live at its bound generation, and the foreground must not
     /// have moved to another app. Anything else drops the intent counted
     /// instead of dispatching stale; a repeat completion finds nothing (no
@@ -296,14 +318,17 @@ impl RuntimeHandle {
     pub(crate) fn release_selection_focus(
         &self,
         completion_op: Option<&str>,
-        post_sid: Option<u64>,
+        post: Option<crate::runtime_types::SelectPhysical>,
         frontmost_pid: Option<u32>,
     ) -> crate::world_dispatch::SelectionFocusRelease {
         crate::world_dispatch::release_selection_focus_after_arrival(
             &self.shared,
             &self.focus_queue,
             completion_op,
-            post_sid,
+            match post {
+                Some(crate::runtime_types::SelectPhysical::Desktop(sid)) => Some(sid),
+                _ => None,
+            },
             frontmost_pid,
         )
     }
@@ -353,10 +378,15 @@ impl RuntimeHandle {
                 } else {
                     EngineJob::ViewAttempt {
                         operation_id: operation_id.to_owned(),
+                        target_output: claim
+                            .select_target_output
+                            .clone()
+                            .map(tiler_core::directional::OutputId),
                         setter: FrameSetter::Refused,
-                        pre_sid: None,
-                        post_sid: None,
-                        baseline_sid: None,
+                        pre: None,
+                        post: None,
+                        baseline: None,
+                        post_member: None,
                     }
                 };
                 // Bump before enqueue (see `invalidate_clock` in runtime).

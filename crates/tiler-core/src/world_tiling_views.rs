@@ -547,6 +547,14 @@ impl WorldTransaction<'_> {
         // A same-home selection, or a changed selection whose detached
         // destinations are all exact-current, needs no binding or effect.
         if admitted.is_empty() && (!changed || detached_any) {
+            if plan.is_exact(output)
+                && let Some(destination) = plan.detached_for(output)
+            {
+                self.world
+                    .staged
+                    .redundant_detached
+                    .push((command_seq, destination));
+            }
             return CommandApplied::NoEffect;
         }
         // Changed selections (and admitted detached returns) supersede

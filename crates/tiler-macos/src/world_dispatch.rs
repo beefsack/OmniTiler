@@ -4999,107 +4999,45 @@ fn settle_select_transfers(
     generation: u64,
     seq: u64,
 ) {
-    let pending_ops: Vec<Option<String>> = lock_shared(shared)
-        .select_pending
-        .iter()
-        .map(|claim| claim.operation_id.clone())
-        .collect();
-    if pending_ops.iter().all(Option::is_none) {
-        return;
-    }
-    let mut held_ops: Vec<String> = Vec::new();
-    let mut rebind_ops: Vec<String> = Vec::new();
-    for operation_id in pending_ops.into_iter().flatten() {
-        let held = reply
-            .transfers
-            .iter()
-            .find(|target| target.operation_id == operation_id)
-            .is_some_and(|target| target.held);
-        if held {
-            held_ops.push(operation_id);
-            continue;
-        }
-        let needs_plan = lock_shared(shared).select_pending.iter().any(|claim| {
-            claim.operation_id.as_deref() == Some(operation_id.as_str())
-                && claim.select_target_output.is_none()
+    let mut guard = lock_shared(shared);
+    let mut dropped = 0;
+    let ctx = guard.native_context.clone();
+    guard.select_pending.retain_mut(|claim| {
+        let Some(op) = claim.operation_id.as_deref() else {
+            return true;
+        };
+        let mut candidates = reply.transfers.iter().filter(|target| {
+            target.operation_id == op
+                && claim
+                    .select_target_output
+                    .as_ref()
+                    .is_none_or(|out| target.target_output.0 == *out)
         });
-        if needs_plan {
-            rebind_ops.push(operation_id);
+        let Some(target) = candidates.next() else {
+            return true;
+        };
+        if candidates.next().is_some() {
+            // A plan-less claim cannot borrow an arbitrary sibling's View.
+            return true;
         }
-    }
-    if !held_ops.is_empty() {
+        if target.held {
+            dropped += 1;
+            return false;
+        }
+        if claim.select_target_output.is_none()
+            && matches!(target.kind, tiler_core::world_report::TransferKind::View)
+            && let Some(ctx) = &ctx
         {
-            let mut guard = lock_shared(shared);
-            guard.select_pending.retain(|claim| {
-                !claim
-                    .operation_id
-                    .as_deref()
-                    .is_some_and(|op| held_ops.iter().any(|held| held == op))
-            });
-            if guard.select_pending.is_empty() {
-                // The dropped claims will never be polled: clear their
-                // publish wake so no spurious early body fires for them.
-                // A later store re-arms through the same flag.
-                guard.select_claim_pending = false;
-            }
+            crate::runtime_thread::bind_select_plan(session, ctx, claim, &target.operation_id);
         }
-        for _ in &held_ops {
-            emit(shared, pid, generation, seq, "input", "select-held", 0);
-        }
-        rebind_ops.retain(|op| !held_ops.contains(op));
+        true
+    });
+    if dropped > 0 && guard.select_pending.is_empty() {
+        guard.select_claim_pending = false;
     }
-    for operation_id in rebind_ops {
-        // Rebind a plan-less claim (stale-refusal store) from this applied
-        // reply: resolve the retained View transfer by operation identity,
-        // then the live native binding (or explicit creation desire) plus
-        // the observation-time baseline from the current native context.
-        // Never invents a binding; missing targets leave the claim unbound
-        // so the drain refuses without actuation. Claims already taken for
-        // drain are popped from the queue, so the drain in progress is
-        // never touched: only queued entries rebind.
-        let transfer = session
-            .engine_mut()
-            .retained_transfers()
-            .into_iter()
-            .find(|target| {
-                target.operation_id == operation_id
-                    && matches!(target.kind, tiler_core::world_report::TransferKind::View)
-            });
-        let Some(transfer) = transfer else {
-            continue;
-        };
-        let target_output = transfer.target_output.0.clone();
-        let target_workspace = transfer.target_workspace.clone();
-        let native_binding = reply
-            .workspaces
-            .iter()
-            .find(|row| row.output.0 == target_output && row.id == target_workspace)
-            .and_then(|row| row.native_binding.clone());
-        let creation = reply.native_creations.iter().find(|desire| {
-            desire.target_output.0 == target_output && desire.logical_workspace == target_workspace
-        });
-        let baseline_sid = lock_shared(shared).native_context.clone().and_then(|ctx| {
-            ctx.domains
-                .iter()
-                .find(|domain| domain.output.0 == target_output && domain.current)
-                .map(|domain| domain.space)
-        });
-        let mut guard = lock_shared(shared);
-        let Some(claim) = guard.select_pending.iter_mut().find(|claim| {
-            claim.operation_id.as_deref() == Some(operation_id.as_str())
-                && claim.select_target_output.is_none()
-        }) else {
-            continue;
-        };
-        claim.select_target_output = Some(target_output.clone());
-        claim.select_target_workspace = Some(target_workspace.clone());
-        claim.select_native_binding = native_binding;
-        if let Some(desire) = creation {
-            claim.select_creation_operation = Some(desire.operation_id.clone());
-            claim.select_creation_logical = Some(desire.logical_workspace.clone());
-            claim.select_creation_output = Some(desire.target_output.0.clone());
-        }
-        claim.select_baseline_sid = baseline_sid;
+    drop(guard);
+    for _ in 0..dropped {
+        emit(shared, pid, generation, seq, "input", "select-held", 0);
     }
 }
 
@@ -6558,6 +6496,7 @@ mod tests {
             revision: 9,
             domains: vec![domain(3, space3_current), domain(7, true)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -6571,6 +6510,7 @@ mod tests {
                 stop: Arc::new(AtomicBool::new(false)),
                 frames: Arc::new(FrameSlot::new()),
                 focus: Arc::clone(&slot),
+                membership: Arc::new(crate::detached_membership::MembershipProbeSlot::new()),
                 ready: Arc::new(Mutex::new(Some(Ok::<(), String>(())))),
                 worker: None,
                 worker_name: "test".to_owned(),
@@ -8744,6 +8684,7 @@ mod tests {
                 revision: ctx.revision,
                 domains,
                 skipped: Vec::new(),
+                detached_spaces: std::collections::BTreeMap::new(),
             })
         };
         lock_shared(&shared).native_context = Some(Arc::clone(&moved));
@@ -8815,6 +8756,7 @@ mod tests {
                 revision: ctx.revision,
                 domains,
                 skipped: Vec::new(),
+                detached_spaces: std::collections::BTreeMap::new(),
             })
         };
         lock_shared(&shared).native_context = Some(moved);
@@ -10079,6 +10021,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -10708,6 +10651,7 @@ mod tests {
                 },
             }],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -10870,6 +10814,9 @@ mod tests {
             crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 2 },
         );
         held_claim.operation_id = Some("op-1".to_owned());
+        held_claim.select_target_output = Some(output().0);
+        let mut sibling_claim = held_claim.clone();
+        sibling_claim.select_target_output = Some("macos-display-other".to_owned());
         let mut live_claim = crate::runtime_types::ClaimedSelect::tap(
             crate::runtime_types::InputSemanticAction::WorkspaceSelect { index: 1 },
         );
@@ -10879,6 +10826,7 @@ mod tests {
             let mut guard = lock_shared(&shared);
             guard.select_pending.push_back(held_claim);
             guard.select_pending.push_back(live_claim);
+            guard.select_pending.push_back(sibling_claim);
             guard.select_claim_pending = true;
         }
         let mut reply = empty_reply();
@@ -10893,6 +10841,7 @@ mod tests {
                 held: true,
                 command_seq: None,
                 parent: None,
+                detached_destination: None,
             });
         settle_select_transfers(&mut session, &shared, &reply, 0, 0, 0);
         let guard = lock_shared(&shared);
@@ -10903,7 +10852,7 @@ mod tests {
             .collect();
         assert_eq!(
             ops,
-            vec![Some("op-2".to_owned())],
+            vec![Some("op-2".to_owned()), Some("op-1".to_owned())],
             "held claim drops before actuation, live claim stays queued"
         );
         assert!(
@@ -10945,6 +10894,7 @@ mod tests {
             }),
             spaces: vec![7],
             fullscreen_meta: false,
+            detached_membership: None,
             minimized_meta: false,
             hidden_meta: false,
             excluded: None,
@@ -11777,6 +11727,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -12060,6 +12011,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -12093,6 +12045,8 @@ mod tests {
                     output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
                     native_order: vec!["space-11".to_owned()],
                     current_native: Some("space-11".to_owned()),
+                    current_known: true,
+                    detached_current: None,
                     occupancy: vec![tiler_core::world_report::NativeOccupancy {
                         native: "space-11".to_owned(),
                         count: None,
@@ -12929,6 +12883,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -12962,6 +12917,8 @@ mod tests {
                     output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
                     native_order: vec!["space-11".to_owned()],
                     current_native: Some("space-11".to_owned()),
+                    current_known: true,
+                    detached_current: None,
                     occupancy: vec![tiler_core::world_report::NativeOccupancy {
                         native: "space-11".to_owned(),
                         count: None,
@@ -13297,6 +13254,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -13328,6 +13286,8 @@ mod tests {
                     output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
                     native_order: vec!["space-11".to_owned()],
                     current_native: Some("space-11".to_owned()),
+                    current_known: true,
+                    detached_current: None,
                     occupancy: vec![tiler_core::world_report::NativeOccupancy {
                         native: "space-11".to_owned(),
                         count: None,
@@ -13633,6 +13593,7 @@ mod tests {
                 fullscreen_owner: None,
                 fullscreen_exitable: None,
                 suppression_available: None,
+                detached_surface: None,
                 visibility: tiler_core::world_report::VisibilityFact {
                     visible: Some(true),
                     suppression_owned: None,
@@ -13666,6 +13627,8 @@ mod tests {
                     output: tiler_core::directional::OutputId("macos-display-1".to_owned()),
                     native_order: vec!["space-11".to_owned()],
                     current_native: Some("space-11".to_owned()),
+                    current_known: true,
+                    detached_current: None,
                     occupancy: vec![tiler_core::world_report::NativeOccupancy {
                         native: "space-11".to_owned(),
                         count: None,
@@ -14000,6 +13963,7 @@ mod tests {
             fullscreen_owner: None,
             fullscreen_exitable: None,
             suppression_available: None,
+            detached_surface: None,
             visibility: VisibilityFact {
                 visible: Some(true),
                 suppression_owned: None,
@@ -14137,6 +14101,7 @@ mod tests {
             fullscreen_owner: None,
             fullscreen_exitable: None,
             suppression_available: None,
+            detached_surface: None,
             visibility: VisibilityFact {
                 visible: Some(true),
                 suppression_owned: None,
@@ -14160,6 +14125,8 @@ mod tests {
             output: OutputId("out-a".to_owned()),
             native_order: vec!["native-a-0".to_owned()],
             current_native: Some("native-a-0".to_owned()),
+            current_known: true,
+            detached_current: None,
             occupancy: vec![NativeOccupancy {
                 native: "native-a-0".to_owned(),
                 count: None,
@@ -14262,6 +14229,7 @@ mod tests {
                 visible: ff_rect(0, 0, 800, 600),
             }],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -14288,6 +14256,7 @@ mod tests {
                     observed: None,
                     spaces: Vec::new(),
                     fullscreen_meta: false,
+                    detached_membership: None,
                     minimized_meta: false,
                     hidden_meta: false,
                     excluded: None,
@@ -14348,6 +14317,7 @@ mod tests {
                 observed: None,
                 spaces: Vec::new(),
                 fullscreen_meta: false,
+                detached_membership: None,
                 minimized_meta: minimized,
                 hidden_meta: false,
                 excluded: None,

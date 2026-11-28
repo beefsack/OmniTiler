@@ -42,6 +42,7 @@ pub mod cursor_probe;
 pub mod desktop_shortcuts;
 #[cfg(test)]
 mod desktop_shortcuts_tests;
+mod detached_membership;
 pub mod dev_selection;
 pub mod diag_cause;
 pub mod dock_swipe_select;

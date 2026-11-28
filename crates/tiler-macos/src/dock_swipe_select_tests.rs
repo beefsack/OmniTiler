@@ -43,6 +43,7 @@ struct FakeTopo {
 impl FakeTopo {
     fn row(display_id: &str, order: &[u64], current: u64) -> FullRow {
         FullRow {
+            detached: None,
             display_id: display_id.to_owned(),
             full_order: order.to_vec(),
             user_spaces: order.to_vec(),
@@ -251,6 +252,7 @@ fn request<'a>(
 
 fn before_row(spaces: &[u64], current: u64) -> SelectionSnapshot {
     SelectionSnapshot {
+        detached: None,
         display: FIX_DISPLAY.to_owned(),
         spaces: spaces.to_vec(),
         current,
@@ -410,18 +412,21 @@ fn mixed_space_types_traverse_fullscreen_inserts() {
         counts: vec![Ok(1), Ok(1)].into(),
         rows: vec![
             Ok(FullRow {
+                detached: None,
                 display_id: FIX_DISPLAY.to_owned(),
                 full_order: order.clone(),
                 user_spaces: vec![1001, 1003],
                 current: 1001,
             }),
             Ok(FullRow {
+                detached: None,
                 display_id: FIX_DISPLAY.to_owned(),
                 full_order: order.clone(),
                 user_spaces: vec![1001, 1003],
                 current: 1001,
             }),
             Ok(FullRow {
+                detached: None,
                 display_id: FIX_DISPLAY.to_owned(),
                 full_order: order.clone(),
                 user_spaces: vec![1001, 1003],
@@ -909,6 +914,7 @@ fn cancel_during_settlement_refuses_without_history() {
                 }
             };
             Ok(FullRow {
+                detached: None,
                 display_id: FIX_DISPLAY.to_owned(),
                 full_order: vec![1001, 1002],
                 user_spaces: vec![1001, 1002],
@@ -972,12 +978,14 @@ fn pre_post_fullscreen_insert_refuses_without_posting() {
         counts: vec![Ok(1)].into(),
         rows: vec![
             Ok(FullRow {
+                detached: None,
                 display_id: FIX_DISPLAY.to_owned(),
                 full_order: row0_order.clone(),
                 user_spaces: row0_order.clone(),
                 current: 1001,
             }),
             Ok(FullRow {
+                detached: None,
                 display_id: FIX_DISPLAY.to_owned(),
                 full_order: pre_order,
                 user_spaces: row0_order.clone(),
@@ -1026,6 +1034,7 @@ fn pre_post_identity_and_user_row_drift_refuse_without_posting() {
             rows: vec![
                 Ok(FakeTopo::row(FIX_DISPLAY, &order, 1001)),
                 Ok(FullRow {
+                    detached: None,
                     display_id: display_id.to_owned(),
                     full_order: order.clone(),
                     user_spaces: user_spaces.clone(),
@@ -1990,7 +1999,7 @@ fn execute_preserves_append_proof_when_post_create_select_refuses() {
     claim.select_creation_operation = Some("op-native-1".to_owned());
     claim.select_creation_logical = Some("ws-new".to_owned());
     claim.select_creation_output = Some("macos-display-1".to_owned());
-    claim.select_baseline_sid = Some(72);
+    claim.select_baseline = Some(crate::runtime_types::SelectPhysical::Desktop(72));
     let failure = crate::workspace_select::drain_claimed_select_with(
         &mut state,
         &mut backend,
@@ -2013,8 +2022,8 @@ fn execute_preserves_append_proof_when_post_create_select_refuses() {
         tiler_core::world_report::FrameSetter::Threw,
         "ambiguous post-actuation output holds, never a proven refusal"
     );
-    assert_eq!(failure.pre, Some(72));
-    assert_eq!(failure.baseline, Some(72));
+    assert_eq!(failure.pre, Some(crate::runtime_types::SelectPhysical::Desktop(72)));
+    assert_eq!(failure.baseline, Some(crate::runtime_types::SelectPhysical::Desktop(72)));
     // The creation leg itself verified: its report rides the failure.
     let creation = failure.creation.expect("append proof rides the failure");
     assert_eq!(creation.operation_id, "op-native-1");
@@ -2054,7 +2063,7 @@ fn drain_plan(
     claim.select_target_output = Some("macos-display-7".to_owned());
     claim.select_target_workspace = Some("ws-async".to_owned());
     claim.select_native_binding = Some(binding.to_owned());
-    claim.select_baseline_sid = Some(baseline);
+    claim.select_baseline = Some(crate::runtime_types::SelectPhysical::Desktop(baseline));
     claim
 }
 
@@ -2156,7 +2165,7 @@ fn drain_delayed_arrival_settles_accepted_without_replay() {
     )
     .expect("delayed arrival settles");
     assert_eq!(success.setter, FrameSetter::Accepted);
-    assert_eq!((success.pre, success.post), (Some(1001), Some(1003)));
+    assert_eq!((success.pre, success.post), (Some(crate::runtime_types::SelectPhysical::Desktop(1001)), Some(crate::runtime_types::SelectPhysical::Desktop(1003))));
     assert_eq!(success.effect.target, 1003);
     assert!(success.effect.changed);
     assert_eq!(backend.test_poster().posted, vec![(1.0, 2)]);
@@ -2250,7 +2259,7 @@ fn drain_intermediate_notification_confirms_without_replay() {
     )
     .expect("intermediate notification still confirms");
     assert_eq!(success.setter, FrameSetter::Accepted);
-    assert_eq!((success.pre, success.post), (Some(1001), Some(1003)));
+    assert_eq!((success.pre, success.post), (Some(crate::runtime_types::SelectPhysical::Desktop(1001)), Some(crate::runtime_types::SelectPhysical::Desktop(1003))));
     assert_eq!(backend.test_poster().posted, vec![(1.0, 2)]);
 }
 
@@ -2301,9 +2310,9 @@ fn drain_partial_post_holds_unknown_without_replay() {
     )
     .expect_err("partial posting holds");
     assert_eq!(failure.setter, FrameSetter::Threw);
-    assert_eq!(failure.pre, Some(1001));
+    assert_eq!(failure.pre, Some(crate::runtime_types::SelectPhysical::Desktop(1001)));
     assert_eq!(failure.post, None, "unreadable post stays unknown");
-    assert_eq!(failure.baseline, Some(1001));
+    assert_eq!(failure.baseline, Some(crate::runtime_types::SelectPhysical::Desktop(1001)));
     assert_eq!(
         backend.test_poster().posted.len(),
         1,
@@ -2371,7 +2380,7 @@ fn drain_newer_switch_supersedes_without_replay() {
         true,
     )
     .expect("first switch actuates");
-    assert_eq!((first.pre, first.post), (Some(1001), Some(1002)));
+    assert_eq!((first.pre, first.post), (Some(crate::runtime_types::SelectPhysical::Desktop(1001)), Some(crate::runtime_types::SelectPhysical::Desktop(1002))));
     let second = drain_claimed_select_with(
         &mut state,
         &mut backend,
@@ -2387,7 +2396,7 @@ fn drain_newer_switch_supersedes_without_replay() {
     .expect("newer switch supersedes");
     // The newer drain observed the older arrival as its pre-image: exact
     // supersession, no stale actuation, no replay.
-    assert_eq!((second.pre, second.post), (Some(1002), Some(1001)));
+    assert_eq!((second.pre, second.post), (Some(crate::runtime_types::SelectPhysical::Desktop(1002)), Some(crate::runtime_types::SelectPhysical::Desktop(1001))));
     assert_eq!(
         backend.test_poster().posted,
         vec![(1.0, 1), (-1.0, 1)],
@@ -2622,6 +2631,7 @@ fn owner_backend_capability_and_creation_are_multi_display_explicit() {
         "the owner never accepts the other display's output"
     );
     let before = SelectionSnapshot {
+        detached: None,
         display: "display-b".to_owned(),
         spaces: vec![31, 32],
         current: 31,

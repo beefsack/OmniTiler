@@ -89,6 +89,7 @@ fn target_domain_named(space: u64, current: bool, display: &str) -> NativeDomain
 fn topo(spaces: Vec<u64>, current: u64, revision: u64) -> SendTopology {
     SendTopology {
         row: SelectionSnapshot {
+            detached: None,
             display: "display-a".to_owned(),
             spaces,
             current,
@@ -102,6 +103,7 @@ fn topo(spaces: Vec<u64>, current: u64, revision: u64) -> SendTopology {
                 target_domain(7, 7 == current),
             ],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         }),
     }
 }
@@ -207,7 +209,10 @@ fn admitted_claim() -> ClaimedSelect {
         select_creation_operation: None,
         select_creation_logical: None,
         select_creation_output: None,
-        select_baseline_sid: None,
+        select_baseline: None,
+        select_detached_surface: None,
+        select_detached_member: None,
+        select_detached_enabled: false,
         send_follow_view_operation: None,
     }
 }
@@ -1814,7 +1819,10 @@ fn admitted_stay_claim() -> ClaimedSelect {
         select_creation_operation: None,
         select_creation_logical: None,
         select_creation_output: None,
-        select_baseline_sid: None,
+        select_baseline: None,
+        select_detached_surface: None,
+        select_detached_member: None,
+        select_detached_enabled: false,
         send_follow_view_operation: None,
     }
 }
@@ -2493,7 +2501,10 @@ fn fixture_gate_controller_submit_refuses_unowned_before_any_owner_effect() {
         select_creation_operation: None,
         select_creation_logical: None,
         select_creation_output: None,
-        select_baseline_sid: None,
+        select_baseline: None,
+        select_detached_surface: None,
+        select_detached_member: None,
+        select_detached_enabled: false,
         send_follow_view_operation: None,
     };
     let err = controller

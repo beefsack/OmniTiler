@@ -1831,7 +1831,10 @@ pub(crate) fn execute_trailing_send<B: ManagedSendBackend>(
         select_creation_operation: None,
         select_creation_logical: None,
         select_creation_output: None,
-        select_baseline_sid: None,
+        select_baseline: None,
+        select_detached_surface: None,
+        select_detached_member: None,
+        select_detached_enabled: false,
         send_follow_view_operation: None,
     };
     let send_prep = crate::workspace_send::TrailingSendPrep {

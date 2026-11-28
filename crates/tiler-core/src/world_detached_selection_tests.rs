@@ -305,6 +305,22 @@ fn exact_redundant_return_sends_no_view_and_no_focus() {
         engine.world.settlement.retained_selection.is_empty(),
         "no binding freezes for a proven redundant no-op"
     );
+    let exact = engine
+        .redundant_detached_selection(10)
+        .expect("exact no-flight selection has a local diagnostic witness");
+    assert_eq!(exact.surface, detached_ref("out-a", "surf-away"));
+    assert_eq!(exact.member.0, "win-fs");
+    assert!(engine.redundant_detached_selection(9).is_none());
+    accepted(
+        &mut engine,
+        &observation_report(
+            11,
+            vec![screen("out-a", 0)],
+            home_windows(),
+            vec![detached_row("out-a", &["n-home", "n-away"], "surf-away")],
+        ),
+    );
+    assert!(engine.redundant_detached_selection(10).is_none());
 }
 
 #[test]
@@ -331,6 +347,7 @@ fn same_home_gap_never_becomes_a_desktop_fallback_write() {
         "same-home read gap mints no Desktop fallback"
     );
     assert!(reply.focus_request.is_none());
+    assert!(engine.redundant_detached_selection(10).is_none());
 }
 
 #[test]

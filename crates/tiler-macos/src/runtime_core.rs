@@ -5,7 +5,7 @@
 //! [`crate::runtime_thread`] own these values and drive them; reports are
 //! built by [`crate::world_builder`] over this retained truth.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tiler_core::{
     directional::{OutputId, WindowId, WorkspaceId},
@@ -95,6 +95,9 @@ pub(crate) struct RosterEntry {
     /// context, else empty (unknown). Multi-Space, empty, and unhomed all
     /// map to unknown, never a guessed home.
     pub(crate) spaces: Vec<u64>,
+    /// Exact singleton fullscreen SID from this lifetime's covering snapshot.
+    /// Reuse only against the same topology revision and complete roster.
+    pub(crate) detached_membership: Option<(u64, u64)>,
     pub(crate) fullscreen_meta: bool,
     pub(crate) minimized_meta: bool,
     pub(crate) hidden_meta: bool,
@@ -388,6 +391,7 @@ fn v4_fact(
             visible: None,
             suppression_owned: None,
         },
+        detached_surface: None,
     }
 }
 
@@ -793,7 +797,12 @@ pub(crate) fn ground_unknown_output(
 /// nonordinary layer, unknown role) keep baseline omission semantics and
 /// hold nothing, since those IDs were never live or reportable. Only the
 /// owning PID is audited; other PIDs never clear it.
-pub(crate) fn audit_roster_hold(retained: &mut RetainedCore, pid: u32, ctx: &NativeContext) {
+pub(crate) fn audit_roster_hold(
+    retained: &mut RetainedCore,
+    pid: u32,
+    ctx: &NativeContext,
+    detached_enabled: bool,
+) {
     use crate::classifier::ExcludeReason;
     let Some(app) = retained.apps.get(&pid) else {
         return;
@@ -824,6 +833,14 @@ pub(crate) fn audit_roster_hold(retained: &mut RetainedCore, pid: u32, ctx: &Nat
                 break;
             }
             Some(obs) => {
+                if detached_enabled
+                    && obs.fullscreen
+                    && let Some((revision, sid)) = entry.detached_membership
+                    && revision == ctx.revision
+                    && ctx.detached_owner(sid).is_some()
+                {
+                    continue;
+                }
                 if ground_unknown_output(&obs, ctx).is_none() {
                     unrepresentable = Some("unknown-output-ungrounded".to_owned());
                     break;
@@ -952,6 +969,18 @@ pub(crate) fn apply_roster_covering(
                 RosterEntry {
                     observed: Some(*w),
                     spaces: norm,
+                    detached_membership: match raw {
+                        [sid] if w.fullscreen
+                            && meta.is_some_and(|m| m.fullscreen)
+                            && snapshot.cg_complete
+                            && cg_alive.contains(&w.wid)
+                            && snapshot.revision == ctx.revision
+                            && ctx.detached_owner(*sid).is_some() =>
+                        {
+                            Some((snapshot.revision, *sid))
+                        }
+                        _ => None,
+                    },
                     fullscreen_meta: meta.is_some_and(|m| m.fullscreen),
                     minimized_meta: meta.is_some_and(|m| m.minimized),
                     hidden_meta: meta.is_some_and(|m| m.hidden),
@@ -978,6 +1007,7 @@ pub(crate) fn apply_roster_covering(
             let entry = app.roster.entry(o.wid).or_insert(RosterEntry {
                 observed: None,
                 spaces: Vec::new(),
+                detached_membership: None,
                 fullscreen_meta: false,
                 minimized_meta: false,
                 hidden_meta: false,
@@ -991,6 +1021,7 @@ pub(crate) fn apply_roster_covering(
                 activation_policy: None,
             });
             entry.excluded = Some(o.reason);
+            entry.detached_membership = None;
             if minimized_source {
                 // Minimized/hidden-app exclusions retain their truthful
                 // show-state and actually read raw legs (null when unknown)
@@ -1128,10 +1159,11 @@ pub(crate) fn preserve_non_covering_hidden(
 /// AX/classifier state before writes (hide/minimize/exclusion may change
 /// during AX blindness; CG onscreen cannot disambiguate). Such a
 /// current-target detail drops its stale home and stays held pending AX.
-/// Multi-Space, empty (unreadable), unhomed (fullscreen/system/deleted
-/// Space), degenerate-frame, missing-entry, and shared-SID multi-output
-/// details all hold unknown, never a guessed home (shared SIDs never
-/// arbitrate on the stale retained rect). Only retained live roster rows
+/// Multi-Space, empty (unreadable), unhomed, degenerate-frame, missing-entry,
+/// and shared-SID multi-output details all hold unknown, never a guessed home.
+/// With detached capability, an exact fresh fullscreen SID can refresh the
+/// same already-witnessed detached lifetime without giving it a Desktop home.
+/// Shared SIDs never arbitrate on the stale retained rect. Only retained live roster rows
 /// re-home (classifier-excluded rows never do; minimized/hidden sources
 /// ride the minimized path); hidden/minimized flags are never refreshed
 /// here — the roster keeps its retained truth. Geometry reuses the retained
@@ -1154,6 +1186,7 @@ pub(crate) fn rehydrate_cg_alive(
     pid: u32,
     snapshot: &crate::runtime_types::ScopedBackendSnapshot,
     ctx: &NativeContext,
+    detached_enabled: bool,
 ) -> BTreeMap<DomainKey, Vec<ObservedWindow>> {
     let mut extra: BTreeMap<DomainKey, Vec<ObservedWindow>> = BTreeMap::new();
     // Decide under shared borrows; mutate below (one roster row at most
@@ -1164,6 +1197,7 @@ pub(crate) fn rehydrate_cg_alive(
     // move is proven only by the fresh SLS read below, never the last
     // membership merely because CG is still alive.
     let mut rehomed: Vec<(u32, u64, DomainKey, ObservedWindow)> = Vec::new();
+    let mut parked = BTreeMap::new();
     let mut contradicted: Vec<u32> = Vec::new();
     {
         let Some(app) = retained.apps.get(&pid) else {
@@ -1184,6 +1218,19 @@ pub(crate) fn rehydrate_cg_alive(
                 contradicted.push(detail.wid);
                 continue;
             };
+            if detached_enabled
+                && snapshot.revision == ctx.revision
+                && snapshot.cg_complete
+                && obs.fullscreen
+                && entry.detached_membership.is_some_and(|(_, prior)| prior == sid)
+                && ctx.detached_owner(sid).is_some()
+            {
+                // No Desktop homing or actuation: fresh same-owner SLS/CG
+                // evidence refreshes an already-observed fullscreen lifetime.
+                parked.insert(detail.wid, sid);
+                contradicted.push(detail.wid);
+                continue;
+            }
             let candidates: Vec<&crate::runtime_types::NativeDomain> =
                 ctx.domains.iter().filter(|d| d.space == sid).collect();
             // Never guess across outputs: a SID homed by several domains
@@ -1233,8 +1280,8 @@ pub(crate) fn rehydrate_cg_alive(
         retained.window_domains.remove(&window_id(pid, *wid));
     }
     // The oracle hold lifts only when every ROSTER-KNOWN absent row is
-    // freshly grounded: every retained row absent from AX/exclusions was
-    // re-homed above. Roster-unknown CG-owned wids (AppKit/winit auxiliary
+    // freshly grounded, as a hidden Desktop member or an exact parked
+    // detached lifetime. Roster-unknown CG-owned wids (AppKit/winit auxiliary
     // windows AX never enumerates) are never retained lifetimes — no path
     // holds or closes them (see `apply_roster_covering`, which scopes its
     // hold and close checks to `app.roster`) — so they must not fence this
@@ -1243,25 +1290,33 @@ pub(crate) fn rehydrate_cg_alive(
     // for this PID, while a contradicted or merely preserved row is not).
     // Decided from this call's success set (never the still-stale homing
     // map, whose prune runs later in `note_scoped_members`).
-    if snapshot.cg_complete
-        && let Some(app) = retained.apps.get_mut(&pid)
-        && (app.roster_cause == "cg-alive"
-            || app.roster_cause == "cg-unreadable"
-            || app.roster_cause == "blank-hidden")
-    {
-        let live: std::collections::BTreeSet<u32> =
-            snapshot.windows.iter().map(|w| w.wid).collect();
-        let excluded: std::collections::BTreeSet<u32> =
-            snapshot.excluded_reasons.iter().map(|o| o.wid).collect();
-        let homed: std::collections::BTreeSet<u32> =
-            rehomed.iter().map(|(wid, _, _, _)| *wid).collect();
-        let pending_roster = app
-            .roster
-            .iter()
-            .any(|(wid, _)| !live.contains(wid) && !excluded.contains(wid) && !homed.contains(wid));
-        if !pending_roster {
-            app.roster_incomplete = false;
-            app.roster_cause.clear();
+    if let Some(app) = retained.apps.get_mut(&pid) {
+        let recovering = snapshot.cg_complete
+            && matches!(app.roster_cause.as_str(), "cg-alive" | "cg-unreadable" | "blank-hidden");
+        if !detached_enabled && !recovering {
+            return extra;
+        }
+        let live: BTreeSet<_> = snapshot.windows.iter().map(|w| w.wid).collect();
+        let excluded: BTreeSet<_> = snapshot.excluded_reasons.iter().map(|o| o.wid).collect();
+        if detached_enabled {
+            for (&wid, entry) in &mut app.roster {
+                if !live.contains(&wid) {
+                    entry.detached_membership = parked.get(&wid).map(|&sid| (ctx.revision, sid));
+                }
+            }
+        }
+        if recovering {
+            let homed: BTreeSet<_> = rehomed.iter().map(|(wid, _, _, _)| *wid).collect();
+            let pending = app.roster.keys().any(|wid| {
+                !live.contains(wid)
+                    && !excluded.contains(wid)
+                    && !homed.contains(wid)
+                    && !parked.contains_key(wid)
+            });
+            if !pending {
+                app.roster_incomplete = false;
+                app.roster_cause.clear();
+            }
         }
     }
     extra
@@ -1503,6 +1558,7 @@ mod tests {
                 },
             ],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         }
     }
 

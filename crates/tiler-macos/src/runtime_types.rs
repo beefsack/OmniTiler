@@ -309,6 +309,9 @@ pub struct NativeContext {
     /// Displays skipped during derivation, with honest reasons. Skipped
     /// displays tile nothing; their windows never reach the engine.
     pub skipped: Vec<SkippedDisplay>,
+    /// Uniquely homed, proven native fullscreen SIDs: (display, is current).
+    /// Never part of the Desktop roster or its actuation authority.
+    pub(crate) detached_spaces: BTreeMap<u64, (u32, bool)>,
 }
 
 /// Display skipped during derivation, with the honest reason (counts and
@@ -325,7 +328,76 @@ pub struct SkippedDisplay {
     pub reason: String,
 }
 
+pub(crate) fn detached_ref(output: OutputId, sid: u64) -> tiler_core::world_report::DetachedRef {
+    tiler_core::world_report::DetachedRef {
+        output,
+        surface: tiler_core::ids::DetachedSurfaceId::parse(&format!("fullscreen-{sid}"))
+            .expect("a numeric fullscreen SID is a valid surface id"),
+    }
+}
+
+pub(crate) fn detached_sid(reference: &tiler_core::world_report::DetachedRef) -> Option<u64> {
+    let decimal = reference.surface.as_str().strip_prefix("fullscreen-")?;
+    let sid: u64 = decimal.parse().ok()?;
+    (sid > 0 && !decimal.starts_with(['0', '+'])).then_some(sid)
+}
+
+/// One exact physical current read on the pinned select output, typed at the
+/// read (never inferred from spelling): a member of the display's user
+/// Desktop row or that display's detached fullscreen surface. The select
+/// receipts carry this around the actuation; the report stage resolves the
+/// exact output from the correlated `(op,out)` transfer and builds the wire
+/// `ViewRef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum SelectPhysical {
+    Desktop(u64),
+    Detached(u64),
+}
+
+impl SelectPhysical {
+    /// Native Space/surface id carried by the read.
+    #[must_use]
+    pub fn sid(self) -> u64 {
+        match self {
+            Self::Desktop(sid) | Self::Detached(sid) => sid,
+        }
+    }
+
+    /// Wire view reference on the exact target output.
+    pub(crate) fn to_view(self, output: &OutputId) -> tiler_core::world_report::ViewRef {
+        match self {
+            Self::Desktop(sid) => native_view(output, sid),
+            Self::Detached(sid) => {
+                tiler_core::world_report::ViewRef::Detached(detached_ref(output.clone(), sid))
+            }
+        }
+    }
+}
+
+/// Typed Desktop view reference on one exact output (`space-<sid>` native
+/// vocabulary, never a `WorkspaceRef`).
+pub(crate) fn native_view(
+    output: &OutputId,
+    sid: u64,
+) -> tiler_core::world_report::ViewRef {
+    tiler_core::world_report::ViewRef::Native {
+        output: output.clone(),
+        workspace: tiler_core::ids::NativeWorkspaceId::parse(&crate::topology::workspace_key(sid))
+            .expect("valid native workspace"),
+    }
+}
+
 impl NativeContext {
+    pub(crate) fn detached_current(&self, cg_id: u32) -> Option<u64> {
+        self.detached_spaces
+            .iter()
+            .find_map(|(&sid, &(owner, current))| (owner == cg_id && current).then_some(sid))
+    }
+
+    pub(crate) fn detached_owner(&self, sid: u64) -> Option<u32> {
+        self.detached_spaces.get(&sid).map(|&(owner, _)| owner)
+    }
+
     /// Derive the tile context from a main-thread topology snapshot.
     /// `space_type` resolves a Space ID to its read-only type (`None` =
     /// unreadable); the live side injects the existing `sls_space_type`
@@ -356,6 +428,8 @@ impl NativeContext {
     ) -> (Self, Vec<SkippedDisplay>) {
         let mut domains = Vec::new();
         let mut skipped = Vec::new();
+        let mut detached_spaces = BTreeMap::new();
+        let mut kinds = BTreeMap::new();
         for display in &snapshot.displays {
             // Last-observed geometry rides the skip record when the
             // snapshot read it: a skip is about Space homing, never a
@@ -390,8 +464,7 @@ impl NativeContext {
                 {
                     ordered.push(live);
                 }
-                let mut kinds: BTreeMap<u64, Option<crate::ffi::SlsSpaceType>> = BTreeMap::new();
-                for sid in ordered.iter().copied().chain(current) {
+                for sid in ordered.iter().copied() {
                     kinds.entry(sid).or_insert_with(|| space_type(sid));
                 }
                 // The current Space actuates only on a proven user verdict;
@@ -436,6 +509,28 @@ impl NativeContext {
                         display.cg_id
                     ));
                 }
+                if snapshot.separate_spaces == Some(true)
+                    && snapshot
+                        .displays
+                        .iter()
+                        .filter(|d| d.uuid == display.uuid || d.cg_id == display.cg_id)
+                        .count()
+                        == 1
+                {
+                    for &sid in &spaces {
+                        if sid != 0
+                            && kinds.get(&sid) == Some(&Some(crate::ffi::SlsSpaceType::Fullscreen))
+                            && snapshot.rows.iter().flat_map(|row| &row.spaces)
+                                .filter(|&&candidate| candidate == sid).count() == 1
+                            && !snapshot.rows.iter().any(|row| {
+                                row.current == Some(sid)
+                                    && row.identifier.as_deref() != display.uuid.as_deref()
+                            })
+                        {
+                            detached_spaces.insert(sid, (display.cg_id, current == Some(sid)));
+                        }
+                    }
+                }
                 Ok::<Vec<NativeDomain>, String>(per_display)
             })();
             match domain {
@@ -453,6 +548,7 @@ impl NativeContext {
                 revision: snapshot.revision,
                 domains,
                 skipped: skipped.clone(),
+                detached_spaces,
             },
             skipped,
         )
@@ -926,6 +1022,13 @@ pub enum InputSemanticAction {
     },
 }
 
+/// Local lifetime pin for the exact member in a detached selection grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DetachedSelectMember {
+    pub(crate) window: WindowId,
+    pub(crate) generation: u64,
+}
+
 /// One pending product workspace claim awaiting the main-thread drain: the
 /// armed action plus the immutable click binding that produced it. Numbered
 /// tap chords bind at engine admission (the admission resolves the native
@@ -1014,10 +1117,25 @@ pub struct ClaimedSelect {
     /// Output the creation desire targets. Always `Some` when
     /// `select_creation_operation` is `Some`.
     pub select_creation_output: Option<String>,
-    /// Observation-time native current SID for the target output (the
-    /// report's `current_native` at dispatch). Stages as the view
-    /// attempt's `native_baseline`; `None` when unreadable at dispatch.
-    pub select_baseline_sid: Option<u64>,
+    /// Observation-time typed physical current for the target output (the
+    /// plan's baseline: the current user Desktop Space, else the display's
+    /// detached fullscreen surface from the bound context). Stages as the
+    /// view attempt's `baseline`; `None` when unread at dispatch.
+    pub select_baseline: Option<SelectPhysical>,
+    /// Reply-driven detached fullscreen destination surface SID for an
+    /// eligible standalone explicit existing-Space selection: present only
+    /// on a `kind:"view"` flight with `follow:false`, `parent:null`,
+    /// non-null `cmdSeq`, a bound existing Desktop home, and
+    /// `surface.out == select_target_output`. Every other select (including
+    /// creation, trailing append, send, and swap) carries `None`.
+    pub select_detached_surface: Option<u64>,
+    /// Intended member and AX owner generation frozen from the same command
+    /// report as the surface grant. Scope-only; never a focus target.
+    pub(crate) select_detached_member: Option<DetachedSelectMember>,
+    /// Bound detached-view capability at admission
+    /// (`WorldSession::detached_fullscreen_view`). False keeps every
+    /// detached route fenced even when a plan names one.
+    pub select_detached_enabled: bool,
     /// Reply-driven follow view flight identity for `follow=true` sends:
     /// the retained View flight the accepted reply publishes alongside the
     /// parent window transfer (same target, distinct operation identity).
@@ -1055,7 +1173,10 @@ impl ClaimedSelect {
             select_creation_operation: None,
             select_creation_logical: None,
             select_creation_output: None,
-            select_baseline_sid: None,
+            select_baseline: None,
+            select_detached_surface: None,
+            select_detached_member: None,
+            select_detached_enabled: false,
             send_follow_view_operation: None,
         }
     }
@@ -1090,7 +1211,10 @@ impl ClaimedSelect {
             select_creation_operation: None,
             select_creation_logical: None,
             select_creation_output: None,
-            select_baseline_sid: None,
+            select_baseline: None,
+            select_detached_surface: None,
+            select_detached_member: None,
+            select_detached_enabled: false,
             send_follow_view_operation: None,
         }
     }

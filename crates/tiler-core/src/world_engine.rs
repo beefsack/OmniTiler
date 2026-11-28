@@ -863,6 +863,21 @@ impl WorldEngine {
             .collect()
     }
 
+    /// Exact detached destination that needed no View flight or effect for
+    /// this command in the latest accepted report. The local owner must
+    /// re-read it before reporting redundant; it never authorizes a write.
+    #[must_use]
+    pub fn redundant_detached_selection(
+        &self,
+        command_seq: u64,
+    ) -> Option<&crate::world_report::DetachedDestination> {
+        self.world
+            .staged
+            .redundant_detached
+            .iter()
+            .find_map(|(seq, destination)| (*seq == command_seq).then_some(destination))
+    }
+
     /// Exact post-send source focus for one retained stay transfer: the
     /// committed source-domain focus after a `follow=false` send, read from
     /// committed session state (never recomputed, never simulated). Matches

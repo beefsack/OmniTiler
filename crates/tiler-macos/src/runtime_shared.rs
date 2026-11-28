@@ -39,6 +39,11 @@ pub(crate) struct AppRecord {
     /// `frames` on terminate/shutdown/drop so queued focus never outlives
     /// its lifetime.
     pub(crate) focus: Arc<FocusSlot>,
+    /// Bounded read-only detached-membership request slot for the SAME
+    /// owner: the select routes ask it for one ordered bracket read and the
+    /// owner services it on its own thread. Stopped alongside `frames` so a
+    /// waiter refuses immediately instead of timing out.
+    pub(crate) membership: Arc<crate::detached_membership::MembershipProbeSlot>,
     /// Backend readiness set by the worker inside its owning thread: `None`
     /// while the backend is still being created, `Ok(())` once it exists,
     /// `Err` when creation was refused. Polled by [`RuntimeHandle::launch_app`]
@@ -748,6 +753,7 @@ mod tests {
             revision,
             domains: Vec::new(),
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 

@@ -306,6 +306,7 @@ impl DragFixture {
                 },
             }],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         }
     }
 

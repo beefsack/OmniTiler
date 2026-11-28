@@ -258,6 +258,9 @@ pub(crate) struct ReportInput<'a> {
     /// (ties and outside frames omit with a hold); grounded rows surface
     /// with native workspace None and truthful fullscreen.
     pub unknown: &'a [(u32, ObservedWindow)],
+    /// Present only with the bound detached-view capability; exact roster
+    /// members keyed by (pid, wid), never derived from geometry.
+    pub detached_members: Option<&'a BTreeMap<(u32, u32), u64>>,
     /// Per-app incomplete holds outstanding (any roster incomplete): forces
     /// whole-report incompleteness without clearing through the session gap.
     pub roster_incomplete: bool,
@@ -357,6 +360,7 @@ impl<'a> ReportInput<'a> {
             memory,
             closed,
             unknown: &[],
+            detached_members: None,
             raw: &*crate::runtime_types::EMPTY_RAW_FACTS,
             roster_incomplete: false,
             minimized,
@@ -417,40 +421,21 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
     // Per-output native order in context order (first-seen output order).
     // Non-user Spaces never become domains upstream, so the native rows
     // omit fullscreen/system by construction.
-    let mut output_order: Vec<OutputId> = Vec::new();
-    let mut native_order: BTreeMap<OutputId, Vec<String>> = BTreeMap::new();
-    let mut current_native: BTreeMap<OutputId, String> = BTreeMap::new();
-    let mut output_geometry: BTreeMap<OutputId, tiler_core::geometry::Rect> = BTreeMap::new();
-    let mut output_visible: BTreeMap<OutputId, tiler_core::geometry::Rect> = BTreeMap::new();
+    let mut output_order = Vec::new();
+    let mut native_order: BTreeMap<&OutputId, Vec<String>> = BTreeMap::new();
+    let mut current_native: BTreeMap<&OutputId, String> = BTreeMap::new();
     for domain in &input.ctx.domains {
-        if !native_order.contains_key(&domain.output) {
-            output_order.push(domain.output.clone());
-        }
         native_order
-            .entry(domain.output.clone())
-            .or_default()
+            .entry(&domain.output)
+            .or_insert_with(|| {
+                output_order.push(domain);
+                Vec::new()
+            })
             .push(domain.workspace.0.clone());
         if domain.current {
-            current_native.insert(domain.output.clone(), domain.workspace.0.clone());
+            current_native.insert(&domain.output, domain.workspace.0.clone());
         }
-        // Core-owned topology authority: FULL native rectangles from the
-        // already-retained display bounds (never the visible work area,
-        // never a window-frame proxy). The visible work area rides
-        // separately below.
-        output_geometry
-            .entry(domain.output.clone())
-            .or_insert(domain.bounds);
-        output_visible
-            .entry(domain.output.clone())
-            .or_insert(domain.visible);
     }
-    let primary = input.primary_output.clone().unwrap_or_else(|| {
-        output_order
-            .first()
-            .cloned()
-            .unwrap_or_else(|| OutputId(String::new()))
-    });
-    let _ = primary;
     // An unreadable Space fences its own scope (omitted members plus the
     // whole-report inventory fence, which the core publishes as a hold),
     // never its screen: the native order/current stay completely observed.
@@ -458,11 +443,11 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
     // gaps ride via settings and primary rides as host-designated only.
     let mut screens: Vec<ScreenReport> = output_order
         .iter()
-        .map(|output| ScreenReport {
-            output: output.clone(),
-            full_rect: output_geometry.get(output).copied(),
-            work_area: output_visible.get(output).copied(),
-            complete: !input.coverage_gap && !input.incomplete_outputs.contains(output),
+        .map(|domain| ScreenReport {
+            output: domain.output.clone(),
+            full_rect: Some(domain.bounds),
+            work_area: Some(domain.visible),
+            complete: !input.coverage_gap && !input.incomplete_outputs.contains(&domain.output),
             scale: 1.0,
             identity: OutputIdentity::unknown(),
         })
@@ -473,7 +458,8 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
     // displace their parked members; an incomplete screen parks them
     // instead (holds, no writes) until the homing proof returns.
     {
-        let mut seen: BTreeSet<String> = output_order.iter().map(|o| o.0.clone()).collect();
+        let mut seen: BTreeSet<String> =
+            output_order.iter().map(|domain| domain.output.0.clone()).collect();
         for skipped in &input.ctx.skipped {
             let output = crate::topology::output_key(skipped.cg_id);
             if !seen.insert(output.clone()) {
@@ -491,26 +477,29 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
     }
     let native: Vec<NativeObservation> = output_order
         .iter()
-        .map(|output| NativeObservation {
-            output: output.clone(),
-            native_order: native_order.get(output).cloned().unwrap_or_default(),
-            // None when the native current is a non-user Space (or
-            // unknown): retains the logical view while using the order,
-            // never adopted and never a move.
-            current_native: current_native.get(output).cloned(),
-            // Explicit unknown occupancy: the neutral count lane is not
-            // yet populated from an all-native-window roster; it cannot
-            // prove an empty desktop and is never fabricated as zero.
-            occupancy: native_order
-                .get(output)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|native| NativeOccupancy {
-                    native,
-                    count: None,
-                })
-                .collect(),
+        .map(|domain| {
+            let output = &domain.output;
+            let native_order = native_order.remove(output).unwrap_or_default();
+            let current_native = current_native.remove(output);
+            let detached_current = if current_native.is_none() && input.detached_members.is_some() {
+                input.ctx.detached_current(domain.cg_id)
+                    .map(|sid| crate::runtime_types::detached_ref(output.clone(), sid))
+            } else {
+                None
+            };
+            // Unknown occupancy: no all-native-window roster proof.
+            let occupancy = native_order.iter().map(|native| NativeOccupancy {
+                native: native.clone(),
+                count: None,
+            }).collect();
+            NativeObservation {
+                output: output.clone(),
+                native_order,
+                current_known: current_native.is_some() || detached_current.is_some(),
+                current_native,
+                occupancy,
+                detached_current,
+            }
         })
         .collect();
 
@@ -565,90 +554,85 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
         .collect();
     minimized_facts.sort_by(|a, b| a.window.0.cmp(&b.window.0));
     windows.extend(minimized_facts);
-    // Unknown-home live rows: ground each candidate against fresh FULL
-    // output geometry. Grounded rows surface with native workspace None
-    // (fullscreen truthful, sticky false); ties, zero overlap, degenerate,
-    // and outside frames omit entirely (the roster hold fences inventory).
-    // Closed/minimized ids defer out.
-    {
-        let mut by_output: BTreeMap<OutputId, Vec<(u32, ObservedWindow)>> = BTreeMap::new();
-        for (pid, window) in input.unknown {
-            let id = crate::runtime_types::window_id(*pid, window.wid);
-            if closed_set.contains(id.as_str()) || minimized_set.contains(id.as_str()) {
-                continue;
-            }
-            let Some(output) = crate::runtime_core::ground_unknown_output(window, input.ctx) else {
-                continue;
-            };
-            by_output.entry(output).or_default().push((*pid, *window));
+    // Exact detached membership owns the output join. Geometry is only
+    // for otherwise unhomed rows and never supplies detached evidence.
+    let empty_raw = crate::runtime_types::WindowRawFacts::default();
+    for (pid, w) in input.unknown {
+        let id = crate::runtime_types::window_id(*pid, w.wid);
+        if closed_set.contains(id.as_str()) || minimized_set.contains(id.as_str()) {
+            continue;
         }
-        for (output, pairs) in &by_output {
-            let mut by_pid: BTreeMap<u32, Vec<ObservedWindow>> = BTreeMap::new();
-            for (pid, window) in pairs {
-                by_pid.entry(*pid).or_default().push(*window);
-            }
-            for (pid, observed) in &by_pid {
-                for w in observed {
-                    let id = crate::runtime_types::window_id(*pid, w.wid);
-                    let raw: crate::runtime_types::WindowRawFacts =
-                        input.raw.get(&id).cloned().unwrap_or_default();
-                    let rect = tiler_core::geometry::Rect {
-                        x: w.x,
-                        y: w.y,
-                        w: w.w,
-                        h: w.h,
-                    };
-                    // Grounded unknown-home rows: output via geometry,
-                    // native workspace unknown (never guessed), truthful
-                    // fullscreen, null maximized/sticky per contract.
-                    // Neutral raw facts ride where known (null otherwise).
-                    windows.push(WindowFact {
-                        window: WindowId(id.clone()),
-                        output: Some(output.clone()),
-                        rect: Some(rect),
-                        fullscreen: Some(w.fullscreen),
-                        maximized: None,
-                        sticky: None,
-                        minimized: Some(false),
-                        hints: Some(w.hints),
-                        native_workspace: NativeWorkspaceFact::Omitted,
-                        host_hidden: raw.host_hidden,
-                        privileged: None,
-                        managed: None,
-                        accepts_input: None,
-                        activation_inhibited: None,
-                        tool_window: None,
-                        owned: None,
-                        transient: None,
-                        modal: raw.modal,
-                        resizable: raw.resizable,
-                        above: None,
-                        below: None,
-                        owner: None,
-                        parent: None,
-                        role: raw.role.clone(),
-                        app_id: raw.app_id.clone(),
-                        executable: None,
-                        process_id: Some(pid.to_string()),
-                        class: None,
-                        title: None,
-                        window_type: crate::runtime_types::normalize_window_type(
-                            raw.role.as_deref(),
-                            raw.subrole.as_deref(),
-                        ),
-                        activation_policy: raw.activation_policy,
-                        layer: raw.layer,
-                        fullscreen_owner: None,
-                        fullscreen_exitable: None,
-                        suppression_available: None,
-                        visibility: tiler_core::world_report::VisibilityFact {
-                            visible: None,
-                            suppression_owned: None,
-                        },
-                    });
-                }
-            }
-        }
+        let detached_surface = input.detached_members
+            .and_then(|members| members.get(&(*pid, w.wid)))
+            .filter(|_| w.fullscreen)
+            .and_then(|&sid| {
+                let cg_id = input.ctx.detached_owner(sid)?;
+                let domain = input.ctx.domains.iter().find(|d| d.cg_id == cg_id)?;
+                Some(crate::runtime_types::detached_ref(domain.output.clone(), sid))
+            });
+        let output = detached_surface.as_ref().map(|surface| surface.output.clone())
+            .or_else(|| crate::runtime_core::ground_unknown_output(w, input.ctx));
+        let Some(output) = output else { continue };
+        let raw = input.raw.get(&id).unwrap_or(&empty_raw);
+        let rect = tiler_core::geometry::Rect {
+            x: w.x,
+            y: w.y,
+            w: w.w,
+            h: w.h,
+        };
+        // Grounded unknown-home rows: output via geometry,
+        // native workspace unknown (never guessed), truthful
+        // fullscreen, null maximized/sticky per contract.
+        // Neutral raw facts ride where known (null otherwise).
+        windows.push(WindowFact {
+            window: WindowId(id),
+            output: Some(output),
+            rect: Some(rect),
+            fullscreen: Some(w.fullscreen),
+            maximized: None,
+            sticky: None,
+            minimized: Some(false),
+            hints: Some(w.hints),
+            native_workspace: if detached_surface.is_some() {
+                NativeWorkspaceFact::Null
+            } else {
+                NativeWorkspaceFact::Omitted
+            },
+            host_hidden: raw.host_hidden,
+            privileged: None,
+            managed: None,
+            accepts_input: None,
+            activation_inhibited: None,
+            tool_window: None,
+            owned: None,
+            transient: None,
+            modal: raw.modal,
+            resizable: raw.resizable,
+            above: None,
+            below: None,
+            owner: None,
+            parent: None,
+            role: raw.role.clone(),
+            app_id: raw.app_id.clone(),
+            executable: None,
+            process_id: Some(pid.to_string()),
+            class: None,
+            title: None,
+            window_type: crate::runtime_types::normalize_window_type(
+                raw.role.as_deref(),
+                raw.subrole.as_deref(),
+            ),
+            activation_policy: raw.activation_policy,
+            layer: raw.layer,
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: tiler_core::world_report::VisibilityFact {
+                visible: None,
+                suppression_owned: None,
+            },
+            detached_surface,
+        });
     }
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
 
@@ -772,6 +756,7 @@ mod tests {
                 native_domain(2, 21, true, 1440, 1440),
             ],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1078,6 +1063,7 @@ mod tests {
                 },
             ],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         };
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
@@ -2129,6 +2115,7 @@ mod tests {
             post: None,
             baseline: None,
             attempt_ms: 0,
+            post_member: None,
         }];
         input.frames = &frames;
         input.member_attempts = &member_attempts;
@@ -2181,6 +2168,7 @@ mod tests {
             revision: 1,
             domains: Vec::new(),
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         };
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();

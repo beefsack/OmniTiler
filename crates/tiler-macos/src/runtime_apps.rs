@@ -123,7 +123,7 @@ impl RuntimeHandle {
                 });
             }
         }
-        let (frames, focus, stop, ready, generation) = {
+        let (frames, focus, membership, stop, ready, generation) = {
             let mut guard = lock_shared(&self.shared);
             // A retained (timed-out) handle for this PID also blocks overlap.
             let blocked = guard.zombies.iter().any(|z| match z {
@@ -154,6 +154,7 @@ impl RuntimeHandle {
             let generation = guard.generation_counter;
             let frames = Arc::new(FrameSlot::new());
             let focus = Arc::new(FocusSlot::new());
+            let membership = Arc::new(crate::detached_membership::MembershipProbeSlot::new());
             let stop = Arc::new(AtomicBool::new(false));
             let ready = Arc::new(Mutex::new(None));
             guard.apps.insert(
@@ -164,12 +165,13 @@ impl RuntimeHandle {
                     stop: Arc::clone(&stop),
                     frames: Arc::clone(&frames),
                     focus: Arc::clone(&focus),
+                    membership: Arc::clone(&membership),
                     ready: Arc::clone(&ready),
                     worker: None,
                     worker_name: format!("phase1-ax-{pid}"),
                 },
             );
-            (frames, focus, stop, ready, generation)
+            (frames, focus, membership, stop, ready, generation)
         };
 
         let worker_shared = Arc::clone(&self.shared);
@@ -185,6 +187,7 @@ impl RuntimeHandle {
                     worker_factory,
                     frames,
                     focus,
+                    membership,
                     worker_inbox,
                     worker_shared,
                     stop,
@@ -280,6 +283,7 @@ impl RuntimeHandle {
                 record.stop.store(true, Ordering::SeqCst);
                 record.frames.stop();
                 record.focus.stop();
+                record.membership.stop();
                 record.worker.map(|handle| LiveHandle::Worker {
                     pid,
                     generation: record.generation,
@@ -375,6 +379,7 @@ impl RuntimeHandle {
         frames.stop();
         if let Some(record) = lock_shared(&self.shared).apps.get(&pid) {
             record.focus.stop();
+            record.membership.stop();
         }
         // Purge queued focus for the dead app: dispatch must never outlive
         // its lifetime. Sequential locks only (focus, then shared): holding

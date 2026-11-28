@@ -324,6 +324,7 @@ mod tests {
             fullscreen_owner: None,
             fullscreen_exitable: None,
             suppression_available: None,
+            detached_surface: None,
             visibility: tiler_core::world_report::VisibilityFact {
                 visible: Some(true),
                 suppression_owned: None,
@@ -759,6 +760,8 @@ mod tests {
             output: OutputId("out-a".to_owned()),
             native_order: vec!["space-1".to_owned(), "space-2".to_owned()],
             current_native: Some("space-1".to_owned()),
+            current_known: true,
+            detached_current: None,
             occupancy: vec![
                 tiler_core::world_report::NativeOccupancy {
                     native: "space-1".to_owned(),

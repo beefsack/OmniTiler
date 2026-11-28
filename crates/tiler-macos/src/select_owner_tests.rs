@@ -53,6 +53,7 @@ fn submit_legs<'a>(
         published_displays: published,
         published_separate: Some(true),
         trailing_enabled: trailing,
+        membership: None,
         wake,
     }
 }
@@ -67,8 +68,9 @@ fn effect(from: u64, target: u64) -> SelectSuccess {
             baseline: None,
         },
         setter: tiler_core::world_report::FrameSetter::Accepted,
-        pre: Some(from),
-        post: Some(target),
+        pre: Some(crate::runtime_types::SelectPhysical::Desktop(from)),
+        post: Some(crate::runtime_types::SelectPhysical::Desktop(target)),
+        post_member: None,
         creation: None,
         attempt_ms: 0,
     }
@@ -130,6 +132,7 @@ impl Script {
                 .expect("scripted job outcome");
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
+                target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                 result: out.result,
                 proof: out.proof,
                 base: job.submitted_at,
@@ -170,6 +173,7 @@ fn serialized_admission_frees_only_on_poll() {
         published_separate: Some(true),
         trailing_enabled: true,
         fixture_gate: None,
+        membership: None,
         latch: Arc::new(wake.subscribe()),
         wake: wake.clone(),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -222,6 +226,7 @@ fn settle_wake_sets_once_clears_on_poll_and_covers_refusals() {
         published_separate: Some(true),
         trailing_enabled: true,
         fixture_gate: None,
+        membership: None,
         latch: Arc::new(wake.subscribe()),
         wake: wake.clone(),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -283,6 +288,7 @@ fn terminal_finish_pokes_installed_main_wake() {
         published_separate: Some(true),
         trailing_enabled: true,
         fixture_gate: None,
+        membership: None,
         latch: Arc::new(wake.subscribe()),
         wake: wake.clone(),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -318,6 +324,7 @@ fn reply_plan_previous_actuates_bound_target() {
     impl SelectionBackend for ScriptBackend {
         fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
             Ok(SelectionSnapshot {
+                detached: None,
                 display: FIX_UUID.to_owned(),
                 spaces: vec![4242, 7777],
                 current: self.current,
@@ -379,6 +386,7 @@ fn reply_plan_previous_actuates_bound_target() {
             let proof = state.take_trailing_proof();
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
+                target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                 result,
                 proof,
                 base: job.submitted_at,
@@ -390,7 +398,7 @@ fn reply_plan_previous_actuates_bound_target() {
     claim.select_target_output = Some("macos-display-7".to_owned());
     claim.select_target_workspace = Some("ws-prev".to_owned());
     claim.select_native_binding = Some("space-4242".to_owned());
-    claim.select_baseline_sid = Some(7777);
+    claim.select_baseline = Some(crate::runtime_types::SelectPhysical::Desktop(7777));
     let job = SelectJob {
         claim,
         display_index: 0,
@@ -400,6 +408,7 @@ fn reply_plan_previous_actuates_bound_target() {
         published_separate: Some(true),
         trailing_enabled: true,
         fixture_gate: None,
+        membership: None,
         latch: Arc::new(wake.subscribe()),
         wake: wake.clone(),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -410,7 +419,7 @@ fn reply_plan_previous_actuates_bound_target() {
     let settled = done.result.expect("previous actuates the bound SID");
     assert_eq!(settled.effect.target, 4242);
     assert_eq!(settled.effect.from, 7777);
-    assert_eq!(settled.effect.baseline, Some(7777));
+    assert_eq!(settled.effect.baseline, Some(crate::runtime_types::SelectPhysical::Desktop(7777)));
 }
 
 #[test]
@@ -440,6 +449,7 @@ fn cancelled_job_terminal_completes_without_actuation_and_frees_lane() {
             };
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
+                target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                 result: Err(refusal(reason)),
                 proof: None,
                 base: job.submitted_at,
@@ -459,6 +469,7 @@ fn cancelled_job_terminal_completes_without_actuation_and_frees_lane() {
             published_separate: Some(true),
             trailing_enabled: true,
             fixture_gate: None,
+            membership: None,
             latch: Arc::new(wake.subscribe()),
             wake: wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -496,6 +507,7 @@ fn cancelled_job_terminal_completes_without_actuation_and_frees_lane() {
             published_separate: Some(true),
             trailing_enabled: true,
             fixture_gate: None,
+            membership: None,
             latch: Arc::new(wake.subscribe()),
             wake: wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -524,6 +536,7 @@ fn cancelled_inflight_job_settles_promptly_through_latch() {
             }
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
+                target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                 result: Err(refusal(
                     "dock-swipe unproven: cancelled during settlement; no replay",
                 )),
@@ -545,6 +558,7 @@ fn cancelled_inflight_job_settles_promptly_through_latch() {
             published_separate: Some(true),
             trailing_enabled: true,
             fixture_gate: None,
+            membership: None,
             latch: Arc::new(wake.subscribe()),
             wake: wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -596,6 +610,7 @@ fn failure_carries_proof_and_later_request_succeeds() {
         published_separate: Some(true),
         trailing_enabled: true,
         fixture_gate: None,
+        membership: None,
         latch: Arc::new(wake.subscribe()),
         wake: wake.clone(),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -622,6 +637,7 @@ fn busy_poll_is_nonblocking_while_owner_runs() {
             std::thread::sleep(Duration::from_millis(300));
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
+                target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                 result: Ok(effect(1001, 1002)),
                 proof: None,
                 base: job.submitted_at,
@@ -637,6 +653,7 @@ fn busy_poll_is_nonblocking_while_owner_runs() {
             published_separate: Some(true),
             trailing_enabled: true,
             fixture_gate: None,
+            membership: None,
             latch: Arc::new(wake.subscribe()),
             wake: wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -719,6 +736,7 @@ fn shutdown_pending_job_terminal_completes_without_actuation() {
             if job.cancel.load(Ordering::SeqCst) || job.latch.cancelled() {
                 return SelectCompletion {
                     operation_id: job.claim.operation_id.clone(),
+                    target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                     result: Err(refusal("select refused: cancelled before dispatch")),
                     proof: None,
                     base: job.submitted_at,
@@ -727,6 +745,7 @@ fn shutdown_pending_job_terminal_completes_without_actuation() {
             act.store(true, Ordering::SeqCst);
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
+                target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                 result: Err(refusal("executor actuated a shutdown job")),
                 proof: None,
                 base: job.submitted_at,
@@ -746,6 +765,7 @@ fn shutdown_pending_job_terminal_completes_without_actuation() {
             published_separate: Some(true),
             trailing_enabled: true,
             fixture_gate: None,
+            membership: None,
             latch: Arc::new(wake.subscribe()),
             wake: wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -788,6 +808,7 @@ fn shutdown_inflight_failure_proof_adopts_as_owned_residue() {
             std::thread::sleep(Duration::from_millis(200));
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
+                target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                 result: Err(refusal(
                     "dock-swipe unproven: posted 1 pairs but native current reads None",
                 )),
@@ -806,6 +827,7 @@ fn shutdown_inflight_failure_proof_adopts_as_owned_residue() {
             published_separate: Some(true),
             trailing_enabled: true,
             fixture_gate: None,
+            membership: None,
             latch: Arc::new(wake.subscribe()),
             wake: wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -857,6 +879,7 @@ fn shutdown_after_create_proof_terminal_orders_cleanup_newest_first() {
             std::thread::sleep(Duration::from_millis(200));
             SelectCompletion {
                 operation_id: job.claim.operation_id.clone(),
+                target_output: job.claim.select_target_output.clone().map(tiler_core::directional::OutputId),
                 result: Ok(effect(1001, 2003)),
                 proof: Some(proof(2003)),
                 base: job.submitted_at,
@@ -873,6 +896,7 @@ fn shutdown_after_create_proof_terminal_orders_cleanup_newest_first() {
             published_separate: Some(true),
             trailing_enabled: true,
             fixture_gate: None,
+            membership: None,
             latch: Arc::new(wake.subscribe()),
             wake: wake.clone(),
             cancel: Arc::new(AtomicBool::new(false)),

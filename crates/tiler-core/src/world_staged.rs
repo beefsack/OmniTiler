@@ -159,6 +159,9 @@ pub(crate) struct StagedReport {
     /// emitted for this report before `drain_focus_candidates` updates
     /// `pending_focus`, preventing same-batch implicit fallback.
     pub(crate) batch_focus_issued: bool,
+    /// In-process owner diagnostics for exact detached no-ops in this
+    /// accepted report. Not a transfer, effect, or wire reply field.
+    pub(crate) redundant_detached: Vec<(u64, crate::world_report::DetachedDestination)>,
 }
 
 impl StagedReport {

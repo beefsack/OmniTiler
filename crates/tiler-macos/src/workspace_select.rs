@@ -6,7 +6,7 @@
 //! stages raw attempt evidence with genuine reads on every path, and never
 //! invents verdicts.
 
-use crate::runtime_types::InputSemanticAction;
+use crate::runtime_types::{InputSemanticAction, SelectPhysical};
 use std::collections::BTreeSet;
 use tiler_core::directional::OutputId;
 use tiler_core::world_report::FrameSetter;
@@ -14,16 +14,34 @@ use tiler_core::world_report::FrameSetter;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionSnapshot {
     pub display: String,
+    /// User-Desktop Spaces in native row order (never a fullscreen surface).
     pub spaces: Vec<u64>,
+    /// Exact physical current Space id read with the row (Desktop or
+    /// detached fullscreen surface).
     pub current: u64,
+    /// `Some(sid)` exactly when `current` is this display's detached
+    /// fullscreen surface (`sid == current`, never a user-Desktop member).
+    /// `None` on the ordinary Desktop arm.
+    pub detached: Option<u64>,
 }
 
 impl SelectionSnapshot {
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.detached.is_some() {
+            return Err("workspace row/current identity unprovable".to_owned());
+        }
+        self.validate_physical()
+    }
+
+    fn validate_physical(&self) -> Result<(), String> {
         if self.display.is_empty()
             || self.spaces.is_empty()
             || self.spaces.contains(&0)
-            || !self.spaces.contains(&self.current)
+            || self.current == 0
+            || match self.detached {
+                Some(sid) => sid != self.current || self.spaces.contains(&sid),
+                None => !self.spaces.contains(&self.current),
+            }
             || self
                 .spaces
                 .iter()
@@ -34,6 +52,29 @@ impl SelectionSnapshot {
             return Err("workspace row/current identity unprovable".to_owned());
         }
         Ok(())
+    }
+
+    /// Typed physical current: the exact Desktop Space or the display's
+    /// detached fullscreen surface, classified at the same fresh read.
+    pub(crate) fn physical(&self) -> SelectPhysical {
+        match self.detached {
+            Some(sid) => SelectPhysical::Detached(sid),
+            None => SelectPhysical::Desktop(self.current),
+        }
+    }
+
+    /// Validate the destination arm against fresh native Space typing.
+    pub(crate) fn detached_selector_target_proven(&self, target: SelectPhysical) -> bool {
+        match target {
+            SelectPhysical::Desktop(sid) => self.detached.is_some() && self.spaces.contains(&sid),
+            SelectPhysical::Detached(sid) => {
+                !self.spaces.contains(&sid)
+                    && matches!(
+                        crate::ffi::sls_space_type(sid),
+                        Ok(crate::ffi::SlsSpaceType::Fullscreen)
+                    )
+            }
+        }
     }
 }
 
@@ -78,15 +119,24 @@ pub(crate) fn user_row_from_rows(
 }
 
 /// Shared row assembly over one display's identifier, native-order Space
-/// list, and current Space: user-typed Spaces only, identity validated.
+/// list, and current Space: user-typed Spaces only, identity validated. The
+/// exact current read is classified at the same per-SID type read: a proven
+/// fullscreen current on this display is the detached surface; any other
+/// non-user current stays unprovable (never guessed into either arm).
 fn user_row_parts(
     identifier: Option<String>,
     spaces: &[u64],
     current: Option<u64>,
 ) -> Result<SelectionSnapshot, String> {
+    let current = current.ok_or("current Space unreadable")?;
     let mut user = Vec::new();
+    let mut detached = false;
     for sid in spaces {
-        match crate::ffi::sls_space_type(*sid).map_err(|e| e.to_string())? {
+        let kind = crate::ffi::sls_space_type(*sid).map_err(|e| e.to_string())?;
+        if *sid == current {
+            detached = matches!(kind, crate::ffi::SlsSpaceType::Fullscreen);
+        }
+        match kind {
             crate::ffi::SlsSpaceType::User => user.push(*sid),
             _ => continue,
         }
@@ -94,7 +144,8 @@ fn user_row_parts(
     Ok(SelectionSnapshot {
         display: identifier.ok_or("display identity unreadable")?,
         spaces: user,
-        current: current.ok_or("current Space unreadable")?,
+        current,
+        detached: detached.then_some(current),
     })
 }
 
@@ -191,6 +242,30 @@ pub trait SelectionBackend {
     /// One select dispatch only; caller independently verifies arrival.
     /// Same typed disposition as [`SelectionBackend::create`].
     fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), DispatchError>;
+    /// One exact selection onto or off a detached surface. Desktop-only
+    /// backends must not silently route this through their ordinary selector.
+    fn select_detached_view(
+        &mut self,
+        _before: &SelectionSnapshot,
+        _target: SelectPhysical,
+    ) -> Result<(), DispatchError> {
+        Err(DispatchError::refused("detached selector unavailable"))
+    }
+
+    /// Fresh exact membership of one window on the pinned display's
+    /// detached fullscreen `surface`. `Ok(true)` only when the window reads
+    /// exactly that surface in one fresh read; `Ok(false)` when readable
+    /// elsewhere; `Err` when unreadable. Never a guess and never focus
+    /// evidence. Default: unavailable (the route refuses without
+    /// actuation).
+    fn detached_membership(
+        &mut self,
+        _member: &str,
+        _generation: u64,
+        _surface: u64,
+    ) -> Result<bool, String> {
+        Err("detached membership read unavailable".to_owned())
+    }
 }
 
 /// Mechanical native dispatch disposition at the actual post/touch.
@@ -299,10 +374,10 @@ pub struct SelectionEffect {
     pub target: u64,
     pub created: Option<u64>,
     pub changed: bool,
-    /// Observation-time native current for the target output captured at
-    /// dispatch (the reply plan baseline). Stages as the view attempt's
-    /// `native_baseline`; `None` when unread at dispatch.
-    pub baseline: Option<u64>,
+    /// Observation-time typed physical current for the target output
+    /// captured at dispatch (the reply plan baseline). Stages as the view
+    /// attempt's `baseline`; `None` when unread at dispatch.
+    pub baseline: Option<SelectPhysical>,
 }
 
 impl SelectionState {
@@ -462,8 +537,13 @@ pub struct CreationReport {
 pub struct SelectSuccess {
     pub effect: SelectionEffect,
     pub setter: FrameSetter,
-    pub pre: Option<u64>,
-    pub post: Option<u64>,
+    pub pre: Option<SelectPhysical>,
+    pub post: Option<SelectPhysical>,
+    /// Adapter-bracketed membership read for an accepted exact detached
+    /// post only (`window` read on the frozen surface between two exact
+    /// physical samples of that surface). `None` withholds proof; never
+    /// focus evidence.
+    pub post_member: Option<tiler_core::directional::WindowId>,
     pub creation: Option<Box<CreationReport>>,
     pub attempt_ms: u64,
 }
@@ -482,9 +562,9 @@ pub struct SelectSuccess {
 pub struct SelectFailure {
     pub reason: String,
     pub setter: FrameSetter,
-    pub pre: Option<u64>,
-    pub post: Option<u64>,
-    pub baseline: Option<u64>,
+    pub pre: Option<SelectPhysical>,
+    pub post: Option<SelectPhysical>,
+    pub baseline: Option<SelectPhysical>,
     pub creation: Option<Box<CreationReport>>,
     pub attempt_ms: u64,
 }
@@ -756,7 +836,7 @@ pub(crate) fn drain_claimed_select_with_os(
     // first readable full post-order completes them exactly once.
     state.last_created = None;
     state.last_proof = None;
-    let baseline = claim.select_baseline_sid;
+    let baseline = claim.select_baseline;
     let attempt_ms = crate::input_eligibility::now_ms();
     // Refused with no reads: nothing actuated, nothing read.
     let refused_bare = |reason: String| SelectFailure {
@@ -839,12 +919,58 @@ pub(crate) fn drain_claimed_select_with_os(
             "select refuses: unbound claim with no operation identity; no actuation".to_owned(),
         ));
     }
+    let explicit_select = matches!(
+        claim.action,
+        InputSemanticAction::WorkspaceSelect { .. }
+            | InputSemanticAction::WorkspaceRelative { .. }
+            | InputSemanticAction::WorkspacePrevious
+            | InputSemanticAction::IndicatorSelectWorkspace { .. }
+    );
     let Some(target_output) = claim.select_target_output.clone() else {
         return Err(refused_bare(
             "select refuses: no retained view target; no actuation".to_owned(),
         ));
     };
     let Some(target_workspace) = claim.select_target_workspace.clone() else {
+        // Core-published exact-current redundant marker only: a selection
+        // already exact-current on a detached surface mints no View flight,
+        // so the engine binds output plus frozen surface/member without a
+        // logical home. The adapter verifies the exact live output and live
+        // typed current plus the same member lifetime on that surface;
+        // any read gap, output mismatch, moved current, or membership
+        // change falls back to the generic safe refusal. A plan that is
+        // merely unbound never reaches this arm (no output bound).
+        if claim.select_detached_enabled
+            && explicit_select
+            && claim.select_creation_operation.is_none()
+            && let (Some(surface), Some(member)) = (
+                claim.select_detached_surface.filter(|surface| *surface != 0),
+                claim.select_detached_member.as_ref(),
+            )
+            && claim.select_baseline == Some(SelectPhysical::Detached(surface))
+            && backend.check_output(&target_output).is_ok()
+            && let Ok(row) = backend.snapshot()
+            && row.validate_physical().is_ok()
+            && row.physical() == SelectPhysical::Detached(surface)
+            && matches!(
+                backend.detached_membership(&member.window.0, member.generation, surface),
+                Ok(true)
+            )
+            && backend.snapshot().is_ok_and(|after| after == row)
+        {
+            return Err(SelectFailure {
+                reason: format!(
+                    "redundant detached fullscreen selection: physical current fullscreen surface {surface} is the frozen destination and member {} is still on it; no dispatch",
+                    member.window.0
+                ),
+                setter: FrameSetter::Refused,
+                pre: Some(SelectPhysical::Detached(surface)),
+                post: Some(SelectPhysical::Detached(surface)),
+                baseline: claim.select_baseline,
+                creation: None,
+                attempt_ms,
+            });
+        }
         return Err(refused_bare(
             "select refuses: no retained view target; no actuation".to_owned(),
         ));
@@ -877,17 +1003,19 @@ pub(crate) fn drain_claimed_select_with_os(
     }
     // One genuine confirming re-read for refusal evidence: proves the
     // desktop untouched (post equals pre) or surfaces drift/unknown
-    // (post differs/unreadable). Never fabricated, never a verdict.
+    // (post differs/unreadable). Never fabricated, never a verdict. Reads
+    // are typed at the same fresh row read (Desktop vs detached surface).
+    let read_physical = |backend: &mut dyn SelectionBackend| -> Option<SelectPhysical> {
+        backend
+            .snapshot()
+            .ok()
+            .filter(|row| row.validate_physical().is_ok())
+            .map(|row| row.physical())
+    };
     let confirm_post =
-        |backend: &mut dyn SelectionBackend, pre: Option<u64>| -> (Option<u64>, Option<u64>) {
-            match backend.snapshot() {
-                Ok(row) => match row.validate() {
-                    Ok(()) => (pre, Some(row.current)),
-                    Err(_) => (pre, None),
-                },
-                Err(_) => (pre, None),
-            }
-        };
+        |backend: &mut dyn SelectionBackend,
+         pre: Option<SelectPhysical>|
+         -> (Option<SelectPhysical>, Option<SelectPhysical>) { (pre, read_physical(backend)) };
     if let Some(binding) = claim.select_native_binding.clone() {
         let Some(sid) = parse_native_binding(&binding) else {
             return Err(refused_bare(format!(
@@ -900,20 +1028,14 @@ pub(crate) fn drain_claimed_select_with_os(
             && expected_sid != sid
         {
             // Fence-only path: confirm the live row for genuine evidence.
-            let (pre, post) = match backend.snapshot() {
-                Ok(row) => match row.validate() {
-                    Ok(()) => (Some(row.current), Some(row.current)),
-                    Err(_) => (None, None),
-                },
-                Err(_) => (None, None),
-            };
+            let fresh = read_physical(&mut *backend);
             return Err(SelectFailure {
                 reason: format!(
                     "stale bound select discarded: reply binding Space {sid} no longer names rendered Space {expected_sid}; no select dispatched"
                 ),
                 setter: FrameSetter::Refused,
-                pre,
-                post,
+                pre: fresh,
+                post: fresh,
                 baseline,
                 creation: None,
                 attempt_ms,
@@ -927,25 +1049,28 @@ pub(crate) fn drain_claimed_select_with_os(
                 )));
             }
         };
-        if let Err(e) = before.validate() {
+        if let Err(e) = before.validate_physical() {
             return Err(refused_bare(format!(
                 "select refuses: fresh row unprovable ({e})"
             )));
         }
         // Queued-tap source fence: the claim's observation-time baseline
-        // (genuine native current at dispatch) must still name the live
-        // current before any actuation. An externally moved source view
-        // refuses with genuinely re-read evidence, never a guess. Baseline
-        // `None` (unreadable at dispatch) skips this leg; revision drift
-        // stays indicator-only so own-append growth (same current) executes.
+        // (typed genuine physical current at dispatch) must still name the
+        // live current before any actuation. An externally moved source
+        // view refuses with genuinely re-read evidence, never a guess.
+        // Baseline `None` (unreadable at dispatch) skips this leg; revision
+        // drift stays indicator-only so own-append growth (same current)
+        // executes.
+        let live_pre = before.physical();
         if let Some(want_baseline) = baseline
-            && want_baseline != before.current
+            && want_baseline != live_pre
         {
-            let (pre, post) = confirm_post(&mut *backend, Some(before.current));
+            let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
             return Err(SelectFailure {
                 reason: format!(
-                    "stale queued select discarded: source view moved between admission and drain (baseline {want_baseline} != live current {}; no select dispatched",
-                    before.current
+                    "stale queued select discarded: source view moved between admission and drain (baseline {} != live current {}; no select dispatched",
+                    want_baseline.sid(),
+                    live_pre.sid()
                 ),
                 setter: FrameSetter::Refused,
                 pre,
@@ -956,7 +1081,7 @@ pub(crate) fn drain_claimed_select_with_os(
             });
         }
         if !before.spaces.contains(&sid) {
-            let (pre, post) = confirm_post(&mut *backend, Some(before.current));
+            let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
             return Err(SelectFailure {
                 reason: format!(
                     "stale bound select discarded: target Space {sid} not in live row for {target_output}/{target_workspace}; no select dispatched"
@@ -969,7 +1094,215 @@ pub(crate) fn drain_claimed_select_with_os(
                 attempt_ms,
             });
         }
-        if before.current == sid {
+        // Detached destination admission: only an eligible standalone
+        // explicit existing-Space View flight may switch to a detached
+        // surface (the claim binds one exactly from such a reply). The
+        // bound capability can never be bypassed by a plan, and creation,
+        // trailing append, send, and swap paths never bind a destination
+        // and therefore never reach this arm.
+        let detached_target = match (
+            claim.select_detached_surface,
+            claim.select_detached_member.clone(),
+        ) {
+            (None, None) => None,
+            (Some(surface), Some(member)) => {
+                if !claim.select_detached_enabled || !explicit_select || surface == 0 {
+                    return Err(refused_bare(
+                        "select refuses: detached fullscreen destination is not authorized on this route; no actuation"
+                            .to_owned(),
+                    ));
+                }
+                Some((surface, member))
+            }
+            _ => {
+                return Err(refused_bare(
+                    "select refuses: malformed detached destination; no actuation".to_owned(),
+                ));
+            }
+        };
+        // A detached-source Desktop switch is never authorized by the
+        // capability alone: it must be a standalone explicit existing-Space
+        // selection (numbered/existing select, no creation/trailing
+        // authorization). Relative/previous/indicator/send/swap claims stay
+        // fenced out of a covered surface regardless of session capability.
+        let standalone_explicit_existing =
+            matches!(claim.action, InputSemanticAction::WorkspaceSelect { .. })
+                && claim.select_creation_operation.is_none();
+        let detached_source = matches!(live_pre, SelectPhysical::Detached(_));
+        if detached_source && detached_target.is_none() && !standalone_explicit_existing {
+            let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
+            return Err(SelectFailure {
+                reason:
+                    "select refuses: detached fullscreen current moved by a non-standalone explicit select; no select dispatched"
+                        .to_owned(),
+                setter: FrameSetter::Refused,
+                pre,
+                post,
+                baseline,
+                creation: None,
+                attempt_ms,
+            });
+        }
+        // Detached actuation (onto a detached surface or out of one) needs
+        // the exact typed observation-time baseline: an unobserved source
+        // (`None`) must never become an authorized Desktop switch, and a
+        // dispatched destination write needs a proven preimage. A mismatched
+        // bound baseline already refused at the fence above.
+        if (detached_target.is_some() || detached_source) && baseline.is_none() {
+            let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
+            return Err(SelectFailure {
+                reason: format!(
+                    "select refuses: detached fullscreen actuation without a bound typed baseline at {}; no select dispatched",
+                    live_pre.sid()
+                ),
+                setter: FrameSetter::Refused,
+                pre,
+                post,
+                baseline,
+                creation: None,
+                attempt_ms,
+            });
+        }
+        // Fullscreen no-write fence: with the bound detached-view
+        // capability false, a detached physical current refuses every
+        // select (never a Desktop write out of a covered surface, never a
+        // detached switch); the exact unchanged read rides the refusal.
+        if !claim.select_detached_enabled
+            && let SelectPhysical::Detached(surface) = live_pre
+        {
+            let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
+            return Err(SelectFailure {
+                reason: format!(
+                    "product select refuses: detached fullscreen current {surface} unsupported by the bound host capability; no select dispatched"
+                ),
+                setter: FrameSetter::Refused,
+                pre,
+                post,
+                baseline,
+                creation: None,
+                attempt_ms,
+            });
+        }
+        if let Some((surface, member)) = detached_target {
+            let target = SelectPhysical::Detached(surface);
+            if live_pre == target {
+                // Already exact current on the frozen surface: the fresh
+                // typed read is the proof (no dispatch, no focus).
+                return Ok(SelectSuccess {
+                    effect: SelectionEffect {
+                        from: surface,
+                        target: surface,
+                        created: None,
+                        changed: false,
+                        baseline,
+                    },
+                    setter: FrameSetter::Accepted,
+                    pre: Some(live_pre),
+                    post: Some(live_pre),
+                    post_member: None,
+                    creation: None,
+                    attempt_ms,
+                });
+            }
+            // Fresh membership and lifetime for the detached target: the
+            // frozen intended member must read exactly the frozen surface
+            // before any actuation. Unreadable or mismatched membership
+            // holds with genuine reads; nothing is guessed, nothing is
+            // dispatched.
+            match backend.detached_membership(&member.window.0, member.generation, surface) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
+                    return Err(SelectFailure {
+                        reason: format!(
+                            "detached fullscreen select refused: member {} is not on frozen surface {surface}; no select dispatched",
+                            member.window.0
+                        ),
+                        setter: FrameSetter::Refused,
+                        pre,
+                        post,
+                        baseline,
+                        creation: None,
+                        attempt_ms,
+                    });
+                }
+                Err(e) => {
+                    let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
+                    return Err(SelectFailure {
+                        reason: format!(
+                            "detached fullscreen select refused: membership of {} on surface {surface} unreadable ({e}); no select dispatched",
+                            member.window.0
+                        ),
+                        setter: FrameSetter::Refused,
+                        pre,
+                        post,
+                        baseline,
+                        creation: None,
+                        attempt_ms,
+                    });
+                }
+            }
+            if let Err(e) = backend.select_detached_view(&before, target) {
+                let post = read_physical(&mut *backend);
+                return Err(SelectFailure {
+                    reason: e.reason,
+                    setter: e.setter,
+                    pre: Some(live_pre),
+                    post,
+                    baseline,
+                    creation: None,
+                    attempt_ms,
+                });
+            }
+            let after = match backend.snapshot() {
+                Ok(row) if row.validate_physical().is_ok() && row.display == before.display => {
+                    Some(row)
+                }
+                _ => None,
+            };
+            let post = after.as_ref().map(SelectionSnapshot::physical);
+            // `postMember` is a membership observation, never focus
+            // evidence: sent only for an accepted exact detached post and a
+            // membership read bracketed by two exact physical samples of
+            // the same frozen surface. `None` withholds proof.
+            let post_member = match (&after, post) {
+                (Some(row), Some(SelectPhysical::Detached(observed)))
+                    if observed == surface && row.spaces == before.spaces =>
+                {
+                    match backend.detached_membership(&member.window.0, member.generation, surface) {
+                        Ok(true) => match backend.snapshot() {
+                            Ok(again)
+                                if again.validate_physical().is_ok()
+                                    && again.display == before.display
+                                    && again.physical() == SelectPhysical::Detached(surface) =>
+                            {
+                                Some(member.window.clone())
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            return Ok(SelectSuccess {
+                effect: SelectionEffect {
+                    from: live_pre.sid(),
+                    target: surface,
+                    created: None,
+                    changed: true,
+                    baseline,
+                },
+                setter: FrameSetter::Accepted,
+                pre: Some(live_pre),
+                post,
+                post_member,
+                creation: None,
+                attempt_ms,
+            });
+        }
+        let desktop_target = SelectPhysical::Desktop(sid);
+        if before.detached.is_none() && before.current == sid {
             return Ok(SelectSuccess {
                 effect: SelectionEffect {
                     from: before.current,
@@ -979,24 +1312,27 @@ pub(crate) fn drain_claimed_select_with_os(
                     baseline,
                 },
                 setter: FrameSetter::Accepted,
-                pre: Some(before.current),
-                post: Some(before.current),
+                pre: Some(live_pre),
+                post: Some(live_pre),
+                post_member: None,
                 creation: None,
                 attempt_ms,
             });
         }
-        if let Err(e) = backend.select(&before, sid) {
+        let selected = if detached_source {
+            backend.select_detached_view(&before, desktop_target)
+        } else {
+            backend.select(&before, sid)
+        };
+        if let Err(e) = selected {
             // Typed mechanical disposition: `Refused` means nothing was
             // attempted (genuine unchanged reads); `Threw` means a partial
             // or erroneous dispatch ran (genuine post read, never a guess).
-            let post = match backend.snapshot() {
-                Ok(row) => row.validate().ok().map(|()| row.current),
-                Err(_) => None,
-            };
+            let post = read_physical(&mut *backend);
             return Err(SelectFailure {
                 reason: format!("{}; created SID None", e.reason),
                 setter: e.setter,
-                pre: Some(before.current),
+                pre: Some(live_pre),
                 post,
                 baseline,
                 creation: None,
@@ -1018,8 +1354,9 @@ pub(crate) fn drain_claimed_select_with_os(
                         baseline,
                     },
                     setter: FrameSetter::Accepted,
-                    pre: Some(before.current),
+                    pre: Some(live_pre),
                     post: None,
+                    post_member: None,
                     creation: None,
                     attempt_ms,
                 });
@@ -1029,10 +1366,14 @@ pub(crate) fn drain_claimed_select_with_os(
             || after.display != before.display
             || after.spaces != before.spaces
             || after.current != sid
+            || after.detached.is_some()
         {
             // Successful dispatch, but the readback disagrees: stage the
-            // genuine read post so the core - not a string classifier -
-            // derives third-location, abandonment, or hold.
+            // genuine typed read post so the core - not a string classifier
+            // - derives third-location, abandonment, or hold.
+            let post = (after.display == before.display)
+                .then(|| after.validate_physical().ok().map(|()| after.physical()))
+                .flatten();
             return Ok(SelectSuccess {
                 effect: SelectionEffect {
                     from: before.current,
@@ -1042,10 +1383,9 @@ pub(crate) fn drain_claimed_select_with_os(
                     baseline,
                 },
                 setter: FrameSetter::Accepted,
-                pre: Some(before.current),
-                post: (after.display == before.display)
-                    .then(|| after.validate().ok().map(|()| after.current))
-                    .flatten(),
+                pre: Some(live_pre),
+                post,
+                post_member: None,
                 creation: None,
                 attempt_ms,
             });
@@ -1059,8 +1399,9 @@ pub(crate) fn drain_claimed_select_with_os(
                 baseline,
             },
             setter: FrameSetter::Accepted,
-            pre: Some(before.current),
-            post: Some(sid),
+            pre: Some(live_pre),
+            post: Some(desktop_target),
+            post_member: None,
             creation: None,
             attempt_ms,
         });
@@ -1068,7 +1409,14 @@ pub(crate) fn drain_claimed_select_with_os(
     // Unbound target: only an explicit creation desire authorizes exactly
     // one native append. The desire must name this exact logical on this
     // exact output; anything else refuses without creating. Missing
-    // bindings never create.
+    // bindings never create. A detached destination never reaches this
+    // leg: detachment authorizes no creation, no trailing append, and no
+    // send/swap path.
+    if claim.select_detached_surface.is_some() || claim.select_detached_member.is_some() {
+        return Err(refused_bare(
+            "select refuses: detached destination never authorizes creation; no actuation".to_owned(),
+        ));
+    }
     let Some(creation_op) = claim.select_creation_operation.clone() else {
         return Err(refused_bare(
             "select refuses: target unbound with no creation desire; missing binding never creates"
@@ -1087,18 +1435,12 @@ pub(crate) fn drain_claimed_select_with_os(
     // its original stamp: no second native append, never a dropped
     // ownership.
     if state.is_creation_spent(&creation_op) {
-        let (pre, post) = match backend.snapshot() {
-            Ok(row) => match row.validate() {
-                Ok(()) => (Some(row.current), Some(row.current)),
-                Err(_) => (None, None),
-            },
-            Err(_) => (None, None),
-        };
+        let fresh = read_physical(&mut *backend);
         return Err(SelectFailure {
             reason: format!("select refuses: creation {creation_op} already spent; no replay"),
             setter: FrameSetter::Refused,
-            pre,
-            post,
+            pre: fresh,
+            post: fresh,
             baseline,
             creation: None,
             attempt_ms,
@@ -1137,7 +1479,7 @@ pub(crate) fn drain_claimed_select_with_os(
             });
         }
     };
-    if let Err(e) = before.validate() {
+    if let Err(e) = before.validate_physical() {
         return Err(SelectFailure {
             reason: format!("select refuses: fresh row unprovable ({e})"),
             setter: FrameSetter::Refused,
@@ -1152,15 +1494,32 @@ pub(crate) fn drain_claimed_select_with_os(
     // naming a departed source view refuses before any append. Placed
     // before the spend gate so a stale claim never consumes the single
     // creation authorization; post-dispatch typed setter truth below is
-    // untouched.
-    if let Some(want_baseline) = baseline
-        && want_baseline != before.current
-    {
-        let (pre, post) = confirm_post(&mut *backend, Some(before.current));
+    // untouched. A detached physical current also refuses: detachment
+    // never authorizes a Desktop append from a covered surface.
+    let live_pre = before.physical();
+    if let SelectPhysical::Detached(surface) = live_pre {
+        let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
         return Err(SelectFailure {
             reason: format!(
-                "stale queued select discarded: source view moved between admission and drain (baseline {want_baseline} != live current {}; no create dispatched",
-                before.current
+                "select refuses: creation from detached fullscreen current {surface}; no create dispatched"
+            ),
+            setter: FrameSetter::Refused,
+            pre,
+            post,
+            baseline,
+            creation: None,
+            attempt_ms,
+        });
+    }
+    if let Some(want_baseline) = baseline
+        && want_baseline != live_pre
+    {
+        let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
+        return Err(SelectFailure {
+            reason: format!(
+                "stale queued select discarded: source view moved between admission and drain (baseline {} != live current {}; no create dispatched",
+                want_baseline.sid(),
+                live_pre.sid()
             ),
             setter: FrameSetter::Refused,
             pre,
@@ -1171,7 +1530,7 @@ pub(crate) fn drain_claimed_select_with_os(
         });
     }
     if before.spaces.len() >= tiler_core::workspace::MAX_ORDERED {
-        let (pre, post) = confirm_post(&mut *backend, Some(before.current));
+        let (pre, post) = confirm_post(&mut *backend, Some(live_pre));
         return Err(SelectFailure {
             reason: "shared workspace catalogue bound reached".to_owned(),
             setter: FrameSetter::Refused,
@@ -1185,18 +1544,12 @@ pub(crate) fn drain_claimed_select_with_os(
     // Spend exactly once per core lifetime, immediately before the native
     // call. A repeated drain refuses above without a second append.
     if !state.spend_creation(&creation_op) {
-        let (pre, post) = match backend.snapshot() {
-            Ok(row) => match row.validate() {
-                Ok(()) => (Some(row.current), Some(row.current)),
-                Err(_) => (None, None),
-            },
-            Err(_) => (None, None),
-        };
+        let fresh = read_physical(&mut *backend);
         return Err(SelectFailure {
             reason: format!("select refuses: creation {creation_op} already spent; no replay"),
             setter: FrameSetter::Refused,
-            pre,
-            post,
+            pre: fresh,
+            post: fresh,
             baseline,
             creation: None,
             attempt_ms,
@@ -1370,14 +1723,15 @@ pub(crate) fn drain_claimed_select_with_os(
         || now.display != after.display
         || now.spaces != after.spaces
         || now.current != before.current
+        || now.detached.is_some()
     {
         return Err(SelectFailure {
             reason: format!(
                 "workspace topology changed before select; created SID {created:?}; no select dispatched"
             ),
             setter: FrameSetter::Refused,
-            pre: Some(before.current),
-            post: now.validate().ok().map(|()| now.current),
+            pre: Some(live_pre),
+            post: now.validate_physical().ok().map(|()| now.physical()),
             baseline,
             creation: Some(creation_ok),
             attempt_ms,
@@ -1387,14 +1741,11 @@ pub(crate) fn drain_claimed_select_with_os(
         // Verified append, typed select disposition: the Space persists
         // (adopted from the proof on both outcomes) while the view holds.
         // `Refused` means the select never ran; `Threw` means it may have.
-        let post = match backend.snapshot() {
-            Ok(row) => row.validate().ok().map(|()| row.current),
-            Err(_) => None,
-        };
+        let post = read_physical(&mut *backend);
         return Err(SelectFailure {
             reason: format!("{}; created SID {created:?}", e.reason),
             setter: e.setter,
-            pre: Some(now.current),
+            pre: Some(live_pre),
             post,
             baseline,
             creation: Some(creation_ok),
@@ -1415,8 +1766,9 @@ pub(crate) fn drain_claimed_select_with_os(
                     baseline,
                 },
                 setter: FrameSetter::Accepted,
-                pre: Some(before.current),
+                pre: Some(live_pre),
                 post: None,
+                post_member: None,
                 creation: Some(creation_ok),
                 attempt_ms,
             });
@@ -1426,6 +1778,7 @@ pub(crate) fn drain_claimed_select_with_os(
         || settled.display != now.display
         || settled.spaces != now.spaces
         || settled.current != sid
+        || settled.detached.is_some()
     {
         // Successful dispatch, disagreeing readback: stage the genuine
         // read so the core derives third-location, abandonment, or hold.
@@ -1438,8 +1791,9 @@ pub(crate) fn drain_claimed_select_with_os(
                 baseline,
             },
             setter: FrameSetter::Accepted,
-            pre: Some(before.current),
-            post: settled.validate().ok().map(|()| settled.current),
+            pre: Some(live_pre),
+            post: settled.validate_physical().ok().map(|()| settled.physical()),
+            post_member: None,
             creation: Some(creation_ok),
             attempt_ms,
         });
@@ -1453,8 +1807,9 @@ pub(crate) fn drain_claimed_select_with_os(
             baseline,
         },
         setter: FrameSetter::Accepted,
-        pre: Some(before.current),
-        post: Some(sid),
+        pre: Some(live_pre),
+        post: Some(SelectPhysical::Desktop(sid)),
+        post_member: None,
         creation: Some(creation_ok),
         attempt_ms,
     })
@@ -1715,23 +2070,27 @@ pub(crate) fn drain_live_claimed(
     state: &mut SelectionState,
     claim: crate::runtime_types::ClaimedSelect,
     gates: &SelectGates,
+    membership: Option<crate::detached_membership::MembershipProbe>,
 ) -> Result<(SelectSuccess, bool), SelectFailure> {
     drain_live_claimed_with(
         state,
         claim,
         gates,
         crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
+        membership,
     )
 }
 
 /// Capability-explicit live drain: the production route above with
-/// `trailing_enabled` threaded from the single capability gate.
+/// `trailing_enabled` threaded from the single capability gate and the
+/// bounded read-only membership bridge for the live per-app AX owner.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn drain_live_claimed_with(
     state: &mut SelectionState,
     claim: crate::runtime_types::ClaimedSelect,
     gates: &SelectGates,
     trailing_enabled: bool,
+    membership: Option<crate::detached_membership::MembershipProbe>,
 ) -> Result<(SelectSuccess, bool), SelectFailure> {
     if !crate::workspace_input::is_armed_select_with(&claim.action, trailing_enabled) {
         return Err(SelectFailure {
@@ -1739,7 +2098,7 @@ pub(crate) fn drain_live_claimed_with(
             setter: FrameSetter::Refused,
             pre: None,
             post: None,
-            baseline: claim.select_baseline_sid,
+            baseline: claim.select_baseline,
             creation: None,
             attempt_ms: crate::input_eligibility::now_ms(),
         });
@@ -1753,7 +2112,7 @@ pub(crate) fn drain_live_claimed_with(
                     setter: FrameSetter::Refused,
                     pre: None,
                     post: None,
-                    baseline: claim.select_baseline_sid,
+                    baseline: claim.select_baseline,
                     creation: None,
                     attempt_ms: crate::input_eligibility::now_ms(),
                 });
@@ -1763,6 +2122,7 @@ pub(crate) fn drain_live_claimed_with(
         display: 0,
         budget: crate::mc_probe::ActionBudget::new(PRODUCT_DRAIN_BUDGET_SECS),
         fixture_gate: None,
+        membership,
     };
     let outcome = drain_claimed_select_with(state, &mut backend, claim, gates, trailing_enabled);
     let reaped = awake.stop();
@@ -1781,6 +2141,7 @@ pub(crate) fn trailing_emptiness(sid: u64, display: usize) -> Result<bool, Strin
         display,
         budget: crate::mc_probe::ActionBudget::new(TRAILING_CLEANUP_BUDGET_SECS),
         fixture_gate: None,
+        membership: None,
     };
     backend.empty(sid)
 }
@@ -1927,14 +2288,17 @@ pub(crate) fn run_batch_step(
     // owns spend-once across actions: one desire creates at most once per
     // batch, and the proof adopts from the same state.
     let op_id = operation.clone().unwrap_or_default();
+    let plan_output = claim.select_target_output.clone().map(OutputId);
     match drain_claimed_select_with(state, backend, claim, gates, trailing_enabled) {
         Ok(success) => {
             session.stage_view_attempt(
                 &op_id,
+                plan_output.as_ref(),
                 success.setter,
                 success.pre,
                 success.post,
                 success.effect.baseline,
+                success.post_member.clone(),
             );
             if let Some(report) = success.creation.as_ref() {
                 session.stage_native_creation(
@@ -1953,10 +2317,12 @@ pub(crate) fn run_batch_step(
         Err(failure) => {
             session.stage_view_attempt(
                 &op_id,
+                plan_output.as_ref(),
                 failure.setter,
                 failure.pre,
                 failure.post,
                 failure.baseline,
+                None,
             );
             if let Some(report) = failure.creation.as_ref() {
                 session.stage_native_creation(
@@ -2014,6 +2380,7 @@ pub fn run(display: usize, actions: &[InputSemanticAction]) -> Result<String, (i
         display,
         budget: crate::mc_probe::ActionBudget::new(120),
         fixture_gate: None,
+        membership: None,
     };
     let mut effects = Vec::new();
     let mut failure: Option<String> = None;
@@ -2105,6 +2472,10 @@ struct NativeSelection {
     /// actuate only owned SIDs and creates refuse (the controller owns
     /// creation). `None` leaves the normal product unchanged.
     fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+    /// Bounded read-only detached-membership bridge to the per-app AX
+    /// owner. `None` on lanes with no runtime owner: those lanes refuse a
+    /// detached membership read instead of guessing.
+    membership: Option<crate::detached_membership::MembershipProbe>,
 }
 
 impl NativeSelection {
@@ -2122,6 +2493,7 @@ impl NativeSelection {
             display,
             budget,
             fixture_gate: gate,
+            membership: None,
         }
     }
 }
@@ -2182,6 +2554,23 @@ impl SelectionBackend for NativeSelection {
     }
     fn empty(&mut self, sid: u64) -> Result<bool, String> {
         probe_trailing_emptiness(sid)
+    }
+    fn detached_membership(&mut self, member: &str, generation: u64, surface: u64) -> Result<bool, String> {
+        let probe = self.membership.as_ref().ok_or_else(|| {
+            "detached membership read unavailable: no per-app AX owner bridge".to_owned()
+        })?;
+        probe.read_membership(member, generation, surface)
+    }
+
+    fn select_detached_view(
+        &mut self,
+        before: &SelectionSnapshot,
+        target: SelectPhysical,
+    ) -> Result<(), DispatchError> {
+        if !before.detached_selector_target_proven(target) {
+            return Err(DispatchError::refused("detached selector target is no longer proven"));
+        }
+        self.select(before, target.sid())
     }
     fn create(&mut self, before: &SelectionSnapshot) -> Result<(), DispatchError> {
         // Fixture gate: the controller owns creation while gated; the
@@ -2275,6 +2664,7 @@ mod fixture_gate_tests {
             display: "test-display".to_owned(),
             spaces: vec![11, 22],
             current: 11,
+            detached: None,
         }
     }
 
@@ -2336,6 +2726,7 @@ mod fixture_gate_tests {
             display: 0,
             budget: crate::mc_probe::ActionBudget::new(30),
             fixture_gate: None,
+            membership: None,
         };
         let before = test_snapshot();
         let err = backend

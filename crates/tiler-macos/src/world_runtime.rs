@@ -60,7 +60,7 @@ use crate::runtime::{NativeContext, ObservedWindow, parse_window_id, window_id};
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, RetainedCore, clear_focus_into};
 use crate::runtime_types::{
     AxCompletion, NativeDomain, PHASE1_BOUNDS, PHASE1_GENERATION, PHASE1_OUTPUT, PHASE1_WORKSPACE,
-    ScopedBackendSnapshot,
+    ScopedBackendSnapshot, SelectPhysical,
 };
 use crate::world_builder::{ReportInput, build_report};
 use crate::world_sequencer::{ObservationClock, WorldSequencer};
@@ -199,10 +199,11 @@ pub(crate) struct WorldSession {
     native_mode: bool,
     focus_route: FocusRoute,
     /// Staged raw view attempts drained into the next dispatched report,
-    /// latest-wins per owning operation. Drained (cleared) on every
-    /// dispatch whether or not the report is accepted — attempts describe
-    /// attempted actuation, never retry themselves.
-    pub(crate) pending_views: BTreeMap<String, ViewAttempt>,
+    /// latest-wins per exact `(operation, output)` pair. Drained (cleared)
+    /// on every dispatch whether or not the report is accepted — attempts
+    /// describe attempted actuation, never retry themselves. A sibling
+    /// output's row can never stand in for another output's flight.
+    pub(crate) pending_views: BTreeMap<(String, OutputId), ViewAttempt>,
     /// Staged raw membership attempts, latest-wins per (operation, window).
     pub(crate) pending_members: BTreeMap<(String, String), MemberAttempt>,
     /// Staged raw native creation attempts, latest-wins per creation
@@ -244,6 +245,9 @@ pub(crate) struct WorldSession {
     /// it exactly once after the overlay clears (never while fullscreen).
     pub(crate) pending_fullscreen_float_placements:
         BTreeMap<String, PendingFullscreenFloatPlacement>,
+    /// Owner generations of exact detached facts in the current command
+    /// report. Never a source of authority for a later command or rebind.
+    detached_select_members: Option<(u64, BTreeMap<WindowId, u64>)>,
     /// One bounded staged close-focus feedback row: the first correlated
     /// raw row since the previous dispatch. First-wins (later rows drop
     /// until drained); drained once into the next dispatched report with
@@ -377,6 +381,7 @@ impl WorldSession {
                 pending_layout_writes: BTreeMap::new(),
                 spent_frame_ops: VecDeque::new(),
                 pending_fullscreen_float_placements: BTreeMap::new(),
+                detached_select_members: None,
                 pending_close_feedback: None,
                 coverage_gap: false,
                 pending_closes: BTreeSet::new(),
@@ -427,6 +432,7 @@ impl WorldSession {
             pending_layout_writes: BTreeMap::new(),
             spent_frame_ops: VecDeque::new(),
             pending_fullscreen_float_placements: BTreeMap::new(),
+            detached_select_members: None,
             pending_close_feedback: None,
             coverage_gap: false,
             pending_closes: BTreeSet::new(),
@@ -444,6 +450,21 @@ impl WorldSession {
             gesture_settlement: None,
             settlements_generation: bound_generation,
         }
+    }
+
+    pub(crate) fn pin_detached_select_member(
+        &self,
+        command_seq: u64,
+        window: &WindowId,
+    ) -> Option<crate::runtime_types::DetachedSelectMember> {
+        let (report_command, members) = self.detached_select_members.as_ref()?;
+        if *report_command != command_seq {
+            return None;
+        }
+        Some(crate::runtime_types::DetachedSelectMember {
+            window: window.clone(),
+            generation: *members.get(window)?,
+        })
     }
 
     /// True once the one-time handshake minted a generation and bound the
@@ -817,53 +838,60 @@ impl WorldSession {
     }
 
     /// Stage one raw view-attempt row for the next dispatched report.
-    /// Resolves the retained transfer target by operation identity (logical
-    /// target correlation only, never adapter mapping). Native Space reads
-    /// ride the dedicated native keys (`native_pre`/`native_post`/`native_baseline`
-    /// via [`crate::topology::workspace_key`]); logical `pre`/`post`/`baseline`
-    /// stay `None` because host-owned facts never translate native ids to
-    /// logical receipts adapter-side. The core translates the native ids
-    /// through its own bindings at settle time. `native_baseline` is the
-    /// observation-time native current captured at dispatch (the plan's
-    /// baseline); `native_pre`/`native_post` are the real write-time reads
-    /// around the drain actuation. Unknown operations drop without evidence
-    /// (never forged, never guessed). Latest-wins per owning operation.
+    /// Resolves the retained transfer target by the exact `(operation,
+    /// output)` pair (logical target correlation only, never adapter
+    /// mapping); a missing output or absent exact View transfer drops the
+    /// row. Typed physical reads keep their Desktop/Detached arm and are
+    /// converted through the target output only
+    /// ([`SelectPhysical::to_view`]); no bare SID is ever re-spelled into a
+    /// native workspace, so a detached surface cannot masquerade as a
+    /// Desktop row. The baseline is the observation-time physical current
+    /// captured at dispatch (the plan's baseline); pre/post are the real
+    /// write-time reads around the drain actuation, and `post_member` is
+    /// the adapter-bracketed membership read for an accepted exact
+    /// detached post. Unknown operations drop without evidence (never
+    /// forged, never guessed). Latest-wins per exact `(operation, output)`
+    /// pair.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn stage_view_attempt(
         &mut self,
         operation_id: &str,
+        target_output: Option<&OutputId>,
         disposition: FrameSetter,
-        pre_sid: Option<u64>,
-        post_sid: Option<u64>,
-        baseline_sid: Option<u64>,
+        pre: Option<SelectPhysical>,
+        post: Option<SelectPhysical>,
+        baseline: Option<SelectPhysical>,
+        post_member: Option<WindowId>,
     ) {
+        let Some(target_output) = target_output else {
+            return;
+        };
         let transfer = self
             .engine
             .retained_transfers()
             .into_iter()
-            .find(|target| target.operation_id == operation_id);
+            .find(|target| {
+                target.operation_id == operation_id
+                    && target.target_output == *target_output
+                    && matches!(target.kind, tiler_core::world_report::TransferKind::View)
+            });
         let Some(transfer) = transfer else {
             return;
         };
-        let target_output = transfer.target_output.clone();
-        let target_workspace = transfer.target_workspace.clone();
-        let to_native = |sid: u64| tiler_core::world_report::WorkspaceRef::Native {
-            output: target_output.clone(),
-            workspace: tiler_core::ids::NativeWorkspaceId::parse(&crate::topology::workspace_key(
-                sid,
-            ))
-            .expect("valid native workspace"),
-        };
+        let to_view = |physical: SelectPhysical| physical.to_view(&transfer.target_output);
         let attempt = ViewAttempt {
             operation_id: operation_id.to_owned(),
-            target_output: target_output.clone(),
-            target_workspace,
+            target_output: transfer.target_output.clone(),
+            target_workspace: transfer.target_workspace.clone(),
             disposition,
-            pre: pre_sid.map(to_native),
-            post: post_sid.map(to_native),
-            baseline: baseline_sid.map(to_native),
+            pre: pre.map(to_view),
+            post: post.map(to_view),
+            baseline: baseline.map(to_view),
             attempt_ms: 0,
+            post_member,
         };
-        self.pending_views.insert(operation_id.to_owned(), attempt);
+        self.pending_views
+            .insert((operation_id.to_owned(), transfer.target_output), attempt);
     }
 
     /// Stage one raw membership-attempt row for the next dispatched report.
@@ -1087,6 +1115,15 @@ impl WorldSession {
     /// Native mode flag (synthetic skeleton otherwise).
     pub(crate) fn is_native(&self) -> bool {
         self.native_mode
+    }
+
+    pub(crate) fn detached_fullscreen_view(&self) -> bool {
+        self.native_mode
+            && self.engine.capabilities().is_some_and(|cap| {
+                cap.detached_fullscreen_view
+                    && cap.host_owned
+                    && cap.native_selector_scope == tiler_core::connection::NativeSelectorScope::PerOutput
+            })
     }
 
     /// Core engine access for the dispatch half (see
@@ -1408,6 +1445,7 @@ pub(crate) fn build_dispatch_report(
     gesture: Option<GestureIngress>,
     request_id: &str,
 ) -> Option<WorldReportV4> {
+    session.detached_select_members = None;
     // No-context guard BEFORE any drain: an empty native context reports
     // nothing (KDE null parity), and the staged rows must survive for the
     // next real dispatch — attempts describe attempted actuation and must
@@ -1474,6 +1512,7 @@ pub(crate) fn build_dispatch_report(
             // Homing is the authority, not the normalized spaces alone,
             // so shared-Space ties also hold here.
             let mut unknown: Vec<(u32, ObservedWindow)> = Vec::new();
+            let mut detached_members = session.detached_fullscreen_view().then(BTreeMap::new);
             for (pid, app) in &retained.apps {
                 for (wid, entry) in &app.roster {
                     if entry.excluded.is_some() {
@@ -1483,6 +1522,14 @@ pub(crate) fn build_dispatch_report(
                     let id = crate::runtime_types::window_id(*pid, *wid);
                     if !retained.window_domains.contains_key(&id) {
                         unknown.push((*pid, obs));
+                        if let Some(members) = &mut detached_members
+                            && !session.coverage_gap
+                            && !app.roster_incomplete
+                            && let Some((revision, sid)) = entry.detached_membership
+                            && revision == ctx.revision
+                        {
+                            members.insert((*pid, *wid), sid);
+                        }
                     }
                 }
             }
@@ -1553,6 +1600,7 @@ pub(crate) fn build_dispatch_report(
                 memory: &memory,
                 closed: &closed_flat,
                 unknown: &unknown,
+                detached_members: detached_members.as_ref(),
                 raw: &raw,
                 roster_incomplete,
                 minimized: &minimized,
@@ -1576,6 +1624,21 @@ pub(crate) fn build_dispatch_report(
                 presentation,
             };
             let mut report = build_report(&mut input);
+            if detached_members.is_some()
+                && let Some(command_seq) = ticket_command_seq
+            {
+                let pins = report
+                    .windows
+                    .iter()
+                    .filter(|fact| fact.detached_surface.is_some())
+                    .filter_map(|fact| {
+                        let (pid, _) = crate::runtime_types::parse_window_id(&fact.window.0)?;
+                        let generation = retained.apps.get(&pid)?.generation;
+                        Some((fact.window.clone(), generation))
+                    })
+                    .collect();
+                session.detached_select_members = Some((command_seq, pins));
+            }
             let records = {
                 let present: Vec<&str> = report
                     .windows
@@ -1610,6 +1673,7 @@ pub(crate) fn build_dispatch_report(
                     visible: PHASE1_BOUNDS,
                 }],
                 skipped: Vec::new(),
+                detached_spaces: BTreeMap::new(),
             };
             let owned_command = ticket_command.clone();
             let owned_request = request_id.to_owned();
@@ -1646,6 +1710,7 @@ pub(crate) fn build_dispatch_report(
                 memory: &memory,
                 closed: &closed_flat,
                 unknown: &[],
+                detached_members: None,
                 raw: &crate::runtime_types::EMPTY_RAW_FACTS,
                 roster_incomplete: false,
                 minimized: &minimized,

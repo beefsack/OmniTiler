@@ -1,5 +1,5 @@
 #![cfg(test)]
-use crate::runtime_types::{ClaimedSelect, InputSemanticAction as Action};
+use crate::runtime_types::{ClaimedSelect, InputSemanticAction as Action, SelectPhysical};
 use crate::workspace_select::*;
 use tiler_core::world_report::FrameSetter;
 
@@ -11,6 +11,7 @@ struct Fake {
     revision: Option<u64>,
     output: String,
     empty: Result<bool, String>,
+    membership: Result<bool, String>,
     creates: usize,
     selects: Vec<u64>,
     effect: bool,
@@ -23,6 +24,7 @@ impl Default for Fake {
                 display: "display-a".to_owned(),
                 spaces: vec![20, 3],
                 current: 20,
+                detached: None,
             },
             displays: 1,
             multi_output_select: false,
@@ -30,6 +32,7 @@ impl Default for Fake {
             revision: None,
             output: "macos-display-1".to_owned(),
             empty: Ok(true),
+            membership: Ok(true),
             creates: 0,
             selects: Vec::new(),
             effect: true,
@@ -66,6 +69,9 @@ impl SelectionBackend for Fake {
     fn empty(&mut self, _: u64) -> Result<bool, String> {
         self.empty.clone()
     }
+    fn detached_membership(&mut self, _: &str, _: u64, _: u64) -> Result<bool, String> {
+        self.membership.clone()
+    }
     fn create(
         &mut self,
         _: &SelectionSnapshot,
@@ -94,6 +100,21 @@ impl SelectionBackend for Fake {
         self.selects.push(sid);
         if self.effect {
             self.row.current = sid;
+        }
+        Ok(())
+    }
+
+    fn select_detached_view(
+        &mut self,
+        before: &SelectionSnapshot,
+        target: SelectPhysical,
+    ) -> Result<(), DispatchError> {
+        self.select(before, target.sid())?;
+        if self.effect {
+            self.row.detached = match target {
+                SelectPhysical::Desktop(_) => None,
+                SelectPhysical::Detached(sid) => Some(sid),
+            };
         }
         Ok(())
     }
@@ -130,7 +151,7 @@ fn plan_claim(
         claim.select_creation_logical = Some(logical.to_owned());
         claim.select_creation_output = Some(out.to_owned());
     }
-    claim.select_baseline_sid = baseline;
+    claim.select_baseline = baseline.map(crate::runtime_types::SelectPhysical::Desktop);
     claim
 }
 
@@ -153,8 +174,17 @@ fn reply_reuse_selects_bound_target_with_baseline() {
     assert_eq!((success.effect.from, success.effect.target), (20, 3));
     assert_eq!(success.effect.created, None);
     assert!(success.effect.changed);
-    assert_eq!(success.effect.baseline, Some(20));
-    assert_eq!((success.pre, success.post), (Some(20), Some(3)));
+    assert_eq!(
+        success.effect.baseline,
+        Some(SelectPhysical::Desktop(20))
+    );
+    assert_eq!(
+        (success.pre, success.post),
+        (
+            Some(SelectPhysical::Desktop(20)),
+            Some(SelectPhysical::Desktop(3))
+        )
+    );
     assert_eq!(fake.selects, vec![3]);
     assert!(state.take_trailing_proof().is_none());
     assert!(success.creation.is_none());
@@ -167,6 +197,7 @@ fn reply_already_there_is_noop_with_accepted_reads() {
             display: "display-a".to_owned(),
             spaces: vec![20, 3],
             current: 3,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -184,7 +215,13 @@ fn reply_already_there_is_noop_with_accepted_reads() {
         .expect("already-there noop");
     assert_eq!(success.setter, FrameSetter::Accepted);
     assert!(!success.effect.changed);
-    assert_eq!((success.pre, success.post), (Some(3), Some(3)));
+    assert_eq!(
+        (success.pre, success.post),
+        (
+            Some(SelectPhysical::Desktop(3)),
+            Some(SelectPhysical::Desktop(3))
+        )
+    );
     assert!(fake.selects.is_empty());
 }
 
@@ -207,8 +244,14 @@ fn reply_stale_binding_refuses_with_unchanged_reads_and_no_replay() {
     assert!(failure.reason.contains("stale"), "{}", failure.reason);
     // Untouched desktop, genuinely re-read: proven refusal shape.
     assert_eq!(failure.setter, FrameSetter::Refused);
-    assert_eq!((failure.pre, failure.post), (Some(20), Some(20)));
-    assert_eq!(failure.baseline, Some(20));
+    assert_eq!(
+        (failure.pre, failure.post),
+        (
+            Some(SelectPhysical::Desktop(20)),
+            Some(SelectPhysical::Desktop(20))
+        )
+    );
+    assert_eq!(failure.baseline, Some(SelectPhysical::Desktop(20)));
     assert!(failure.creation.is_none());
     assert!(fake.selects.is_empty());
     assert_eq!(fake.creates, 0);
@@ -246,6 +289,7 @@ fn reply_creation_authorizes_single_append_with_proof_and_baseline() {
             display: "display-a".to_owned(),
             spaces: vec![1, 277],
             current: 1,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -265,8 +309,14 @@ fn reply_creation_authorizes_single_append_with_proof_and_baseline() {
     assert_eq!(success.effect.created, Some(21));
     assert_eq!(success.effect.target, 21);
     assert!(success.effect.changed);
-    assert_eq!(success.effect.baseline, Some(1));
-    assert_eq!((success.pre, success.post), (Some(1), Some(21)));
+    assert_eq!(success.effect.baseline, Some(SelectPhysical::Desktop(1)));
+    assert_eq!(
+        (success.pre, success.post),
+        (
+            Some(SelectPhysical::Desktop(1)),
+            Some(SelectPhysical::Desktop(21))
+        )
+    );
     assert_eq!(fake.creates, 1);
     assert_eq!(fake.selects, vec![21]);
     let creation = success.creation.expect("creation report rides success");
@@ -292,6 +342,7 @@ fn double_drain_of_same_claim_creates_only_once() {
             display: "display-a".to_owned(),
             spaces: vec![1, 277],
             current: 1,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -327,6 +378,7 @@ fn reply_creation_mismatch_refuses_without_append() {
             display: "display-a".to_owned(),
             spaces: vec![1, 277],
             current: 1,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -396,6 +448,7 @@ fn reply_creation_refusal_reports_unknown_without_fabricated_after_order() {
                 display: "display-a".to_owned(),
                 spaces: vec![1, 277],
                 current: 1,
+                detached: None,
             },
             ..Fake::default()
         },
@@ -421,7 +474,7 @@ fn reply_creation_refusal_reports_unknown_without_fabricated_after_order() {
         "partial dispatch may have run"
     );
     assert_eq!(failure.pre, None);
-    assert_eq!(failure.baseline, Some(1));
+    assert_eq!(failure.baseline, Some(SelectPhysical::Desktop(1)));
     assert!(
         failure.creation.is_none(),
         "unknown after-order must not be substituted"
@@ -492,6 +545,7 @@ fn reply_creation_no_delta_defers_receipt_without_emission() {
         display: "display-a".to_owned(),
         spaces: vec![1, 277],
         current: 1,
+        detached: None,
     };
     let mut backend = NoDelta { row };
     let mut state = SelectionState::default();
@@ -584,11 +638,13 @@ fn reply_creation_disagree_reports_threw_with_genuine_after() {
             display: "display-a".to_owned(),
             spaces: vec![1, 277],
             current: 1,
+            detached: None,
         },
         after: SelectionSnapshot {
             display: "display-a".to_owned(),
             spaces: vec![1, 277, 99, 100],
             current: 1,
+            detached: None,
         },
         phase: 0,
     };
@@ -643,6 +699,7 @@ fn deferred_creation_never_claims_causal_identity_or_changes_setter() {
         display: "display-a".to_owned(),
         spaces: vec![3, 20, 99, 100],
         current: 20,
+        detached: None,
     };
     assert!(
         pending.observe(&row, 42).is_none(),
@@ -712,7 +769,13 @@ fn reply_indicator_mismatch_refuses_stale_click_with_unchanged_reads() {
         failure.reason
     );
     assert_eq!(failure.setter, FrameSetter::Refused);
-    assert_eq!((failure.pre, failure.post), (Some(20), Some(20)));
+    assert_eq!(
+        (failure.pre, failure.post),
+        (
+            Some(SelectPhysical::Desktop(20)),
+            Some(SelectPhysical::Desktop(20))
+        )
+    );
     assert!(fake.selects.is_empty());
 }
 
@@ -728,6 +791,7 @@ fn reply_own_append_growth_keeps_tap_binding_fresh() {
             display: "display-a".to_owned(),
             spaces: vec![20, 3, 21],
             current: 20,
+            detached: None,
         },
         revision: Some(10),
         ..Fake::default()
@@ -751,8 +815,17 @@ fn reply_own_append_growth_keeps_tap_binding_fresh() {
         vec![3],
         "exactly one dispatch, never replayed"
     );
-    assert_eq!((success.pre, success.post), (Some(20), Some(3)));
-    assert_eq!(success.effect.baseline, Some(20));
+    assert_eq!(
+        (success.pre, success.post),
+        (
+            Some(SelectPhysical::Desktop(20)),
+            Some(SelectPhysical::Desktop(3))
+        )
+    );
+    assert_eq!(
+        success.effect.baseline,
+        Some(SelectPhysical::Desktop(20))
+    );
     assert!(success.effect.changed);
 }
 
@@ -767,6 +840,7 @@ fn reply_external_source_move_refuses_before_actuation() {
             display: "display-a".to_owned(),
             spaces: vec![20, 30, 3],
             current: 30,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -788,8 +862,14 @@ fn reply_external_source_move_refuses_before_actuation() {
         failure.reason
     );
     assert_eq!(failure.setter, FrameSetter::Refused);
-    assert_eq!((failure.pre, failure.post), (Some(30), Some(30)));
-    assert_eq!(failure.baseline, Some(20));
+    assert_eq!(
+        (failure.pre, failure.post),
+        (
+            Some(SelectPhysical::Desktop(30)),
+            Some(SelectPhysical::Desktop(30))
+        )
+    );
+    assert_eq!(failure.baseline, Some(SelectPhysical::Desktop(20)));
     assert!(failure.creation.is_none());
     assert!(fake.selects.is_empty(), "no select dispatched");
     assert_eq!(fake.creates, 0, "no create dispatched");
@@ -805,6 +885,7 @@ fn reply_external_source_move_refuses_creation_before_append() {
             display: "display-a".to_owned(),
             spaces: vec![20, 30],
             current: 30,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -826,8 +907,14 @@ fn reply_external_source_move_refuses_creation_before_append() {
         failure.reason
     );
     assert_eq!(failure.setter, FrameSetter::Refused);
-    assert_eq!((failure.pre, failure.post), (Some(30), Some(30)));
-    assert_eq!(failure.baseline, Some(20));
+    assert_eq!(
+        (failure.pre, failure.post),
+        (
+            Some(SelectPhysical::Desktop(30)),
+            Some(SelectPhysical::Desktop(30))
+        )
+    );
+    assert_eq!(failure.baseline, Some(SelectPhysical::Desktop(20)));
     assert!(failure.creation.is_none());
     assert_eq!(fake.creates, 0, "no append dispatched");
     assert!(fake.selects.is_empty(), "no select dispatched");
@@ -895,6 +982,7 @@ fn reply_external_source_move_unreadable_post_fabricates_nothing() {
             display: "display-a".to_owned(),
             spaces: vec![20, 30, 3],
             current: 30,
+            detached: None,
         },
         reads: 0,
     };
@@ -916,7 +1004,10 @@ fn reply_external_source_move_unreadable_post_fabricates_nothing() {
         failure.reason
     );
     assert_eq!(failure.setter, FrameSetter::Refused);
-    assert_eq!((failure.pre, failure.post), (Some(30), None));
+    assert_eq!(
+        (failure.pre, failure.post),
+        (Some(SelectPhysical::Desktop(30)), None)
+    );
 }
 
 #[test]
@@ -1020,6 +1111,7 @@ fn reply_select_failure_after_append_stages_throw_with_proof() {
                 display: "display-a".to_owned(),
                 spaces: vec![1, 277],
                 current: 1,
+                detached: None,
             },
             ..Fake::default()
         },
@@ -1038,8 +1130,8 @@ fn reply_select_failure_after_append_stages_throw_with_proof() {
         .expect_err("failed goto holds");
     assert!(failure.reason.contains("goto failed"), "{}", failure.reason);
     assert_eq!(failure.setter, FrameSetter::Threw);
-    assert_eq!(failure.pre, Some(1));
-    assert_eq!(failure.baseline, Some(1));
+    assert_eq!(failure.pre, Some(SelectPhysical::Desktop(1)));
+    assert_eq!(failure.baseline, Some(SelectPhysical::Desktop(1)));
     // The verified append is still reported (Accepted create leg) and
     // adoptable even though the select held.
     let creation = failure.creation.expect("append proof rides the failure");
@@ -1114,7 +1206,7 @@ fn reply_accepted_with_unreadable_post_stays_accepted() {
     let success = drain_claimed_select_with(&mut state, &mut backend, claim, &open_gates(), true)
         .expect("unreadable post still Accepted");
     assert_eq!(success.setter, FrameSetter::Accepted);
-    assert_eq!(success.pre, Some(20));
+    assert_eq!(success.pre, Some(SelectPhysical::Desktop(20)));
     assert_eq!(success.post, None);
 }
 
@@ -1207,6 +1299,7 @@ fn drain_gates_display_and_unarmed_refuse_without_touch() {
             display: "display-b".to_owned(),
             spaces: vec![31, 32],
             current: 31,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -1514,6 +1607,7 @@ fn core_previous_drives_reply_drain_without_local_history() {
             display: "display-a".to_owned(),
             spaces: vec![20, 3],
             current: 3,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -1531,7 +1625,7 @@ fn core_previous_drives_reply_drain_without_local_history() {
         .expect("previous plan drains");
     assert_eq!(success.setter, FrameSetter::Accepted);
     assert_eq!((success.effect.from, success.effect.target), (3, 20));
-    assert_eq!(success.effect.baseline, Some(3));
+    assert_eq!(success.effect.baseline, Some(SelectPhysical::Desktop(3)));
     assert!(success.effect.changed);
     assert_eq!(fake.selects, vec![20]);
 }
@@ -1547,6 +1641,7 @@ fn keyboard_two_display_fake() -> Fake {
             display: "display-b".to_owned(),
             spaces: vec![31, 32],
             current: 31,
+            detached: None,
         },
         ..Fake::default()
     }
@@ -1788,6 +1883,7 @@ fn multi_display_routes_do_not_cross_admit() {
             display: "display-b".to_owned(),
             spaces: vec![31, 32],
             current: 31,
+            detached: None,
         },
         ..Fake::default()
     };
@@ -1840,5 +1936,203 @@ fn keyboard_two_display_requires_exact_reply_target_output() {
         failure.reason
     );
     assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
+}
+
+/// Core-published redundant marker claim shape: output plus frozen
+/// detached surface/member, no logical workspace and no View flight.
+fn marker_claim(surface: u64, baseline: Option<SelectPhysical>) -> ClaimedSelect {
+    let mut claim = ClaimedSelect::tap(Action::WorkspaceSelect { index: 2 });
+    claim.operation_id = Some("op-7".to_owned());
+    claim.select_target_output = Some("macos-display-1".to_owned());
+    claim.select_baseline = baseline;
+    claim.select_detached_enabled = true;
+    claim.select_detached_surface = Some(surface);
+    claim.select_detached_member = Some(crate::runtime_types::DetachedSelectMember {
+        window: tiler_core::directional::WindowId("4242_7".to_owned()),
+        generation: 1,
+    });
+    claim
+}
+
+#[test]
+fn redundant_detached_marker_refuses_without_dispatch_on_exact_live_evidence() {
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20, 3],
+            current: 900,
+            detached: Some(900),
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let failure = drain_claimed_select_with(
+        &mut state,
+        &mut fake,
+        marker_claim(900, Some(SelectPhysical::Detached(900))),
+        &open_gates(),
+        true,
+    )
+    .expect_err("exact-current marker refuses specifically");
+    assert!(
+        failure.reason.contains("redundant detached fullscreen selection"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(
+        (failure.pre, failure.post),
+        (
+            Some(SelectPhysical::Detached(900)),
+            Some(SelectPhysical::Detached(900))
+        )
+    );
+    assert_eq!(failure.baseline, Some(SelectPhysical::Detached(900)));
+    assert!(fake.selects.is_empty(), "no dispatch");
+    assert_eq!(fake.creates, 0);
+}
+
+#[test]
+fn redundant_detached_marker_never_guesses_on_gaps() {
+    for (row_current, baseline, membership) in [
+        (900, None, Ok(true)),
+        (3, Some(SelectPhysical::Detached(900)), Ok(true)),
+        (900, Some(SelectPhysical::Detached(900)), Ok(false)),
+        (900, Some(SelectPhysical::Detached(900)), Err("membership unreadable".to_owned())),
+    ] {
+        let mut fake = Fake {
+            row: SelectionSnapshot {
+                display: "display-a".to_owned(),
+                spaces: vec![20, 3],
+                current: row_current,
+                detached: (row_current == 900).then_some(900),
+            },
+            membership,
+            ..Fake::default()
+        };
+        let mut state = SelectionState::default();
+        let failure = drain_claimed_select_with(
+            &mut state,
+            &mut fake,
+            marker_claim(900, baseline),
+            &open_gates(),
+            true,
+        )
+        .expect_err("gap keeps the generic refusal");
+        assert!(
+            failure.reason.contains("no retained view target"),
+            "{}",
+            failure.reason
+        );
+        assert!(fake.selects.is_empty());
+        assert_eq!(fake.creates, 0);
+    }
+}
+
+#[test]
+fn detached_destination_requires_bound_typed_baseline_before_any_write() {
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let mut claim = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-8",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        None,
+    );
+    claim.select_detached_enabled = true;
+    claim.select_detached_surface = Some(900);
+    claim.select_detached_member = Some(crate::runtime_types::DetachedSelectMember {
+        window: tiler_core::directional::WindowId("4242_7".to_owned()),
+        generation: 1,
+    });
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("unobserved baseline refuses the destination write");
+    assert!(
+        failure
+            .reason
+            .contains("without a bound typed baseline"),
+        "{}",
+        failure.reason
+    );
+    assert!(fake.selects.is_empty());
+    assert_eq!(fake.creates, 0);
+}
+
+#[test]
+fn detached_source_desktop_switch_requires_standalone_explicit_select() {
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20, 3],
+            current: 900,
+            detached: Some(900),
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let mut claim = plan_claim(
+        Action::WorkspacePrevious,
+        "op-9",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        Some(900),
+    );
+    claim.select_detached_enabled = true;
+    claim.select_baseline = Some(SelectPhysical::Detached(900));
+    let failure = drain_claimed_select_with(&mut state, &mut fake, claim, &open_gates(), true)
+        .expect_err("previous never leaves a covered surface");
+    assert!(
+        failure.reason.contains("non-standalone explicit select"),
+        "{}",
+        failure.reason
+    );
+    assert!(fake.selects.is_empty());
+}
+
+#[test]
+fn armed_detached_away_and_return_have_exact_typed_receipts() {
+    let mut fake = Fake::default();
+    fake.row.current = 900;
+    fake.row.detached = Some(900);
+    let mut state = SelectionState::default();
+    let mut away = plan_claim(
+        Action::WorkspaceSelect { index: 2 },
+        "op-8",
+        "macos-display-1",
+        "ws-2",
+        Some("space-3"),
+        None,
+        None,
+    );
+    away.select_baseline = Some(SelectPhysical::Detached(900));
+    let disabled =
+        drain_claimed_select_with(&mut state, &mut fake, away.clone(), &open_gates(), true)
+            .expect_err("the disabled production route refuses");
+    assert!(disabled.reason.contains("unsupported by the bound host capability"));
+    assert!(fake.selects.is_empty());
+
+    away.select_detached_enabled = true;
+    let away = drain_claimed_select_with(&mut state, &mut fake, away, &open_gates(), true)
+        .expect("one armed switch reaches the exact Desktop");
+    assert_eq!(fake.selects, [3]);
+    assert_eq!(away.pre, Some(SelectPhysical::Detached(900)));
+    assert_eq!(away.post, Some(SelectPhysical::Desktop(3)));
+    assert!(away.post_member.is_none());
+
+    let mut back = marker_claim(900, Some(SelectPhysical::Desktop(3)));
+    back.operation_id = Some("op-9".to_owned());
+    back.select_target_workspace = Some("ws-2".to_owned());
+    back.select_native_binding = Some("space-3".to_owned());
+    let back = drain_claimed_select_with(&mut state, &mut fake, back, &open_gates(), true)
+        .expect("one explicit return reaches the frozen member");
+    assert_eq!(fake.selects, [3, 900]);
+    assert_eq!(back.pre, Some(SelectPhysical::Desktop(3)));
+    assert_eq!(back.post, Some(SelectPhysical::Detached(900)));
+    assert_eq!(back.post_member.unwrap().0, "4242_7");
     assert_eq!(fake.creates, 0);
 }

@@ -25,7 +25,7 @@ use crate::runtime::{
 };
 use crate::runtime_lifecycle::EngineExit;
 use crate::runtime_log::sanitize_backend_reason;
-use crate::runtime_types::ScopedBackendSnapshot;
+use crate::runtime_types::{ScopedBackendSnapshot, SelectPhysical};
 use crate::world_command_map::{
     OP_CURSOR, OP_DRAG_GESTURE, OP_RECONCILE, OP_SELECT, OP_SEND, OP_TERMINATE, operation_command,
     select_command, select_output,
@@ -261,16 +261,22 @@ pub(crate) enum EngineJob {
     /// without fresh proof.
     ViewAttempt {
         operation_id: String,
+        /// Exact core-owned output the attempt correlates on; `None` when no
+        /// plan bound (the stage drops without a row).
+        target_output: Option<tiler_core::directional::OutputId>,
         setter: tiler_core::world_report::FrameSetter,
-        /// Native Space id read immediately before the drain actuated
-        /// (`None` unread).
-        pre_sid: Option<u64>,
-        /// Native Space id read immediately after the drain actuated
+        /// Typed physical current read immediately before the drain
+        /// actuated (`None` unread).
+        pre: Option<crate::runtime_types::SelectPhysical>,
+        /// Typed physical current read immediately after the drain actuated
         /// (`None` unread/unproven).
-        post_sid: Option<u64>,
-        /// Observation-time native current for the target output captured
-        /// at dispatch (`None` unread).
-        baseline_sid: Option<u64>,
+        post: Option<crate::runtime_types::SelectPhysical>,
+        /// Observation-time typed physical current for the target output
+        /// captured at dispatch (`None` unread).
+        baseline: Option<crate::runtime_types::SelectPhysical>,
+        /// Adapter-bracketed membership read for an accepted exact detached
+        /// post (`None` withholds proof; never focus evidence).
+        post_member: Option<tiler_core::directional::WindowId>,
     },
     /// Raw mechanical membership-attempt evidence from one proven
     /// send-drain outcome (never a verdict): the setter disposition plus
@@ -1040,14 +1046,37 @@ pub(crate) fn store_select_claim(
     emit(shared, 0, 0, 0, "input", token, depth);
 }
 
+/// Exact typed observation-time baseline for one core-owned output: the
+/// output's current user Desktop Space, else this display's detached
+/// fullscreen surface from the same bound context, else unread (`None`).
+/// Never guesses an output, never flattens a detached surface to a Desktop.
+fn select_baseline_for(
+    ctx: &Arc<crate::runtime_types::NativeContext>,
+    output: &str,
+) -> Option<SelectPhysical> {
+    ctx.domains
+        .iter()
+        .find(|domain| domain.output.0 == output && domain.current)
+        .map(|domain| SelectPhysical::Desktop(domain.space))
+        .or_else(|| {
+            ctx.domains
+                .iter()
+                .find(|domain| domain.output.0 == output)
+                .and_then(|domain| ctx.detached_current(domain.cg_id))
+                .map(SelectPhysical::Detached)
+        })
+}
+
 /// Bind the reply-derived select plan into a claim for one operation id:
 /// the retained view target (output plus logical workspace) from the
 /// engine, the live native binding for that logical from the accepted
 /// reply's workspace rows (live lookup only, never a durable table), the
 /// explicit trailing creation desire for that logical when the target is
-/// unbound, and the observation-time native current for the target output
-/// as the attempt baseline. Missing transfers leave every plan field
-/// `None` so the drain refuses without actuation (a prior no-op such as
+/// unbound, and the exact typed observation-time physical current for the
+/// target output as the attempt baseline. Without a transfer, binds only
+/// the core-published exact-current redundant marker under the bound
+/// capability; every other missing transfer leaves the plan unbound so
+/// the drain refuses without actuation (a prior no-op such as
 /// previous-without-history binds nothing). Never invents a binding and
 /// never reinterprets ordinals: numbered taps resolve core-side.
 /// Call only with the currently applied reply's operation identity - never
@@ -1066,12 +1095,47 @@ pub(crate) fn bind_select_plan(
             target.operation_id == operation_id
                 && matches!(target.kind, tiler_core::world_report::TransferKind::View)
         });
+    let reply = session.sequencer().last_reply();
     let Some(transfer) = transfer else {
+        // No retained View flight: the only no-flight selection the adapter
+        // may call redundant is the core-published exact-current marker for
+        // this command sequence (a selection already exact-current on a
+        // detached surface mints no flight). Consumed only under the bound
+        // capability, carrying output, SID, and intended member. Every
+        // other unbound plan (previous-no-history, trailing refusal,
+        // malformed identity) stays generic.
+        claim.select_detached_enabled = session.detached_fullscreen_view();
+        if !claim.select_detached_enabled {
+            return;
+        }
+        let Some(seq) = operation_id
+            .strip_prefix("op-")
+            .and_then(|seq| seq.parse::<u64>().ok())
+        else {
+            return;
+        };
+        let marker = session
+            .engine_mut()
+            .redundant_detached_selection(seq)
+            .cloned();
+        let Some(destination) = marker else {
+            return;
+        };
+        let output = destination.surface.output.0.clone();
+        let Some(surface) = crate::runtime_types::detached_sid(&destination.surface) else {
+            return;
+        };
+        let Some(member) = session.pin_detached_select_member(seq, &destination.member) else {
+            return;
+        };
+        claim.select_target_output = Some(output.clone());
+        claim.select_detached_surface = Some(surface);
+        claim.select_detached_member = Some(member);
+        claim.select_baseline = select_baseline_for(ctx, &output);
         return;
     };
     let target_output = transfer.target_output.0.clone();
     let target_workspace = transfer.target_workspace.clone();
-    let reply = session.sequencer().last_reply();
     let native_binding = reply.as_ref().and_then(|reply| {
         reply
             .workspaces
@@ -1084,11 +1148,46 @@ pub(crate) fn bind_select_plan(
             desire.target_output.0 == target_output && desire.logical_workspace == target_workspace
         })
     });
-    let baseline_sid = ctx
-        .domains
-        .iter()
-        .find(|domain| domain.output.0 == target_output && domain.current)
-        .map(|domain| domain.space);
+    let baseline = select_baseline_for(ctx, &target_output);
+    // Frozen detached destination of an eligible standalone explicit
+    // existing-Space View flight: exactly the reply row shape core
+    // publishes (`kind:"view"`, `follow:false`, `parent:null`, non-null
+    // `cmdSeq`, surface on this output, and a bound existing Desktop home).
+    // Any other shape binds nothing; creation/trailing append/send/swap
+    // never carry one.
+    let detached_row = reply.as_ref().and_then(|reply| {
+        reply.transfers.iter().find(|row| {
+            row.operation_id == operation_id
+                && row.target_output.0 == target_output
+                && matches!(row.kind, tiler_core::world_report::TransferKind::View)
+        })
+    });
+    claim.select_detached_enabled = session.detached_fullscreen_view();
+    let detached = match detached_row.and_then(|row| {
+        row.detached_destination.as_ref().map(|destination| (row, destination))
+    }) {
+        Some((row, destination)) => {
+            if !claim.select_detached_enabled
+                || row.follow
+                || row.parent.is_some()
+                || destination.surface.output.0 != target_output
+                || native_binding.is_none()
+            {
+                return;
+            }
+            let (Some(surface), Some(member)) = (
+                crate::runtime_types::detached_sid(&destination.surface),
+                row.command_seq.and_then(|seq| {
+                    session.pin_detached_select_member(seq, &destination.member)
+                }),
+            ) else {
+                // Never degrade an unproven detached grant to a Desktop switch.
+                return;
+            };
+            Some((surface, member))
+        }
+        None => None,
+    };
     claim.select_target_output = Some(target_output.clone());
     claim.select_target_workspace = Some(target_workspace.clone());
     claim.select_native_binding = native_binding;
@@ -1097,7 +1196,11 @@ pub(crate) fn bind_select_plan(
         claim.select_creation_logical = Some(desire.logical_workspace.clone());
         claim.select_creation_output = Some(desire.target_output.0.clone());
     }
-    claim.select_baseline_sid = baseline_sid;
+    if let Some((surface, member)) = detached {
+        claim.select_detached_surface = Some(surface);
+        claim.select_detached_member = Some(member);
+    }
+    claim.select_baseline = baseline;
 }
 
 /// Parse one `space-<sid>` reply native binding to its live SID (`None` on
@@ -1163,11 +1266,18 @@ pub(crate) fn bind_send_plan(
             desire.target_output.0 == target_output && desire.logical_workspace == target_workspace
         })
     });
-    let baseline_sid = ctx
+    let baseline = ctx
         .domains
         .iter()
         .find(|domain| domain.output.0 == target_output && domain.current)
-        .map(|domain| domain.space);
+        .map(|domain| SelectPhysical::Desktop(domain.space))
+        .or_else(|| {
+            ctx.domains
+                .iter()
+                .find(|domain| domain.output.0 == target_output)
+                .and_then(|domain| ctx.detached_current(domain.cg_id))
+                .map(SelectPhysical::Detached)
+        });
     claim.select_target_output = Some(target_output.clone());
     claim.select_target_workspace = Some(target_workspace.clone());
     claim.select_native_binding = native_binding.clone();
@@ -1176,7 +1286,7 @@ pub(crate) fn bind_send_plan(
         claim.select_creation_logical = Some(desire.logical_workspace.clone());
         claim.select_creation_output = Some(desire.target_output.0.clone());
     }
-    claim.select_baseline_sid = baseline_sid;
+    claim.select_baseline = baseline;
     // Follow view flight identity, read from the reply's own published
     // transfers: the retained View flight naming the same target as the
     // parent window transfer. The drain stages the follow view attempt
@@ -2224,10 +2334,12 @@ pub(crate) fn process_job(
         }
         EngineJob::ViewAttempt {
             operation_id,
+            target_output,
             setter,
-            pre_sid,
-            post_sid,
-            baseline_sid,
+            pre,
+            post,
+            baseline,
+            post_member,
         } => {
             // Raw drain evidence staged for the next report (never a
             // verdict: the core derives confirmation, refusal, ambiguity,
@@ -2236,8 +2348,17 @@ pub(crate) fn process_job(
             // `{op}-follow` identity (the retained follow view flight the
             // reply publishes); the standalone stage below correlates it
             // against that retained View target exactly like any other
-            // view. The ring line makes staging observable end to end.
-            session.stage_view_attempt(&operation_id, setter, pre_sid, post_sid, baseline_sid);
+            // view, by the exact `(op,out)` pair. The ring line makes
+            // staging observable end to end.
+            session.stage_view_attempt(
+                &operation_id,
+                target_output.as_ref(),
+                setter,
+                pre,
+                post,
+                baseline,
+                post_member,
+            );
             emit(shared, 0, 0, 0, "feedback", "staged", 1);
             // Drain settlement is the select per-action TOTAL (trace origin
             // to staging, including the lane's fixed waits unsplit).
@@ -3645,6 +3766,7 @@ mod trailing_join_tests {
             revision: 9,
             domains: vec![domain(1, true), domain(277, false)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -3890,6 +4012,7 @@ mod trailing_join_tests {
                 stop: Arc::new(AtomicBool::new(false)),
                 frames: Arc::new(FrameSlot::new()),
                 focus: Arc::new(FocusSlot::new()),
+                membership: Arc::new(crate::detached_membership::MembershipProbeSlot::new()),
                 ready: Arc::new(Mutex::new(Some(Ok(())))),
                 worker: None,
                 worker_name: "test-close".to_owned(),
@@ -4406,11 +4529,13 @@ mod trailing_join_tests {
             revision: 9,
             domains: Vec::new(),
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         let ambiguous = Arc::new(NativeContext {
             revision: 9,
             domains: vec![domain(1, true), domain(2, true)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         let ambiguous_bindings = vec![
             crate::pager::PagerWorkspaceBinding {
@@ -4819,6 +4944,7 @@ mod trailing_join_tests {
             observed: Some(window),
             spaces,
             fullscreen_meta: false,
+            detached_membership: None,
             minimized_meta: false,
             hidden_meta: false,
             excluded: None,
@@ -5649,6 +5775,10 @@ mod trailing_join_tests {
             .cloned()
             .expect("away select stores its operation");
         let away_op = away.operation_id.clone().expect("operation rides");
+        let away_output = away
+            .select_target_output
+            .clone()
+            .map(tiler_core::directional::OutputId);
         let away_pending = lock_shared(&shared)
             .selection_focus_pending
             .clone()
@@ -5671,14 +5801,19 @@ mod trailing_join_tests {
         };
         let moved = drain_claimed_select_with(&mut state, &mut backend, away, &gates, true)
             .expect("away drains to its binding");
-        assert_eq!((moved.pre, moved.post), (Some(1), Some(277)));
+        assert_eq!(
+            (moved.pre, moved.post),
+            (Some(SelectPhysical::Desktop(1)), Some(SelectPhysical::Desktop(277)))
+        );
         process_job(
             EngineJob::ViewAttempt {
                 operation_id: away_op.clone(),
+                target_output: away_output,
                 setter: FrameSetter::Accepted,
-                pre_sid: moved.pre,
-                post_sid: moved.post,
-                baseline_sid: moved.effect.baseline,
+                pre: moved.pre,
+                post: moved.post,
+                baseline: moved.effect.baseline,
+                post_member: moved.post_member,
             },
             &mut session,
             &mut retained,
@@ -5692,6 +5827,7 @@ mod trailing_join_tests {
             revision: 10,
             domains: vec![domain(1, false), domain(277, true)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         lock_shared(&shared).native_context = Some(Arc::clone(&moved_ctx));
         lock_shared(&shared).topology_revision = moved_ctx.revision;
@@ -5915,7 +6051,7 @@ mod trailing_join_tests {
         shared: &Arc<Mutex<Shared>>,
         inbox: &Arc<Inbox>,
         focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
-    ) -> (String, Option<u64>) {
+    ) -> (String, Option<SelectPhysical>) {
         use crate::workspace_select::{SelectGates, SelectionState, drain_claimed_select_with};
         use tiler_core::world_report::FrameSetter;
         let away = lock_shared(shared)
@@ -5924,6 +6060,10 @@ mod trailing_join_tests {
             .cloned()
             .expect("away select stored");
         let away_op = away.operation_id.clone().expect("operation rides");
+        let target_output = away
+            .select_target_output
+            .clone()
+            .map(tiler_core::directional::OutputId);
         let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
         let mut state = SelectionState::default();
         let gates = SelectGates {
@@ -5933,14 +6073,19 @@ mod trailing_join_tests {
         };
         let moved = drain_claimed_select_with(&mut state, &mut backend, away, &gates, true)
             .expect("away drains to its binding");
-        assert_eq!((moved.pre, moved.post), (Some(1), Some(277)));
+        assert_eq!(
+            (moved.pre, moved.post),
+            (Some(SelectPhysical::Desktop(1)), Some(SelectPhysical::Desktop(277)))
+        );
         process_job(
             EngineJob::ViewAttempt {
                 operation_id: away_op.clone(),
+                target_output,
                 setter: FrameSetter::Accepted,
-                pre_sid: moved.pre,
-                post_sid: moved.post,
-                baseline_sid: moved.effect.baseline,
+                pre: moved.pre,
+                post: moved.post,
+                baseline: moved.effect.baseline,
+                post_member: moved.post_member,
             },
             session,
             retained,
@@ -5953,6 +6098,7 @@ mod trailing_join_tests {
             revision: 10,
             domains: vec![domain(1, false), domain(277, true)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         lock_shared(shared).native_context = Some(Arc::clone(&moved_ctx));
         lock_shared(shared).topology_revision = moved_ctx.revision;
@@ -6224,7 +6370,7 @@ mod trailing_join_tests {
         let (settled_op, post) =
             drain_settle_away(&mut session, &mut retained, &shared, &inbox, &focus_queue);
         assert_eq!(settled_op, away_op);
-        assert_eq!(post, Some(277));
+        assert_eq!(post, Some(SelectPhysical::Desktop(277)));
         // Mock applies the actual produced layout frames, then the
         // production scoped-observation handler observes that mock native
         // geometry so the roster-observed live rects match the frozen
@@ -6854,6 +7000,7 @@ mod trailing_join_tests {
             revision: 10,
             domains: vec![domain(1, false), domain(277, true)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         let post_sid = moved_ctx
             .domains
@@ -6865,10 +7012,12 @@ mod trailing_join_tests {
         process_job(
             EngineJob::ViewAttempt {
                 operation_id: parent_op.clone(),
+                target_output: Some(output()),
                 setter: tiler_core::world_report::FrameSetter::Accepted,
-                pre_sid,
-                post_sid,
-                baseline_sid: pre_sid,
+                pre: pre_sid.map(SelectPhysical::Desktop),
+                post: post_sid.map(SelectPhysical::Desktop),
+                baseline: pre_sid.map(SelectPhysical::Desktop),
+                post_member: None,
             },
             &mut session,
             &mut retained,
@@ -7033,7 +7182,11 @@ mod trailing_join_tests {
         assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
         let handle = release_handle(&shared, &inbox, &focus_queue);
         assert_eq!(
-            handle.release_selection_focus(Some(&parent_op), post_sid, Some(4242)),
+            handle.release_selection_focus(
+                Some(&parent_op),
+                post_sid.map(SelectPhysical::Desktop),
+                Some(4242),
+            ),
             crate::world_dispatch::SelectionFocusRelease::Deferred,
             "unstamped intent never releases early"
         );
@@ -7292,7 +7445,11 @@ mod trailing_join_tests {
         }
         assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 2);
         assert_eq!(
-            handle.release_selection_focus(Some(&parent_op), post_sid, Some(4242)),
+            handle.release_selection_focus(
+                Some(&parent_op),
+                post_sid.map(SelectPhysical::Desktop),
+                Some(4242),
+            ),
             crate::world_dispatch::SelectionFocusRelease::NoPending,
             "old callback never duplicates the capture release"
         );
@@ -7575,7 +7732,11 @@ mod trailing_join_tests {
             "completion retires the intent"
         );
         assert_eq!(
-            handle.release_selection_focus(Some(&parent_op), post_sid, Some(4242)),
+            handle.release_selection_focus(
+                Some(&parent_op),
+                post_sid.map(SelectPhysical::Desktop),
+                Some(4242),
+            ),
             crate::world_dispatch::SelectionFocusRelease::NoPending
         );
         assert!(
@@ -8635,7 +8796,7 @@ mod trailing_join_tests {
     }
 
     #[test]
-    fn redundant_select_on_detached_fullscreen_reports_refusal_without_posting() {
+    fn detached_select_without_typed_baseline_refuses_without_posting() {
         use crate::workspace_select::{SelectGates, SelectionState, drain_claimed_select_with};
 
         let desktop = ctx();
@@ -8671,6 +8832,7 @@ mod trailing_join_tests {
             revision: 10,
             domains: vec![domain(1, false), domain(277, false)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         {
             let mut guard = lock_shared(&shared);
@@ -8692,8 +8854,12 @@ mod trailing_join_tests {
             .pop_front()
             .expect("core retains a redundant host-owned View flight");
         let op = claim.operation_id.clone().expect("correlated operation");
+        let target_output = claim
+            .select_target_output
+            .clone()
+            .map(tiler_core::directional::OutputId);
         assert_eq!(claim.select_native_binding.as_deref(), Some("space-1"));
-        assert_eq!(claim.select_baseline_sid, None);
+        assert_eq!(claim.select_baseline, None);
         let mut backend = FakeBackend::new(&[1, 277], 900, &[]);
         let failure = drain_claimed_select_with(
             &mut SelectionState::default(),
@@ -8707,16 +8873,31 @@ mod trailing_join_tests {
             true,
         )
         .expect_err("the detached current fails the user-row preflight");
-        assert!(failure.reason.contains("workspace row/current identity unprovable"));
+        assert!(
+            failure
+                .reason
+                .contains("detached fullscreen actuation without a bound typed baseline"),
+            "{}",
+            failure.reason
+        );
+        assert_eq!(
+            (failure.pre, failure.post),
+            (
+                Some(SelectPhysical::Detached(900)),
+                Some(SelectPhysical::Detached(900))
+            )
+        );
         assert!(backend.selects.is_empty());
         assert_eq!((backend.creates, backend.current), (0, 900));
         process_job(
             EngineJob::ViewAttempt {
                 operation_id: op.clone(),
+                target_output,
                 setter: failure.setter,
-                pre_sid: failure.pre,
-                post_sid: failure.post,
-                baseline_sid: failure.baseline,
+                pre: failure.pre,
+                post: failure.post,
+                baseline: failure.baseline,
+                post_member: None,
             },
             &mut session,
             &mut retained,
@@ -8743,7 +8924,14 @@ mod trailing_join_tests {
         };
         assert_eq!(attempt.operation_id, op);
         assert_eq!(attempt.disposition, FrameSetter::Refused);
-        assert_eq!((attempt.pre.as_ref(), attempt.post.as_ref()), (None, None));
+        assert!(matches!(
+            (attempt.pre.as_ref(), attempt.post.as_ref()),
+            (
+                Some(tiler_core::world_report::ViewRef::Detached(_)),
+                Some(tiler_core::world_report::ViewRef::Detached(_))
+            )
+        ));
+        assert_eq!(attempt.baseline, None);
         assert!(matches!(
             tiler_protocol::world_admission::handle_report_checked(
                 session.engine_mut(),
@@ -8786,11 +8974,15 @@ mod trailing_join_tests {
             .cloned()
             .expect("numbered claim stored");
         let first_op = first.operation_id.clone().expect("operation rides");
+        let first_output = first
+            .select_target_output
+            .clone()
+            .map(tiler_core::directional::OutputId);
         assert!(
             first.select_native_binding.is_some(),
             "numbered binds a live native"
         );
-        assert_eq!(first.select_baseline_sid, Some(1));
+        assert_eq!(first.select_baseline, Some(SelectPhysical::Desktop(1)));
         // Drain the numbered move through the scripted native row.
         let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
         let mut state = SelectionState::default();
@@ -8803,8 +8995,11 @@ mod trailing_join_tests {
             .expect("numbered drains to its binding");
         assert_eq!(moved.setter, FrameSetter::Accepted);
         assert!(moved.effect.changed);
-        assert_eq!(moved.effect.baseline, Some(1));
-        assert_eq!((moved.pre, moved.post), (Some(1), Some(277)));
+        assert_eq!(moved.effect.baseline, Some(SelectPhysical::Desktop(1)));
+        assert_eq!(
+            (moved.pre, moved.post),
+            (Some(SelectPhysical::Desktop(1)), Some(SelectPhysical::Desktop(277)))
+        );
         // Stage the proven raw attempt and settle the moved observation
         // through the production dispatch path: the native echo (current
         // 277) confirms the view and records core history. The shared
@@ -8813,10 +9008,12 @@ mod trailing_join_tests {
         process_job(
             EngineJob::ViewAttempt {
                 operation_id: first_op,
+                target_output: first_output,
                 setter: FrameSetter::Accepted,
-                pre_sid: moved.pre,
-                post_sid: moved.post,
-                baseline_sid: moved.effect.baseline,
+                pre: moved.pre,
+                post: moved.post,
+                baseline: moved.effect.baseline,
+                post_member: moved.post_member,
             },
             &mut session,
             &mut retained,
@@ -8829,6 +9026,7 @@ mod trailing_join_tests {
             revision: 10,
             domains: vec![domain(1, false), domain(277, true)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         lock_shared(&shared).native_context = Some(Arc::clone(&moved_ctx));
         lock_shared(&shared).topology_revision = moved_ctx.revision;
@@ -8877,25 +9075,31 @@ mod trailing_join_tests {
             .cloned()
             .expect("previous claim stored with proven history");
         let prev_op = prev.operation_id.clone().expect("operation rides");
+        let prev_output = prev
+            .select_target_output
+            .clone()
+            .map(tiler_core::directional::OutputId);
         assert_eq!(
             prev.select_native_binding.as_deref(),
             Some(crate::topology::workspace_key(1).as_str()),
             "previous binds the proven prior Space"
         );
-        assert_eq!(prev.select_baseline_sid, Some(277));
+        assert_eq!(prev.select_baseline, Some(SelectPhysical::Desktop(277)));
         let back = drain_claimed_select_with(&mut state, &mut backend, prev, &gates, true)
             .expect("previous drains to its binding");
         assert_eq!((back.effect.from, back.effect.target), (277, 1));
-        assert_eq!(back.effect.baseline, Some(277));
+        assert_eq!(back.effect.baseline, Some(SelectPhysical::Desktop(277)));
         // Settle the return arrival, then previous again flips forward -
         // history advances only on proven arrivals, both directions.
         process_job(
             EngineJob::ViewAttempt {
                 operation_id: prev_op,
+                target_output: prev_output,
                 setter: FrameSetter::Accepted,
-                pre_sid: back.pre,
-                post_sid: back.post,
-                baseline_sid: back.effect.baseline,
+                pre: back.pre,
+                post: back.post,
+                baseline: back.effect.baseline,
+                post_member: back.post_member,
             },
             &mut session,
             &mut retained,
@@ -8908,6 +9112,7 @@ mod trailing_join_tests {
             revision: 11,
             domains: vec![domain(1, true), domain(277, false)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         lock_shared(&shared).native_context = Some(Arc::clone(&home_ctx));
         lock_shared(&shared).topology_revision = home_ctx.revision;
@@ -8983,7 +9188,7 @@ mod trailing_join_tests {
             claim.select_target_output = Some("macos-display-1".to_owned());
             claim.select_target_workspace = Some("ws-2".to_owned());
             claim.select_native_binding = Some("space-277".to_owned());
-            claim.select_baseline_sid = Some(1);
+            claim.select_baseline = Some(SelectPhysical::Desktop(1));
             claim
         };
         let mut backend = FakeBackend::new(&[1, 277], 1, &[]);
@@ -8994,7 +9199,10 @@ mod trailing_join_tests {
             drain_claimed_select_with_os(&mut state, &mut backend, claim(), &gates, true, Some(27))
                 .expect("two-display keyboard select drains its exact target");
         assert_eq!(backend.selects, vec![277], "exact reply-bound SID only");
-        assert_eq!((success.pre, success.post), (Some(1), Some(277)));
+        assert_eq!(
+            (success.pre, success.post),
+            (Some(SelectPhysical::Desktop(1)), Some(SelectPhysical::Desktop(277)))
+        );
         assert_eq!(success.effect.created, None);
         assert_eq!(backend.creates, 0);
         assert!(state.take_trailing_proof().is_none());
@@ -9040,7 +9248,7 @@ mod trailing_join_tests {
         trailing.select_target_output = Some("macos-display-1".to_owned());
         trailing.select_target_workspace = Some("ws-new".to_owned());
         trailing.select_native_binding = Some("space-277".to_owned());
-        trailing.select_baseline_sid = Some(1);
+        trailing.select_baseline = Some(SelectPhysical::Desktop(1));
         let mut state = SelectionState::default();
         let failure = drain_claimed_select_with_os(
             &mut state,
@@ -9170,10 +9378,12 @@ mod trailing_join_tests {
         process_job(
             EngineJob::ViewAttempt {
                 operation_id: stale.operation_id.clone().expect("operation rides"),
+                target_output: None,
                 setter: FrameSetter::Refused,
-                pre_sid: None,
-                post_sid: None,
-                baseline_sid: None,
+                pre: None,
+                post: None,
+                baseline: None,
+                post_member: None,
             },
             &mut session,
             &mut retained,
@@ -9222,10 +9432,12 @@ mod trailing_join_tests {
         for job in [
             EngineJob::ViewAttempt {
                 operation_id: "op-404".to_owned(),
+                target_output: None,
                 setter: FrameSetter::Accepted,
-                pre_sid: Some(1),
-                post_sid: Some(277),
-                baseline_sid: Some(1),
+                pre: Some(SelectPhysical::Desktop(1)),
+                post: Some(SelectPhysical::Desktop(277)),
+                baseline: Some(SelectPhysical::Desktop(1)),
+                post_member: None,
             },
             EngineJob::MemberAttempt {
                 operation_id: "op-404".to_owned(),
@@ -9279,7 +9491,7 @@ mod trailing_join_tests {
         // assertion, bypassing resolution (latest-wins keys are what the
         // guard must preserve, not the evidence content).
         session.pending_views.insert(
-            "op-9".to_owned(),
+            ("op-9".to_owned(), output()),
             ViewAttempt {
                 operation_id: "op-9".to_owned(),
                 target_output: output(),
@@ -9289,6 +9501,7 @@ mod trailing_join_tests {
                 post: None,
                 baseline: None,
                 attempt_ms: 0,
+                post_member: None,
             },
         );
         session.pending_members.insert(
@@ -9369,6 +9582,7 @@ mod trailing_join_tests {
             revision: 1,
             domains: Vec::new(),
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         });
         match dispatch_report(
             &mut session,
@@ -9501,6 +9715,7 @@ mod trailing_join_tests {
                 stop: Arc::new(AtomicBool::new(false)),
                 frames: Arc::new(FrameSlot::new()),
                 focus: Arc::new(FocusSlot::new()),
+                membership: Arc::new(crate::detached_membership::MembershipProbeSlot::new()),
                 ready: Arc::new(Mutex::new(Some(Ok(())))),
                 worker: None,
                 worker_name: "test-1001".to_owned(),
@@ -9520,6 +9735,7 @@ mod trailing_join_tests {
                         observed: Some(observed(7)),
                         spaces: vec![1],
                         fullscreen_meta: false,
+                        detached_membership: None,
                         minimized_meta: false,
                         hidden_meta: false,
                         excluded: None,
@@ -9751,6 +9967,7 @@ mod trailing_join_tests {
                             observed: Some(observed(7)),
                             spaces: vec![1],
                             fullscreen_meta: false,
+                            detached_membership: None,
                             minimized_meta: false,
                             hidden_meta: false,
                             excluded: None,
@@ -9786,6 +10003,9 @@ mod trailing_join_tests {
                     stop: Arc::new(AtomicBool::new(false)),
                     frames: Arc::new(FrameSlot::new()),
                     focus: Arc::new(FocusSlot::new()),
+                    membership: Arc::new(
+                        crate::detached_membership::MembershipProbeSlot::new(),
+                    ),
                     ready: Arc::new(Mutex::new(Some(Ok(())))),
                     worker: None,
                     worker_name: "test-1001".to_owned(),
@@ -10317,6 +10537,7 @@ mod trailing_join_tests {
                 stop: Arc::new(AtomicBool::new(false)),
                 frames: Arc::clone(&frames),
                 focus: Arc::new(FocusSlot::new()),
+                membership: Arc::new(crate::detached_membership::MembershipProbeSlot::new()),
                 ready: Arc::new(Mutex::new(Some(Ok::<(), String>(())))),
                 worker: None,
                 worker_name: "test-4242".to_owned(),
@@ -11230,6 +11451,7 @@ mod trailing_join_tests {
                 stop: Arc::new(AtomicBool::new(false)),
                 frames: Arc::clone(&frames),
                 focus: Arc::new(FocusSlot::new()),
+                membership: Arc::new(crate::detached_membership::MembershipProbeSlot::new()),
                 ready: Arc::new(Mutex::new(Some(Ok::<(), String>(())))),
                 worker: None,
                 worker_name: "test-4242".to_owned(),
@@ -11541,6 +11763,7 @@ mod trailing_join_tests {
                 stop: Arc::new(AtomicBool::new(false)),
                 frames: Arc::new(FrameSlot::new()),
                 focus: Arc::new(FocusSlot::new()),
+                membership: Arc::new(crate::detached_membership::MembershipProbeSlot::new()),
                 ready: Arc::new(Mutex::new(Some(Ok::<(), String>(())))),
                 worker: None,
                 worker_name: "test-4242".to_owned(),
@@ -11667,10 +11890,12 @@ mod trailing_join_tests {
 
     impl SelectionBackend for FakeBackend {
         fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
+            let detached = (!self.spaces.contains(&self.current)).then_some(self.current);
             Ok(SelectionSnapshot {
                 display: self.display.clone(),
                 spaces: self.spaces.clone(),
                 current: self.current,
+                detached,
             })
         }
 
@@ -11736,6 +11961,7 @@ mod trailing_join_tests {
             revision: 10,
             domains: vec![domain(1, false), domain(277, false), domain(278, true)],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -11844,10 +12070,12 @@ mod trailing_join_tests {
             process_job(
                 EngineJob::ViewAttempt {
                     operation_id: op.clone(),
+                    target_output: Some(output()),
                     setter: success.setter,
-                    pre_sid: success.pre,
-                    post_sid: success.post,
-                    baseline_sid: success.effect.baseline,
+                    pre: success.pre,
+                    post: success.post,
+                    baseline: success.effect.baseline,
+                    post_member: success.post_member,
                 },
                 &mut session,
                 &mut retained,
@@ -11941,16 +12169,18 @@ mod trailing_join_tests {
             assert!(
                 matches!(
                     report.view_attempts[0].pre.as_ref(),
-                    Some(tiler_core::world_report::WorkspaceRef::Native { workspace, .. })
-                        if workspace.as_str() == workspace_key(success.pre.expect("pre read"))
+                    Some(tiler_core::world_report::ViewRef::Native { workspace, .. })
+                        if matches!(success.pre, Some(SelectPhysical::Desktop(sid))
+                            if workspace.as_str() == workspace_key(sid))
                 ),
                 "drain-verified before read rides the native pre key"
             );
             assert!(
                 matches!(
                     report.view_attempts[0].post.as_ref(),
-                    Some(tiler_core::world_report::WorkspaceRef::Native { workspace, .. })
-                        if workspace.as_str() == workspace_key(success.post.expect("post read"))
+                    Some(tiler_core::world_report::ViewRef::Native { workspace, .. })
+                        if matches!(success.post, Some(SelectPhysical::Desktop(sid))
+                            if workspace.as_str() == workspace_key(sid))
                 ),
                 "drain-verified after read rides the native post key"
             );
@@ -12296,6 +12526,7 @@ mod drag_gesture_handoff_tests {
                 },
             }],
             skipped: Vec::new(),
+            detached_spaces: std::collections::BTreeMap::new(),
         })
     }
 
@@ -12343,6 +12574,7 @@ mod drag_gesture_handoff_tests {
                         observed: Some(window_a),
                         spaces: vec![11],
                         fullscreen_meta: false,
+                        detached_membership: None,
                         minimized_meta: false,
                         hidden_meta: false,
                         excluded: None,
@@ -12375,6 +12607,7 @@ mod drag_gesture_handoff_tests {
                         observed: Some(window_b),
                         spaces: vec![11],
                         fullscreen_meta: false,
+                        detached_membership: None,
                         minimized_meta: false,
                         hidden_meta: false,
                         excluded: None,
